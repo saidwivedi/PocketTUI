@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- PocketTUI app icon — warm paper field, umber prompt chevron + cursor block.
+       Shares the organiser icon language (same paper gradient, same umber). -->
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FBF7EB"/>
+      <stop offset="1" stop-color="#F1E9D6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded-square paper field (iOS superellipse-ish corner radius) -->
+  <rect width="512" height="512" rx="114" fill="url(#paper)"/>
+  <rect x="3" y="3" width="506" height="506" rx="112" fill="none"
+        stroke="#E2D8C2" stroke-width="6"/>
+
+  <!-- Prompt chevron, drawn in umber -->
+  <path d="M156 176 L246 256 L156 336" fill="none" stroke="#B85C38"
+        stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Cursor block trailing the prompt -->
+  <rect x="286" y="300" width="112" height="36" rx="10" fill="#B85C38"/>
+</svg>

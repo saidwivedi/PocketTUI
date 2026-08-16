@@ -1,0 +1,20 @@
+[Unit]
+Description=PocketTUI tmux terminal backend (port 5560)
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+# %h is the user's home directory. Adjust the paths if the checkout lives
+# elsewhere; install.sh generates its own unit with absolute paths instead.
+WorkingDirectory=%h/work/pockettui
+ExecStart=/bin/bash %h/work/pockettui/run.sh
+StandardOutput=append:%h/.cache/pockettui.log
+StandardError=append:%h/.cache/pockettui.log
+# Make sure PATH covers micromamba + tmux
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,15 @@
+.ftp_credentials
+mobile_build/
+__pycache__/
+*.log
+.backend_url
+cloudflare_build/
+.cloudflare_token
+node_modules/
+.wrangler/
+landing_assets/
+landing.html
+favicon.ico
+favicon-32.png
+_redirects
+deploy_cloudflare.sh
