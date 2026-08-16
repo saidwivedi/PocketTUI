@@ -1,0 +1,13 @@
+# PocketTUI backend dependencies (app.py).
+# Unpinned on purpose: the server uses only long-stable FastAPI/uvicorn API, and
+# an install months from now should get a maintained release rather than a
+# version that has since dropped support for the user's Python.
+#
+# starlette>=1.0 is not cosmetic: app.py passes allow_private_network=True to
+# CORSMiddleware, which older starlette rejects with a TypeError at request time
+# (every response becomes a 500). Naming it here turns that into an install-time
+# resolution failure instead. starlette 1.x requires Python >=3.10, which is
+# what really sets this project's minimum interpreter version.
+fastapi>=0.100
+starlette>=1.0
+uvicorn[standard]>=0.23

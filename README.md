@@ -4,24 +4,24 @@
 
 # PocketTUI
 
-**Your workstation's tmux sessions, on your phone.**
+**Your computer's terminal, on your phone.**
 
 Check on jobs, keep Claude or Codex going, or kick off something new while you're away from your laptop.
 
 [**pockettui.com**](https://pockettui.com) · [Open the app](https://pockettui.com/app/) · [Live demo](https://pockettui.com/demo)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)](#install)
 [![Website](https://img.shields.io/website?url=https%3A%2F%2Fpockettui.com&label=pockettui.com)](https://pockettui.com)
 
-<img src="https://pockettui.com/landing_assets/hero-combo-round.png?v=5" alt="A tmux session on the workstation, and the same session attached on a phone" width="92%">
+<img src="https://pockettui.com/landing_assets/hero-combo-round.png?v=5" alt="A tmux session on the computer, and the same session attached on a phone" width="92%">
 
 </div>
 
 ---
 
-PocketTUI is a real terminal for your phone, backed by the tmux sessions already running on your workstation. A small Python server on your machine bridges tmux to a touch-first web app — no cloud in between, no account, nothing to pay for. Your phone talks straight to your machine.
+PocketTUI is a real terminal for your phone, backed by the tmux sessions already running on your computer. A small Python server on your machine bridges tmux to a touch-first web app — no cloud in between, no account, nothing to pay for. Your phone talks straight to your machine.
 
 - **Your actual sessions.** Attaches to the tmux sessions you already have — the training run, the agent, the build — not fresh shells.
 - **Doesn't fight your laptop.** Attaching uses tmux grouped sessions, so the phone gets its own window size without resizing what's on your desktop.
@@ -40,13 +40,22 @@ PocketTUI is a real terminal for your phone, backed by the tmux sessions already
 
 Three steps, once.
 
-**1. On your workstation** — run the installer on the machine where your tmux sessions already live:
+**1. On your computer** — run the installer on the machine where your tmux sessions already live:
 
 ```bash
 curl -fsSL https://pockettui.com/install.sh | bash
 ```
 
-It fetches the source, builds a venv, and on Linux offers to install a systemd user service. Requires Python ≥ 3.9 and tmux.
+It fetches the source, builds a venv from `requirements.txt`, and offers to keep the backend running in the background — a systemd user service on Linux, a launchd agent on macOS. Requires Python ≥ 3.10 and tmux — and if either is missing it provisions them into the install's own environment (via uv or micromamba), without sudo and without touching system packages.
+
+**From a clone**, if you'd rather see the source first — the installer uses the files next to it instead of downloading anything:
+
+```bash
+git clone https://github.com/saidwivedi/PocketTUI.git
+cd PocketTUI && ./install.sh
+```
+
+Or skip the installer entirely: `./run.sh` creates a `.venv` on first run and starts the server.
 
 **2. On your phone** — open [pockettui.com/app](https://pockettui.com/app/) and add it to your home screen (iPhone: Share → Add to Home Screen; Android: Menu → Add to Home screen).
 

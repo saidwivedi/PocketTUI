@@ -1,3 +1,17 @@
+# EXAMPLE systemd user unit — a template, not a working file.
+#
+# install.sh generates the real unit at ~/.config/systemd/user/pockettui.service
+# with absolute paths for the directory it installed into; you only need this
+# file if you are wiring up a clone by hand. In that case:
+#
+#   1. edit WorkingDirectory and ExecStart below to your actual clone path
+#      (%h is your home directory, so %h/work/pockettui is just an example),
+#   2. cp pockettui.service ~/.config/systemd/user/
+#   3. systemctl --user daemon-reload && systemctl --user enable --now pockettui
+#
+# run.sh picks its own environment (an existing micromamba `pockettui` env, else
+# a .venv it creates in the clone), so nothing here has to know which one it is.
+
 [Unit]
 Description=PocketTUI tmux terminal backend (port 5560)
 After=network.target
@@ -7,13 +21,11 @@ StartLimitIntervalSec=0
 Type=simple
 Restart=always
 RestartSec=10
-# %h is the user's home directory. Adjust the paths if the checkout lives
-# elsewhere; install.sh generates its own unit with absolute paths instead.
 WorkingDirectory=%h/work/pockettui
 ExecStart=/bin/bash %h/work/pockettui/run.sh
 StandardOutput=append:%h/.cache/pockettui.log
 StandardError=append:%h/.cache/pockettui.log
-# Make sure PATH covers micromamba + tmux
+# Make sure PATH covers python3/tmux (and micromamba, if you use one)
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]

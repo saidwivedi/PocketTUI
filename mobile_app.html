@@ -825,7 +825,7 @@ html.term-open, body.term-open {
     <div class="eyebrow" id="list-eyebrow">Sessions</div>
     <div id="list"></div>
     <div id="list-empty">No tmux sessions yet — New session starts one.</div>
-    <div id="list-error">Couldn't reach the workstation.</div>
+    <div id="list-error">Couldn't reach your computer.</div>
   </div>
 </div>
 
@@ -845,7 +845,7 @@ html.term-open, body.term-open {
 <div class="sheet-scrim" id="sheet-scrim"></div>
 <div class="sheet" id="sheet-settings">
   <h2 id="sheet-title">Settings</h2>
-  <p class="sheet-note" id="sheet-note">Your workstation terminal, on your phone.</p>
+  <p class="sheet-note" id="sheet-note">Your computer's terminal, on your phone.</p>
   <div class="sheet-install" id="sheet-install">
     <label>Install the backend</label>
     <div class="cmd">
@@ -853,7 +853,7 @@ html.term-open, body.term-open {
       <button type="button" id="btn-copy-install">Copy</button>
     </div>
   </div>
-  <label for="backend-url">Workstation address</label>
+  <label for="backend-url">Computer address</label>
   <input id="backend-url" type="url" inputmode="url" autocapitalize="off" autocorrect="off"
          spellcheck="false" placeholder="my-host.example.net/pockettui">
   <label for="backend-port" class="opt">Port <span>optional</span></label>
@@ -1042,7 +1042,7 @@ function openSettings(firstRun) {
   const parts = backendParts(cfg.backend);
   $("backend-url").value = parts.url;
   $("backend-port").value = parts.port;
-  $("sheet-title").textContent = firstRun ? "Connect your workstation" : "Settings";
+  $("sheet-title").textContent = firstRun ? "Connect your computer" : "Settings";
   $("sheet-note").classList.toggle("hide", !firstRun);
   // First run has nothing to go back to, so there is no cancelling out of it.
   $("btn-settings-cancel").style.display = firstRun ? "none" : "";
@@ -1078,7 +1078,7 @@ $("sheet-scrim").addEventListener("click", () => {
 });
 $("btn-settings-save").addEventListener("click", () => {
   const v = normalizeBackend($("backend-url").value, $("backend-port").value);
-  if (setupMode && !v) { toast("Enter your workstation address"); return; }
+  if (setupMode && !v) { toast("Enter your computer address"); return; }
   cfg.backend = v;
   setupMode = false;
   showSheet(false);
@@ -1908,7 +1908,7 @@ document.addEventListener("visibilitychange", () => {
 // ============================================================
 // Demo shell
 // ============================================================
-// A fake terminal for looking at the app without a workstation behind it. It
+// A fake terminal for looking at the app without a computer behind it. It
 // takes over send() — every input source already funnels through there — and
 // writes back through term.write(), so the key bar, the physical keyboard and
 // the theme all work exactly as they do against a real PTY.

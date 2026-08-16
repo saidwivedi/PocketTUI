@@ -1,7 +1,7 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """PocketTUI — phone-facing tmux terminal.
 
-Serves a single-page mobile web app that lists the workstation's tmux sessions
+Serves a single-page mobile web app that lists the computer's tmux sessions
 and attaches to them over a WebSocket-bridged PTY. Reached both directly at
 http://<host>:5560/ and behind `tailscale serve` at https://<host>/pockettui/,
 so every URL the frontend uses is relative — the proxy strips the /pockettui
@@ -436,11 +436,19 @@ def set_winsize(fd: int, cols: int, rows: int) -> None:
 # ncurses resolve TERM against that directory alone, so tmux dies with
 # "missing or unsuitable terminal: xterm-256color". Naming the system databases
 # explicitly restores the standard entries without touching the user's home.
+# The trailing entries are macOS: Homebrew's tmux links against its own ncurses,
+# whose database lives under the brew prefix (/opt/homebrew on Apple Silicon,
+# /usr/local on Intel) rather than in the system one. Listing a directory that
+# does not exist is harmless — ncurses just skips it.
 TERMINFO_DIRS = ":".join([
     str(Path.home() / ".terminfo"),
     "/etc/terminfo",
     "/lib/terminfo",
     "/usr/share/terminfo",
+    "/opt/homebrew/share/terminfo",
+    "/usr/local/share/terminfo",
+    "/opt/homebrew/opt/ncurses/share/terminfo",
+    "/usr/local/opt/ncurses/share/terminfo",
 ])
 
 
