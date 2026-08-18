@@ -346,7 +346,11 @@ if [[ "$LOCAL_CHECKOUT" == "1" ]] && [[ -e "$INSTALL_DIR" ]] \
 elif [[ -e "$INSTALL_DIR" ]]; then
     FRESH_DIR=0
     if [[ "${POCKETTUI_FORCE:-}" != "1" ]]; then
-        die "$INSTALL_DIR already exists. Re-run with POCKETTUI_FORCE=1 to overwrite, or set POCKETTUI_DIR."
+        die "$INSTALL_DIR already exists.
+  To reinstall over it (your pairing code is kept):
+      curl -fsSL $BASE_URL/install.sh | POCKETTUI_FORCE=1 bash
+  Or install somewhere else:
+      curl -fsSL $BASE_URL/install.sh | POCKETTUI_DIR=~/somewhere bash"
     fi
     step_quiet "Replacing existing install at $INSTALL_DIR (POCKETTUI_FORCE=1)"
     vsay "  These are overwritten by the new copy:"
