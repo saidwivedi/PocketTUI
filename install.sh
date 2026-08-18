@@ -9,9 +9,11 @@
 # on first run, so nothing about your host is baked into it.
 #
 # Environment:
-#   POCKETTUI_DIR    install directory   (default: ~/pockettui)
-#   POCKETTUI_FORCE  1 to overwrite an existing install
-#   PORT             port to serve on    (default: 5560)
+#   POCKETTUI_DIR      install directory   (default: ~/pockettui)
+#   POCKETTUI_FORCE    1 to overwrite an existing install
+#   POCKETTUI_VERBOSE  1 for the full per-step detail (same as --verbose)
+#   POCKETTUI_SERVICE_NAME  systemd unit / launchd label  (default: pockettui)
+#   PORT               port to serve on    (default: 5560)
 
 set -eu
 
@@ -19,7 +21,9 @@ BASE_URL="https://pockettui.com"
 TARBALL_URL="$BASE_URL/pockettui.tar.gz"
 INSTALL_DIR="${POCKETTUI_DIR:-$HOME/pockettui}"
 PORT="${PORT:-5560}"
-SERVICE_NAME="pockettui"
+# Overridable so a second install on another port can have its own unit rather
+# than fighting the first one for the name.
+SERVICE_NAME="${POCKETTUI_SERVICE_NAME:-pockettui}"
 MIN_PY_MINOR=10
 
 # Run from a clone (./install.sh) the sources are already here, so use them and
@@ -33,9 +37,84 @@ if [[ -n "$SRC_DIR" ]] && [[ -f "$SRC_DIR/app.py" ]] && [[ -f "$SRC_DIR/mobile_a
     LOCAL_CHECKOUT=1
 fi
 
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+# A successful run is a handful of lines: one per step with a status on the
+# right, then the pairing code and what to type on the phone. Everything that
+# used to be printed as a tutorial is written into $INSTALL_DIR/README.md and
+# pointed at with one line. Quiet applies to the SUCCESS path only — warnings,
+# prompts and failures still say everything they said before, because a failed
+# install has to stay diagnosable from the terminal alone.
+VERBOSE="${POCKETTUI_VERBOSE:-0}"
+for arg in ${@+"$@"}; do
+    case "$arg" in
+        -v|--verbose) VERBOSE=1 ;;
+    esac
+done
+
+# Colour, only where it can do no harm: a pipe into a file or a pager, NO_COLOR
+# (https://no-color.org), and TERM=dumb all turn it off. Disabled means empty
+# strings rather than a second set of printf calls, so the layout of a coloured
+# and an uncoloured run is identical minus the escapes. Note that
+# `curl … | bash` pipes into *stdin*; stdout is still the terminal, so the
+# documented install path does get colour.
+C_RESET=""; C_STEP=""; C_OK=""; C_WARN=""; C_DIM=""; C_CODE=""; C_RULE=""
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]] && [[ "${TERM:-}" != "dumb" ]]; then
+    C_RESET=$'\033[0m'
+    C_STEP=$'\033[36m'          # step markers: modest
+    C_OK=$'\033[32m'
+    C_WARN=$'\033[33m'
+    C_DIM=$'\033[2m'            # secondary detail
+    C_CODE=$'\033[1;35m'        # the pairing code: the loudest thing on screen
+    C_RULE=$'\033[35m'
+fi
+
 say()  { printf '%s\n' "$*"; }
-step() { printf '\n==> %s\n' "$*"; }
-die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+die()  { printf '%sERROR: %s%s\n' "$C_WARN" "$*" "$C_RESET" >&2; exit 1; }
+
+# Detail that only a --verbose run wants. Anything a user must act on (a
+# warning, a prompt, a failure) uses say/die and is printed either way.
+vsay() { [[ "$VERBOSE" == "1" ]] && printf '%s\n' "$*" || true; }
+
+# One step, one line. In quiet mode the heading is held back until its status is
+# known so the two can share a line; --verbose prints the old multi-line form.
+STEP_OPEN=""
+step() {
+    STEP_OPEN="$*"
+    [[ "$VERBOSE" == "1" ]] && printf '\n%s==> %s%s\n' "$C_STEP" "$*" "$C_RESET"
+    return 0
+}
+
+# A heading that has no status of its own and so no place on a quiet run: the
+# install-directory and download steps, whose result is implied by the steps
+# that follow. Printed in full by --verbose, silent otherwise.
+step_quiet() {
+    [[ "$VERBOSE" == "1" ]] && printf '\n%s==> %s%s\n' "$C_STEP" "$*" "$C_RESET"
+    return 0
+}
+
+# Close the open step with a right-aligned status. Padding is computed on the
+# uncoloured text, so the columns line up whether or not colour is on.
+STEP_WIDTH=34
+step_done() {
+    local status="$1" colour="${2:-$C_OK}" pad=""
+    if [[ "$VERBOSE" == "1" ]]; then
+        # The verbose run has already printed the detail this status summarises,
+        # so repeating the one-word version under it would only be noise.
+        STEP_OPEN=""
+        return 0
+    fi
+    [[ -n "$STEP_OPEN" ]] || return 0
+    # printf cannot pad a string that already contains escapes, so pad first.
+    local plain="==> $STEP_OPEN"
+    local n=$(( STEP_WIDTH - ${#plain} ))
+    [[ "$n" -lt 1 ]] && n=1
+    while [[ "$n" -gt 0 ]]; do pad="$pad "; n=$((n - 1)); done
+    printf '%s==>%s %s%s%s%s%s\n' \
+        "$C_STEP" "$C_RESET" "$STEP_OPEN" "$pad" "$colour" "$status" "$C_RESET"
+    STEP_OPEN=""
+}
 
 # ---------------------------------------------------------------------------
 # Package manager (hints only)
@@ -201,36 +280,50 @@ step "Checking prerequisites"
 
 # Nothing here is fatal any more. What is missing is noted and then provided in
 # user space further down — a missing tmux or an unusable python3 is a thing to
-# fix, not a reason to send the user away to their package manager.
+# fix, not a reason to send the user away to their package manager. Quiet runs
+# collapse to "ok" or to the one thing that is missing; --verbose keeps the
+# per-tool lines.
+MISSING=""
 if command -v python3 >/dev/null 2>&1; then
     PY_VER="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo '?')"
     if usable_python3; then
-        say "  python3 $PY_VER"
+        vsay "  python3 $PY_VER"
     else
-        say "  python3 $PY_VER — not usable for a venv (needs 3.${MIN_PY_MINOR}+ with venv/ensurepip)"
+        vsay "  python3 $PY_VER — not usable for a venv (needs 3.${MIN_PY_MINOR}+ with venv/ensurepip)"
+        MISSING="python"
     fi
 else
-    say "  python3 not found"
+    vsay "  python3 not found"
+    MISSING="python"
 fi
 
 HAVE_TMUX=0
 if command -v tmux >/dev/null 2>&1; then
     HAVE_TMUX=1
-    say "  tmux $(tmux -V | awk '{print $2}')"
+    vsay "  tmux $(tmux -V | awk '{print $2}')"
 else
-    say "  tmux not found — it will be installed into this install's own"
-    say "    environment (see below); no system packages are touched."
+    vsay "  tmux not found — it will be installed into this install's own"
+    vsay "    environment (see below); no system packages are touched."
+    MISSING="${MISSING:+$MISSING, }tmux"
 fi
 
 # The backend only needs to be reachable from the phone; Tailscale is the
 # easiest way to do that, but it is not this script's job to require it.
+HAVE_TAILSCALE=0
 if command -v tailscale >/dev/null 2>&1; then
-    say "  tailscale $(tailscale version 2>/dev/null | head -1)"
+    HAVE_TAILSCALE=1
+    vsay "  tailscale $(tailscale version 2>/dev/null | head -1)"
 else
-    say "  tailscale not found — you will need some other way to reach this"
-    say "    machine from your phone (see the notes at the end)."
-    say "    Whatever route you use, the pairing code set up below keeps the"
-    say "    connection authenticated — a LAN address is not an open shell."
+    vsay "  tailscale not found — you will need some other way to reach this"
+    vsay "    machine from your phone (see the notes at the end)."
+    vsay "    Whatever route you use, the pairing code set up below keeps the"
+    vsay "    connection authenticated — a LAN address is not an open shell."
+fi
+
+if [[ -n "$MISSING" ]]; then
+    step_done "$MISSING missing — will provide" "$C_WARN"
+else
+    step_done "ok"
 fi
 
 # Only the download path needs curl; a local checkout already has the sources.
@@ -248,28 +341,28 @@ FRESH_DIR=1
 if [[ "$LOCAL_CHECKOUT" == "1" ]] && [[ -e "$INSTALL_DIR" ]] \
    && [[ "$SRC_DIR" -ef "$INSTALL_DIR" ]]; then
     FRESH_DIR=0
-    step "Installing into this checkout at $INSTALL_DIR"
-    say "  The sources are already here; only .venv and start.sh are added."
+    step_quiet "Installing into this checkout at $INSTALL_DIR"
+    vsay "  The sources are already here; only .venv and start.sh are added."
 elif [[ -e "$INSTALL_DIR" ]]; then
     FRESH_DIR=0
     if [[ "${POCKETTUI_FORCE:-}" != "1" ]]; then
         die "$INSTALL_DIR already exists. Re-run with POCKETTUI_FORCE=1 to overwrite, or set POCKETTUI_DIR."
     fi
-    step "Replacing existing install at $INSTALL_DIR (POCKETTUI_FORCE=1)"
-    say "  These are overwritten by the new copy:"
+    step_quiet "Replacing existing install at $INSTALL_DIR (POCKETTUI_FORCE=1)"
+    vsay "  These are overwritten by the new copy:"
     for f in app.py mobile_app.html sw.js pockettui.service install.sh \
              icon-192.png icon-512.png vendor; do
-        [[ -e "$INSTALL_DIR/$f" ]] && say "    $f"
+        [[ -e "$INSTALL_DIR/$f" ]] && vsay "    $f"
     done
     # The venv is rebuilt on top of whatever is there; nothing else is removed.
-    [[ -e "$INSTALL_DIR/.venv" ]] && say "    .venv (dependencies reinstalled)"
-    say "  Anything else already in that directory is left alone."
+    [[ -e "$INSTALL_DIR/.venv" ]] && vsay "    .venv (dependencies reinstalled)"
+    vsay "  Anything else already in that directory is left alone."
     note "replaced files in $INSTALL_DIR"
 fi
 
 if [[ "$LOCAL_CHECKOUT" == "1" ]]; then
-    step "Copying source from this checkout"
-    say "  $SRC_DIR"
+    step_quiet "Copying source from this checkout"
+    vsay "  $SRC_DIR"
     mkdir -p "$INSTALL_DIR"
     [[ "$FRESH_DIR" == "1" ]] && note "created $INSTALL_DIR"
     # Only the files the backend actually runs, mirroring what the tarball ships.
@@ -282,9 +375,9 @@ if [[ "$LOCAL_CHECKOUT" == "1" ]]; then
         [[ "$SRC_DIR/$f" -ef "$INSTALL_DIR/$f" ]] && continue
         cp -R "$SRC_DIR/$f" "$INSTALL_DIR/" || die "could not copy $f"
     done
-    say "  -> $INSTALL_DIR"
+    vsay "  -> $INSTALL_DIR"
 else
-    step "Downloading source"
+    step_quiet "Downloading source"
     mkdir -p "$INSTALL_DIR"
     [[ "$FRESH_DIR" == "1" ]] && note "created $INSTALL_DIR"
     # `mktemp -t X.tar.gz` means different things to GNU and BSD mktemp (BSD
@@ -294,19 +387,23 @@ else
     trap 'rm -f "$TMP_TGZ"' EXIT
     curl -fsSL "$TARBALL_URL" -o "$TMP_TGZ" || die "could not download $TARBALL_URL"
     tar -xzf "$TMP_TGZ" -C "$INSTALL_DIR" || die "could not extract the tarball"
-    say "  -> $INSTALL_DIR"
+    vsay "  -> $INSTALL_DIR"
 fi
 
 # ---------------------------------------------------------------------------
 # Python environment
 # ---------------------------------------------------------------------------
-step "Creating the Python environment"
+step "Python environment"
 
 # Where the interpreter ends up, and — when tmux comes from a conda env rather
 # than the system — the bin directory the runtime has to have on PATH. start.sh,
 # the systemd unit and the launchd agent all need both.
 VENV_PY="$INSTALL_DIR/.venv/bin/python"
 ENV_KIND="venv"
+# The one-word provenance shown on the quiet run's status column: which of the
+# three routes actually produced the environment. ENV_KIND stays as it was —
+# it selects the installer below and is quoted in the changelog.
+ENV_LABEL="venv"
 MAMBA_PREFIX="$INSTALL_DIR/.micromamba"
 ENV_BIN=""          # non-empty only when the env must be on PATH (its tmux)
 
@@ -345,15 +442,26 @@ adopt_mamba_env() {
     # tmux by bare name, so the env's bin dir has to precede the system one.
     if [[ -x "$MAMBA_PREFIX/bin/tmux" ]]; then
         ENV_BIN="$MAMBA_PREFIX/bin"
-        say "  tmux $("$MAMBA_PREFIX/bin/tmux" -V 2>/dev/null | awk '{print $2}') from conda-forge"
+        vsay "  tmux $("$MAMBA_PREFIX/bin/tmux" -V 2>/dev/null | awk '{print $2}') from conda-forge"
     fi
     note "created a micromamba env at $MAMBA_PREFIX"
-    say "  $ENV_KIND"
+    ENV_LABEL="micromamba"
+    vsay "  $ENV_KIND"
 }
 
 # Build the venv with uv, which brings its own interpreter when the system has
 # none good enough. Returns non-zero if uv could not do it.
 create_uv_venv() {
+    # An existing venv is a success, not a failure: `uv venv` refuses to write
+    # into one without --clear, and treating that refusal as "uv cannot do it"
+    # sent every re-run down the fallback chain to micromamba — so a second run
+    # rebuilt the environment a different way, rewrote the unit, and then warned
+    # that the unit it had just written differed from the one before it.
+    # Re-using it is also what the pip step below expects: dependencies are
+    # installed into whatever is there, so a fresh venv is only needed once.
+    if [[ -x "$INSTALL_DIR/.venv/bin/python" ]]; then
+        return 0
+    fi
     uv venv --python "3.${MIN_PY_MINOR}" "$INSTALL_DIR/.venv" >/dev/null 2>&1 \
         || uv venv "$INSTALL_DIR/.venv" >/dev/null 2>&1
 }
@@ -364,7 +472,7 @@ create_uv_venv() {
 if [[ "$HAVE_TMUX" != "1" ]]; then
     # Said out loud because it overrides the uv preference: with no system tmux,
     # a venv cannot help — only a conda env supplies tmux without root.
-    say "  no system tmux — using micromamba, which can provide both tmux and python"
+    vsay "  no system tmux — using micromamba, which can provide both tmux and python"
     if ! command -v micromamba >/dev/null 2>&1; then
         install_micromamba \
             || die "tmux is missing and micromamba could not be installed. Install tmux yourself and re-run:  $(pkg_install_cmd tmux)"
@@ -376,26 +484,30 @@ elif command -v uv >/dev/null 2>&1 && create_uv_venv; then
     # uv first: it is the fastest, and it can provision its own Python when the
     # system one is too old, so it subsumes the venv path rather than competing.
     ENV_KIND="venv (uv)"
-    say "  using uv (found on PATH)"
-    say "  $INSTALL_DIR/.venv (uv)"
+    ENV_LABEL="uv"
+    vsay "  using uv (found on PATH)"
+    vsay "  $INSTALL_DIR/.venv (uv)"
 elif usable_python3 && python3 -m venv "$INSTALL_DIR/.venv" 2>/dev/null; then
-    say "  no uv on PATH — using python3 -m venv"
-    say "  $INSTALL_DIR/.venv"
+    ENV_LABEL="venv"
+    vsay "  no uv on PATH — using python3 -m venv"
+    vsay "  $INSTALL_DIR/.venv"
 elif command -v micromamba >/dev/null 2>&1 && create_mamba_env 0; then
     # Debian splits venv out of the stdlib, and some distro pythons ship without
     # ensurepip at all. A micromamba env brings its own interpreter.
-    say "  no usable python3 venv — falling back to a micromamba env"
+    vsay "  no usable python3 venv — falling back to a micromamba env"
     adopt_mamba_env
 elif install_uv && create_uv_venv; then
     # tmux is present, so only the Python side is broken and uv is enough to fix
     # it — it downloads a managed interpreter of its own.
     ENV_KIND="venv (uv)"
-    say "  $INSTALL_DIR/.venv (uv, with its own Python)"
+    ENV_LABEL="uv (own python)"
+    vsay "  $INSTALL_DIR/.venv (uv, with its own Python)"
 else
     die "could not build a Python environment. Install Python 3.${MIN_PY_MINOR}+ and re-run:  $(pkg_install_cmd "$(pkg_name venv)")"
 fi
+step_done "$ENV_LABEL"
 
-step "Installing dependencies (this takes a minute)"
+step "Dependencies"
 # Inside an environment we just made, so nothing here is a system change and
 # nothing needs asking.
 #
@@ -425,7 +537,8 @@ else
         die "could not install fastapi/uvicorn. Check your network and try again."
     fi
 fi
-say "  fastapi + uvicorn installed"
+vsay "  fastapi + uvicorn installed"
+step_done "ok"
 
 # ---------------------------------------------------------------------------
 # Run script
@@ -483,6 +596,9 @@ PYEOF
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_PATH="$UNIT_DIR/$SERVICE_NAME.service"
 SERVICE_INSTALLED=0
+# The nohup fallback: running now, but nothing brings it back after a reboot.
+# Tracked apart from SERVICE_INSTALLED so the summary can say which it is.
+BACKGROUND_STARTED=0
 HAVE_SYSTEMD=0
 if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl >/dev/null 2>&1 \
    && systemctl --user show-environment >/dev/null 2>&1; then
@@ -491,7 +607,7 @@ fi
 
 # macOS has no systemd; the same job — start at login, restart if it dies — is a
 # launchd user agent (a LaunchAgent, per-user, no root).
-AGENT_LABEL="com.pockettui.server"
+AGENT_LABEL="com.${SERVICE_NAME}.server"
 AGENT_DIR="$HOME/Library/LaunchAgents"
 AGENT_PATH="$AGENT_DIR/$AGENT_LABEL.plist"
 HAVE_LAUNCHD=0
@@ -529,21 +645,61 @@ EOF
 
 UNIT_BACKUP=""
 
-# daemon-reload, then enable + start, then report. Shared by the "we wrote the
+# Whether the backend is actually answering, which is the only claim worth
+# making at the end. `systemctl is-active` says the process was spawned, not
+# that uvicorn bound the port — a unit that crash-loops on an occupied port is
+# "active" for the first second of every restart. GET / is unauthenticated
+# (the token guards the API, not the page), so a 2xx here means the server is
+# up and reachable. Poll rather than sleep-once: a cold start is usually well
+# under a second but a loaded machine can take several.
+SERVER_UP=0
+# POSIX sleep only promises integer seconds; GNU and BSD both take fractions.
+# Probe once rather than assume, so a minimal /bin/sleep polls at 1s instead of
+# erroring out of the loop on every iteration.
+SLEEP_TICK=1
+sleep 0.2 >/dev/null 2>&1 && SLEEP_TICK=0.5
+wait_for_server() {
+    local tries="${1:-20}"
+    command -v curl >/dev/null 2>&1 || return 1
+    while [[ "$tries" -gt 0 ]]; do
+        if curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/" 2>/dev/null; then
+            SERVER_UP=1
+            return 0
+        fi
+        sleep "$SLEEP_TICK"
+        tries=$((tries - 1))
+    done
+    return 1
+}
+
+# daemon-reload, then enable + start, then verify. Shared by the "we wrote the
 # unit" and the "the user kept theirs" paths, which differ only in wording.
 start_service() {
     local what="$1"
     touched_outside          # enabling a user unit is systemd state, not a file
     systemctl --user daemon-reload
     systemctl --user enable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
-    if systemctl --user is-active --quiet "$SERVICE_NAME"; then
+    # A re-run against an already-running unit has to pick up the new code and
+    # the (possibly rewritten) unit file; enable --now alone would leave the old
+    # process in place.
+    systemctl --user restart "$SERVICE_NAME" >/dev/null 2>&1 || true
+    if wait_for_server; then
         SERVICE_INSTALLED=1
-        say "  $SERVICE_NAME running on port $PORT"
+        vsay "  $SERVICE_NAME running on port $PORT"
         note "$what and started $SERVICE_NAME"
+        step_done "running"
     else
-        say "  the service did not start; check:"
-        say "    systemctl --user status $SERVICE_NAME"
-        note "$what (service not running)"
+        SERVICE_INSTALLED=1
+        note "$what (service not answering on port $PORT)"
+        step_done "not responding" "$C_WARN"
+        # A failure is never quiet: this is the whole diagnosis, printed in both
+        # modes, because the user has nothing else to go on.
+        say ""
+        say "  $SERVICE_NAME was started but nothing answered on port $PORT."
+        say "  See what it said:"
+        say "      systemctl --user status $SERVICE_NAME"
+        say "      journalctl --user -u $SERVICE_NAME -n 50 --no-pager"
+        say ""
     fi
 }
 
@@ -606,28 +762,71 @@ start_agent() {
         launchctl unload -w "$AGENT_PATH" >/dev/null 2>&1 || true
         launchctl load -w "$AGENT_PATH" >/dev/null 2>&1 || true
     fi
-    if launchctl list 2>/dev/null | grep -q "$AGENT_LABEL"; then
+    # Same reasoning as start_service: `launchctl list` shows a label launchd
+    # knows about, not a server that bound the port.
+    if wait_for_server; then
         SERVICE_INSTALLED=1
-        say "  $AGENT_LABEL running on port $PORT"
+        vsay "  $AGENT_LABEL running on port $PORT"
         note "$what and started $AGENT_LABEL"
+        step_done "running"
     else
-        say "  the agent did not start; check:"
-        say "    launchctl list | grep $AGENT_LABEL"
-        say "    $INSTALL_DIR/pockettui.log"
-        note "$what (agent not running)"
+        SERVICE_INSTALLED=1
+        note "$what (agent not answering on port $PORT)"
+        step_done "not responding" "$C_WARN"
+        say ""
+        say "  $AGENT_LABEL was loaded but nothing answered on port $PORT."
+        say "  See what it said:"
+        say "      launchctl list | grep $AGENT_LABEL"
+        say "      tail -50 $INSTALL_DIR/pockettui.log"
+        say ""
     fi
 }
 
-# Everything above this point stayed inside $INSTALL_DIR. A service touches the
-# rest of the system, so it only happens if the user says so out loud.
+# No service manager, or one that would not take our unit: run start.sh detached
+# so the server is genuinely up when the installer exits. nohup plus disown
+# survives this shell; it does NOT survive a reboot, which is why it is the
+# fallback and not the plan, and why the summary says so out loud.
+start_background() {
+    local log="$INSTALL_DIR/pockettui.log"
+    # Already answering (a service from an earlier run, or a hand-started copy)?
+    # Starting a second one would only collide on the port.
+    if wait_for_server 1; then
+        BACKGROUND_STARTED=1
+        note "the backend was already running on port $PORT"
+        step_done "already running"
+        return 0
+    fi
+    nohup "$INSTALL_DIR/start.sh" >>"$log" 2>&1 </dev/null &
+    disown 2>/dev/null || true
+    if wait_for_server; then
+        BACKGROUND_STARTED=1
+        note "started $INSTALL_DIR/start.sh in the background"
+        step_done "running (no service)"
+    else
+        note "could not start $INSTALL_DIR/start.sh"
+        step_done "failed to start" "$C_WARN"
+        say ""
+        say "  Nothing answered on port $PORT. See what it said:"
+        say "      tail -50 $log"
+        say "  Or run it in the foreground to watch it fail:"
+        say "      $INSTALL_DIR/start.sh"
+        say ""
+    fi
+}
+
+# Starting the backend is the point of the install, so it is not a question any
+# more: with a service manager the unit is written and started, without one the
+# server is put in the background by hand. What stays a question is somebody
+# else's file — an existing unit that differs from ours is theirs, and is never
+# overwritten without being asked, exactly as before.
+step "Starting PocketTUI"
 if [[ "$HAVE_SYSTEMD" == "1" ]]; then
-    step "Optional: run automatically in the background"
-    say "  This would write $UNIT_PATH,"
-    say "  run 'systemctl --user daemon-reload', and enable + start the service."
+    vsay "  This writes $UNIT_PATH,"
+    vsay "  runs 'systemctl --user daemon-reload', and enables + starts the service."
 
     # A unit is a whole file: there is no appending to it the way there is with
     # .tmux.conf, so an existing one can only be replaced, left alone, or the
-    # step abandoned. Which of those it is has to be answered out loud.
+    # step abandoned.
     UNIT_EXISTS=0
     UNIT_SAME=0
     if [[ -e "$UNIT_PATH" ]]; then
@@ -637,83 +836,44 @@ if [[ "$HAVE_SYSTEMD" == "1" ]]; then
 
     if [[ "$UNIT_EXISTS" == "1" ]] && [[ "$UNIT_SAME" == "1" ]]; then
         # Nothing to lose and nothing to decide: the file already says exactly
-        # what we would write. Don't ask, don't back up, don't rewrite it.
-        say ""
-        say "  $UNIT_PATH already exists and is"
-        say "  identical to what this installer writes — leaving it as it is."
-        if confirm "  Reload and (re)start the service?"; then
-            start_service "kept the identical $UNIT_PATH"
-        else
-            say "  Skipped — nothing outside $INSTALL_DIR was touched."
-            note "left $UNIT_PATH alone (already identical)"
-        fi
+        # what we would write. Don't back it up, don't rewrite it, just start it.
+        vsay "  $UNIT_PATH already matches what this installer writes."
+        start_service "kept the identical $UNIT_PATH"
     elif [[ "$UNIT_EXISTS" == "1" ]]; then
+        # Their file, possibly customised (port, Environment=, Restart=). The
+        # one irreversible option is the overwrite, so it never happens on its
+        # own — the automatic path is to leave it and start what is there.
+        # Printed in both modes: the service now running may not be ours.
         say ""
-        say "  NOTE: $UNIT_PATH already exists"
-        say "  and differs from what this installer writes. If you customised it"
-        say "  (port, Environment=, Restart=), that is your file, not ours."
-        if [[ "$INTERACTIVE" != "1" ]]; then
-            # Nobody to ask, and the one irreversible option is the overwrite.
-            say ""
-            say "  Non-interactive (piped) run — your unit is left untouched."
-            say "  To replace it with ours, back it up and write it yourself:"
-            say ""
-            say "      cp $UNIT_PATH $UNIT_PATH.bak"
-            say "      \$EDITOR $UNIT_PATH   # see the unit printed below"
-            say "      systemctl --user daemon-reload"
-            say "      systemctl --user enable --now $SERVICE_NAME"
-            note "left the existing $UNIT_PATH alone (non-interactive)"
-        elif confirm "  OVERWRITE it with PocketTUI's unit (a backup is kept)?"; then
-            # Backup first, and only then write. Seconds-resolution UTC sorts
-            # lexically and a second run lands on a different name.
-            UNIT_BACKUP="$UNIT_PATH.bak.$(date -u +%Y%m%d-%H%M%S)"
-            if ! cp -p "$UNIT_PATH" "$UNIT_BACKUP"; then
-                UNIT_BACKUP=""
-                die "could not back up $UNIT_PATH — refusing to overwrite it."
-            fi
-            say "  Backed up your unit to:"
-            say "      $UNIT_BACKUP"
-            printf '%s\n' "$UNIT_CONTENT" > "$UNIT_PATH"
-            note "backed up the old unit to $UNIT_BACKUP"
-            start_service "overwrote $UNIT_PATH"
-        elif confirm "  Keep your unit as it is and just enable + start it?"; then
-            # Their file, their ExecStart — we have not read it and it need not
-            # point at this install at all, so starting it is its own question.
-            start_service "kept your existing $UNIT_PATH"
-        else
-            say "  Skipped — $UNIT_PATH was not touched."
-            note "skipped service install (declined)"
-        fi
-    elif [[ "$INTERACTIVE" != "1" ]]; then
+        say "  ${C_WARN}NOTE${C_RESET} $UNIT_PATH already exists and differs from"
+        say "  the unit this installer writes — leaving your file alone and"
+        say "  starting it as it is. To use ours instead, replace it yourself:"
+        say "      cp $UNIT_PATH $UNIT_PATH.bak"
+        say "      \$EDITOR $UNIT_PATH   # see the unit in the notes file"
+        say "      systemctl --user daemon-reload"
         say ""
-        say "  Non-interactive (piped) run — skipping. To do it yourself, see below."
-        note "skipped service install (non-interactive)"
-    elif confirm "  Install and start the systemd user service?"; then
+        note "left the existing $UNIT_PATH alone (differs from ours)"
+        start_service "kept your existing $UNIT_PATH"
+    else
         # Bare `mkdir -p` here would abort the whole script under `set -e` on an
         # unwritable ~/.config, losing the summary and next steps for an install
-        # that otherwise succeeded. Report and carry on instead.
+        # that otherwise succeeded. Report, fall back to nohup, and carry on.
         if ! mkdir -p "$UNIT_DIR" 2>/dev/null; then
-            say "  WARNING: could not create $UNIT_DIR — leaving it alone."
-            say "  PocketTUI works regardless; start it by hand with:"
-            say "      $INSTALL_DIR/start.sh"
+            say "  WARNING: could not create $UNIT_DIR — starting without a service."
             note "could not create $UNIT_DIR (no service installed)"
+            start_background
         elif ! printf '%s\n' "$UNIT_CONTENT" > "$UNIT_PATH" 2>/dev/null; then
-            say "  WARNING: could not write $UNIT_PATH — leaving it alone."
-            say "  PocketTUI works regardless; start it by hand with:"
-            say "      $INSTALL_DIR/start.sh"
+            say "  WARNING: could not write $UNIT_PATH — starting without a service."
             note "could not write $UNIT_PATH (no service installed)"
+            start_background
         else
             start_service "installed $UNIT_PATH"
         fi
-    else
-        say "  Skipped — nothing outside $INSTALL_DIR was touched."
-        note "skipped service install (declined)"
     fi
 elif [[ "$HAVE_LAUNCHD" == "1" ]]; then
     # Same shape as the systemd branch above, in launchd's spelling.
-    step "Optional: run automatically in the background"
-    say "  This would write $AGENT_PATH"
-    say "  and load it with launchctl, so PocketTUI starts at login."
+    vsay "  This writes $AGENT_PATH and loads it with launchctl,"
+    vsay "  so PocketTUI starts at login."
 
     AGENT_EXISTS=0
     AGENT_SAME=0
@@ -723,76 +883,38 @@ elif [[ "$HAVE_LAUNCHD" == "1" ]]; then
     fi
 
     if [[ "$AGENT_EXISTS" == "1" ]] && [[ "$AGENT_SAME" == "1" ]]; then
-        say ""
-        say "  $AGENT_PATH already exists and is"
-        say "  identical to what this installer writes — leaving it as it is."
-        if confirm "  Reload and (re)start the agent?"; then
-            start_agent "kept the identical $AGENT_PATH"
-        else
-            say "  Skipped — nothing outside $INSTALL_DIR was touched."
-            note "left $AGENT_PATH alone (already identical)"
-        fi
+        vsay "  $AGENT_PATH already matches what this installer writes."
+        start_agent "kept the identical $AGENT_PATH"
     elif [[ "$AGENT_EXISTS" == "1" ]]; then
         say ""
-        say "  NOTE: $AGENT_PATH already exists"
-        say "  and differs from what this installer writes. If you customised it,"
-        say "  that is your file, not ours."
-        if [[ "$INTERACTIVE" != "1" ]]; then
-            say ""
-            say "  Non-interactive (piped) run — your agent is left untouched."
-            say "  To replace it with ours, back it up and write it yourself:"
-            say ""
-            say "      cp $AGENT_PATH $AGENT_PATH.bak"
-            say "      \$EDITOR $AGENT_PATH"
-            say "      launchctl bootout gui/\$(id -u)/$AGENT_LABEL"
-            say "      launchctl bootstrap gui/\$(id -u) $AGENT_PATH"
-            note "left the existing $AGENT_PATH alone (non-interactive)"
-        elif confirm "  OVERWRITE it with PocketTUI's agent (a backup is kept)?"; then
-            AGENT_BACKUP="$AGENT_PATH.bak.$(date -u +%Y%m%d-%H%M%S)"
-            if ! cp -p "$AGENT_PATH" "$AGENT_BACKUP"; then
-                AGENT_BACKUP=""
-                die "could not back up $AGENT_PATH — refusing to overwrite it."
-            fi
-            say "  Backed up your agent to:"
-            say "      $AGENT_BACKUP"
-            # Unload the old one before its file is replaced, so launchd is not
-            # left holding a definition that no longer exists on disk.
-            launchctl bootout "gui/$(id -u)/$AGENT_LABEL" >/dev/null 2>&1 \
-                || launchctl unload -w "$AGENT_PATH" >/dev/null 2>&1 || true
-            printf '%s\n' "$AGENT_CONTENT" > "$AGENT_PATH"
-            note "backed up the old agent to $AGENT_BACKUP"
-            start_agent "overwrote $AGENT_PATH"
-        elif confirm "  Keep your agent as it is and just load it?"; then
-            start_agent "kept your existing $AGENT_PATH"
-        else
-            say "  Skipped — $AGENT_PATH was not touched."
-            note "skipped agent install (declined)"
-        fi
-    elif [[ "$INTERACTIVE" != "1" ]]; then
+        say "  ${C_WARN}NOTE${C_RESET} $AGENT_PATH already exists and differs from"
+        say "  the agent this installer writes — leaving your file alone and"
+        say "  loading it as it is. To use ours instead, replace it yourself:"
+        say "      cp $AGENT_PATH $AGENT_PATH.bak"
+        say "      \$EDITOR $AGENT_PATH   # see the agent in the notes file"
         say ""
-        say "  Non-interactive (piped) run — skipping. To do it yourself, see below."
-        note "skipped agent install (non-interactive)"
-    elif confirm "  Install and start the launchd user agent?"; then
+        note "left the existing $AGENT_PATH alone (differs from ours)"
+        start_agent "kept your existing $AGENT_PATH"
+    else
         if ! mkdir -p "$AGENT_DIR" 2>/dev/null; then
-            say "  WARNING: could not create $AGENT_DIR — leaving it alone."
-            say "  PocketTUI works regardless; start it by hand with:"
-            say "      $INSTALL_DIR/start.sh"
+            say "  WARNING: could not create $AGENT_DIR — starting without an agent."
             note "could not create $AGENT_DIR (no agent installed)"
+            start_background
         elif ! printf '%s\n' "$AGENT_CONTENT" > "$AGENT_PATH" 2>/dev/null; then
             say "  WARNING: could not write $AGENT_PATH — leaving it alone."
-            say "  PocketTUI works regardless; start it by hand with:"
-            say "      $INSTALL_DIR/start.sh"
             note "could not write $AGENT_PATH (no agent installed)"
+            start_background
         else
             start_agent "installed $AGENT_PATH"
         fi
-    else
-        say "  Skipped — nothing outside $INSTALL_DIR was touched."
-        note "skipped agent install (declined)"
     fi
 else
-    step "No systemd user session — no service installed"
-    note "skipped service install (no systemd user session)"
+    # No systemd user session and no launchd: a container, an ssh login with no
+    # user bus, a BSD. Nothing can bring the server back after a reboot, but the
+    # installer can still leave it running now, which is what the user came for.
+    vsay "  No systemd user session and no launchd — starting in the background."
+    note "no service manager available (started in the background)"
+    start_background
 fi
 
 # ---------------------------------------------------------------------------
@@ -816,22 +938,24 @@ if command -v tmux >/dev/null 2>&1; then
     # spacing are tolerated so re-runs never stack duplicates.
     if [[ -e "$TMUX_CONF" ]] \
        && grep -Eq '^[[:space:]]*set-environment[[:space:]]+-gu[[:space:]]+ZDOTDIR[[:space:]]*$' "$TMUX_CONF"; then
-        step "tmux config already has the ZDOTDIR line"
-        say "  $TMUX_CONF is fine as it is — nothing to do."
+        step_quiet "tmux config already has the ZDOTDIR line"
+        vsay "  $TMUX_CONF is fine as it is — nothing to do."
     else
-        step "Optional: keep new tmux sessions out of a stale ZDOTDIR"
-        say "  This would append one line to $TMUX_CONF:"
-        say ""
-        say "      $TMUX_LINE"
-        say ""
-        say "  It only affects tmux sessions you start yourself; PocketTUI's own"
-        say "  sessions already set ZDOTDIR=\$HOME."
+        step_quiet "Optional: keep new tmux sessions out of a stale ZDOTDIR"
+        vsay "  This would append one line to $TMUX_CONF:"
+        vsay ""
+        vsay "      $TMUX_LINE"
+        vsay ""
+        vsay "  It only affects tmux sessions you start yourself; PocketTUI's own"
+        vsay "  sessions already set ZDOTDIR=\$HOME."
         if [[ "$INTERACTIVE" != "1" ]]; then
-            say ""
-            say "  Non-interactive (piped) run — skipping. Add that line yourself if"
-            say "  your tmux sessions come up without your zsh config."
+            # Nobody to ask. Silent on a quiet run: it is optional, it affects
+            # only the user's own tmux sessions, and README.md has the line.
+            vsay ""
+            vsay "  Non-interactive (piped) run — skipping. Add that line yourself if"
+            vsay "  your tmux sessions come up without your zsh config."
             note "skipped tmux.conf line (non-interactive)"
-        elif confirm "  Append that line to $TMUX_CONF?"; then
+        elif confirm "  Add one line to $TMUX_CONF so your own tmux sessions keep your shell config?"; then
             # A failed >> redirection prints its own error whatever we do with
             # stderr, so check for a writable target first rather than finding
             # out by botching one. An absent file needs a writable directory.
@@ -847,6 +971,7 @@ if command -v tmux >/dev/null 2>&1; then
                 say "  Added. Existing tmux servers keep the old environment until"
                 say "  they restart (tmux kill-server), or clear it now with:"
                 say "      tmux $TMUX_LINE"
+                say ""
                 touched_outside
                 note "appended the ZDOTDIR line to $TMUX_CONF"
             else
@@ -856,133 +981,273 @@ if command -v tmux >/dev/null 2>&1; then
                 note "could not write $TMUX_CONF (left alone)"
             fi
         else
-            say "  Skipped — $TMUX_CONF was not touched. To do it yourself, add:"
-            say "      $TMUX_LINE"
+            vsay "  Skipped — $TMUX_CONF was not touched. To do it yourself, add:"
+            vsay "      $TMUX_LINE"
             note "skipped tmux.conf line (declined)"
         fi
     fi
 fi
 
 # ---------------------------------------------------------------------------
-# Next steps
+# Where the phone should point
 # ---------------------------------------------------------------------------
-cat <<EOF
+# Printing the real hostname beats printing a <machine>.<tailnet> placeholder
+# the user has to go and resolve, but not at the cost of hanging: a tailscaled
+# that is starting, logged out, or wedged can make these calls block for a long
+# time. Every call is wrapped in a timeout, every failure falls through to the
+# placeholder, and none of them is allowed to fail the script.
+TS_HOST=""
+ts_try() {
+    # `timeout` is coreutils and not on macOS by default, so it is used only if
+    # present; the tailscale CLI's own --timeout covers the common case.
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 3 "$@" 2>/dev/null
+    else
+        "$@" 2>/dev/null
+    fi
+}
 
-============================================================
-Installed to $INSTALL_DIR
-
-What this script changed:
-EOF
-# ${arr[@]+...} because bash 3.2 — still /bin/bash on macOS — treats an empty
-# array's expansion as an unbound variable under `set -u` and would abort here.
-for d in ${DID[@]+"${DID[@]}"}; do say "  - $d"; done
-case "$ENV_KIND" in
-    venv)        say "  - created $INSTALL_DIR/.venv (fastapi, uvicorn)" ;;
-    "venv (uv)") say "  - created $INSTALL_DIR/.venv with uv (fastapi, uvicorn)" ;;
-    *)           say "  - created the $ENV_KIND (fastapi, uvicorn)" ;;
-esac
-[[ -n "$ENV_BIN" ]] && say "  - tmux is provided by that environment (no system tmux was found)"
-say "  - wrote $INSTALL_DIR/start.sh"
-if [[ "$TOKEN_KEPT" == "1" ]]; then
-    say "  - kept the existing pairing token at $INSTALL_DIR/.token"
-else
-    say "  - wrote a new pairing token to $INSTALL_DIR/.token"
+if [[ "$HAVE_TAILSCALE" == "1" ]]; then
+    # `status --json` carries Self.DNSName, the fully-qualified name with a
+    # trailing dot. Parsed with sed rather than jq, which is not a dependency
+    # this installer is willing to acquire.
+    TS_HOST="$(ts_try tailscale status --json \
+        | sed -n 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | head -1 | sed 's/\.$//' || true)"
+    # Older CLIs, or a machine where --json is unavailable: `serve status`
+    # prints the https:// URL on its first line.
+    if [[ -z "$TS_HOST" ]]; then
+        TS_HOST="$(ts_try tailscale serve status \
+            | sed -n 's|^https://\([^ /]*\).*|\1|p' | head -1 || true)"
+    fi
 fi
-# Only true when nothing outside $INSTALL_DIR was touched. DID cannot answer
-# this: it also holds install-dir work and steps the user declined.
-[[ "$OUTSIDE" -eq 0 ]] && say "  Nothing else on this machine was modified."
-say ""
 
+# The LAN address, printed only as a hint when there is no tailnet name to give.
+# hostname -I is Linux-only; ipconfig is the macOS spelling. Both are allowed to
+# come back empty.
+LAN_IP=""
+if [[ -z "$TS_HOST" ]]; then
+    if command -v hostname >/dev/null 2>&1; then
+        LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+    fi
+    if [[ -z "$LAN_IP" ]] && command -v ipconfig >/dev/null 2>&1; then
+        LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
+    fi
+fi
+
+if [[ -n "$TS_HOST" ]]; then
+    PHONE_ADDR="$TS_HOST/pockettui"
+else
+    PHONE_ADDR="<machine>.<tailnet>.ts.net/pockettui"
+fi
+
+# ---------------------------------------------------------------------------
+# README in the install dir
+# ---------------------------------------------------------------------------
+# Everything the old summary printed as a tutorial — the Tailscale steps, the
+# rotate-token command, how to stop and inspect the service, Add to Home Screen
+# — lives here instead. It is written on every run so it always describes the
+# install that is actually on disk (this port, this interpreter, this unit), and
+# the final summary points at it with one line.
+if [[ "$HAVE_SYSTEMD" == "1" ]]; then
+    README_SERVICE="## The service
+
+PocketTUI runs as a systemd **user** service, started at boot.
+
+    systemctl --user status $SERVICE_NAME     # is it running?
+    systemctl --user restart $SERVICE_NAME    # after changing app.py
+    systemctl --user stop $SERVICE_NAME       # stop it
+    systemctl --user disable $SERVICE_NAME    # stop it starting at boot
+    journalctl --user -u $SERVICE_NAME -f     # follow the log
+
+The unit is at \`$UNIT_PATH\`.
+
+A user service only survives you logging out if lingering is on:
+
+    loginctl enable-linger $USER"
+elif [[ "$HAVE_LAUNCHD" == "1" ]]; then
+    README_SERVICE="## The service
+
+PocketTUI runs as a launchd user agent, started at login.
+
+    launchctl list | grep $AGENT_LABEL              # is it running?
+    launchctl kickstart -k gui/\$(id -u)/$AGENT_LABEL  # restart it
+    launchctl bootout gui/\$(id -u)/$AGENT_LABEL       # stop it
+    tail -f $INSTALL_DIR/pockettui.log
+
+The agent is at \`$AGENT_PATH\`."
+else
+    README_SERVICE="## Running it
+
+This machine has no systemd user session and no launchd, so the installer
+started the server in the background with nohup. That does **not** survive a
+reboot. After one, start it again with:
+
+    $INSTALL_DIR/start.sh
+
+To stop it:
+
+    pkill -f '$INSTALL_DIR/app.py'"
+fi
+
+# Installing into a checkout (./install.sh with no POCKETTUI_DIR) means the
+# install dir IS the repo, which already has its own README.md — the project's,
+# not this install's. Writing ours there would destroy a tracked file, so the
+# generated notes go to a distinct name in that one case. Everywhere else, where
+# the install dir holds only what the tarball unpacked, README.md is the name a
+# user will actually look for.
+NOTES_NAME="README.md"
+if [[ "$LOCAL_CHECKOUT" == "1" ]] && [[ "$SRC_DIR" -ef "$INSTALL_DIR" ]]; then
+    NOTES_NAME="POCKETTUI-NOTES.md"
+fi
+NOTES_PATH="$INSTALL_DIR/$NOTES_NAME"
+
+cat > "$NOTES_PATH" <<READMEEOF
+# PocketTUI
+
+Installed by install.sh. The backend serves port $PORT from \`$INSTALL_DIR\`;
+the phone client is the hosted page at $BASE_URL/app/.
+
+## Pairing
+
+The pairing code was printed by the installer and is stored in
+\`$INSTALL_DIR/.token\`. Anyone with both the address and that code can use
+this machine's shell, so treat it like a password.
+
+To invalidate it and force every paired phone to enter a new one:
+
+    $VENV_PY $INSTALL_DIR/app.py --rotate-token
+
+Re-running install.sh does **not** rotate the code; an existing one is kept so
+already-paired phones keep working.
+
+$README_SERVICE
+
+## Reaching it from your phone
+
+The backend only has to be reachable from the phone. Tailscale is the easiest
+way, and puts it on your own tailnet rather than the public internet.
+
+1. Install Tailscale on this machine and on the phone, both logged into the
+   same tailnet.
+2. Enable HTTPS certificates once, in the Tailscale admin console
+   (admin console > DNS > HTTPS Certificates).
+3. Publish this port under a path:
+
+       tailscale serve --bg --set-path /pockettui $PORT
+
+4. Find the address:
+
+       tailscale serve status
+
+   It looks like \`https://<machine>.<tailnet>.ts.net\`, so the address to
+   type into the phone is \`<machine>.<tailnet>.ts.net/pockettui\`.
+
+If you would rather not path-serve, \`tailscale serve --bg $PORT\` publishes it
+at the root instead; then enter the bare hostname on the phone and put $PORT in
+the port field.
+
+Any other route works too — a LAN address, a VPN, an SSH tunnel. Whatever you
+use, the pairing code keeps the connection authenticated: an address alone is
+not an open shell.
+
+## On the phone
+
+1. Open $BASE_URL/app/
+2. Enter the address and the pairing code.
+3. In Safari: Share > Add to Home Screen to keep it as an app icon. On Android
+   Chrome the same thing is under the menu, as "Install app".
+
+## What is in here
+
+- \`app.py\` — the backend
+- \`start.sh\` — runs it on port $PORT with this install's interpreter
+- \`.token\` — the pairing code
+- \`.venv\` / \`.micromamba\` — this install's Python environment
+READMEEOF
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+# --verbose keeps the full changelog: on a `curl | bash` install, the question
+# "what did that just do to my machine?" deserves an answer that does not
+# require reading the script.
+if [[ "$VERBOSE" == "1" ]]; then
+    say ""
+    say "============================================================"
+    say "Installed to $INSTALL_DIR"
+    say ""
+    say "What this script changed:"
+    # ${arr[@]+...} because bash 3.2 — still /bin/bash on macOS — treats an empty
+    # array's expansion as an unbound variable under `set -u` and would abort here.
+    for d in ${DID[@]+"${DID[@]}"}; do say "  - $d"; done
+    case "$ENV_KIND" in
+        venv)        say "  - created $INSTALL_DIR/.venv (fastapi, uvicorn)" ;;
+        "venv (uv)") say "  - created $INSTALL_DIR/.venv with uv (fastapi, uvicorn)" ;;
+        *)           say "  - created the $ENV_KIND (fastapi, uvicorn)" ;;
+    esac
+    [[ -n "$ENV_BIN" ]] && say "  - tmux is provided by that environment (no system tmux was found)"
+    say "  - wrote $INSTALL_DIR/start.sh"
+    say "  - wrote $NOTES_PATH"
+    if [[ "$TOKEN_KEPT" == "1" ]]; then
+        say "  - kept the existing pairing token at $INSTALL_DIR/.token"
+    else
+        say "  - wrote a new pairing token to $INSTALL_DIR/.token"
+    fi
+    # Only true when nothing outside $INSTALL_DIR was touched. DID cannot answer
+    # this: it also holds install-dir work and steps the user declined.
+    [[ "$OUTSIDE" -eq 0 ]] && say "  Nothing else on this machine was modified."
+fi
+
+# A backup only exists when the user asked for an overwrite, so it is never
+# noise — printed in both modes.
 if [[ -n "$UNIT_BACKUP" ]]; then
+    say ""
     say "Your previous systemd unit is saved at:"
     say "    $UNIT_BACKUP"
     say "To put it back:  cp $UNIT_BACKUP $UNIT_PATH"
     say "                 systemctl --user daemon-reload"
-    say ""
 fi
-
 if [[ -n "$AGENT_BACKUP" ]]; then
+    say ""
     say "Your previous launchd agent is saved at:"
     say "    $AGENT_BACKUP"
     say "To put it back:  cp $AGENT_BACKUP $AGENT_PATH"
     say "                 launchctl bootout gui/\$(id -u)/$AGENT_LABEL"
     say "                 launchctl bootstrap gui/\$(id -u) $AGENT_PATH"
-    say ""
 fi
 
-say "NEXT STEPS"
+# The two things the user actually came for. The code is the loudest thing on
+# the screen because it is the one part nothing else can tell them.
+RULE="─────────────────────────────────────"
 say ""
+say "  $C_RULE$RULE$C_RESET"
+printf '   Pairing code   %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
+say "  $C_RULE$RULE$C_RESET"
+say ""
+say "  On your phone open  $BASE_URL/app/"
+say "  Address   $PHONE_ADDR"
+say "  Code      the one above"
 
-# Step 1 depends on whether the service is already running the backend.
-if [[ "$SERVICE_INSTALLED" == "1" ]] && [[ "$HAVE_SYSTEMD" == "1" ]]; then
-    cat <<EOF
-1. The backend is already running (systemd unit $SERVICE_NAME) and will
-   come back on boot. Check it any time with:
-
-       systemctl --user status $SERVICE_NAME
-
-   A user service only survives logout if lingering is on:
-
-       loginctl enable-linger $USER
-
-EOF
-elif [[ "$SERVICE_INSTALLED" == "1" ]]; then
-    cat <<EOF
-1. The backend is already running (launchd agent $AGENT_LABEL) and will
-   come back at login. Check it any time with:
-
-       launchctl list | grep $AGENT_LABEL
-       tail -f $INSTALL_DIR/pockettui.log
-
-   To stop it:
-
-       launchctl bootout gui/\$(id -u)/$AGENT_LABEL
-
-EOF
-else
-    cat <<EOF
-1. Start the backend:
-
-       $INSTALL_DIR/start.sh
-
-   Leave that running. (To run it in the background instead, re-run this
-   installer from a terminal and say yes to the service step.)
-
-EOF
+# No tailnet name to print: say what has to happen before that address exists,
+# and offer the LAN address as the thing that works right now.
+if [[ -z "$TS_HOST" ]]; then
+    if [[ "$HAVE_TAILSCALE" == "1" ]]; then
+        say "  ${C_DIM}(run 'tailscale serve --bg --set-path /pockettui $PORT' to publish it)$C_RESET"
+    fi
+    [[ -n "$LAN_IP" ]] && say "  ${C_DIM}(on this LAN, right now: $LAN_IP:$PORT)$C_RESET"
 fi
 
-cat <<EOF
-2. Expose it on your tailnet:
-
-       tailscale serve --bg --set-path /pockettui $PORT
-
-   - needs HTTPS certificates enabled once in the Tailscale admin console
-     (admin console > DNS > HTTPS Certificates)
-   - find your hostname with:  tailscale serve status
-     (looks like https://<machine>.<tailnet>.ts.net)
-
-3. On your phone (Tailscale connected) open:
-
-       $BASE_URL/app/
-
-   and when asked, enter the address:
-
-       https://<machine>.<tailnet>.ts.net/pockettui
-
-   (alternative if you skip path-serving: tailscale serve --bg $PORT,
-   then enter the hostname and put $PORT in the port field)
-
-   and this pairing code:
-
-       >>> $TOKEN_DISPLAY <<<
-
-   Anyone with both the address and this code can use this machine's
-   shell, so treat it like a password. To invalidate it and force every
-   paired phone to re-enter a new one:
-
-       $VENV_PY $INSTALL_DIR/app.py --rotate-token
-
-4. In Safari: Share -> Add to Home Screen to install it as an app.
-
-============================================================
-EOF
+# Whichever way it ended up running, say so honestly, and never claim a reboot
+# will bring back something nohup started.
+say ""
+if [[ "$SERVER_UP" != "1" ]]; then
+    say "  ${C_WARN}The backend is not answering on port $PORT — see above.$C_RESET"
+elif [[ "$BACKGROUND_STARTED" == "1" ]]; then
+    say "  ${C_DIM}Running on port $PORT. No service manager here, so start it"
+    say "  again after a reboot: $INSTALL_DIR/start.sh$C_RESET"
+else
+    say "  ${C_DIM}Running on port $PORT, and after a reboot.$C_RESET"
+fi
+say "  ${C_DIM}Full notes: $NOTES_PATH$C_RESET"
+say ""
