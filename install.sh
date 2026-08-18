@@ -229,6 +229,8 @@ if command -v tailscale >/dev/null 2>&1; then
 else
     say "  tailscale not found — you will need some other way to reach this"
     say "    machine from your phone (see the notes at the end)."
+    say "    Whatever route you use, the pairing code set up below keeps the"
+    say "    connection authenticated — a LAN address is not an open shell."
 fi
 
 # Only the download path needs curl; a local checkout already has the sources.
@@ -437,6 +439,38 @@ $ENV_PATH_LINE
 exec "$VENV_PY" app.py --port $PORT "\$@"
 EOF
 chmod +x "$INSTALL_DIR/start.sh"
+
+# ---------------------------------------------------------------------------
+# Pairing token
+# ---------------------------------------------------------------------------
+# app.py refuses to start without a token at $INSTALL_DIR/.token, and owns the
+# only implementation of its format (10 base32 chars, XXXXX-XXXXX display) via
+# --rotate-token. Importing it here (rather than calling --rotate-token blind)
+# lets an existing valid token be read back and kept as-is: re-running the
+# installer must not rotate it, or every already-paired phone breaks silently.
+# TOKEN_KEPT drives the wording of the summary line further down; the
+# keep-or-mint decision below is made the same way, off the same read_token().
+TOKEN_KEPT=0
+"$VENV_PY" -c "
+import sys
+sys.path.insert(0, '$INSTALL_DIR')
+import app
+sys.exit(0 if app.read_token() else 1)
+" && TOKEN_KEPT=1
+
+TOKEN_DISPLAY="$("$VENV_PY" - "$INSTALL_DIR" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+import app
+
+token = app.read_token()
+if not token:
+    token = app.generate_token()
+    app.write_token(token)
+print(app.format_token(token))
+PYEOF
+)" || die "Could not set up a pairing token in $INSTALL_DIR/.token."
+[[ -n "$TOKEN_DISPLAY" ]] || die "Could not set up a pairing token in $INSTALL_DIR/.token."
 
 # ---------------------------------------------------------------------------
 # Service
@@ -844,6 +878,11 @@ case "$ENV_KIND" in
 esac
 [[ -n "$ENV_BIN" ]] && say "  - tmux is provided by that environment (no system tmux was found)"
 say "  - wrote $INSTALL_DIR/start.sh"
+if [[ "$TOKEN_KEPT" == "1" ]]; then
+    say "  - kept the existing pairing token at $INSTALL_DIR/.token"
+else
+    say "  - wrote a new pairing token to $INSTALL_DIR/.token"
+fi
 # Only true when nothing outside $INSTALL_DIR was touched. DID cannot answer
 # this: it also holds install-dir work and steps the user declined.
 [[ "$OUTSIDE" -eq 0 ]] && say "  Nothing else on this machine was modified."
@@ -921,12 +960,22 @@ cat <<EOF
 
        $BASE_URL/app/
 
-   and when asked, enter:
+   and when asked, enter the address:
 
        https://<machine>.<tailnet>.ts.net/pockettui
 
    (alternative if you skip path-serving: tailscale serve --bg $PORT,
    then enter the hostname and put $PORT in the port field)
+
+   and this pairing code:
+
+       >>> $TOKEN_DISPLAY <<<
+
+   Anyone with both the address and this code can use this machine's
+   shell, so treat it like a password. To invalidate it and force every
+   paired phone to re-enter a new one:
+
+       $VENV_PY $INSTALL_DIR/app.py --rotate-token
 
 4. In Safari: Share -> Add to Home Screen to install it as an app.
 
