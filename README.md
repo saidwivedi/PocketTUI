@@ -59,7 +59,7 @@ Or skip the installer entirely: `./run.sh` creates a `.venv` on first run and st
 
 **2. On your phone** — open [pockettui.com/app](https://pockettui.com/app/) and add it to your home screen (iPhone: Share → Add to Home Screen; Android: Menu → Add to Home screen).
 
-**3. Connect** — enter your machine's address once. A [Tailscale](https://tailscale.com) hostname is easiest, but any address your phone can reach works. PocketTUI remembers it; tap a session to attach.
+**3. Connect** — enter your machine's address and the pairing code the installer printed. Any address your phone can reach works; a [Tailscale](https://tailscale.com) hostname is the easiest way to reach a machine behind NAT. The pairing code is what authenticates the connection — the backend will not start without one. PocketTUI remembers both; tap a session to attach.
 
 ### Windows
 

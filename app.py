@@ -15,12 +15,16 @@ resizes or detaches the client already attached on the laptop.
 import argparse
 import asyncio
 import fcntl
+import hmac
 import json
 import os
 import pty
+import re
+import secrets
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import time
 from pathlib import Path
@@ -33,6 +37,7 @@ import uvicorn
 HERE = Path(__file__).resolve().parent
 HTML_PATH = HERE / "mobile_app.html"
 VENDOR_DIR = HERE / "vendor"
+TOKEN_PATH = HERE / ".token"
 
 # Cache-busting stamp, injected into the HTML/sw at serve time. Bumping on every
 # server start is what makes iOS drop the old PWA shell after a redeploy.
@@ -43,6 +48,225 @@ CACHE_VERSION = time.strftime("%Y%m%d-%H%M%S")
 PHONE_PREFIX = "phone-"
 
 app = FastAPI(title="PocketTUI")
+
+# ---------------------------------------------------------------------------
+# Pairing token
+# ---------------------------------------------------------------------------
+# This server bridges a full shell to anything that can reach it, and it binds
+# beyond loopback by default, so every data route is gated on a shared secret.
+# The token is short enough to retype on a phone (10 base32 chars, ~50 bits),
+# which only stays safe because guessing is throttled — see AuthLimiter.
+
+TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"  # RFC4648 base32
+TOKEN_LEN = 10
+TOKEN_RE = re.compile(f"^[{TOKEN_ALPHABET}]{{{TOKEN_LEN}}}$")
+
+# The header carries it rather than a cookie: allow_origins=["*"] plus a cookie
+# the browser attaches automatically would let any page in the world drive this
+# shell. A header has to be set deliberately by our own frontend.
+TOKEN_HEADER = "X-PocketTUI-Token"
+
+# The shell itself must load unauthenticated — it is what prompts for the token.
+# Only the routes that read or touch the machine are gated.
+GATED_PREFIXES = ("/api/",)
+
+
+def normalize_token(raw: str) -> str:
+    """Canonical form of a typed token, or "" if it is not one.
+
+    The user sees XXXXX-XXXXX but may retype it without the dash, in lower case,
+    or with the whitespace a phone keyboard adds; all of those are the same
+    token. Anything that is not 10 base32 characters after that is not a token
+    at all, which is what lets a malformed .token file read as simply absent.
+    """
+    text = re.sub(r"[\s-]", "", str(raw or "")).upper()
+    return text if TOKEN_RE.match(text) else ""
+
+
+def format_token(token: str) -> str:
+    """Group the canonical form as XXXXX-XXXXX — far easier to read off a screen."""
+    return f"{token[:5]}-{token[5:]}"
+
+
+def generate_token() -> str:
+    """A fresh token. `secrets`, not `random`: this is the only thing guarding a shell."""
+    return "".join(secrets.choice(TOKEN_ALPHABET) for _ in range(TOKEN_LEN))
+
+
+def read_token() -> str:
+    """The token on disk, or "" if there is none that is usable.
+
+    A file we cannot read, or one holding something that is not a token, is
+    treated as absent rather than as an error: the caller's job is to refuse to
+    start either way, and the message it prints is the same.
+    """
+    try:
+        return normalize_token(TOKEN_PATH.read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+
+
+def write_token(token: str) -> None:
+    """Write the canonical token 0600.
+
+    The mode is set before the secret is written, so it is never briefly
+    world-readable on a shared machine.
+    """
+    fd = os.open(TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(token + "\n")
+    os.chmod(TOKEN_PATH, 0o600)
+
+
+# Set by main() before uvicorn starts. None means --no-auth: every gate below
+# short-circuits open, which main() only permits on a loopback bind.
+AUTH_TOKEN: str | None = None
+
+
+def token_ok(candidate: str) -> bool:
+    """Whether `candidate` is the pairing token.
+
+    compare_digest rather than ==, so the number of leading characters a guess
+    got right cannot be read off the response time.
+    """
+    if AUTH_TOKEN is None:
+        return True
+    return hmac.compare_digest(normalize_token(candidate), AUTH_TOKEN)
+
+
+# ---------------------------------------------------------------------------
+# Guess throttling
+# ---------------------------------------------------------------------------
+
+class AuthLimiter:
+    """Exponential backoff on failed token attempts, per source IP and overall.
+
+    ~50 bits of token is only out of reach while an attacker gets a bounded
+    number of tries per second; unthrottled, a LAN peer could walk the space.
+    After FREE_TRIES failures an IP is locked out for a doubling delay, so a
+    sustained attack costs exponentially more wall-clock time than it gains.
+
+    The global counter exists because the per-IP one is trivially sidestepped
+    from a botnet or a spoofable v6 range: it applies the same backoff to the
+    server as a whole once failures pile up regardless of where they came from.
+    Its allowance is looser so that one attacker cannot cheaply lock out the
+    legitimate phone — the per-IP limit is the sharp one.
+    """
+
+    FREE_TRIES = 5
+    GLOBAL_FREE_TRIES = 50
+    BASE_DELAY = 1.0
+    MAX_DELAY = 300.0
+    # A quiet IP is forgotten, so a phone that mistyped its token last week is
+    # not still serving a penalty — and the table cannot grow without bound.
+    FORGET_AFTER = 3600.0
+
+    def __init__(self) -> None:
+        self.failures: dict[str, tuple[int, float]] = {}
+        self.global_failures = 0
+        self.global_blocked_until = 0.0
+
+    def _delay(self, count: int, free: int) -> float:
+        over = count - free
+        if over <= 0:
+            return 0.0
+        return min(self.BASE_DELAY * (2 ** (over - 1)), self.MAX_DELAY)
+
+    def _prune(self, now: float) -> None:
+        for key, (_, last) in list(self.failures.items()):
+            if now - last > self.FORGET_AFTER:
+                del self.failures[key]
+
+    def blocked_for(self, ip: str) -> float:
+        """Seconds this source must wait, or 0 if it may try now."""
+        now = time.monotonic()
+        self._prune(now)
+        wait = max(0.0, self.global_blocked_until - now)
+        entry = self.failures.get(ip)
+        if entry is not None:
+            count, last = entry
+            wait = max(wait, last + self._delay(count, self.FREE_TRIES) - now)
+        return max(0.0, wait)
+
+    def record_failure(self, ip: str) -> None:
+        now = time.monotonic()
+        count = self.failures.get(ip, (0, 0.0))[0] + 1
+        self.failures[ip] = (count, now)
+        self.global_failures += 1
+        self.global_blocked_until = now + self._delay(
+            self.global_failures, self.GLOBAL_FREE_TRIES)
+
+    def record_success(self, ip: str) -> None:
+        """Clear this source's penalty — the holder of the token is not an attacker.
+
+        The global counter is also relieved, otherwise a long-running server
+        would drift into permanent backoff on accumulated typos alone.
+        """
+        self.failures.pop(ip, None)
+        self.global_failures = 0
+        self.global_blocked_until = 0.0
+
+
+LIMITER = AuthLimiter()
+
+
+def peer_ip(scope_client) -> str:
+    """The address the connection actually came from.
+
+    Deliberately not X-Forwarded-For: that header is set by whoever is calling,
+    so trusting it would let an attacker mint a fresh rate-limit bucket per
+    guess simply by varying it.
+    """
+    return scope_client[0] if scope_client else "unknown"
+
+
+def check_auth(candidate: str, ip: str, where: str) -> tuple[bool, str]:
+    """Throttled token check. Returns (ok, reason) — reason is empty when ok.
+
+    Single place for the sequence every entry point needs: refuse outright while
+    a source is backing off, verify, then either forgive or penalise it.
+    """
+    if AUTH_TOKEN is None:
+        return True, ""
+    wait = LIMITER.blocked_for(ip)
+    if wait > 0:
+        log(f"auth blocked {where} ip={ip} retry-after={wait:.0f}s")
+        return False, "too many attempts"
+    if token_ok(candidate):
+        LIMITER.record_success(ip)
+        return True, ""
+    LIMITER.record_failure(ip)
+    log(f"auth fail {where} ip={ip}")
+    return False, "bad token"
+
+
+@app.middleware("http")
+async def require_token(request: Request, call_next):
+    """Gate the API routes on the pairing token.
+
+    Registered before CORSMiddleware so it sits *inside* it: a 401 returned from
+    out here would carry no Access-Control-Allow-Origin, and the browser would
+    hide it from the frontend as a network error — leaving the phone unable to
+    tell a wrong token from an unreachable host.
+
+    Preflights pass through untouched. They carry no custom headers by
+    definition, so 401-ing them would stop the browser ever sending the real
+    request that does carry the token.
+    """
+    if AUTH_TOKEN is None or request.method == "OPTIONS":
+        return await call_next(request)
+    if not request.url.path.startswith(GATED_PREFIXES):
+        return await call_next(request)
+
+    ok, reason = check_auth(
+        request.headers.get(TOKEN_HEADER, ""),
+        peer_ip(request.scope.get("client")),
+        f"http {request.url.path}",
+    )
+    if not ok:
+        return no_store(JSONResponse({"error": reason}, status_code=401))
+    return await call_next(request)
+
 
 # The public static shell (apps.saidwivedi.in/pockettui/) calls this server
 # cross-origin, so /api/sessions has to answer with CORS headers. The WebSocket
@@ -566,14 +790,14 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
     cid = CONN_SEQ
     log(f"conn {cid} open  session={session_name}")
 
-    if not session_exists(session_name):
-        log(f"conn {cid} close session={session_name} reason=no-such-session")
-        await ws.close(code=4404, reason=f"no tmux session {session_name!r}")
-        return
-
     # The client sends its size as the first frame; use it for the initial
-    # winsize so tmux never paints at the default 80x24 and then reflows.
+    # winsize so tmux never paints at the default 80x24 and then reflows. That
+    # same frame carries the token: CORS does not apply to WebSockets, so this
+    # handshake is the only thing standing between the open port and a shell.
+    # Both live in one frame because a second receive() for the token would eat
+    # the resize — and every check here runs before any PTY or tmux command.
     cols, rows = 80, 24
+    token = ""
     try:
         first = await asyncio.wait_for(ws.receive(), timeout=5)
         if first.get("type") == "websocket.disconnect":
@@ -581,10 +805,26 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         text = first.get("text")
         if text:
             msg = json.loads(text)
+            token = msg.get("token", "")
             if msg.get("type") == "resize":
                 cols, rows = msg.get("cols", cols), msg.get("rows", rows)
     except (asyncio.TimeoutError, ValueError, KeyError, json.JSONDecodeError):
+        # A client that never sent a first frame has not authenticated either,
+        # so with auth on this falls through to the 4401 below rather than
+        # attaching at the default size.
         pass
+
+    if AUTH_TOKEN is not None:
+        ok, reason = check_auth(token, peer_ip(ws.scope.get("client")), "ws")
+        if not ok:
+            log(f"conn {cid} close session={session_name} reason={reason}")
+            await ws.close(code=4401, reason="bad token")
+            return
+
+    if not session_exists(session_name):
+        log(f"conn {cid} close session={session_name} reason=no-such-session")
+        await ws.close(code=4404, reason=f"no tmux session {session_name!r}")
+        return
 
     loop = asyncio.get_running_loop()
 
@@ -689,12 +929,68 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
             pass
 
 
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
+
+
+def die(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+    raise SystemExit(1)
+
+
+def rotate_token() -> None:
+    """Replace the token on disk and print the new one.
+
+    Every paired phone stored the old one, so this is not a silent operation —
+    it is announced as re-pairing work rather than as a routine refresh.
+    """
+    token = generate_token()
+    write_token(token)
+    print(f"New PocketTUI token: {format_token(token)}")
+    print(f"Stored in {TOKEN_PATH} (mode 0600).")
+    print("Every paired phone must be re-paired with this token; the old one no "
+          "longer works.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="PocketTUI — phone-facing tmux terminal")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5560)
     parser.add_argument("--log-level", default="info")
+    parser.add_argument("--rotate-token", action="store_true",
+                        help="generate a new pairing token, print it, and exit")
+    parser.add_argument("--no-auth", action="store_true",
+                        help="serve with no token — refused unless bound to loopback")
     args = parser.parse_args()
+
+    if args.rotate_token:
+        rotate_token()
+        return
+
+    global AUTH_TOKEN
+    if args.no_auth:
+        # The escape hatch is for a local-only session, and the default bind is
+        # 0.0.0.0 — so without this check the flag would quietly publish an
+        # unauthenticated shell to the whole network.
+        if args.host not in LOOPBACK_HOSTS:
+            die(f"--no-auth refused: --host {args.host} is not loopback.\n"
+                f"An unauthenticated PocketTUI must not be reachable off this "
+                f"machine. Either re-run with --host 127.0.0.1, or drop "
+                f"--no-auth and pair with a token.")
+        AUTH_TOKEN = None
+        log("running with --no-auth on a loopback bind: no token required")
+    else:
+        AUTH_TOKEN = read_token()
+        if not AUTH_TOKEN:
+            die(f"No pairing token found at {TOKEN_PATH}.\n"
+                f"PocketTUI bridges a shell to anything that can reach it, so it "
+                f"will not start without one.\n"
+                f"Generate one with:  {sys.executable} {Path(__file__).resolve()} "
+                f"--rotate-token\n"
+                f"or re-run ./install.sh, which sets one up for you.\n"
+                f"To run without a token, bind to loopback only: --host 127.0.0.1 "
+                f"--no-auth")
+        log(f"pairing token loaded from {TOKEN_PATH}")
+
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
 
 

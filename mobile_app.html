@@ -530,6 +530,14 @@ html.term-open, body.term-open {
   transition: transform 0.28s var(--ease-out);
   z-index: 210;
   box-shadow: 0 -8px 32px rgba(20, 16, 10, 0.16);
+  /* First run stacks the install block, three fields, the buttons and the FAQ —
+     taller than a short phone in landscape, and a fixed sheet clips the overflow
+     off the top of the screen with no way to reach it. Cap it and scroll inside
+     instead, so the last field is always reachable. */
+  max-height: 88vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 .sheet.show { transform: translateY(0); }
 .sheet h2 {
@@ -636,6 +644,7 @@ html.term-open, body.term-open {
   transition: border-color 0.18s var(--ease-out);
 }
 .sheet input:focus { border-color: var(--umber); outline: none; }
+#backend-token { letter-spacing: 0.06em; }
 .sheet .actions {
   display: flex; gap: 10px; justify-content: flex-end;
   margin-top: 18px;
@@ -856,6 +865,9 @@ html.term-open, body.term-open {
   <label for="backend-url">Computer address</label>
   <input id="backend-url" type="url" inputmode="url" autocapitalize="off" autocorrect="off"
          spellcheck="false" placeholder="my-host.example.net/pockettui">
+  <label for="backend-token">Pairing code</label>
+  <input id="backend-token" type="text" inputmode="latin" autocapitalize="characters" autocorrect="off"
+         spellcheck="false" placeholder="XXXXX-XXXXX" maxlength="11">
   <label for="backend-port" class="opt">Port <span>optional</span></label>
   <input id="backend-port" type="text" inputmode="numeric" autocapitalize="off"
          autocorrect="off" spellcheck="false" placeholder="5560">
@@ -866,9 +878,9 @@ html.term-open, body.term-open {
   </div>
   <div class="sheet-faq" id="sheet-faq">
     <p><b>What is this?</b> Your machine's tmux sessions, from any device.</p>
-    <p><b>How does it work?</b> xterm.js relays keys over a WebSocket to your
-      machine, over <a href="https://tailscale.com" target="_blank"
-      rel="noopener">Tailscale</a>. Nothing is stored off-device.</p>
+    <p><b>How does it work?</b> xterm.js relays keys over a WebSocket straight to
+      your machine, authenticated by the pairing code the installer printed.
+      Nothing is stored off-device.</p>
   </div>
 </div>
 
@@ -960,12 +972,14 @@ const cfg = {
   set backend(v) { localStorage.setItem("pockettui_backend", v); },
   get newdir() { return localStorage.getItem("pockettui_newdir") || ""; },
   set newdir(v) { localStorage.setItem("pockettui_newdir", v); },
+  get token() { return localStorage.getItem("pockettui_token") || ""; },
+  set token(v) { localStorage.setItem("pockettui_token", v); },
 };
 
 // True when we have no idea where the API is: not same-origin, nothing baked
 // in, nothing stored. That is the first run of a public build.
 function needsSetup() {
-  return !SAME_ORIGIN && !cfg.backend;
+  return (!SAME_ORIGIN && !cfg.backend) || !cfg.token;
 }
 
 // The app is served both at / and behind `tailscale serve` at /pockettui/, so
@@ -983,6 +997,12 @@ function wsURL(p) {
   }
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   return proto + "//" + location.host + BASE + p;
+}
+
+// Every API call needs to prove it holds the pairing code; merge rather than
+// clobber so POSTs keep their Content-Type alongside it.
+function authHeaders(extra) {
+  return Object.assign({ "X-PocketTUI-Token": cfg.token }, extra || {});
 }
 
 // ============================================================
@@ -1035,6 +1055,24 @@ function backendParts(v) {
   return { url: m[1] + m[2] + (m[4] || ""), port: m[3] || "" };
 }
 
+// Accepts the code typed with or without the dash, any case, with stray
+// whitespace — normalizes down to the bare 10-char canonical form.
+function normalizeToken(v) {
+  return (v || "").toUpperCase().replace(/[\s-]/g, "");
+}
+
+// True for exactly 10 base32 chars — the alphabet excludes 0/1/8/9 so those
+// never pass even if someone's autocorrect or a look-alike keyboard slips one in.
+function isValidToken(v) {
+  return /^[A-Z2-7]{10}$/.test(v);
+}
+
+// Re-groups a canonical 10-char token as XXXXX-XXXXX for display in the field.
+function formatTokenDisplay(v) {
+  const t = normalizeToken(v);
+  return t.length > 5 ? t.slice(0, 5) + "-" + t.slice(5) : t;
+}
+
 let setupMode = false;
 
 function openSettings(firstRun) {
@@ -1042,6 +1080,7 @@ function openSettings(firstRun) {
   const parts = backendParts(cfg.backend);
   $("backend-url").value = parts.url;
   $("backend-port").value = parts.port;
+  $("backend-token").value = formatTokenDisplay(cfg.token);
   $("sheet-title").textContent = firstRun ? "Connect your computer" : "Settings";
   $("sheet-note").classList.toggle("hide", !firstRun);
   // First run has nothing to go back to, so there is no cancelling out of it.
@@ -1053,6 +1092,15 @@ function openSettings(firstRun) {
   $("sheet-faq").classList.toggle("show", !!firstRun);
   $("sheet-settings").classList.toggle("setup", !!firstRun);
   showSheet(true);
+}
+
+// The address was reachable but the code was wrong — send them straight back
+// to re-enter it rather than showing the generic can't-connect toast.
+function rejectToken() {
+  openSettings(needsSetup());
+  $("backend-token").value = "";
+  $("backend-token").focus();
+  toast("Pairing code rejected");
 }
 
 $("btn-settings").addEventListener("click", () => openSettings(false));
@@ -1079,11 +1127,24 @@ $("sheet-scrim").addEventListener("click", () => {
 $("btn-settings-save").addEventListener("click", () => {
   const v = normalizeBackend($("backend-url").value, $("backend-port").value);
   if (setupMode && !v) { toast("Enter your computer address"); return; }
+  const tok = normalizeToken($("backend-token").value);
+  if (setupMode && !isValidToken(tok)) { toast("Enter the 10-character pairing code"); return; }
   cfg.backend = v;
+  cfg.token = tok;
   setupMode = false;
   showSheet(false);
   // Reload against the new backend so a bad URL surfaces straight away.
   loadSessions(true);
+});
+$("backend-token").addEventListener("input", (e) => {
+  const input = e.target;
+  const rawBefore = input.value.slice(0, input.selectionStart).replace(/[^A-Za-z2-7]/g, "").length;
+  const raw = input.value.toUpperCase().replace(/[^A-Z2-7]/g, "").slice(0, 10);
+  const formatted = raw.length > 5 ? raw.slice(0, 5) + "-" + raw.slice(5) : raw;
+  input.value = formatted;
+  let pos = rawBefore;
+  if (rawBefore > 5) pos += 1;   // account for the dash now sitting before the caret
+  input.setSelectionRange(pos, pos);
 });
 
 // ============================================================
@@ -1095,7 +1156,8 @@ async function loadSessions(spin=false) {
   const btn = $("btn-reload");
   if (spin) btn.classList.add("spin");
   try {
-    const r = await fetch(apiURL("api/sessions"), { cache: "no-store" });
+    const r = await fetch(apiURL("api/sessions"), { cache: "no-store", headers: authHeaders() });
+    if (r.status === 401) { rejectToken(); return; }
     if (!r.ok) throw new Error("HTTP " + r.status);
     const data = await r.json();
     renderSessions(data.sessions || []);
@@ -1170,7 +1232,7 @@ async function promptAlias(s) {
   try {
     const r = await fetch(apiURL("api/alias"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ session: s.name, alias: next }),
     });
     if (!r.ok) throw new Error("HTTP " + r.status);
@@ -1201,7 +1263,7 @@ async function createSession() {
   try {
     const r = await fetch(apiURL("api/session"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ name: name, dir: dir }),
     });
     const data = await r.json().catch(() => null);
@@ -1743,7 +1805,7 @@ function send(data) {
 }
 function sendResize() {
   if (!term || !sock || sock.readyState !== WebSocket.OPEN) return;
-  sock.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+  sock.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows, token: cfg.token }));
 }
 
 let fitTimer = null;
@@ -1798,7 +1860,7 @@ function openTerminal(name) {
   });
 }
 
-function closeTerminal() {
+function closeTerminal(skipReload) {
   clearTimeout(retryTimer);
   let fromURL = false;
   try {
@@ -1821,7 +1883,9 @@ function closeTerminal() {
   $("screen-list").classList.add("active");
   syncChrome();
   releaseMods();
-  loadSessions();
+  // A rejected pairing code reloads into the same 401; the caller shows the
+  // setup sheet itself, so skip the doomed round-trip.
+  if (!skipReload) loadSessions();
 }
 
 // Single-flight: the server's attach uses `tmux attach -d`, which detaches
@@ -1860,11 +1924,16 @@ function connect() {
     else term.write(new Uint8Array(ev.data));
   };
   ws.onerror = () => {};
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     // A superseded socket's close must never trigger a reconnect.
     if (gen !== sockGen) return;
     sock = null;
     if (!currentSession) return;
+    if (ev.code === 4401) {
+      closeTerminal(true);
+      rejectToken();
+      return;
+    }
     scheduleReconnect();
   };
 }
