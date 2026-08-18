@@ -300,7 +300,7 @@ fi
 # ---------------------------------------------------------------------------
 # Python environment
 # ---------------------------------------------------------------------------
-step "Creating virtualenv"
+step "Creating the Python environment"
 
 # Where the interpreter ends up, and — when tmux comes from a conda env rather
 # than the system — the bin directory the runtime has to have on PATH. start.sh,
@@ -362,6 +362,9 @@ create_uv_venv() {
 # strategy: only a conda env can supply tmux without root. Everything else is
 # the ordinary uv -> venv -> micromamba preference.
 if [[ "$HAVE_TMUX" != "1" ]]; then
+    # Said out loud because it overrides the uv preference: with no system tmux,
+    # a venv cannot help — only a conda env supplies tmux without root.
+    say "  no system tmux — using micromamba, which can provide both tmux and python"
     if ! command -v micromamba >/dev/null 2>&1; then
         install_micromamba \
             || die "tmux is missing and micromamba could not be installed. Install tmux yourself and re-run:  $(pkg_install_cmd tmux)"
@@ -373,8 +376,10 @@ elif command -v uv >/dev/null 2>&1 && create_uv_venv; then
     # uv first: it is the fastest, and it can provision its own Python when the
     # system one is too old, so it subsumes the venv path rather than competing.
     ENV_KIND="venv (uv)"
+    say "  using uv (found on PATH)"
     say "  $INSTALL_DIR/.venv (uv)"
 elif usable_python3 && python3 -m venv "$INSTALL_DIR/.venv" 2>/dev/null; then
+    say "  no uv on PATH — using python3 -m venv"
     say "  $INSTALL_DIR/.venv"
 elif command -v micromamba >/dev/null 2>&1 && create_mamba_env 0; then
     # Debian splits venv out of the stdlib, and some distro pythons ship without
