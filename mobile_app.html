@@ -2588,8 +2588,8 @@ const DEMO_COMMANDS = {
       demoLine("the demo only answers " + D.grn + "tmux ls" + D.r);
       return;
     }
-    demoLine("phone-webapp: 2 windows (created Mon Mar 10 08:14:31 2025) (attached)");
-    demoLine("phone-api: 1 windows (created Tue Mar 11 17:02:09 2025)");
+    demoLine("ptui-webapp: 2 windows (created Mon Mar 10 08:14:31 2025) (attached)");
+    demoLine("ptui-api: 1 windows (created Tue Mar 11 17:02:09 2025)");
     demoLine("scratch: 1 windows (created Wed Mar 12 11:40:55 2025)");
     demoNoteLine("(these sessions are invented — the real list is the screen you came from)");
   },
@@ -3230,7 +3230,7 @@ let edgeSwipe = false;
 // ============================================================
 // Drag to scroll
 // ============================================================
-// tmux is in mouse mode (the server sets it on the phone-* session), so scrolling
+// tmux is in mouse mode (the server sets it on the ptui-* session), so scrolling
 // means feeding it wheel events. One SGR wheel report per cell of vertical travel,
 // at the cell the finger is over, in the natural direction: dragging down pulls
 // older content into view, exactly like flicking a native terminal.
