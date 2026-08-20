@@ -1026,23 +1026,118 @@ if [[ "$HAVE_TAILSCALE" == "1" ]]; then
     fi
 fi
 
-# The LAN address, printed only as a hint when there is no tailnet name to give.
-# hostname -I is Linux-only; ipconfig is the macOS spelling. Both are allowed to
-# come back empty.
+SERVE_CMD="tailscale serve --bg --set-path /pockettui $PORT"
+
+# Publishing the port is what turns the tailnet name into a working address, and
+# it is the step users were most often left to discover on their own. The offer
+# is skipped when `serve status` already lists this port under /pockettui, so a
+# re-run neither re-asks nor disturbs an existing config.
+if [[ "$HAVE_TAILSCALE" == "1" ]] \
+   && ! ts_try tailscale serve status \
+        | grep -q "^|-- /pockettui .*:$PORT\$"; then
+    step_quiet "Optional: publish port $PORT on your tailnet"
+    vsay "  Without this the tailnet name resolves but /pockettui returns 404."
+    vsay "  It would run:"
+    vsay ""
+    vsay "      $SERVE_CMD"
+    vsay ""
+    if [[ "$INTERACTIVE" != "1" ]]; then
+        # Nobody to ask, and this changes state outside the install dir, so it
+        # is described rather than done. The summary repeats the command.
+        vsay "  Non-interactive (piped) run — skipping."
+        note "skipped tailscale serve (non-interactive)"
+    elif confirm "  Publish port $PORT at /pockettui on your tailnet now?"; then
+        # `tailscale serve` only runs unprivileged for the tailscale operator
+        # (OperatorUser in `tailscale debug prefs`); for everyone else it needs
+        # root. Escalating silently is not this script's call, so a permission
+        # failure prints the sudo line and the install carries on regardless.
+        if ts_try tailscale serve --bg --set-path /pockettui "$PORT" >/dev/null; then
+            say "  Published. To undo it later:"
+            say "      tailscale serve --set-path /pockettui off"
+            say ""
+            touched_outside
+            note "published port $PORT at /pockettui with tailscale serve"
+        else
+            say "  ${C_WARN}That needs root on this machine — you are not the"
+            say "  Tailscale operator. Run this yourself to publish it:$C_RESET"
+            say "      sudo $SERVE_CMD"
+            say ""
+            note "could not run tailscale serve unprivileged (sudo line printed)"
+        fi
+    else
+        vsay "  Skipped — no serve config was touched. To do it yourself:"
+        vsay "      $SERVE_CMD"
+        note "skipped tailscale serve (declined)"
+    fi
+fi
+
+# A tailnet name that resolves says nothing about whether /pockettui is actually
+# published — the reported bug was an address that looked right and 404ed. Only
+# a path that answers is presented as the address, so probe it: 404 is the
+# unpublished case, anything else that comes back at all is good enough. curl is
+# not a dependency on the local-checkout path and the probe is never fatal.
+TS_SERVED=0
+if [[ -n "$TS_HOST" ]] && command -v curl >/dev/null 2>&1; then
+    TS_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        "https://$TS_HOST/pockettui/" 2>/dev/null || true)"
+    case "$TS_CODE" in
+        ""|000|404) TS_SERVED=0 ;;
+        *)          TS_SERVED=1 ;;
+    esac
+fi
+
+# The LAN address. It is the thing that works right now whenever the tailnet URL
+# is unverified, so it is collected in that case too, not only when there is no
+# tailnet name at all. hostname -I is Linux-only; ipconfig is the macOS
+# spelling. Both are allowed to come back empty.
+#
+# hostname -I prints every address on the box in an arbitrary order, Tailscale's
+# among them, so field 1 is not a LAN address — it is whichever address sorted
+# first. Printing a tailnet IP under the words "on this LAN" is the same bug as
+# printing an unpublished serve URL, so the candidates are filtered rather than
+# taken on faith. Glob matching keeps this bash 3.2 clean with no new tools.
+lan_candidate() {
+    local _ip _private="" _other=""
+    for _ip in $1; do
+        case "$_ip" in
+            # IPv6 (Tailscale's fd7a:115c:a1e0::/48 included) and loopback are
+            # not addresses to hand a phone.
+            *:*|127.*) continue ;;
+            # 100.64.0.0/10 is the CGNAT block Tailscale allocates from. Only
+            # 100.64-127 is carrier-grade NAT; 100.0-63 and 100.128-255 are
+            # ordinary public space and must survive this filter.
+            100.6[4-9].*|100.[7-9][0-9].*|100.1[0-1][0-9].*|100.12[0-7].*) continue ;;
+            # A real RFC1918 address is the one most likely to be the LAN, so it
+            # wins over anything else still standing.
+            10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)
+                if [[ -z "$_private" ]]; then _private="$_ip"; fi ;;
+            *)
+                if [[ -z "$_other" ]]; then _other="$_ip"; fi ;;
+        esac
+    done
+    printf '%s' "${_private:-$_other}"
+}
+
 LAN_IP=""
-if [[ -z "$TS_HOST" ]]; then
+if [[ "$TS_SERVED" != "1" ]]; then
     if command -v hostname >/dev/null 2>&1; then
-        LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+        LAN_IP="$(lan_candidate "$(hostname -I 2>/dev/null || true)" || true)"
     fi
     if [[ -z "$LAN_IP" ]] && command -v ipconfig >/dev/null 2>&1; then
         LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
     fi
 fi
 
-if [[ -n "$TS_HOST" ]]; then
+# Only an address known to answer earns the headline: a verified serve, or the
+# LAN address. A tailnet name whose /pockettui 404s is not one of them, and the
+# warning below already says so in full — repeating it on the Address line would
+# print the broken address twice and contradict the explanation. With neither,
+# there is no Address line at all; the summary states the problem instead.
+PHONE_ADDR=""
+if [[ "$TS_SERVED" == "1" ]]; then
     PHONE_ADDR="$TS_HOST/pockettui"
-else
-    PHONE_ADDR="<machine>.<tailnet>.ts.net/pockettui"
+elif [[ -n "$LAN_IP" ]]; then
+    PHONE_ADDR="$LAN_IP:$PORT"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1140,12 +1235,25 @@ way, and puts it on your own tailnet rather than the public internet.
 
        tailscale serve --bg --set-path /pockettui $PORT
 
+   install.sh offers to run this for you when Tailscale is present and the
+   path is not published yet, so it may already be done. It only runs
+   without \`sudo\` for the machine's Tailscale operator (the user in
+   \`tailscale debug prefs\`, under \`OperatorUser\`); for anyone else the
+   command needs \`sudo\` in front, which is why the installer prints it
+   rather than escalating on its own.
+
+   To undo it:
+
+       tailscale serve --set-path /pockettui off
+
 4. Find the address:
 
        tailscale serve status
 
    It looks like \`https://<machine>.<tailnet>.ts.net\`, so the address to
-   type into the phone is \`<machine>.<tailnet>.ts.net/pockettui\`.
+   type into the phone is \`<machine>.<tailnet>.ts.net/pockettui\`. Until that
+   path is published the name still resolves but returns 404 — a plain LAN
+   address (\`<this machine's IP>:$PORT\`) works in the meantime.
 
 If you would rather not path-serve, \`tailscale serve --bg $PORT\` publishes it
 at the root instead; then enter the bare hostname on the phone and put $PORT in
@@ -1158,9 +1266,12 @@ not an open shell.
 ## On the phone
 
 1. Open $BASE_URL/app/
-2. Enter the address and the pairing code.
-3. In Safari: Share > Add to Home Screen to keep it as an app icon. On Android
-   Chrome the same thing is under the menu, as "Install app".
+2. On iPhone or iPad, add it to the Home Screen first: Share > Add to Home
+   Screen. Safari and the home-screen app keep separate storage, so an address
+   and code typed in the Safari tab do not carry over to the installed app and
+   it asks for them again. On Android Chrome the same thing is under the menu,
+   as "Install app", and storage is shared either way.
+3. Open the icon and enter the address and the pairing code there.
 
 ## What is in here
 
@@ -1230,16 +1341,85 @@ printf '   Pairing code   %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
 say "  $C_RULE$RULE$C_RESET"
 say ""
 say "  On your phone open  $BASE_URL/app/"
-say "  Address   $PHONE_ADDR"
-say "  Code      the one above"
-
-# No tailnet name to print: say what has to happen before that address exists,
-# and offer the LAN address as the thing that works right now.
-if [[ -z "$TS_HOST" ]]; then
-    if [[ "$HAVE_TAILSCALE" == "1" ]]; then
-        say "  ${C_DIM}(run 'tailscale serve --bg --set-path /pockettui $PORT' to publish it)$C_RESET"
+if [[ -n "$PHONE_ADDR" ]]; then
+    say "  Address   $PHONE_ADDR"
+    say "  Code      the one above"
+else
+    # Nothing reachable was found. The install itself is fine — what is missing
+    # is a route — and saying so is more use than inventing an address the user
+    # would then have to debug. The backend is only vouched for when it actually
+    # answered; the line below this block reports it when it did not.
+    say "  ${C_WARN}No address to give you yet: this machine has no route a phone"
+    say "  can reach.$C_RESET"
+    if [[ "$SERVER_UP" == "1" ]]; then
+        say "  ${C_DIM}The backend is running and the code above is valid — only the"
+        say "  route is missing.$C_RESET"
     fi
-    [[ -n "$LAN_IP" ]] && say "  ${C_DIM}(on this LAN, right now: $LAN_IP:$PORT)$C_RESET"
+    say "  ${C_WARN}Publish it on a tailnet, put this machine on a network, or"
+    say "  reach it over any VPN or SSH tunnel.$C_RESET"
+    say "  ${C_DIM}The routes are written out in $NOTES_PATH.$C_RESET"
+fi
+
+# No verified tailnet URL: whatever is above is at best the LAN address, so what
+# is left to explain is the tailnet address that does not exist yet. A name that
+# resolves but 404s is called out as exactly that rather than being printed as
+# if it were reachable.
+if [[ "$TS_SERVED" != "1" ]]; then
+    say ""
+    if [[ -n "$TS_HOST" ]]; then
+        say "  ${C_WARN}Your tailnet name is $TS_HOST, but /pockettui is not"
+        say "  published yet — that address 404s until you run:$C_RESET"
+        say "      $SERVE_CMD"
+        say "  ${C_DIM}(prefix it with sudo if you are not the Tailscale operator)$C_RESET"
+    elif [[ "$HAVE_TAILSCALE" == "1" ]]; then
+        say "  ${C_DIM}Tailscale is installed but not reporting a name yet. Once it is"
+        say "  logged in, '$SERVE_CMD'"
+        say "  gives you a <machine>.<tailnet>.ts.net/pockettui address too.$C_RESET"
+    elif [[ -n "$PHONE_ADDR" ]]; then
+        # Only worth saying when there is an address above to say it about; the
+        # no-address case has already said its piece and pointed at the notes.
+        say "  ${C_DIM}That address works on this LAN. For a route from anywhere,"
+        say "  install Tailscale — see $NOTES_PATH.$C_RESET"
+    fi
+fi
+
+# The order matters on iOS and only on iOS: a home-screen web app gets its own
+# storage container, and Add to Home Screen does not copy the Safari tab's. The
+# address and code live in localStorage, so entering them in Safari first and
+# adding the icon afterwards produces an app that asks for setup again. The
+# installer cannot know which phone this is, so everyone gets the sentence.
+if [[ "$SERVER_UP" == "1" ]]; then
+    say ""
+    say "  ${C_WARN}On iPhone/iPad, Add to Home Screen FIRST, then enter the address"
+    say "  and code inside the installed app.$C_RESET"
+    say "  ${C_DIM}Safari and the home-screen app keep separate storage — what you"
+    say "  type in Safari does not carry over.$C_RESET"
+fi
+
+# A LAN address hands the phone a port that a host firewall can be dropping
+# silently: the backend is up and listening, the phone just gets nothing. Only
+# worth saying when the address really is the LAN one — a verified tailnet URL
+# has already proved the path. Detection is best-effort and advisory: no rule is
+# ever changed, no sudo is asked for, and a status query that needs root and
+# fails prints nothing rather than a false alarm.
+if [[ "$SERVER_UP" == "1" ]] && [[ -n "$PHONE_ADDR" ]] && [[ "$TS_SERVED" != "1" ]]; then
+    FW_CMD=""
+    if command -v ufw >/dev/null 2>&1; then
+        if ts_try ufw status | grep -qi '^Status: active'; then
+            FW_CMD="sudo ufw allow $PORT/tcp"
+        fi
+    fi
+    if [[ -z "$FW_CMD" ]] && command -v firewall-cmd >/dev/null 2>&1; then
+        if [[ "$(ts_try firewall-cmd --state || true)" == "running" ]]; then
+            FW_CMD="sudo firewall-cmd --add-port=$PORT/tcp --permanent && sudo firewall-cmd --reload"
+        fi
+    fi
+    if [[ -n "$FW_CMD" ]]; then
+        say ""
+        say "  ${C_WARN}A firewall is active here, so port $PORT may need to be allowed"
+        say "  before the phone can reach it:$C_RESET"
+        say "      $FW_CMD"
+    fi
 fi
 
 # Whichever way it ended up running, say so honestly, and never claim a reboot
