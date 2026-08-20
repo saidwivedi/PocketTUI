@@ -249,6 +249,33 @@ body {
   margin: 14px 0 14px;
 }
 
+/* "Add to Home Screen" hint — a slim strip above the list, shown only to
+   phone users in a plain browser tab who haven't dismissed it before. */
+.a2hs-hint {
+  display: none;
+  align-items: center; gap: 10px;
+  background: var(--umber-tint);
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  padding: 10px 10px 10px 14px;
+  margin-top: 14px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+.a2hs-hint.show { display: flex; }
+.a2hs-hint span { flex: 1; }
+.a2hs-hint button {
+  background: transparent; border: none;
+  color: var(--secondary);
+  font-size: 15px;
+  line-height: 1;
+  padding: 6px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.a2hs-hint button:hover { color: var(--ink); }
+
 .item {
   background: var(--card);
   border: 1px solid var(--hair);
@@ -844,6 +871,10 @@ html.term-open, body.term-open {
     </div>
   </div>
   <div class="list-wrap">
+    <div class="a2hs-hint" id="a2hs-hint">
+      <span id="a2hs-hint-text"></span>
+      <button type="button" id="a2hs-hint-dismiss" aria-label="Dismiss">✕</button>
+    </div>
     <div class="list-new"><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg>New session</button></div>
     <div class="eyebrow" id="list-eyebrow">Sessions</div>
     <div id="list"></div>
@@ -1020,6 +1051,37 @@ function cleanDevName(v) {
 function needsSetup() {
   return (!SAME_ORIGIN && !cfg.backend) || !cfg.token;
 }
+
+// ============================================================
+// Add-to-home-screen hint
+// ============================================================
+// Phone/tablet only. iPadOS reports as "Macintosh" unless it's touch-capable,
+// which real Macs never are, so that combination still counts as iOS.
+function a2hsPlatform() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/.test(ua)) return "ios";
+  if (/Mac/.test(ua) && navigator.maxTouchPoints > 1) return "ios";
+  if (/Android/.test(ua)) return "android";
+  return null;
+}
+function a2hsInstalled() {
+  return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+}
+function a2hsShouldShow() {
+  return !!a2hsPlatform() && !a2hsInstalled() && !localStorage.getItem("pockettui_a2hs_dismissed");
+}
+function initA2hsHint() {
+  if (!a2hsShouldShow()) return;
+  const text = a2hsPlatform() === "ios"
+    ? "Add PocketTUI to your home screen: tap Share, then Add to Home Screen."
+    : "Add PocketTUI to your home screen: tap the browser menu, then Add to Home screen.";
+  $("a2hs-hint-text").textContent = text;
+  $("a2hs-hint").classList.add("show");
+}
+$("a2hs-hint-dismiss").addEventListener("click", () => {
+  localStorage.setItem("pockettui_a2hs_dismissed", "1");
+  $("a2hs-hint").classList.remove("show");
+});
 
 // The app is served both at / and behind `tailscale serve` at /pockettui/, so
 // same-origin URLs hang off the directory of the current path rather than the
@@ -3412,6 +3474,7 @@ if (wantDemo) {
 } else {
   loadSessions();
 }
+initA2hsHint();
 
 const SW_VERSION = "__CACHE_VERSION__";
 if ("serviceWorker" in navigator && location.protocol === "https:") {
