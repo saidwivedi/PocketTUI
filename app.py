@@ -45,7 +45,7 @@ CACHE_VERSION = time.strftime("%Y%m%d-%H%M%S")
 
 # Sessions this app creates for its own grouped views — hidden from the list so
 # the phone never shows its own reflections.
-PHONE_PREFIX = "phone-"
+PTUI_PREFIX = "ptui-"
 
 app = FastAPI(title="PocketTUI")
 
@@ -336,7 +336,7 @@ def list_sessions() -> list[dict]:
             continue
         name, created, attached, windows = parts[:4]
         alias = parts[4] if len(parts) > 4 else ""
-        if name.startswith(PHONE_PREFIX):
+        if name.startswith(PTUI_PREFIX):
             continue
         cmd, title = active_pane(name)
         sessions.append({
@@ -378,7 +378,7 @@ def attach_argv(target: str) -> list[str]:
     laptop's client. Reuse the phone session across reconnects (-d kicks off any
     stale client of it) so the phone's window selection survives a dropout.
     """
-    phone = PHONE_PREFIX + target
+    phone = PTUI_PREFIX + target
     if session_exists(phone):
         return ["tmux", "attach", "-d", "-t", f"={phone}"]
     return ["tmux", "new-session", "-s", phone, "-t", f"={target}"]
@@ -388,11 +388,11 @@ def enable_mouse(target: str) -> None:
     """Turn on mouse reporting for the phone's own session only.
 
     Drag-to-scroll on the phone works by synthesising SGR wheel events, which
-    tmux only acts on with `mouse on`. The option is set on the phone-* session
+    tmux only acts on with `mouse on`. The option is set on the ptui-* session
     alone (a grouped session carries its own options), so the laptop's client of
     the same windows keeps whatever the user configured.
     """
-    phone = PHONE_PREFIX + target
+    phone = PTUI_PREFIX + target
     # The session only exists once the attach child has spawned it, so retry
     # briefly rather than racing the fork.
     for _ in range(20):
@@ -517,8 +517,8 @@ def validate_session_name(value: str) -> tuple[str, str]:
     # containing either is unaddressable afterwards.
     if "." in name or ":" in name:
         return "", "Session name cannot contain '.' or ':'."
-    if name.startswith(PHONE_PREFIX):
-        return "", f"Session name cannot start with '{PHONE_PREFIX}' — that prefix is reserved."
+    if name.startswith(PTUI_PREFIX):
+        return "", f"Session name cannot start with '{PTUI_PREFIX}' — that prefix is reserved."
     if session_exists(name):
         return "", f"A session named '{name}' already exists."
     return name, ""
@@ -533,7 +533,7 @@ def api_alias(body: dict = Body(...)) -> Response:
     the session under its real name.
     """
     name = str(body.get("session", ""))
-    if name.startswith(PHONE_PREFIX) or not session_exists(name):
+    if name.startswith(PTUI_PREFIX) or not session_exists(name):
         return JSONResponse({"error": "no such session"}, status_code=404)
 
     alias = clean_alias(body.get("alias", ""))
