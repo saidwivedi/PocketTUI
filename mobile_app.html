@@ -1040,10 +1040,12 @@ function normalizeBackend(url, port) {
   u = u.replace(/\/+$/, "");
   const p = (port || "").trim();
   if (p) {
-    // Only add a port if the authority does not already carry one. Splitting at
-    // the first slash after the scheme keeps a path like /pockettui out of the test.
+    // Only add a port if the authority does not already carry one AND the
+    // address has no path. A path like /pockettui is a reverse-proxy route on
+    // 443; gluing a leftover backend port onto it builds a URL nothing answers
+    // on — the port field is for bare hosts only.
     const m = u.match(/^(https?:\/\/)([^/]+)(.*)$/i);
-    if (m && !/:\d+$/.test(m[2])) u = m[1] + m[2] + ":" + p + m[3];
+    if (m && !/:\d+$/.test(m[2]) && !m[3]) u = m[1] + m[2] + ":" + p;
   }
   return u;
 }
