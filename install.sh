@@ -1049,8 +1049,8 @@ if [[ "$HAVE_TAILSCALE" == "1" ]] \
     elif confirm "  Publish port $PORT at /pockettui on your tailnet now?"; then
         # `tailscale serve` only runs unprivileged for the tailscale operator
         # (OperatorUser in `tailscale debug prefs`); for everyone else it needs
-        # root. Escalating silently is not this script's call, so a permission
-        # failure prints the sudo line and the install carries on regardless.
+        # root. Escalating is still the user's call, not this script's, so it is
+        # a second question with the exact sudo command shown before it is asked.
         if ts_try tailscale serve --bg --set-path /pockettui "$PORT" >/dev/null; then
             say "  Published. To undo it later:"
             say "      tailscale serve --set-path /pockettui off"
@@ -1059,10 +1059,56 @@ if [[ "$HAVE_TAILSCALE" == "1" ]] \
             note "published port $PORT at /pockettui with tailscale serve"
         else
             say "  ${C_WARN}That needs root on this machine — you are not the"
-            say "  Tailscale operator. Run this yourself to publish it:$C_RESET"
+            say "  Tailscale operator.$C_RESET It would run:"
+            say ""
             say "      sudo $SERVE_CMD"
             say ""
-            note "could not run tailscale serve unprivileged (sudo line printed)"
+            # Reaching here means a terminal exists and was answered yes, so
+            # sudo has somewhere to ask for a password; the branch above skips
+            # this whole offer when there is nobody to ask.
+            SUDO_OK=0
+            if ! command -v sudo >/dev/null 2>&1; then
+                say "  No sudo on this machine. Run that as root to publish it."
+                say ""
+                note "could not run tailscale serve unprivileged (no sudo; command printed)"
+            else
+                # `sudo -n true` fails silently when a password would be needed,
+                # which is the only way to tell "already cached" from "will
+                # prompt" without prompting.
+                if sudo -n true 2>/dev/null; then
+                    SUDO_PROMPT="  Run it with sudo now?"
+                else
+                    SUDO_PROMPT="  Run it with sudo now? (you will be asked for your password)"
+                fi
+                if confirm "$SUDO_PROMPT"; then
+                    # Not ts_try: its `timeout 3` would kill the password prompt
+                    # and its 2>/dev/null would hide it. stdin is the piped
+                    # script here, so sudo is pointed at the terminal itself.
+                    if sudo tailscale serve --bg --set-path /pockettui "$PORT" \
+                        </dev/tty >/dev/null; then
+                        SUDO_OK=1
+                    fi
+                    if [[ "$SUDO_OK" == "1" ]]; then
+                        say "  Published. To undo it later:"
+                        say "      sudo tailscale serve --set-path /pockettui off"
+                        say ""
+                        touched_outside
+                        note "published port $PORT at /pockettui with sudo tailscale serve"
+                    else
+                        # Wrong password, a sudoers refusal, or ctrl-C at the
+                        # prompt. None of that is a reason to fail the install.
+                        say "  ${C_WARN}That did not go through.$C_RESET Run this yourself to publish it:"
+                        say "      sudo $SERVE_CMD"
+                        say ""
+                        note "sudo tailscale serve failed (command printed)"
+                    fi
+                else
+                    say "  Skipped — no serve config was touched. To do it yourself:"
+                    say "      sudo $SERVE_CMD"
+                    say ""
+                    note "declined sudo tailscale serve (command printed)"
+                fi
+            fi
         fi
     else
         vsay "  Skipped — no serve config was touched. To do it yourself:"
@@ -1239,8 +1285,9 @@ way, and puts it on your own tailnet rather than the public internet.
    path is not published yet, so it may already be done. It only runs
    without \`sudo\` for the machine's Tailscale operator (the user in
    \`tailscale debug prefs\`, under \`OperatorUser\`); for anyone else the
-   command needs \`sudo\` in front, which is why the installer prints it
-   rather than escalating on its own.
+   command needs \`sudo\` in front, so the installer asks a second time
+   before running it that way, and prints it for you to run later if you
+   say no.
 
    To undo it:
 
@@ -1392,8 +1439,6 @@ if [[ "$SERVER_UP" == "1" ]]; then
     say ""
     say "  ${C_WARN}On iPhone/iPad, Add to Home Screen FIRST, then enter the address"
     say "  and code inside the installed app.$C_RESET"
-    say "  ${C_DIM}Safari and the home-screen app keep separate storage — what you"
-    say "  type in Safari does not carry over.$C_RESET"
 fi
 
 # A LAN address hands the phone a port that a host firewall can be dropping
@@ -1430,8 +1475,5 @@ if [[ "$SERVER_UP" != "1" ]]; then
 elif [[ "$BACKGROUND_STARTED" == "1" ]]; then
     say "  ${C_DIM}Running on port $PORT. No service manager here, so start it"
     say "  again after a reboot: $INSTALL_DIR/start.sh$C_RESET"
-else
-    say "  ${C_DIM}Running on port $PORT, and after a reboot.$C_RESET"
 fi
-say "  ${C_DIM}Full notes: $NOTES_PATH$C_RESET"
 say ""
