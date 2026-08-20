@@ -1056,9 +1056,12 @@ function backendParts(v) {
 }
 
 // Accepts the code typed with or without the dash, any case, with stray
-// whitespace — normalizes down to the bare 10-char canonical form.
+// whitespace — normalizes down to the bare 10-char canonical form. 0 and 1 are
+// mapped to O and I: the alphabet excludes them for being look-alikes, so a
+// typed 0 can only ever mean the letter O read off a screen.
 function normalizeToken(v) {
-  return (v || "").toUpperCase().replace(/[\s-]/g, "");
+  return (v || "").toUpperCase().replace(/[\s-]/g, "")
+    .replace(/0/g, "O").replace(/1/g, "I");
 }
 
 // True for exactly 10 base32 chars — the alphabet excludes 0/1/8/9 so those
@@ -1138,8 +1141,13 @@ $("btn-settings-save").addEventListener("click", () => {
 });
 $("backend-token").addEventListener("input", (e) => {
   const input = e.target;
-  const rawBefore = input.value.slice(0, input.selectionStart).replace(/[^A-Za-z2-7]/g, "").length;
-  const raw = input.value.toUpperCase().replace(/[^A-Z2-7]/g, "").slice(0, 10);
+  // 0→O and 1→I before filtering: the code on screen has no zeros or ones, so
+  // typing one means the user read a look-alike letter — swallowing it made the
+  // field appear stuck. One mapper for both counts keeps the caret math honest.
+  const keep = (s) => s.toUpperCase().replace(/0/g, "O").replace(/1/g, "I")
+    .replace(/[^A-Z2-7]/g, "");
+  const rawBefore = keep(input.value.slice(0, input.selectionStart)).length;
+  const raw = keep(input.value).slice(0, 10);
   const formatted = raw.length > 5 ? raw.slice(0, 5) + "-" + raw.slice(5) : raw;
   input.value = formatted;
   let pos = rawBefore;
