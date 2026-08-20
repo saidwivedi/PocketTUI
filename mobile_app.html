@@ -174,6 +174,7 @@ body {
   color: var(--umber);
 }
 .topbar .brand .glyph svg { width: 100%; height: 100%; }
+.topbar .brand a { display: flex; align-items: center; gap: 9px; color: inherit; text-decoration: none; }
 .topbar .right { display: flex; gap: 4px; align-items: center; padding-left: 8px; }
 .icon-btn {
   background: transparent; border: none;
@@ -831,8 +832,10 @@ html.term-open, body.term-open {
 <div class="screen active" id="screen-list">
   <div class="topbar">
     <div class="brand">
-      <span class="glyph"><svg><use href="#i-logo"/></svg></span>
-      <span class="name">PocketTUI</span>
+      <a href="https://pockettui.com/" target="_blank" rel="noopener">
+        <span class="glyph"><svg><use href="#i-logo"/></svg></span>
+        <span class="name">PocketTUI</span>
+      </a>
     </div>
     <div class="right">
       <button class="icon-btn" id="btn-reload" aria-label="Reload sessions"><svg><use href="#i-reload"/></svg></button>
