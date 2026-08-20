@@ -1379,19 +1379,20 @@ if [[ -n "$AGENT_BACKUP" ]]; then
     say "                 launchctl bootstrap gui/\$(id -u) $AGENT_PATH"
 fi
 
-# The two things the user actually came for. The code is the loudest thing on
-# the screen because it is the one part nothing else can tell them.
+# The two things the user actually came for, boxed together so they read as
+# the pair to copy; the URL comes first because it is the first thing to do.
 RULE="─────────────────────────────────────"
 say ""
-say "  $C_RULE$RULE$C_RESET"
-printf '   Pairing code   %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
-say "  $C_RULE$RULE$C_RESET"
-say ""
 say "  On your phone open  $BASE_URL/app/"
+say ""
+say "  $C_RULE$RULE$C_RESET"
 if [[ -n "$PHONE_ADDR" ]]; then
-    say "  Address   $PHONE_ADDR"
-    say "  Code      the one above"
-else
+    printf '   Address   %s%s%s\n' "$C_CODE" "$PHONE_ADDR" "$C_RESET"
+fi
+printf '   Code      %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
+say "  $C_RULE$RULE$C_RESET"
+if [[ -z "$PHONE_ADDR" ]]; then
+    say ""
     # Nothing reachable was found. The install itself is fine — what is missing
     # is a route — and saying so is more use than inventing an address the user
     # would then have to debug. The backend is only vouched for when it actually
