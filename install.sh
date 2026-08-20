@@ -1298,15 +1298,23 @@ way, and puts it on your own tailnet rather than the public internet.
        tailscale serve status
 
    It looks like \`https://<machine>.<tailnet>.ts.net\`, so the address to
-   type into the phone is \`<machine>.<tailnet>.ts.net/pockettui\`. Until that
-   path is published the name still resolves but returns 404 — a plain LAN
-   address (\`<this machine's IP>:$PORT\`) works in the meantime.
+   type into the phone is \`<machine>.<tailnet>.ts.net/pockettui\`, with the
+   port field left **empty** — the serve terminates TLS on 443 and forwards
+   to $PORT itself; putting $PORT in the port field points the phone at the
+   wrong door. Until the path is published the name still resolves but
+   returns 404 — on the same network, opening \`http://<this machine's
+   IP>:$PORT/\` directly on the phone works in the meantime (the backend
+   serves this same app; only the code is needed).
 
 If you would rather not path-serve, \`tailscale serve --bg $PORT\` publishes it
-at the root instead; then enter the bare hostname on the phone and put $PORT in
-the port field.
+at the root instead; then enter the bare hostname on the phone, again with the
+port field empty.
 
-Any other route works too — a LAN address, a VPN, an SSH tunnel. Whatever you
+Any other route works too — a VPN or an SSH tunnel with the app at
+$BASE_URL/app/, or the backend's own \`http://<address>:$PORT/\` page on a
+network the phone shares. One thing that cannot work: typing a plain-http
+address into the hosted app — it is served over https, and browsers refuse
+to let an https page call an http backend. Whatever route you
 use, the pairing code keeps the connection authenticated: an address alone is
 not an open shell.
 
@@ -1379,18 +1387,33 @@ if [[ -n "$AGENT_BACKUP" ]]; then
     say "                 launchctl bootstrap gui/\$(id -u) $AGENT_PATH"
 fi
 
-# The two things the user actually came for, boxed together so they read as
-# the pair to copy; the URL comes first because it is the first thing to do.
+# What to open depends on the route. The hosted app is https, and a browser
+# will not let an https page call a plain-http backend, so a LAN address can
+# never be typed into $BASE_URL/app/ — but the backend serves the same shell
+# itself, so on a LAN the phone opens it directly and only the code is left to
+# type. A verified serve is https end to end, so there the hosted app plus the
+# address works. The URL comes first because it is the first thing to do.
 RULE="─────────────────────────────────────"
 say ""
-say "  On your phone open  $BASE_URL/app/"
-say ""
-say "  $C_RULE$RULE$C_RESET"
-if [[ -n "$PHONE_ADDR" ]]; then
+if [[ "$TS_SERVED" == "1" ]]; then
+    say "  On your phone open  $BASE_URL/app/"
+    say ""
+    say "  $C_RULE$RULE$C_RESET"
     printf '   Address   %s%s%s\n' "$C_CODE" "$PHONE_ADDR" "$C_RESET"
+    printf '   Code      %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
+    say "  $C_RULE$RULE$C_RESET"
+elif [[ -n "$LAN_IP" ]]; then
+    say "  On your phone open  ${C_CODE}http://$LAN_IP:$PORT/$C_RESET"
+    say ""
+    say "  $C_RULE$RULE$C_RESET"
+    printf '   Code      %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
+    say "  $C_RULE$RULE$C_RESET"
+    say "  ${C_DIM}(that page is the backend itself — no address to enter)$C_RESET"
+else
+    say "  $C_RULE$RULE$C_RESET"
+    printf '   Code      %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
+    say "  $C_RULE$RULE$C_RESET"
 fi
-printf '   Code      %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
-say "  $C_RULE$RULE$C_RESET"
 if [[ -z "$PHONE_ADDR" ]]; then
     say ""
     # Nothing reachable was found. The install itself is fine — what is missing
