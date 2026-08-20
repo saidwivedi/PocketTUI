@@ -662,6 +662,17 @@ html.term-open, body.term-open {
   transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out);
 }
 .sheet .actions button:active { transform: scale(0.96); }
+/* Sits apart from Cancel/Save, at the far left: it is the destructive one, and
+   nobody should reach it while aiming for Save. Hidden during first-run setup,
+   where there is nothing stored yet to forget. */
+#btn-settings-forget {
+  display: none;
+  order: -1;
+  margin-right: auto;
+  border-color: transparent;
+  color: var(--secondary);
+}
+#btn-settings-forget.show { display: block; }
 .sheet .actions button.primary {
   background: var(--umber);
   border-color: var(--umber);
@@ -868,10 +879,14 @@ html.term-open, body.term-open {
   <label for="backend-token">Pairing code</label>
   <input id="backend-token" type="text" inputmode="latin" autocapitalize="characters" autocorrect="off"
          spellcheck="false" placeholder="XXXXX-XXXXX" maxlength="11">
+  <label for="backend-devname">Device name</label>
+  <input id="backend-devname" type="text" autocapitalize="off" autocorrect="off"
+         spellcheck="false" placeholder="iphone" maxlength="16">
   <label for="backend-port" class="opt">Port <span>optional</span></label>
   <input id="backend-port" type="text" inputmode="numeric" autocapitalize="off"
          autocorrect="off" spellcheck="false" placeholder="5560">
   <div class="actions">
+    <button type="button" id="btn-settings-forget">Forget</button>
     <button type="button" id="btn-settings-cancel">Cancel</button>
     <button type="button" id="btn-settings-save">Save</button>
     <button type="button" id="btn-sheet-demo">Try demo</button>
@@ -974,7 +989,28 @@ const cfg = {
   set newdir(v) { localStorage.setItem("pockettui_newdir", v); },
   get token() { return localStorage.getItem("pockettui_token") || ""; },
   set token(v) { localStorage.setItem("pockettui_token", v); },
+  // Names this device's own grouped view session (<devname>-<target>), so
+  // two devices watching one session never detach each other. Minted once and
+  // kept, because a name that changed per visit would strand a view per reload.
+  get devname() {
+    let v = localStorage.getItem("pockettui_devname");
+    if (!v) {
+      const r = crypto.getRandomValues(new Uint8Array(4));
+      v = "device-" + Array.from(r, (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join("");
+      localStorage.setItem("pockettui_devname", v);
+    }
+    return v;
+  },
+  set devname(v) { localStorage.setItem("pockettui_devname", v); },
 };
+
+// The name becomes a tmux session name, so it is held to what tmux and the
+// backend's `dev` check both accept: lowercase, [a-z0-9-], no runs of dashes,
+// no dashes at either end. Empty after cleaning means keep the existing name.
+function cleanDevName(v) {
+  return String(v).toLowerCase().replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-").replace(/^-+|-+$/g, "").slice(0, 16).replace(/-+$/, "");
+}
 
 // True when we have no idea where the API is: not same-origin, nothing baked
 // in, nothing stored. That is the first run of a public build.
@@ -1086,6 +1122,7 @@ function openSettings(firstRun) {
   $("backend-url").value = parts.url;
   $("backend-port").value = parts.port;
   $("backend-token").value = formatTokenDisplay(cfg.token);
+  $("backend-devname").value = cfg.devname;
   $("sheet-title").textContent = firstRun ? "Connect your computer" : "Settings";
   $("sheet-note").classList.toggle("hide", !firstRun);
   // First run has nothing to go back to, so there is no cancelling out of it.
@@ -1093,6 +1130,9 @@ function openSettings(firstRun) {
   // The demo is the way out of a first run with no backend to enter; past setup
   // the list screen carries its own entry point.
   $("btn-sheet-demo").classList.add("show");
+  // Nothing to forget on a first run, and nothing to forget if the backend was
+  // baked in at build time and no code has been entered yet.
+  $("btn-settings-forget").classList.toggle("show", !firstRun && !!(cfg.backend || cfg.token));
   $("sheet-install").classList.toggle("show", !!firstRun);
   $("sheet-faq").classList.toggle("show", !!firstRun);
   $("sheet-settings").classList.toggle("setup", !!firstRun);
@@ -1125,6 +1165,20 @@ $("btn-copy-install").addEventListener("click", () => {
     .then(() => toast("Install command copied"))
     .catch(() => toast("Clipboard blocked"));
 });
+// Drops the stored address and pairing code, so this device is no longer paired
+// with that computer. The device name stays: it names this device, not the
+// computer, and keeping it means re-pairing lands on the same view session.
+$("btn-settings-forget").addEventListener("click", () => {
+  localStorage.removeItem("pockettui_backend");
+  localStorage.removeItem("pockettui_token");
+  $("backend-url").value = "";
+  $("backend-port").value = "";
+  $("backend-token").value = "";
+  toast("Computer forgotten");
+  // Re-open in whichever mode we are now in: a public build with nothing stored
+  // is back to first-run setup, which is not dismissible.
+  openSettings(needsSetup());
+});
 $("btn-settings-cancel").addEventListener("click", () => showSheet(false));
 $("sheet-scrim").addEventListener("click", () => {
   if (!setupMode) showSheet(false);   // the setup sheet is not dismissible
@@ -1136,6 +1190,10 @@ $("btn-settings-save").addEventListener("click", () => {
   if (setupMode && !isValidToken(tok)) { toast("Enter the 10-character pairing code"); return; }
   cfg.backend = v;
   cfg.token = tok;
+  // Cleaning can empty the field outright ("!!!"), which would leave this device
+  // unnamed — keep the previous name in that case rather than writing a blank.
+  const dev = cleanDevName($("backend-devname").value);
+  if (dev) cfg.devname = dev;
   setupMode = false;
   showSheet(false);
   // Reload against the new backend so a bad URL surfaces straight away.
@@ -1815,7 +1873,7 @@ function send(data) {
 }
 function sendResize() {
   if (!term || !sock || sock.readyState !== WebSocket.OPEN) return;
-  sock.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows, token: cfg.token }));
+  sock.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows, token: cfg.token, dev: cfg.devname }));
 }
 
 let fitTimer = null;
@@ -2588,8 +2646,8 @@ const DEMO_COMMANDS = {
       demoLine("the demo only answers " + D.grn + "tmux ls" + D.r);
       return;
     }
-    demoLine("ptui-webapp: 2 windows (created Mon Mar 10 08:14:31 2025) (attached)");
-    demoLine("ptui-api: 1 windows (created Tue Mar 11 17:02:09 2025)");
+    demoLine("iphone-webapp: 2 windows (created Mon Mar 10 08:14:31 2025) (attached)");
+    demoLine("laptop-api: 1 windows (created Tue Mar 11 17:02:09 2025)");
     demoLine("scratch: 1 windows (created Wed Mar 12 11:40:55 2025)");
     demoNoteLine("(these sessions are invented — the real list is the screen you came from)");
   },
@@ -3230,7 +3288,7 @@ let edgeSwipe = false;
 // ============================================================
 // Drag to scroll
 // ============================================================
-// tmux is in mouse mode (the server sets it on the ptui-* session), so scrolling
+// tmux is in mouse mode (the server sets it on this device's view session), so scrolling
 // means feeding it wheel events. One SGR wheel report per cell of vertical travel,
 // at the cell the finger is over, in the natural direction: dragging down pulls
 // older content into view, exactly like flicking a native terminal.

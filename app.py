@@ -9,7 +9,9 @@ prefix and this server always sees paths rooted at /.
 
 Attach uses a *grouped* session (tmux new-session -t <target>): the phone gets
 an independent view of the same windows, so attaching from the phone never
-resizes or detaches the client already attached on the laptop.
+resizes or detaches the client already attached on the laptop. Each device gets
+its own view, named <device>-<target>, so two phones can watch one session at
+once; the views hide themselves from the session list by being grouped clones.
 """
 
 import argparse
@@ -43,9 +45,10 @@ TOKEN_PATH = HERE / ".token"
 # server start is what makes iOS drop the old PWA shell after a redeploy.
 CACHE_VERSION = time.strftime("%Y%m%d-%H%M%S")
 
-# Sessions this app creates for its own grouped views — hidden from the list so
-# the phone never shows its own reflections.
-PTUI_PREFIX = "ptui-"
+# A device name from the client, which becomes part of a tmux session name
+# (<device>-<target>). Anything else is treated as absent rather than rejected,
+# so a client that sends nothing still gets the single-view behaviour below.
+DEV_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,15}$")
 
 app = FastAPI(title="PocketTUI")
 
@@ -322,21 +325,27 @@ def list_sessions() -> list[dict]:
         "list-sessions",
         "-F",
         "#{session_name}\t#{session_created}\t#{session_attached}\t#{session_windows}"
-        "\t#{@alias}",
+        "\t#{session_grouped}\t#{session_group}\t#{@alias}",
     )
     if rc != 0:
         return []
 
     sessions = []
     for line in out.splitlines():
-        # The alias field is last and empty when unset, so split to a fixed width
-        # rather than requiring every field to be present.
+        # The alias field is still last and empty when unset, so split to a
+        # fixed width rather than requiring every field to be present.
         parts = line.split("\t")
-        if len(parts) < 4:
+        if len(parts) < 6:
             continue
-        name, created, attached, windows = parts[:4]
-        alias = parts[4] if len(parts) > 4 else ""
-        if name.startswith(PTUI_PREFIX):
+        name, created, attached, windows, grouped, group = parts[:6]
+        alias = parts[6] if len(parts) > 6 else ""
+        # Hide the grouped clones — this app's own views are born grouped onto
+        # their target, which is race-free in a way a marker set after spawn is
+        # not. `new-session -t x` names the group after x, so the original keeps
+        # name == group and stays listed while every clone of it drops out. A
+        # user's own hand-made clone is hidden too, reasonably: it mirrors a
+        # session already on the list.
+        if grouped == "1" and name != group:
             continue
         cmd, title = active_pane(name)
         sessions.append({
@@ -370,36 +379,72 @@ def active_pane(name: str) -> tuple[str, str]:
     return parts[0], (parts[1] if len(parts) > 1 else "")
 
 
-def attach_argv(target: str) -> list[str]:
+def session_group(name: str) -> str:
+    """The name of the group `name` belongs to, or "" if it is ungrouped.
+
+    Filtered here rather than with `list-sessions -f`, which older tmux (3.0a)
+    does not have — passing it there fails the whole command.
+    """
+    rc, out = tmux("list-sessions",
+                   "-F", "#{session_name}\t#{session_grouped}\t#{session_group}")
+    if rc != 0:
+        return ""
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[0] == name:
+            return parts[2] if parts[1] == "1" else ""
+    return ""
+
+
+def view_name(target: str, dev: str) -> str:
+    """The name of this device's own grouped view of `target`.
+
+    Without a device name (an old cached shell) this keeps the original single
+    view per target. With one, each device gets its own, which is the whole
+    point: two devices hold different views and so never detach each other.
+    """
+    if not dev:
+        return "ptui-" + target
+    base = f"{dev}-{target}"
+    # The name is user-facing on both ends, so it can collide with a real
+    # session the user made. Reuse it only when it is already a view of this
+    # target; otherwise step aside rather than attaching to the wrong session.
+    name = base
+    for n in range(2, 10):
+        if not session_exists(name) or session_group(name) == target:
+            return name
+        name = f"{base}-{n}"
+    return name
+
+
+def attach_argv(target: str, view: str) -> list[str]:
     """Command that gives the phone its own view of `target`.
 
     A grouped session shares the target's windows but keeps its own current
     window and size, so the phone client's small size never squeezes the
-    laptop's client. Reuse the phone session across reconnects (-d kicks off any
-    stale client of it) so the phone's window selection survives a dropout.
+    laptop's client. Reuse the view across reconnects (-d kicks off any stale
+    client of it) so the phone's window selection survives a dropout.
     """
-    phone = PTUI_PREFIX + target
-    if session_exists(phone):
-        return ["tmux", "attach", "-d", "-t", f"={phone}"]
-    return ["tmux", "new-session", "-s", phone, "-t", f"={target}"]
+    if session_exists(view):
+        return ["tmux", "attach", "-d", "-t", f"={view}"]
+    return ["tmux", "new-session", "-s", view, "-t", f"={target}"]
 
 
-def enable_mouse(target: str) -> None:
+def enable_mouse(view: str) -> None:
     """Turn on mouse reporting for the phone's own session only.
 
     Drag-to-scroll on the phone works by synthesising SGR wheel events, which
-    tmux only acts on with `mouse on`. The option is set on the ptui-* session
+    tmux only acts on with `mouse on`. The option is set on this device's view
     alone (a grouped session carries its own options), so the laptop's client of
     the same windows keeps whatever the user configured.
     """
-    phone = PTUI_PREFIX + target
     # The session only exists once the attach child has spawned it, so retry
     # briefly rather than racing the fork.
     for _ in range(20):
-        if session_exists(phone):
+        if session_exists(view):
             # No "=" exact-match prefix here: set-option rejects it outright
             # ("no such session"), unlike the session-target commands above.
-            tmux("set-option", "-t", phone, "mouse", "on")
+            tmux("set-option", "-t", view, "mouse", "on")
             return
         time.sleep(0.05)
 
@@ -517,8 +562,6 @@ def validate_session_name(value: str) -> tuple[str, str]:
     # containing either is unaddressable afterwards.
     if "." in name or ":" in name:
         return "", "Session name cannot contain '.' or ':'."
-    if name.startswith(PTUI_PREFIX):
-        return "", f"Session name cannot start with '{PTUI_PREFIX}' — that prefix is reserved."
     if session_exists(name):
         return "", f"A session named '{name}' already exists."
     return name, ""
@@ -533,7 +576,10 @@ def api_alias(body: dict = Body(...)) -> Response:
     the session under its real name.
     """
     name = str(body.get("session", ""))
-    if name.startswith(PTUI_PREFIX) or not session_exists(name):
+    # A grouped clone is one of this app's views (or the user's own mirror of a
+    # listed session), never something the list offers to rename.
+    grouped_as = session_group(name)
+    if not session_exists(name) or (grouped_as and grouped_as != name):
         return JSONResponse({"error": "no such session"}, status_code=404)
 
     alias = clean_alias(body.get("alias", ""))
@@ -735,13 +781,16 @@ async def reap(pid: int, fd: int) -> None:
         pass
 
 
-# Attaching is not safe to do concurrently for one session: `tmux attach -d`
+# Attaching is not safe to do concurrently for one view: `tmux attach -d`
 # detaches whichever client is already there, so two overlapping attaches kick
 # each other, and each kicked client's PTY dies, closing its WebSocket, whose
 # browser then reconnects and kicks the other one back. That ping-pong is what
 # made opening a session flap several times before settling. One lock per
-# session name serialises attaches, and ATTACHED tracks the live one so a new
+# view name serialises attaches, and ATTACHED tracks the live one so a new
 # connection can retire its predecessor deliberately instead of racing it.
+# Keying on the view rather than the target is what lets two devices watch one
+# session: they hold different views, so neither ever retires the other, while
+# the same device reconnecting still lands on its own view and retires itself.
 ATTACH_LOCKS: dict[str, asyncio.Lock] = {}
 ATTACHED: dict[str, "Attachment"] = {}
 
@@ -801,6 +850,7 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
     # the resize — and every check here runs before any PTY or tmux command.
     cols, rows = 80, 24
     token = ""
+    dev = ""
     try:
         first = await asyncio.wait_for(ws.receive(), timeout=5)
         if first.get("type") == "websocket.disconnect":
@@ -809,6 +859,10 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         if text:
             msg = json.loads(text)
             token = msg.get("token", "")
+            # Names this device's view. A name that could not be a tmux session
+            # reads as no name at all — the legacy single-view path still works.
+            candidate = str(msg.get("dev", ""))
+            dev = candidate if DEV_RE.match(candidate) else ""
             if msg.get("type") == "resize":
                 cols, rows = msg.get("cols", cols), msg.get("rows", rows)
     except (asyncio.TimeoutError, ValueError, KeyError, json.JSONDecodeError):
@@ -831,10 +885,15 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
 
     loop = asyncio.get_running_loop()
 
+    # Everything below serialises on the *view*, not the target: that is what
+    # lets two devices watch one session without retiring each other.
+    view = view_name(session_name, dev)
+    log(f"conn {cid} view={view}")
+
     # Retire the previous attachment and spawn ours as one atomic step, so two
-    # connections can never have a live PTY for the same session at once.
-    async with attach_lock(session_name):
-        prev = ATTACHED.pop(session_name, None)
+    # connections can never have a live PTY for the same view at once.
+    async with attach_lock(view):
+        prev = ATTACHED.pop(view, None)
         if prev is not None:
             log(f"conn {cid} retiring previous attachment pid={prev.pid}")
             prev.retire()
@@ -844,13 +903,13 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                 await asyncio.wait_for(prev.done.wait(), timeout=3)
             except asyncio.TimeoutError:
                 log(f"conn {cid} previous attachment slow to exit; continuing")
-        pid, fd = spawn_pty(attach_argv(session_name), cols, rows)
+        pid, fd = spawn_pty(attach_argv(session_name, view), cols, rows)
         os.set_blocking(fd, False)
         me = Attachment(pid, fd)
-        ATTACHED[session_name] = me
+        ATTACHED[view] = me
 
     # Off-thread: enable_mouse polls for the just-spawned session.
-    asyncio.create_task(asyncio.to_thread(enable_mouse, session_name))
+    asyncio.create_task(asyncio.to_thread(enable_mouse, view))
 
     # PTY reads land in this queue via add_reader; None marks the PTY closing.
     out: asyncio.Queue = asyncio.Queue()
@@ -919,8 +978,8 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         # connection holds it while waiting on me.done, so taking it would
         # deadlock. Identity is enough — only we ever remove ourselves, and a
         # newer connection has already replaced the entry by this point.
-        if ATTACHED.get(session_name) is me:
-            del ATTACHED[session_name]
+        if ATTACHED.get(view) is me:
+            del ATTACHED[view]
         await reap(pid, fd)
         reason = "superseded" if me.retired.is_set() else "client-or-pty-gone"
         log(f"conn {cid} close session={session_name} reason={reason}")
