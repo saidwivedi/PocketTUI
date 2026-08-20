@@ -80,6 +80,9 @@ def normalize_token(raw: str) -> str:
     at all, which is what lets a malformed .token file read as simply absent.
     """
     text = re.sub(r"[\s-]", "", str(raw or "")).upper()
+    # 0 and 1 are excluded from the alphabet as look-alikes, so a typed 0 or 1
+    # can only be a misread O or I — map rather than reject.
+    text = text.replace("0", "O").replace("1", "I")
     return text if TOKEN_RE.match(text) else ""
 
 
