@@ -15,7 +15,7 @@ Check on jobs, keep Claude or Codex going, or kick off something new while you'r
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)](#install)
 [![Website](https://img.shields.io/website?url=https%3A%2F%2Fpockettui.com&label=pockettui.com)](https://pockettui.com)
 
-<img src="https://pockettui.com/landing_assets/hero-combo-round.png?v=5" alt="A tmux session on the computer, and the same session attached on a phone" width="92%">
+<img src="https://pockettui.com/landing_assets/hero-combo-round.png?v=8" alt="A tmux session on the computer, and the same session attached on a phone" width="92%">
 
 </div>
 
