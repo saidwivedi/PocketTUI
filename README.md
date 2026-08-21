@@ -21,20 +21,9 @@ Check on jobs, keep Claude or Codex going, or kick off something new while you'r
 
 ---
 
-PocketTUI is a real terminal for your phone, backed by the tmux sessions already running on your computer. A small Python server on your machine bridges tmux to a touch-first web app — no cloud in between, no account, nothing to pay for. Your phone talks straight to your machine.
-
-- **Your actual sessions.** Attaches to the tmux sessions you already have — the training run, the agent, the build — not fresh shells.
-- **Doesn't fight your laptop.** Attaching uses tmux grouped sessions, so the phone gets its own window size without resizing what's on your desktop.
-- **Keys built for thumbs.** Esc, Ctrl, Tab, arrows, and friends in a collapsible key bar designed for touch, on top of a full terminal (xterm.js).
-- **Tap paths to view files.** Any image or video path printed in the terminal opens with a tap — check the plot your job just saved without leaving your phone.
-- **Private by construction.** The hosted page is a static shell; your machine's address lives only in your phone's local storage. Terminal traffic never touches a third-party server.
-
-<div align="center">
-<img src="https://pockettui.com/landing_assets/sessions-round.png" alt="Session list" width="24%">
-<img src="https://pockettui.com/landing_assets/keybar-round.png" alt="Touch-first key bar" width="24%">
-<img src="https://pockettui.com/landing_assets/viewer-round.png" alt="Tap-to-view images" width="24%">
-<img src="https://pockettui.com/landing_assets/viewer-video-round.png" alt="Tap-to-view videos" width="24%">
-</div>
+- **Your actual tmux sessions.** Attaches to the sessions you already have — the training run, the agent, the build — without resizing what's on your desktop (tmux grouped sessions).
+- **Built for phone.** A full terminal (xterm.js) with a touch-first key bar — Esc, Ctrl, Tab, arrows — and tap-to-open for image and video paths printed in the terminal.
+- **Direct connection.** The hosted page is a static shell; your machine's address lives only in your phone's local storage. Terminal traffic does not pass through PocketTUI servers.
 
 ## Install
 
@@ -64,6 +53,13 @@ Or skip the installer entirely: `./run.sh` creates a `.venv` on first run and st
 ### Windows
 
 Not natively (the backend wraps tmux and Unix PTYs), but it works in **WSL2**: run the same installer inside WSL and reach it via Tailscale or WSL's mirrored networking mode.
+
+<div align="center">
+<img src="https://pockettui.com/landing_assets/sessions-round.png" alt="Session list" width="24%">
+<img src="https://pockettui.com/landing_assets/keybar-round.png" alt="Touch-first key bar" width="24%">
+<img src="https://pockettui.com/landing_assets/viewer-round.png" alt="Tap-to-view images" width="24%">
+<img src="https://pockettui.com/landing_assets/viewer-video-round.png" alt="Tap-to-view videos" width="24%">
+</div>
 
 ## How it works
 
