@@ -21,7 +21,8 @@ Check on jobs, keep Claude or Codex going, or kick off something new while you'r
 
 ---
 
-- **Your actual tmux sessions.** Attaches to the sessions you already have — the training run, the agent, the build — without resizing what's on your desktop (tmux grouped sessions).
+- **Your sessions follow you.** Open the same running tmux session from your phone, laptop, or another device. Switch between them whenever you want, or keep multiple devices connected at once.
+- **Independent views on every device.** Each connected device gets its own screen size without resizing or detaching the session on your other devices.
 - **Built for phone.** A full terminal (xterm.js) with a touch-first key bar — Esc, Ctrl, Tab, arrows — and tap-to-open for image and video paths printed in the terminal.
 - **Direct connection.** The hosted page is a static shell; your machine's address lives only in your phone's local storage. Terminal traffic does not pass through PocketTUI servers.
 
