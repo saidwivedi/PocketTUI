@@ -379,9 +379,13 @@ body {
    ============================================================ */
 #screen-term {
   position: fixed; inset: 0;
-  /* inset:0 alone leaves the safe-area strip unpainted in the iOS standalone
-     PWA; the explicit dynamic-viewport size forces coverage under the notch. */
-  height: 100dvh; width: 100vw;
+  /* Anchored by inset alone, never sized: a declared viewport height (100dvh)
+     makes this a viewport-sized fixed container, which iOS renders a bottom gap
+     short in the installed app (WebKit's Safari 26.1 fix names exactly that),
+     with top:0 putting the whole shortfall under the key bar. Pinning both
+     edges instead makes the bottom the screen's real bottom by construction.
+     The under-notch strip this used to paint is covered by syncChrome, which
+     keeps html/body on the terminal background while this screen is up. */
   /* The terminal's own background, not the app's paper — html/body are painted
      to the same value while this screen is up, so the strip under the notch
      matches the terminal instead of flashing white. */
@@ -391,7 +395,12 @@ body {
 }
 #screen-term.active { display: flex; }
 
-/* No rubber-banding behind the fixed terminal surface. */
+/* No rubber-banding behind the fixed terminal surface. overflow:hidden stops the
+   user scrolling but not iOS scrolling a focused input into view — that pan is
+   undone in applyViewport the moment it appears instead. Deliberately NOT
+   position:fixed on the root: a fixed body in the iOS standalone app misplaces
+   the whole fixed layer (the screen renders shifted up with a blank band at the
+   bottom), which the production client — identical here — has never shown. */
 html.term-open, body.term-open {
   overscroll-behavior: none;
   overflow: hidden;
@@ -441,6 +450,82 @@ html.term-open, body.term-open {
 #demo-badge:active { transform: scale(0.94); }
 
 /* ============================================================
+   COMPOSE STRIP — dictation staging, above the key bar
+   ============================================================ */
+/* Dictating straight into xterm's hidden textarea duplicates the text: xterm's
+   IME handling re-sends what the composition already delivered. So dictation
+   lands in a textarea of our own and reaches the terminal only on Send, as one
+   paste. Shares the key bar's material — the two read as one docked surface. */
+#compose {
+  display: none;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 253, 247, 0.94);
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  border-top: 1px solid var(--hair);
+  z-index: 20;
+}
+:root[data-theme="dark"] #compose { background: rgba(31, 28, 22, 0.94); }
+#compose.open { display: flex; align-items: flex-end; }
+/* A well to speak into: recessed surface, hairline rim, capsule at one line. The
+   radius stays put as the field grows, so it eases into a soft rounded rect
+   rather than tracking the height. */
+#compose-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--sans);
+  /* 16px is the floor iOS zooms the page below, and a zoomed page leaves the
+     terminal mis-fitted behind the keyboard. */
+  font-size: 16px;
+  line-height: 1.35;
+  color: var(--ink);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 18px;
+  padding: 8px 14px;
+  /* Height is set from scrollHeight as you dictate; the cap turns into scroll. */
+  max-height: 96px;
+  resize: none;
+  overflow-y: auto;
+  caret-color: var(--umber);
+  -webkit-appearance: none;
+}
+#compose-text::placeholder { color: var(--whisper); }
+/* No focus ring: the strip only exists while focused, so the treatment would be
+   on permanently and say nothing. */
+#compose-text:focus { outline: none; }
+
+/* The one lit control on the bar. Empty it recedes into the same well material
+   as the field; the moment there is something to send it fills with umber. */
+#compose-send {
+  flex: 0 0 auto;
+  /* Matches the field's single-line height exactly, so at rest the two read as
+     one row rather than a circle floating 2px shy of the capsule's top. */
+  width: 38px; height: 38px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  color: var(--tertiary);
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  /* --whisper is the quieter token, but at 1.9:1 on this background the arrow
+     stops reading as a control; --tertiary clears 3:1 in both themes. */
+  transition: background 0.14s var(--ease-out), border-color 0.14s var(--ease-out),
+              color 0.14s var(--ease-out);
+  -webkit-user-select: none; user-select: none;
+}
+#compose-send svg { width: 17px; height: 17px; }
+#compose-send.armed {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+}
+#compose-send:active { transform: scale(0.94); }
+
+/* ============================================================
    KEY BAR — docked above the soft keyboard
    ============================================================ */
 .keybar {
@@ -472,8 +557,10 @@ html.term-open, body.term-open {
      row of height saved here goes straight to the grid. */
   min-width: 30px; min-height: 33px;
   padding: 0 4px;
-  /* Word keys take the larger share of the row's spare width — see .narrow. */
-  flex: 1.3 1 auto;
+  /* Word keys take the larger share of the row's width — see .narrow. Basis 0,
+     not auto: the label's own width must not leak into the split, or esc and
+     shift end up different sizes. */
+  flex: 1.1 1 0;
   cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
   transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out),
@@ -489,13 +576,28 @@ html.term-open, body.term-open {
   color: var(--paper);
   font-weight: 700;
 }
+/* Recording: the armed-modifier fill, since it is the same idea — a key that is
+   on and stays on until tapped again — plus a slow breath so it reads as live
+   rather than merely latched. */
+.keybar button.listening {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+  animation: mic-pulse 1.6s var(--ease-out) infinite;
+}
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.62; }
+}
+/* Motion is the decoration, not the signal — the fill still says "recording". */
+@media (prefers-reduced-motion: reduce) {
+  .keybar button.listening { animation: none; }
+}
 /* Arrows are single glyphs: they need their own font size to stay legible next
    to the 10.5px words, but a smaller floor and a smaller share of the slack, so
    the row's spare width goes to the labels that actually need it. */
-.keybar button.narrow { min-width: 28px; flex-grow: 0.8; font-size: 13px; }
+.keybar button.narrow { min-width: 28px; flex-grow: 1; font-size: 13px; }
 .keybar button.glyph-key svg { width: 15px; height: 15px; }
-/* A glyph label that still wants a word key's width share. */
-.keybar button.wide-glyph { font-size: 13px; }
 
 /* Arrow cluster — collapsed, the four arrows are one button; expanded, they take
    a second row in the inverted-T of a real keyboard.
@@ -508,13 +610,16 @@ html.term-open, body.term-open {
 .keybar > .expanded-only { display: none; }
 .keybar.expanded {
   display: grid;
-  /* Ten tracks: five word keys, backspace, the three-wide arrow cluster, and the
-     keyboard column. Word keys keep the larger share and the glyph columns the
-     smaller, mirroring the 1.3/0.8 grow factors of the collapsed row. Ten 30px
-     floors would overflow a 320px screen by 3px, and the word keys do not need
-     that floor here — spanning both rows already gives them a 69px tap target,
-     so the width minimum drops to the glyph keys' 28px across the board. */
-  grid-template-columns: repeat(5, minmax(28px, 1.3fr)) repeat(5, minmax(28px, 0.8fr));
+  /* Ten tracks: four word keys, enter, backspace, the three-wide arrow cluster,
+     and one column shared by close and compose. Word keys keep the collapsed
+     row's larger share; enter gives up width here — expanded is an arrow-work
+     mode, so its slice goes to the cluster and the close/compose column, which
+     are what the thumb is aiming at. Ten 30px floors would overflow a 320px
+     screen by 3px, and the word keys do not need that floor here — spanning both
+     rows already gives them a 69px tap target — so the width minimum drops to
+     the glyph keys' 28px across the board. */
+  grid-template-columns: repeat(4, minmax(28px, 1.1fr)) minmax(28px, 0.85fr)
+                         minmax(28px, 1fr) repeat(4, minmax(28px, 1.15fr));
   grid-template-rows: auto auto;
   /* Two rows of chips would otherwise stretch to the bar's own height. */
   align-items: stretch;
@@ -524,16 +629,21 @@ html.term-open, body.term-open {
 .keybar.expanded > .span-2 { grid-row: span 2; }
 .keybar.expanded > .expanded-only { display: inline-flex; }
 .keybar.expanded > .collapsed-only { display: none; }
-/* Columns 7-9 are the inverted-T: up centred over left/down/right. The two cells
-   flanking up in row 1 stay empty — that gap is what makes the T readable. */
+/* Columns 7-9 are the inverted-T: up centred over left/down/right. Column 6 is
+   left to auto-placement for backspace, which spans both rows — claiming it here
+   would push backspace past the cluster onto a row of its own. Retiring the
+   keyboard key vacated the bottom of column 10, so compose moves in there and no
+   longer borrows the T's left flank: both cells beside up are empty again, which
+   is what makes the T read as one shape. Close and compose now share that last
+   column, the two controls that are not keys sitting together. */
 .keybar.expanded > .k-up    { grid-column: 8; grid-row: 1; }
 .keybar.expanded > .k-left  { grid-column: 7; grid-row: 2; }
 .keybar.expanded > .k-down  { grid-column: 8; grid-row: 2; }
 .keybar.expanded > .k-right { grid-column: 9; grid-row: 2; }
 /* Close sits on the top row: it is the control that undoes the expansion, so it
    reads better level with the row that appeared than buried at the bottom. */
-.keybar.expanded > .k-close { grid-column: 10; grid-row: 1; }
-.keybar.expanded > .k-kb    { grid-column: 10; grid-row: 2; }
+.keybar.expanded > .k-close   { grid-column: 10; grid-row: 1; }
+.keybar.expanded > .k-compose { grid-column: 10; grid-row: 2; }
 
 /* ============================================================
    SETTINGS SHEET
@@ -829,10 +939,6 @@ html.term-open, body.term-open {
     <symbol id="i-fwd" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M9 5l7 7-7 7"/>
     </symbol>
-    <symbol id="i-keyboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-      <rect x="2" y="6" width="20" height="12" rx="2.2"/>
-      <path d="M6 9.5h.01M9.5 9.5h.01M13 9.5h.01M16.5 9.5h.01M6 12.8h.01M9.5 12.8h.01M13 12.8h.01M16.5 12.8h.01M8 15.6h8"/>
-    </symbol>
     <symbol id="i-arrows" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 3.5l3 3.2h-6z" fill="currentColor" stroke="none"/>
       <path d="M12 20.5l-3-3.2h6z" fill="currentColor" stroke="none"/>
@@ -842,6 +948,15 @@ html.term-open, body.term-open {
     </symbol>
     <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
       <path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>
+    </symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="2.5" width="6" height="11" rx="3"/>
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>
+      <path d="M12 17.5V21M9 21h6"/>
+    </symbol>
+    <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 19.5V5"/>
+      <path d="M5.5 11.5L12 5l6.5 6.5"/>
     </symbol>
     <symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M16.5 4.5l3 3L8 19l-4 1 1-4z"/>
@@ -890,6 +1005,23 @@ html.term-open, body.term-open {
   <div class="term-safetop"></div>
   <button type="button" id="demo-badge" aria-label="Leave the demo">DEMO</button>
   <div id="term-host"></div>
+  <div id="compose">
+    <!-- Deliberately an exact mirror of the attribute set xterm puts on its own
+         hidden textarea: autocorrect off, autocapitalize off, spellcheck false.
+         The terminal's keyboard is the reference — on the affected device it
+         provably raises no accessory strip, while this field did, and these
+         attributes were the only difference left. autocapitalize in particular is
+         reported to keep iOS's predictive bar even with the other two off.
+         autocomplete=off is ours; xterm predates it. iOS honours these only in
+         part, so this is a best effort rather than a guarantee. The cost is
+         autocapitalisation of thumb-typed text only: dictation does its own, since
+         the mic key runs its own speech-to-text. -->
+    <textarea id="compose-text" rows="1" placeholder="Dictate or type…"
+              autocapitalize="off" autocorrect="off" spellcheck="false"
+              autocomplete="off" enterkeyhint="enter"
+              aria-label="Compose text to send"></textarea>
+    <button type="button" id="compose-send" aria-label="Send"><svg><use href="#i-send"/></svg></button>
+  </div>
   <div class="keybar" id="keybar"></div>
 </div>
 
@@ -2033,6 +2165,8 @@ function closeTerminal(skipReload) {
   $("screen-list").classList.add("active");
   syncChrome();
   releaseMods();
+  // Leaving with the strip open would carry its keyboard onto the session list.
+  setCompose(false);
   // A rejected pairing code reloads into the same 401; the caller shows the
   // setup sheet itself, so skip the doomed round-trip.
   if (!skipReload) loadSessions();
@@ -3122,16 +3256,19 @@ const KEYS = [
   { label: "shift", mod: "shift", cls: "span-2" },
   // A terminal's Enter is a carriage return; \n would send a bare line feed that
   // readline and tmux both read as ctrl+J instead. No repeat — a held Enter
-  // firing a shell command over and over is never what a thumb meant. wide-glyph
-  // because a lone glyph needs the arrows' font at a word key's width share.
-  { label: "⏎",     seq: "\r",    cls: "span-2 wide-glyph", aria: "Enter" },
+  // firing a shell command over and over is never what a thumb meant. narrow,
+  // so the glyph keys — enter, backspace, arrows, mic — all share one width.
+  { label: "⏎",     seq: "\r",    narrow: true, cls: "span-2", aria: "Enter" },
   { label: "⌫",     seq: "\x7f",  narrow: true, repeat: true, cls: "span-2", aria: "Backspace" },
   { icon: "i-arrows", arrows: true, narrow: true, only: "collapsed", aria: "Show arrow keys" },
   { label: "←",     seq: "\x1b[D", narrow: true, repeat: true, cls: "k-left",  only: "expanded" },
   { label: "↓",     seq: "\x1b[B", narrow: true, repeat: true, cls: "k-down",  only: "expanded" },
   { label: "↑",     seq: "\x1b[A", narrow: true, repeat: true, cls: "k-up",    only: "expanded" },
   { label: "→",     seq: "\x1b[C", narrow: true, repeat: true, cls: "k-right", only: "expanded" },
-  { icon: "i-keyboard", kb: true, cls: "k-kb", aria: "Show or hide keyboard" },
+  // Focus is the point of this key, not a side effect — it opens the compose
+  // strip and puts the caret in it, so it shares the keyboard toggle's exemption
+  // from the focus-preserving preventDefault below.
+  { icon: "i-mic", compose: true, focusing: true, narrow: true, cls: "k-compose", aria: "Show or hide compose bar" },
   { icon: "i-close", collapse: true, narrow: true, cls: "k-close", only: "expanded", aria: "Hide arrow keys" },
 ];
 
@@ -3151,20 +3288,251 @@ function setArrows(open) {
   refit(0);
 }
 
+// Transient like arrowsOpen, and for the same reason: dictating is a per-task
+// gesture, not a preference to restore on launch.
+let composeOpen = false;
+let composeBlurTimer = null;
+
+// The single close routine — every path in and out of the strip goes through it.
+// Closing keeps whatever is typed: dismissing the keyboard is not a discard, and
+// reopening should show the half-dictated sentence again. Only Send clears.
+// `quiet` opens the strip without focusing it. Speech recognition wants the strip
+// visible but no keyboard — the whole point is to see the terminal while talking.
+function setCompose(open, quiet) {
+  // A deliberate toggle settles the question a pending blur was about to answer.
+  clearTimeout(composeBlurTimer);
+  composeBlurTimer = null;
+  if (open === composeOpen) return;
+  composeOpen = open;
+  const strip = $("compose"), ta = $("compose-text");
+  strip.classList.toggle("open", open);
+  // Focusing is what raises the keyboard with its dictation key; blurring is the
+  // only way to put that keyboard away again. Reopening can bring back text kept
+  // from last time, so the button is told again rather than assumed empty.
+  if (open) {
+    $("compose-send").classList.toggle("armed", ta.value.length > 0);
+    if (!quiet) ta.focus();
+  } else {
+    ta.blur();
+  }
+  // Closing is the last word on listening: every close path — mic key, blur, Send,
+  // leaving the terminal — inherits the stop from here rather than repeating it.
+  if (!open) stopListening();
+  // The strip is a flex sibling of #term-host, so showing it takes rows away
+  // from the terminal — xterm only learns that from a fit.
+  refit(0);
+}
+
+// Grow with the text to a few lines, then let the cap scroll. Reset to auto
+// first or the height would only ever ratchet up. Runs on every input, so it is
+// also where the Send button learns whether it has anything to send — presentation
+// only, the empty button is still there and still a no-op.
+function composeGrow() {
+  const ta = $("compose-text");
+  ta.style.height = "auto";
+  ta.style.height = ta.scrollHeight + "px";
+  $("compose-send").classList.toggle("armed", ta.value.length > 0);
+  refit(0);
+}
+
+// The whole point of the strip: the composed text reaches the terminal once, as
+// a paste, so xterm's IME handling never gets to re-send it. term.paste() also
+// applies bracketed-paste framing when the running app asked for it, which is
+// what keeps a multi-line dictation from executing line by line. No trailing
+// \r — the user reviews it in the terminal and submits with the key bar's ⏎.
+function composeSend() {
+  // Stop before reading: the recogniser is mid-utterance and whatever is already
+  // in the box is what the user meant to send.
+  stopListening();
+  const ta = $("compose-text");
+  const text = ta.value;
+  if (!text || !term) return;
+  term.paste(text);
+  ta.value = "";
+  recogText = "";
+  composeGrow();
+  // Sending is the end of the errand: the strip closes and takes the keyboard
+  // with it, so the terminal gets its rows back to show what just landed.
+  setCompose(false);
+}
+
+// The strip exists to hold a keyboard's dictation; without one it is just a box
+// covering the terminal. So whatever drops the keyboard — the iOS dismiss key, a
+// swipe down, a tap into the terminal — closes the strip too.
+//
+// Deferred a tick because blur fires before the click that caused it. Tapping the
+// compose key while the strip is open would otherwise close it here and then have
+// the key's own handler see composeOpen === false and reopen it. Anything that
+// legitimately refocuses within the same tick (or closes the strip outright)
+// cancels the pending close.
+function composeBlurred() {
+  clearTimeout(composeBlurTimer);
+  composeBlurTimer = setTimeout(() => {
+    composeBlurTimer = null;
+    if (composeOpen && document.activeElement !== $("compose-text")) setCompose(false);
+  }, 0);
+}
+
+// ============================================================
+// Speech recognition
+// ============================================================
+// The mic key talks to the browser's own recogniser when there is one, so the
+// keyboard never has to come up and the terminal stays visible while dictating.
+// Everything here is best-effort: iOS ships the API but has historically failed
+// to start it inside a standalone PWA, so every failure path lands back on the
+// keyboard's dictation key, which always works.
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recog = null;              // the live recogniser, null when not listening
+let recogText = "";            // what has been committed, minus the interim tail
+// One failure is enough: after it, the mic key goes straight to the keyboard
+// rather than prompting again every tap. Session-only, like the other modes.
+let recogBroken = false;
+
+function listening() {
+  return recog !== null;
+}
+
+// A textarea cannot style part of its own value, so the interim tail is plain
+// text appended to the committed text and replaced wholesale as results firm up.
+// The alternative — a contenteditable overlay — would rewrite the whole strip for
+// a cue the recogniser already makes obvious by correcting itself as you speak.
+function renderTranscript(interim) {
+  const ta = $("compose-text");
+  ta.value = recogText + interim;
+  composeGrow();
+}
+
+function stopListening() {
+  if (!recog) return;
+  const r = recog;
+  recog = null;              // cleared first: onend must not re-enter this
+  $("keybar").querySelector(".k-compose").classList.remove("listening");
+  try { r.stop(); } catch (e) {}
+}
+
+// Falling back means: behave exactly as the app did before speech existed —
+// open the strip and focus it, so the keyboard's own mic key is one tap away.
+function recogFallback(msg) {
+  recogBroken = true;
+  stopListening();
+  if (msg) toast(msg);
+  if (!composeOpen) setCompose(true);
+  else $("compose-text").focus();
+}
+
+// Must be called straight from the tap: iOS only grants the microphone from
+// inside a user gesture, the same constraint pasteFromClipboard() works under.
+function startListening() {
+  if (!SpeechRec || recogBroken) { recogFallback(); return; }
+
+  let r;
+  try {
+    r = new SpeechRec();
+  } catch (e) {
+    recogFallback("Dictation unavailable");
+    return;
+  }
+  r.lang = navigator.language || "en-US";
+  r.continuous = true;
+  r.interimResults = true;
+
+  // Whether anything was actually heard. An end with no result after a start is
+  // the silent failure mode: no error fires, the recogniser just stops.
+  let gotResult = false;
+
+  r.onresult = (e) => {
+    gotResult = true;
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const res = e.results[i];
+      if (res.isFinal) {
+        // Keep one space between utterances without doubling an existing one.
+        const chunk = res[0].transcript.trim();
+        if (chunk) recogText = recogText ? recogText.replace(/\s*$/, " ") + chunk : chunk;
+      } else {
+        interim += res[0].transcript;
+      }
+    }
+    renderTranscript(interim);
+  };
+
+  r.onerror = (e) => {
+    const err = e && e.error;
+    // "aborted" is our own stop() unwinding; "no-speech" just means silence.
+    if (err === "aborted" || err === "no-speech") return;
+    const denied = err === "not-allowed" || err === "service-not-allowed";
+    recogFallback(denied ? "Microphone blocked — use the keyboard mic"
+                         : "Dictation unavailable");
+  };
+
+  r.onend = () => {
+    // Ending without ever producing a result means it never really ran — the
+    // standalone-PWA failure. Ending after results is just the user stopping.
+    const wasLive = recog === r;
+    if (wasLive && !gotResult) { recogFallback("Dictation unavailable"); return; }
+    if (wasLive) stopListening();
+  };
+
+  // The strip must be visible to show the transcript, but quiet: focusing it
+  // would raise the keyboard and cover the terminal, which is what talking to it
+  // is meant to avoid.
+  if (!composeOpen) setCompose(true, true);
+  recogText = $("compose-text").value;
+
+  try {
+    r.start();
+  } catch (e) {
+    recogFallback("Dictation unavailable");
+    return;
+  }
+  recog = r;
+  $("keybar").querySelector(".k-compose").classList.add("listening");
+}
+
+// The mic key's whole job: start, stop, or — with no recogniser — the old
+// open-and-focus behaviour.
+function toggleCompose() {
+  if (listening()) { stopListening(); return; }
+  if (!SpeechRec || recogBroken) { setCompose(!composeOpen); return; }
+  if (composeOpen && document.activeElement === $("compose-text")) {
+    // Already typing: the tap means "put this away", not "start talking".
+    setCompose(false);
+    return;
+  }
+  startListening();
+}
+
+(function bindCompose() {
+  const ta = $("compose-text"), btn = $("compose-send");
+  ta.addEventListener("input", composeGrow);
+  ta.addEventListener("blur", composeBlurred);
+  // Tapping into the text to edit it hands over to the keyboard: dictating and
+  // typing into the same field at once would fight over the caret.
+  ta.addEventListener("focus", () => { if (listening()) stopListening(); });
+  // Same trick as the key bar's: the tap must not pull focus out of the textarea,
+  // so no blur fires mid-tap and composeSend() owns the close outright.
+  btn.addEventListener("pointerdown", e => e.preventDefault());
+  btn.addEventListener("mousedown", e => e.preventDefault());
+  btn.addEventListener("click", composeSend);
+})();
+
+// A backgrounded tab keeps the microphone hot otherwise.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopListening();
+});
+
 // xterm reads keystrokes through a hidden textarea; focusing it is what raises
 // the iOS keyboard and blurring it is the only way to put the keyboard away.
 function termInput() {
   return term ? term.textarea : null;
 }
+// The compose textarea raises the same keyboard, so it counts as up too. Only
+// applyViewport reads this now, as its stand-in before a full viewport height has
+// been measured; tapping the terminal is what raises the keyboard, and iOS or the
+// compose close routine is what puts it away.
 function keyboardUp() {
   const ta = termInput();
-  return !!ta && document.activeElement === ta;
-}
-function toggleKeyboard() {
-  const ta = termInput();
-  if (!ta) return;
-  if (keyboardUp()) ta.blur();
-  else ta.focus();
+  return composeOpen || (!!ta && document.activeElement === ta);
 }
 
 // One-shot modifiers: a tap arms the modifier (lit), the next key consumes it and
@@ -3218,10 +3586,10 @@ function sendKey(seq) {
     if (k.cls) b.classList.add(...k.cls.split(" "));
     if (k.only) b.classList.add(k.only + "-only");
     if (k.mod) modButtons[k.mod] = b;
-    // Every key but the keyboard toggle must leave focus exactly where it is:
+    // Every key but the focusing ones must leave focus exactly where it is:
     // stealing it would drop the soft keyboard, and handing it back would raise
     // one the user had just dismissed. pointerdown fires before focus moves.
-    if (!k.kb) b.addEventListener("pointerdown", e => e.preventDefault());
+    if (!k.focusing) b.addEventListener("pointerdown", e => e.preventDefault());
     b.addEventListener("mousedown", e => e.preventDefault());
 
     if (k.repeat) {
@@ -3262,7 +3630,7 @@ function sendKey(seq) {
     }
 
     b.addEventListener("click", () => {
-      if (k.kb) { toggleKeyboard(); return; }
+      if (k.compose) { toggleCompose(); return; }
       if (k.arrows) { setArrows(true); return; }
       if (k.collapse) { setArrows(false); return; }
       if (k.mod) { setMod(k.mod, !mods[k.mod]); return; }
@@ -3545,28 +3913,141 @@ let cancelCoast = () => {};
 // visualViewport shrinks when the iOS keyboard opens. Pin the terminal screen to
 // the visible rectangle so the key bar rides just above the keyboard and the
 // terminal refits to what's actually on screen.
+//
+// Two ways iOS raises a keyboard, and they report differently. For the terminal
+// it just overlays: innerHeight holds still and vv.height shrinks. For a visible
+// input at the page bottom it also SCROLLS the field into view, panning the
+// layout viewport up (vv.offsetTop > 0) and shrinking innerHeight to match — so
+// innerHeight - vv.height - vv.offsetTop collapses to 0 and the old formula read
+// "no keyboard" at the exact moment one was covering half the screen.
+//
+// So the full height is tracked instead of inferred: the tallest visible viewport
+// seen while nothing is focused. It is a measurement, never a stored constant,
+// and it is re-derived whenever the device geometry itself changes.
+let fullViewH = 0;
+// How much viewport a rounding artefact may swallow before it counts as a
+// keyboard. Not a device measurement — it is one CSS line-height, the smallest
+// shrink that could hide anything, read off the root's own type rather than
+// picked. Any real keyboard clears it by an order of magnitude.
+const KB_NOISE_PX = (() => {
+  const lh = parseFloat(getComputedStyle(document.documentElement).lineHeight);
+  return Number.isFinite(lh) ? Math.ceil(lh) : 24;
+})();
+// The tallest the visible viewport has been, which is what "no keyboard" looks
+// like. Focus is not the test — xterm keeps its hidden textarea focused for the
+// whole session with no keyboard up — so the only frames rejected are the ones a
+// pan has already distorted. A keyboard can only ever shrink this, so taking the
+// maximum is what makes it self-correcting rather than a stored constant.
+function noteFullHeight() {
+  const vv = window.visualViewport;
+  if (!vv || vv.offsetTop > 0) return;
+  fullViewH = Math.max(fullViewH, Math.round(vv.height));
+}
+
 function applyViewport() {
   const vv = window.visualViewport;
   const scr = $("screen-term");
   if (!vv || !scr.classList.contains("active")) return;
-  const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-  scr.style.height = vv.height + "px";
-  scr.style.top = vv.offsetTop + "px";
+  noteFullHeight();
+  // The app is a fixed full-viewport UI, so any pan is always wrong. Undoing it
+  // is what puts the key bar back on screen; the pinned root above should stop it
+  // happening at all, and this is the backstop for when it slips through.
+  if (vv.offsetTop > 0 || window.scrollY > 0 || window.scrollX > 0) {
+    window.scrollTo(0, 0);
+  }
+  // Keyboard-up is decided by the one number the pan cannot forge: how much of
+  // the full viewport is still visible. Once a full height has been measured that
+  // answer is authoritative — a field can stay focused with the keyboard already
+  // dismissed, so focus only stands in before the first measurement exists.
+  const measured = fullViewH > 0;
+  const kb = measured ? Math.round(fullViewH - vv.height) : 0;
+  // A soft keyboard is never a small event: it claims a large fraction of the
+  // screen on any device, where everything else that shortens the viewport — a
+  // one-pixel fullViewH latch, the installed app's stuck-short reading after a
+  // dismissal, a tab's URL bar — stays in the tens of pixels. A fixed floor can
+  // sit between those bands on one phone and inside one of them on another, so
+  // the floor is a fraction of the measured full height (with the line-height
+  // rounding tolerance as the lower bound while fullViewH is still small).
+  // Deciding by proportion also covers the case focus cannot: xterm keeps its
+  // textarea focused for the whole session, so a stuck-short reading with the
+  // keyboard already dismissed looks focused too — but it never looks big.
+  const shrunk = measured && kb > Math.max(KB_NOISE_PX, fullViewH * 0.2);
+  // A shrunken viewport is necessary evidence of a keyboard but not sufficient:
+  // iOS is documented to leave vv.height stuck short of the real visible area
+  // after a keyboard interaction in the installed app, and a stuck reading looks
+  // exactly like a small keyboard. Focus is what tells them apart — not as proof
+  // a keyboard IS up (one can be dismissed with the field still focused, which is
+  // why shrink still has to agree) but as proof one CANNOT be: nothing focused,
+  // nothing to type into, so the shrink is the viewport lying and the geometry
+  // belongs back with the stylesheet. That is a fact about keyboards rather than
+  // about any device.
+  const up = measured ? (shrunk && keyboardUp()) : keyboardUp();
+  // The explicit size exists solely to hold the screen above the keyboard. With
+  // no keyboard there is nothing to hold it above, and vv.height is then a
+  // liability: in the installed PWA it reports short of what is actually visible,
+  // so pinning the screen to it stops the key bar early and leaves a blank strip
+  // beneath. (In a tab the same shortfall is the URL bar — real occlusion — which
+  // is why the tab case looked right.) Handing the geometry back to the
+  // stylesheet's inset:0/100dvh is what makes the bar sit on the true bottom.
+  if (up) {
+    scr.style.height = vv.height + "px";
+    // offsetTop is what is left of the pan after the reset above; adding it keeps
+    // the screen aligned with the visible rectangle either way.
+    scr.style.top = vv.offsetTop + "px";
+  } else {
+    scr.style.height = "";
+    scr.style.top = "";
+  }
   // With the keyboard up there is no home-indicator gap to reserve.
-  scr.style.setProperty("--kb-safe", kb > 40 ? "0px" : "");
+  scr.style.setProperty("--kb-safe", up ? "0px" : "");
   refit();
 }
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", applyViewport);
   window.visualViewport.addEventListener("scroll", applyViewport);
 }
-window.addEventListener("orientationchange", () => setTimeout(() => { applyViewport(); refit(160); }, 250));
-window.addEventListener("resize", () => refit());
+// The screen is sized from the visible rectangle, so it has to be re-measured
+// after the keyboard goes away as well as when it arrives. iOS does not always
+// report the dismissal as a visualViewport resize — it can restore the viewport
+// silently — which left the bar pinned at the keyboard-up height with a gap
+// beneath it. These are the other moments the geometry is known to have settled.
+const settleViewport = () => {
+  applyViewport();
+  // One re-read after the keyboard's animation, because the event that prompted
+  // this can arrive before the viewport finishes moving. Cadence, not geometry.
+  setTimeout(applyViewport, 300);
+};
+// Focusing the compose field is the moment iOS decides to scroll it into view.
+// Catching the focus itself undoes the pan on the same turn rather than leaving
+// the bar off screen until some later viewport event.
+document.addEventListener("focusin", (e) => {
+  if (e.target === $("compose-text")) applyViewport();
+});
+// Blur is the usual precursor to the keyboard leaving.
+document.addEventListener("focusout", settleViewport);
+// Returning to a resumed app: the keyboard is normally gone by now, and nothing
+// else will say so.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) settleViewport();
+});
+// Rotating changes what "full" means, so the tracked height is thrown away and
+// measured again rather than carried across the turn.
+window.addEventListener("orientationchange", () => setTimeout(() => {
+  fullViewH = 0;
+  settleViewport();
+  refit(160);
+}, 250));
+// A window resize means the layout viewport itself changed — the screen needs
+// re-sizing, not just a refit of what is inside it.
+window.addEventListener("resize", settleViewport);
 
 // ============================================================
 // Boot
 // ============================================================
 syncChrome();
+// Take a first full-height reading before any keyboard can appear, so the very
+// first focus already has something to compare against.
+noteFullHeight();
 // pockettui.com/demo redirects here with ?demo=1, so the demo is linkable
 // without a backend.
 //
@@ -3609,6 +4090,13 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
           }
         }
       });
+    });
+    // The chain above only starts when the page is fetched again, and a standalone
+    // PWA resumed from the app switcher is restored frozen — it never re-fetches
+    // index.html, so it can run a shell that is builds out of date with no way to
+    // find out. Asking on every resume is what closes that door.
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) reg.update().catch(()=>{});
     });
   }).catch(()=>{});
 }
