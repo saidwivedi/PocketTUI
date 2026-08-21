@@ -14,3 +14,4 @@ favicon-32.png
 _redirects
 deploy_cloudflare.sh
 .token
+deploy_test.sh
