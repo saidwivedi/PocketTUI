@@ -970,16 +970,19 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "") -> Re
     decode_audio never trusts it, since ffmpeg reads the container from the
     bytes themselves.
     """
-    if not raw:
-        return JSONResponse({"error": "empty_audio"}, status_code=422)
-    if len(raw) > MAX_AUDIO_BYTES:
-        return JSONResponse({"error": "audio_too_large"}, status_code=413)
-
+    # Assets before body: an install without the voice pieces answers the same
+    # way whatever it was sent, which lets the phone probe with an empty body
+    # before it records rather than telling the user after the fact.
     binary, model = whisper_paths()
     if binary is None or model is None:
         return JSONResponse({"error": "not_setup"}, status_code=503)
     if not shutil.which("ffmpeg"):
         return JSONResponse({"error": "no_ffmpeg"}, status_code=503)
+
+    if not raw:
+        return JSONResponse({"error": "empty_audio"}, status_code=422)
+    if len(raw) > MAX_AUDIO_BYTES:
+        return JSONResponse({"error": "audio_too_large"}, status_code=413)
 
     if VOICE_DEBUG:
         try:

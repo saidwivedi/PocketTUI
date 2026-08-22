@@ -3967,6 +3967,19 @@ let recCancelled = false;
 // One hard failure is enough: after it the mic key goes straight to the phone's
 // dictation rather than asking for the microphone again on every tap.
 let recBroken = false;
+// A computer without the voice assets can only answer "not installed", and it
+// can answer that to an empty body — so the first tap of the take asks before it
+// records, and the user hears what to do instead of losing a sentence into a
+// failed upload. recVoiceChecked says the ask has happened this session (a
+// reload re-asks, which is what a fresh setup_voice.sh run needs);
+// recVoiceNotSetup is only ever set by a confirmed not_setup answer, so anything
+// ambiguous leaves it false and the recording goes ahead.
+let recVoiceChecked = false;
+let recVoiceNotSetup = false;
+// What the user is told in that case, from both the probe and a real upload that
+// comes back the same way.
+const REC_NO_VOICE_MSG =
+  "Local voice-to-text is not installed — run setup_voice.sh in PocketTUI's folder";
 // Where the transcript goes. Read off the textarea at the tap that starts the
 // take — the field is blurred for the whole recording, and a blurred textarea
 // does not report a trustworthy selection. null means there was never a caret to
@@ -4424,9 +4437,28 @@ async function uploadRecording(blob) {
     // Cancelled while we waited: the user has moved on, and writing into the box
     // now would land text on a composition they already abandoned.
     if (!recBusy) return;
-    // Everything non-200 is the same answer — 404 from an old backend, 503 from
-    // an install without the voice assets, 500 from a failed transcription. The
-    // user gets dictation, not a diagnosis.
+    // One non-200 is worth naming: the voice assets are missing, which the user
+    // can fix in a minute. The probe usually catches it first, but the two can
+    // disagree — the probe raced a config change, or answered before this
+    // session's backend was the one being asked — so clear the checked flag and
+    // let the next tap ask again rather than trusting a stale verdict. No
+    // recFallback here: this is not a broken capture path.
+    if (r.status === 503) {
+      let err = "";
+      try { const d = await r.json(); err = d && d.error; } catch (e) { err = ""; }
+      if (!recBusy) return;
+      if (err === "not_setup") {
+        recVoiceChecked = false;
+        recVoiceNotSetup = true;
+        recBusy = false;
+        recAbort = null;
+        recClearUI();
+        toast(REC_NO_VOICE_MSG);
+        return;
+      }
+    }
+    // Every other non-200 is the same answer — 404 from an old backend, 500 from
+    // a failed transcription. The user gets dictation, not a diagnosis.
     if (!r.ok) { recFallback("Voice server unavailable — using phone dictation"); return; }
     const data = await r.json();
     if (!recBusy) return;
@@ -4511,8 +4543,31 @@ function recSyncMic() {
     : "Record code via local transcription");
 }
 
+// Ask the backend whether it can transcribe at all, before a word is spoken.
+// An empty body is enough: the route checks its assets before it looks at what
+// it was sent, so a computer without them answers not_setup to nothing at all.
+//
+// Fails open in every other case. A 404 from an old backend, a timeout, a
+// network error, a body that will not parse — none of those prove voice is
+// missing, and none of them may swallow the tap that was meant to start a take.
+async function recProbeVoice() {
+  recVoiceChecked = true;
+  try {
+    const url = apiURL("api/transcribe") +
+      "?session=" + encodeURIComponent(currentSession) +
+      "&dev=" + encodeURIComponent(cfg.devname) +
+      "&v=" + encodeURIComponent(REC_BUILD);
+    const r = await fetch(url, { method: "POST", headers: authHeaders({}), body: "" });
+    if (r.status !== 503) return;
+    const data = await r.json();
+    if (data && data.error === "not_setup") recVoiceNotSetup = true;
+  } catch (e) {
+    dbg("voice probe failed:", e);
+  }
+}
+
 // The strip mic's whole job, and the only thing that starts a local recording.
-function toggleCodeMic() {
+async function toggleCodeMic() {
   if (recBusy) { cancelRecording(); return; }   // a tap during the upload is a cancel
   if (recording()) { stopRecording(); return; }
   if (!cfg.localVoice || !recAvailable()) return;  // hidden in that case; guard anyway
@@ -4533,6 +4588,12 @@ function toggleCodeMic() {
   } else {
     recCaretStart = recCaretEnd = null;
   }
+  // Nothing to record into on a computer that cannot transcribe. Not
+  // recFallback(): that latches recBroken and hides the button for good, and
+  // this verdict is meant to expire — run setup_voice.sh, reload, and the mic
+  // works. The caret above is already captured and stays good for the next tap.
+  if (!recVoiceChecked) await recProbeVoice();
+  if (recVoiceNotSetup) { toast(REC_NO_VOICE_MSG); return; }
   startRecording();
 }
 
