@@ -2,8 +2,12 @@
 # Build the local speech recognizer PocketTUI's mic key talks to.
 #
 # Everything lands in voice/ next to app.py and nothing leaves this machine:
-# whisper.cpp compiled here, one ~148 MB English model downloaded once. No sudo,
+# whisper.cpp compiled here, one ~142 MB English model downloaded once. No sudo,
 # and safe to re-run — each step skips if its output is already in place.
+#
+# Run from wherever app.py lives — a git checkout or the directory install.sh
+# unpacked the tarball into. Nothing here reads this script's own repository;
+# whisper.cpp is cloned fresh into .whisper-build.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -12,6 +16,8 @@ WORK="$HERE/.whisper-build"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
 
 command -v cmake >/dev/null || { echo "need cmake (apt install cmake)"; exit 1; }
+command -v make >/dev/null || { echo "need make (apt install make)"; exit 1; }
+command -v c++ >/dev/null || { echo "need a C++ compiler (apt install g++)"; exit 1; }
 command -v git >/dev/null || { echo "need git"; exit 1; }
 command -v ffmpeg >/dev/null || echo "warning: ffmpeg missing — voice needs it at runtime"
 
@@ -32,7 +38,7 @@ fi
 if [ ! -s "$VOICE/ggml-base.en.bin" ]; then
   # Fetched straight from HuggingFace rather than via whisper.cpp's own
   # download script, which uses curl options older curl builds reject.
-  echo "downloading ggml-base.en.bin (~148 MB)..."
+  echo "downloading ggml-base.en.bin (~142 MB)..."
   if command -v curl >/dev/null; then
     curl -fL --retry 3 -o "$VOICE/ggml-base.en.bin.part" "$MODEL_URL"
   else
