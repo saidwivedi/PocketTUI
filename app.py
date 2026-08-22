@@ -694,9 +694,9 @@ MAX_PROMPT_CHARS = 900
 
 # Live-debugging aid for the empty-transcript phone bug: logs the pipeline's
 # numbers per request and snapshots the last upload to fixed paths for offline
-# inspection. Defaults ON — this is the user's own machine while the bug is
-# being chased; flip the default off once it's found.
-VOICE_DEBUG = os.environ.get("POCKETTUI_VOICE_DEBUG", "1") == "1"
+# inspection. Opt-in diagnostic — off by default; set POCKETTUI_VOICE_DEBUG=1
+# to enable while chasing an issue.
+VOICE_DEBUG = os.environ.get("POCKETTUI_VOICE_DEBUG", "0") == "1"
 VOICE_DEBUG_ORIG_PATH = HERE / ".last_voice.orig"
 VOICE_DEBUG_WAV_PATH = HERE / ".last_voice.wav"
 
