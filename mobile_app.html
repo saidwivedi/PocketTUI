@@ -466,9 +466,32 @@ html.term-open, body.term-open {
   -webkit-backdrop-filter: saturate(1.4) blur(14px);
   border-top: 1px solid var(--hair);
   z-index: 20;
+  /* Single source for each button's own box: both the "code" chip and Send
+     read these two, so they are the same rendered box by construction rather
+     than by one button's content happening to measure out to match the
+     other's. Width clears the "code" chip's widest content (13px icon + 5px
+     gap + the "code" label + 22px of horizontal padding) with room to spare
+     across fonts. */
+  --compose-btn-w: 72px;
+  --compose-btn-h: 38px;
+  /* The actions column's resting height, derived from the button height above
+     so it can never drift out of sync: two stacked buttons plus the 8px gap
+     between them. The field's starting min-height reads this same variable. */
+  --compose-actions-h: calc(2 * var(--compose-btn-h) + 8px);
 }
 :root[data-theme="dark"] #compose { background: rgba(31, 28, 22, 0.94); }
-#compose.open { display: flex; align-items: flex-end; }
+#compose.open { display: flex; align-items: flex-start; }
+/* The "code" chip and Send, stacked into one column at the strip's right edge
+   instead of sitting beside the field — the textarea keeps the width both used
+   to split. Top-aligned with the field, which is fixed to this same height, so
+   the two always read as one row regardless of how much text the field holds. */
+#compose-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: var(--compose-actions-h);
+}
 /* A well to speak into: recessed surface, hairline rim, capsule at one line. The
    radius stays put as the field grows, so it eases into a soft rounded rect
    rather than tracking the height. */
@@ -485,8 +508,12 @@ html.term-open, body.term-open {
   border: 1px solid var(--hair);
   border-radius: 18px;
   padding: 8px 14px;
-  /* Height is set from scrollHeight as you dictate; the cap turns into scroll. */
-  max-height: 96px;
+  /* Fixed at the actions column's height rather than at one text row with
+     46px of the button stack left dangling below it — and fixed rather than
+     growing, so the strip's height never moves as you type. Longer text
+     scrolls inside the box instead; the browser's own textarea scrolling
+     keeps the caret in view as it goes. */
+  height: var(--compose-actions-h);
   resize: none;
   overflow-y: auto;
   caret-color: var(--umber);
@@ -501,11 +528,13 @@ html.term-open, body.term-open {
    as the field; the moment there is something to send it fills with umber. */
 #compose-send {
   flex: 0 0 auto;
-  /* Matches the field's single-line height exactly, so at rest the two read as
-     one row rather than a circle floating 2px shy of the capsule's top. */
-  width: 38px; height: 38px;
+  /* Height and width both come from the shared variables the "code" chip
+     below uses, so at rest the two are the same box exactly, not a circle
+     floating 2px shy of the capsule's top and a different width besides. */
+  width: var(--compose-btn-w);
+  height: var(--compose-btn-h);
   padding: 0;
-  border-radius: 50%;
+  border-radius: 19px;
   background: var(--paper-rec);
   border: 1px solid var(--hair);
   color: var(--tertiary);
@@ -524,6 +553,138 @@ html.term-open, body.term-open {
   color: var(--paper);
 }
 #compose-send:active { transform: scale(0.94); }
+
+/* The recording control. A key-bar chip rather than a Send-style circle: it
+   carries a word, and the mono label is exactly the vocabulary the row of keys
+   below already speaks. Height matches the field's single line so the three
+   controls sit on one row; the pill radius keeps it from reading as a tenth key
+   that wandered up here. */
+#compose-mic {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  width: var(--compose-btn-w);
+  height: var(--compose-btn-h);
+  padding: 0 11px;
+  border-radius: 19px;
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  color: var(--tertiary);
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background 0.14s var(--ease-out), border-color 0.14s var(--ease-out),
+              color 0.14s var(--ease-out), opacity 0.14s var(--ease-out);
+  -webkit-user-select: none; user-select: none;
+}
+#compose-mic.hide { display: none; }
+#compose-mic > span { display: inline-flex; align-items: center; gap: 5px; }
+#compose-mic .idle svg { width: 13px; height: 13px; }
+#compose-mic .stop { display: none; }
+#compose-mic .stop svg { width: 15px; height: 15px; }
+/* Recording, the button IS the stop control — the label goes and a filled square
+   takes its place, so nothing on screen still says "code" while it is listening.
+   Umber fill plus the key bar's breath: the same thing this app means everywhere
+   by a control that is on and stays on until tapped again. */
+#compose-mic.recording,
+#compose-mic.busy {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+}
+#compose-mic.recording .idle,
+#compose-mic.busy .idle { display: none; }
+#compose-mic.recording .stop,
+#compose-mic.busy .stop { display: inline-flex; }
+#compose-mic.recording { animation: mic-pulse 1.6s var(--ease-out) infinite; }
+/* Uploading keeps the fill — the take is still the app's to finish — but drops
+   the breath and dims, to say the tap now cancels rather than stops. No spinner:
+   the strip's own "Transcribing…" is where the wait is reported. */
+#compose-mic.busy { opacity: 0.5; }
+/* The fill is the signal; the breath is only decoration on top of it. */
+@media (prefers-reduced-motion: reduce) {
+  #compose-mic.recording { animation: none; }
+}
+#compose-mic:active { transform: scale(0.94); }
+
+/* Recording status, shown in place of the textarea while the mic key is capturing
+   audio. It occupies the field's slot so the strip's height never changes between
+   speaking and reviewing — the terminal keeps the same rows throughout. */
+#compose-rec {
+  display: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  /* Matches #compose-text's single-line box exactly: same font, padding, border,
+     radius, and now min-height, so the swap reads as the field changing mode,
+     not as a new bar. */
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.35;
+  color: var(--ink-2);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 18px;
+  padding: 8px 14px;
+  min-height: var(--compose-actions-h);
+  -webkit-user-select: none; user-select: none;
+}
+#compose.recording #compose-rec { display: flex; }
+/* The textarea is hidden rather than removed: it keeps whatever was already
+   composed, which the transcript is appended to when the recording lands. */
+#compose.recording #compose-text { display: none; }
+/* Umber rather than a literal red: it is the app's one accent, it clears contrast
+   in both themes, and it is already what a live mic key fills with. */
+#compose-rec .dot {
+  flex: 0 0 auto;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--umber);
+  animation: rec-pulse 1.4s var(--ease-out) infinite;
+}
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.82); }
+}
+/* The dot is decoration; the label is the signal. Reduced motion loses the
+   pulse but keeps the level: the dot's opacity is driven by the analyser, so it
+   still brightens with the voice rather than sitting inert. */
+@media (prefers-reduced-motion: reduce) {
+  #compose-rec .dot { animation: none; }
+}
+/* Live input level. A track the width of the elapsed counter, filled from the
+   left by a transform so the 10Hz repaint never touches layout. It exists to
+   answer one question at a glance — is the microphone hearing me — which no
+   amount of "Recording…" ever could. */
+#compose-rec .level {
+  flex: 0 0 auto;
+  width: 34px; height: 4px;
+  border-radius: 2px;
+  background: var(--hair);
+  overflow: hidden;
+}
+#compose-rec .level-fill {
+  display: block;
+  width: 100%; height: 100%;
+  border-radius: 2px;
+  background: var(--umber);
+  transform: scaleX(0);
+  transform-origin: left center;
+  /* Just enough smoothing that speech reads as a level rather than a flicker,
+     far too little to hide a mic that has gone dead. */
+  transition: transform 90ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  #compose-rec .level-fill { transition: none; }
+}
+/* Tabular figures so a ticking counter does not shuffle the label beside it. */
+#compose-rec .elapsed {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--tertiary);
+  font-variant-numeric: tabular-nums;
+}
 
 /* ============================================================
    KEY BAR — docked above the soft keyboard
@@ -1002,6 +1163,17 @@ html.term-open, body.term-open {
       <path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>
       <path d="M12 17.5V21M9 21h6"/>
     </symbol>
+    <!-- Rides beside the strip mic's "code" label at a size the key bar's glyphs
+         work at, so it is drawn tighter than #i-mic rather than scaled down. -->
+    <symbol id="i-mic-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="2.5" width="6" height="10.5" rx="3"/>
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>
+      <path d="M12 17.5V21"/>
+    </symbol>
+    <!-- The same button once it is recording: one square, the universal stop. -->
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/>
+    </symbol>
     <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 19.5V5"/>
       <path d="M5.5 11.5L12 5l6.5 6.5"/>
@@ -1068,7 +1240,33 @@ html.term-open, body.term-open {
               autocapitalize="off" autocorrect="off" spellcheck="false"
               autocomplete="off" enterkeyhint="enter"
               aria-label="Compose text to send"></textarea>
-    <button type="button" id="compose-send" aria-label="Send"><svg><use href="#i-send"/></svg></button>
+    <!-- Takes the textarea's place while the mic key is recording. aria-live so a
+         screen reader announces the state change the pulsing dot signals visually;
+         the ticking seconds are marked off, or every tick would be announced. -->
+    <div id="compose-rec" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <!-- Live input level, driven by the analyser's RMS. Decoration to a screen
+           reader, but the only thing on screen that says the microphone is
+           actually hearing something rather than merely being open. -->
+      <span class="level" aria-hidden="true"><span class="level-fill"></span></span>
+      <span class="label">Recording…</span>
+      <span class="elapsed" aria-hidden="true">0:00</span>
+    </div>
+    <!-- Recording lives here rather than on the key bar's mic: that key is the
+         phone's own dictation and stays that way. Labelled rather than iconic,
+         because what it captures is the distinction that matters — prose comes
+         from the keyboard's mic, code comes from this one. Both faces ship in
+         the markup and CSS swaps them, so becoming the stop control costs no
+         DOM work mid-recording. Hidden outright where the capture path is
+         unavailable, so it never offers what it cannot do. -->
+    <div id="compose-actions">
+      <button type="button" id="compose-mic" class="hide"
+              aria-label="Record code via local transcription">
+        <span class="idle"><svg aria-hidden="true"><use href="#i-mic-code"/></svg>code</span>
+        <span class="stop" aria-hidden="true"><svg><use href="#i-stop"/></svg></span>
+      </button>
+      <button type="button" id="compose-send" aria-label="Send"><svg><use href="#i-send"/></svg></button>
+    </div>
   </div>
   <div class="keybar" id="keybar"></div>
 </div>
@@ -1110,6 +1308,10 @@ html.term-open, body.term-open {
     <p><b>How does it work?</b> xterm.js relays keys over a WebSocket straight to
       your machine, authenticated by the pairing code the installer printed.
       Nothing is stored off-device.</p>
+  </div>
+  <div class="toggle-row">
+    <label for="localvoice-toggle">Local transcription</label>
+    <input id="localvoice-toggle" type="checkbox">
   </div>
   <!-- Last in the sheet because it is a diagnostic, not part of connecting. -->
   <div class="toggle-row">
@@ -1302,6 +1504,15 @@ const cfg = {
     return v;
   },
   set devname(v) { localStorage.setItem("pockettui_devname", v); },
+  // Default ON when unset: recording is the better path where the backend has
+  // the voice assets, and where it does not the first attempt falls back to
+  // phone dictation on its own — so an unset device loses nothing by trying.
+  // Stored only once it has been turned off, like the theme's "auto".
+  get localVoice() { return localStorage.getItem("pockettui_localvoice") !== "0"; },
+  set localVoice(v) {
+    if (v) localStorage.removeItem("pockettui_localvoice");
+    else localStorage.setItem("pockettui_localvoice", "0");
+  },
   get debug() { return localStorage.getItem("pockettui_debug") === "1"; },
   set debug(v) {
     if (v) localStorage.setItem("pockettui_debug", "1");
@@ -1459,6 +1670,7 @@ function openSettings(firstRun) {
   $("backend-port").value = parts.port;
   $("backend-token").value = formatTokenDisplay(cfg.token);
   $("backend-devname").value = cfg.devname;
+  $("localvoice-toggle").checked = cfg.localVoice;
   $("dbg-toggle").checked = cfg.debug;
   $("sheet-title").textContent = firstRun ? "Connect your computer" : "Settings";
   $("sheet-note").classList.toggle("hide", !firstRun);
@@ -1535,6 +1747,18 @@ $("btn-settings-save").addEventListener("click", () => {
   showSheet(false);
   // Reload against the new backend so a bad URL surfaces straight away.
   loadSessions(true);
+});
+// Applies on the tap rather than on Save, for the same reason as the debug
+// switch below: it is reached for when the current voice path is getting in the
+// way, and Cancel must not put it back. Switching it off mid-capture stops the
+// recording outright — a microphone still running after the feature was turned
+// off would be the switch not having worked.
+$("localvoice-toggle").addEventListener("change", (e) => {
+  cfg.localVoice = e.target.checked;
+  if (!e.target.checked) cancelRecording();
+  // cancelRecording() already resyncs through recClearUI(); switching it back on
+  // is the case that needs telling.
+  recSyncMic();
 });
 // Applies on the tap rather than on Save: the reason to reach for it is that
 // something is already going wrong, and Cancel must not be able to lose it.
@@ -2270,6 +2494,9 @@ function openTerminal(name) {
   ensureTerm();
   term.reset();
   $("demo-badge").classList.toggle("show", demoMode);
+  // Whether the strip's mic is offered depends on this session: the demo has no
+  // backend to transcribe against.
+  recSyncMic();
   history.pushState({ term: name }, "", location.href);
   requestAnimationFrame(() => {
     if (demoMode) {
@@ -3465,19 +3692,22 @@ function setCompose(open, quiet) {
   // Closing is the last word on listening: every close path — mic key, blur, Send,
   // leaving the terminal — inherits the stop from here rather than repeating it.
   if (!open) stopListening();
+  // Same for a recording: the strip going away is the user abandoning it, so the
+  // capture is dropped rather than left running behind a closed bar.
+  if (!open) cancelRecording();
   // The strip is a flex sibling of #term-host, so showing it takes rows away
   // from the terminal — xterm only learns that from a fit.
   refit(0);
 }
 
-// Grow with the text to a few lines, then let the cap scroll. Reset to auto
-// first or the height would only ever ratchet up. Runs on every input, so it is
-// also where the Send button learns whether it has anything to send — presentation
-// only, the empty button is still there and still a no-op.
+// The field's height is fixed in CSS now (matches the actions column), so
+// there is nothing left to grow — longer text scrolls inside the box via the
+// browser's own textarea scrolling, which also keeps the caret in view as you
+// type. Runs on every input regardless, since it is where the Send button
+// learns whether it has anything to send — presentation only, the empty
+// button is still there and still a no-op.
 function composeGrow() {
   const ta = $("compose-text");
-  ta.style.height = "auto";
-  ta.style.height = ta.scrollHeight + "px";
   $("compose-send").classList.toggle("armed", ta.value.length > 0);
   refit(0);
 }
@@ -3491,6 +3721,9 @@ function composeSend() {
   // Stop before reading: the recogniser is mid-utterance and whatever is already
   // in the box is what the user meant to send.
   stopListening();
+  // A recording, though, is discarded rather than waited for: Send means "this
+  // text, now", and the audio has not become text yet.
+  if (recording() || recBusy) cancelRecording();
   const ta = $("compose-text");
   const text = ta.value;
   if (!text || !term) return;
@@ -3512,10 +3745,18 @@ function composeSend() {
 // the key's own handler see composeOpen === false and reopen it. Anything that
 // legitimately refocuses within the same tick (or closes the strip outright)
 // cancels the pending close.
+//
+// A local recording is the exception. The indicator takes the textarea's place
+// by hiding it, and hiding a focused field blurs it — so a recording started
+// from a box the user was typing in would blur its way straight into closing the
+// strip it needs. The capture outranks the missing keyboard. recStarting covers
+// the gap the other two cannot: the microphone grant is still pending, so there
+// is no recorder yet to report itself recording.
 function composeBlurred() {
   clearTimeout(composeBlurTimer);
   composeBlurTimer = setTimeout(() => {
     composeBlurTimer = null;
+    if (recStarting || recording() || recBusy) return;
     if (composeOpen && document.activeElement !== $("compose-text")) setCompose(false);
   }, 0);
 }
@@ -3571,6 +3812,12 @@ function recogFallback(msg) {
 // inside a user gesture, the same constraint pasteFromClipboard() works under.
 function startListening() {
   if (!SpeechRec || recogBroken) { recogFallback(); return; }
+  // The two capture modes are exclusive, and this is the choke point every
+  // caller passes through. Turning to the phone's recogniser abandons the local
+  // take rather than finishing it: the words are about to be said again, and an
+  // upload landing behind them would insert a duplicate mid-sentence. The other
+  // direction keeps its transcript — see toggleCodeMic().
+  if (recording() || recBusy || recStarting) cancelRecording();
 
   let r;
   try {
@@ -3637,7 +3884,8 @@ function startListening() {
 }
 
 // The mic key's whole job: start, stop, or — with no recogniser — the old
-// open-and-focus behaviour.
+// open-and-focus behaviour. It knows nothing about local recording; that lives
+// on the strip's own mic button.
 function toggleCompose() {
   if (listening()) {
     if (!$("compose-text").value.trim()) setCompose(false);  // nothing captured: put the strip away
@@ -3653,6 +3901,641 @@ function toggleCompose() {
   startListening();
 }
 
+// ============================================================
+// Voice capture
+// ============================================================
+// Phone dictation hears prose. "pie test on tests slash test underscore camera
+// h m r dot py" is a perfectly good transcription of what was said and a useless
+// command line. So the mic key records real audio instead and hands it to the
+// backend, which transcribes it against the vocabulary actually on screen and in
+// the working directory, and answers with text fit to paste. The result lands in
+// the compose box for review — never straight into the terminal.
+//
+// Nothing here is load-bearing. A refused microphone, a browser without
+// MediaRecorder, an old backend with no /api/transcribe, a slow or broken one —
+// each falls back to the phone's own dictation, which is what this app did
+// before and always works.
+const REC_TIMEOUT = 30000;   // ms before an upload is abandoned
+// iOS gives audio/mp4 (AAC) and nothing else; Chrome and Firefox give webm/opus.
+// Preference order rather than a single guess, because MediaRecorder throws on a
+// type it cannot produce and the default is unnamed in the response headers.
+const REC_MIMES = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
+// How long a finished recording's microphone is kept open for a quick re-record
+// before the idle timer releases it. Long enough to cover "read it, clear it,
+// say it again", short enough that a forgotten strip does not hold the mic.
+const REC_IDLE_RELEASE = 45000;
+// Below this, a finished recording is silence-shaped rather than audio: even a
+// half-second of AAC or Opus carries more than this in container overhead alone.
+// Only consulted where there is no analyser to ask instead.
+const REC_MIN_BLOB = 2048;
+// How often the analyser is sampled while recording. Fast enough that the level
+// bar tracks speech rather than lagging behind it, slow enough to be free.
+const REC_LEVEL_MS = 100;
+// Below this RMS the samples are not quiet, they are zero. Real silence in a
+// room still carries preamp noise two or three orders of magnitude above it;
+// what sits under it is the muted-capture failure writing literal zeroes.
+const REC_DEAD_RMS = 1e-4;
+// How long a capture may show nothing at all before the recovery attempts run
+// (resume the audio session, then bounce the track). The muted-track failure is
+// visible immediately, so this only has to outlast the first analyser frames.
+const REC_REVIVE_MS = 700;
+// ...and how long before the user is warned on screen, so a long dictation is
+// never spoken into a dead microphone. After the recovery attempts have had
+// their turn and still produced nothing.
+const REC_WARN_MS = 1500;
+// Stamped onto the upload URL so a server log says which shell build sent the
+// audio. Declared here rather than read from SW_VERSION, which is defined at the
+// very bottom of this script.
+const REC_BUILD = "__CACHE_VERSION__";
+
+let recorder = null;         // the live MediaRecorder, null when not recording
+// The MediaStream, kept alive between recordings. iOS hands back a MUTED track
+// from a second getUserMedia() in a standalone PWA, so the stream that already
+// works is reused rather than re-requested; recReleaseTimer is what eventually
+// closes it. Non-null does NOT mean recording.
+let recStream = null;
+let recReleaseTimer = null;  // pending idle release of the retained stream
+let recChunks = null;        // dataavailable payloads, joined into one blob
+let recTimer = null;         // the elapsed-seconds ticker
+let recStarted = 0;          // performance.now() at the first chunk of audio
+let recBusy = false;         // an upload is in flight
+let recStarting = false;     // tapped, waiting on the microphone grant
+let recAbort = null;         // its AbortController
+// Set when the capture is being torn down without an upload, so the recorder's
+// own onstop knows to drop what it collected rather than send it.
+let recCancelled = false;
+// One hard failure is enough: after it the mic key goes straight to the phone's
+// dictation rather than asking for the microphone again on every tap.
+let recBroken = false;
+// Where the transcript goes. Read off the textarea at the tap that starts the
+// take — the field is blurred for the whole recording, and a blurred textarea
+// does not report a trustworthy selection. null means there was never a caret to
+// speak of, which resolves to the end of the text.
+let recCaretStart = null, recCaretEnd = null;
+
+// --- Level monitoring -----------------------------------------------------
+// The muted-track failure hands over a track that reports readyState "live" and
+// muted false while delivering nothing but zero samples, so the flags cannot be
+// trusted. What can be trusted is the audio itself: the stream is tapped through
+// an AnalyserNode and its RMS watched. That serves three jobs at once — it shows
+// the user a live level so a dead mic is visible while speaking, it refuses to
+// upload a recording that never carried a signal, and creating/resuming the
+// AudioContext inside the tap is itself the documented way to wake the iOS audio
+// session, which frequently un-mutes the capture outright.
+let recCtx = null;           // the one AudioContext, kept across recordings
+let recSource = null;        // MediaStreamAudioSourceNode for the live stream
+let recAnalyser = null;
+let recLevelBuf = null;      // reused time-domain sample buffer
+let recLevelTimer = null;    // the ~100ms RMS sampler
+let recPeak = 0;             // loudest RMS seen in the current recording
+let recRevived = false;      // the recovery attempts have already been spent
+let recWarned = false;       // the "no signal" label is already up
+// Whether the analyser really ran for this take. A browser with no Web Audio,
+// or one that refused the source node, leaves recPeak at zero for reasons that
+// have nothing to do with the microphone — so the silence gate only applies
+// when there was actually something listening.
+let recMonitored = false;
+
+function recording() {
+  return recorder !== null;
+}
+
+// Whether the capture path is worth trying at all. The demo has no backend to
+// send audio to, and a session is what the server needs to build its prompt.
+function recAvailable() {
+  return !recBroken && !demoMode && !!currentSession &&
+    typeof window.MediaRecorder === "function" &&
+    !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
+function recMime() {
+  if (typeof MediaRecorder.isTypeSupported !== "function") return "";
+  for (const m of REC_MIMES) {
+    if (MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return "";  // let the browser pick; the blob still carries its own type
+}
+
+// Wakes the audio session. Must run straight from the tap — a suspended
+// AudioContext only resumes inside a user gesture on iOS, and that resume is
+// what un-mutes a capture that would otherwise deliver zeroes. One context for
+// the life of the page: they are a limited resource and creating one per
+// recording is how a browser ends up refusing to make any more.
+function recAudioWake() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (typeof AC !== "function") return null;
+  try {
+    if (!recCtx || recCtx.state === "closed") recCtx = new AC();
+    if (recCtx.state === "suspended") recCtx.resume();
+  } catch (e) {
+    recCtx = null;
+  }
+  return recCtx;
+}
+
+// Taps the recording stream for level only: source -> analyser and nothing
+// onward, so nothing is ever played back through the speaker.
+function recMonitor(stream) {
+  recUnmonitor();
+  if (!recAudioWake()) return;
+  try {
+    recSource = recCtx.createMediaStreamSource(stream);
+    recAnalyser = recCtx.createAnalyser();
+    recAnalyser.fftSize = 2048;
+    recLevelBuf = new Float32Array(recAnalyser.fftSize);
+    recSource.connect(recAnalyser);
+  } catch (e) {
+    recUnmonitor();
+  }
+}
+
+// Drops the analyser graph. The context itself stays: it is shared, and closing
+// it would mean building a new one outside a gesture on the next take.
+function recUnmonitor() {
+  clearInterval(recLevelTimer);
+  recLevelTimer = null;
+  if (recSource) { try { recSource.disconnect(); } catch (e) {} }
+  if (recAnalyser) { try { recAnalyser.disconnect(); } catch (e) {} }
+  recSource = null;
+  recAnalyser = null;
+  recLevelBuf = null;
+}
+
+// Root-mean-square of one analyser frame, 0..1 of full scale. Float samples are
+// already normalised, so this is directly comparable to REC_DEAD_RMS.
+function recRMS() {
+  if (!recAnalyser || !recLevelBuf) return 0;
+  try {
+    recAnalyser.getFloatTimeDomainData(recLevelBuf);
+  } catch (e) {
+    return 0;
+  }
+  let sum = 0;
+  for (let i = 0; i < recLevelBuf.length; i++) sum += recLevelBuf[i] * recLevelBuf[i];
+  return Math.sqrt(sum / recLevelBuf.length);
+}
+
+// The dot's brightness and the bar's width, from an RMS that spends most of its
+// range near zero. Speech at a phone's distance sits around 0.01–0.1 RMS, so the
+// scale is logarithmic: -60dB is empty, -10dB is full.
+function recLevelFill(rms) {
+  if (!(rms > 0)) return 0;
+  const db = 20 * Math.log10(rms);
+  return Math.max(0, Math.min(1, (db + 60) / 50));
+}
+
+// Paints the live level into the indicator. Kept to two style writes so the
+// 10Hz tick costs nothing.
+function recPaintLevel(rms) {
+  const rec = $("compose-rec");
+  const fill = recLevelFill(rms);
+  const bar = rec.querySelector(".level-fill");
+  if (bar) bar.style.transform = "scaleX(" + fill.toFixed(3) + ")";
+  const dot = rec.querySelector(".dot");
+  // The dot carries the same signal for reduced-motion users, who get no
+  // pulse: dim when nothing is arriving, full umber when the mic is alive.
+  if (dot) dot.style.opacity = (0.25 + 0.75 * fill).toFixed(2);
+}
+
+// The recovery ladder, run once per recording when the first frames show
+// nothing. Both steps are cheap and neither interrupts the MediaRecorder, which
+// keeps running throughout — a revived mic just means the take opens on a
+// moment of silence, which nobody notices.
+function recRevive() {
+  if (recRevived) return;
+  recRevived = true;
+  // 1. The audio session may have gone back to sleep behind our backs.
+  try { if (recCtx && recCtx.state !== "running") recCtx.resume(); } catch (e) {}
+  // 2. Bouncing the track is what clears a stuck mute on the WebKit side.
+  const t = recStream && recStream.getAudioTracks()[0];
+  if (t) {
+    try { t.enabled = false; t.enabled = true; } catch (e) {}
+  }
+}
+
+// The ~100ms sampler that runs for the length of a recording: it drives the
+// level display, remembers the loudest frame for the silence check at stop, and
+// escalates from recovery to an on-screen warning when nothing ever arrives.
+function recLevelTick() {
+  const rms = recRMS();
+  if (rms > recPeak) recPeak = rms;
+  recPaintLevel(rms);
+  if (recPeak > REC_DEAD_RMS) return;   // alive; nothing to escalate
+  const age = performance.now() - recStarted;
+  if (age >= REC_REVIVE_MS) recRevive();
+  if (age >= REC_WARN_MS && !recWarned) {
+    recWarned = true;
+    recSetLabel("No signal — mic muted?");
+  }
+}
+
+// The one place the microphone is actually released. A track left live is a red
+// pill in the iOS status bar for the rest of the session, so every way out of the
+// app — strip closed, session left, tab hidden, page going away, idle timeout —
+// ends here. Deliberately separate from the indicator teardown below: the
+// microphone can be done while the strip is still showing "Transcribing…".
+function recRelease() {
+  clearTimeout(recReleaseTimer);
+  recReleaseTimer = null;
+  recUnmonitor();
+  // Suspended rather than closed: a closed context can only be replaced by a new
+  // one, and building that outside a tap is exactly what iOS refuses. Suspending
+  // costs nothing while idle and the next tap resumes it inside its gesture.
+  if (recCtx && recCtx.state === "running") {
+    try { recCtx.suspend(); } catch (e) {}
+  }
+  if (recStream) {
+    for (const t of recStream.getTracks()) {
+      try { t.stop(); } catch (e) {}
+    }
+    recStream = null;
+  }
+  recorder = null;
+  clearInterval(recTimer);
+  recTimer = null;
+}
+
+// What a finished recording does instead of releasing. Stopping the tracks after
+// every take is what breaks the second one: a fresh getUserMedia() in an iOS
+// standalone PWA frequently returns a live-but-MUTED track, and the recorder
+// built on it captures silence the backend's gate throws away. So the stream is
+// left open for a quick re-record and only released once the user has clearly
+// moved on. The recorder itself is always dropped — a stopped MediaRecorder is
+// never restarted, startRecording() builds a new one on the retained stream.
+function recRetire() {
+  recorder = null;
+  // The analyser tap belongs to the take that just ended; the context stays
+  // running so the re-record this retains the stream for starts hot.
+  recUnmonitor();
+  clearInterval(recTimer);
+  recTimer = null;
+  clearTimeout(recReleaseTimer);
+  recReleaseTimer = recStream ? setTimeout(recRelease, REC_IDLE_RELEASE) : null;
+}
+
+// Whether the retained stream is still worth recording on. Only "ended"
+// disqualifies it: a track that has ended cannot be revived, and one that is
+// merely flagged muted usually is not — iOS sets that flag on any track nothing
+// is currently consuming, so testing it here would throw away a working stream
+// on every second take and force the fresh getUserMedia that actually fails.
+// A retained track that really is dead is caught by the analyser instead.
+function recStreamUsable() {
+  if (!recStream) return false;
+  const t = recStream.getAudioTracks()[0];
+  return !!t && t.readyState === "live";
+}
+
+// Puts the indicator away and returns it to the state a fresh recording expects
+// to find, so the next one never opens on "Transcribing…" with a hidden dot.
+function recClearUI() {
+  $("compose").classList.remove("recording");
+  recSyncMic();
+  $("keybar").querySelector(".k-compose").classList.remove("listening");
+  recSetLabel("Recording…");
+  const rec = $("compose-rec");
+  const dot = rec.querySelector(".dot");
+  dot.style.visibility = "";
+  dot.style.opacity = "";
+  const level = rec.querySelector(".level");
+  if (level) level.style.visibility = "";
+  const fill = rec.querySelector(".level-fill");
+  if (fill) fill.style.transform = "";
+}
+
+// Abandon the capture without uploading: the strip closed, Send was tapped, the
+// tab went away. Safe to call when nothing is recording.
+function cancelRecording() {
+  if (recAbort) { recAbort.abort(); recAbort = null; }
+  recBusy = false;
+  recStarting = false;
+  recCancelled = true;
+  if (recorder) {
+    const r = recorder;
+    // Cleared before stop(): onstop must see no live recorder and take the
+    // cancelled path rather than uploading.
+    recorder = null;
+    try { r.stop(); } catch (e) {}
+  }
+  recRelease();
+  recClearUI();
+}
+
+function recSetLabel(text) {
+  $("compose-rec").querySelector(".label").textContent = text;
+}
+
+function recTick() {
+  const s = Math.floor((performance.now() - recStarted) / 1000);
+  $("compose-rec").querySelector(".elapsed").textContent =
+    Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+// Something in the capture path failed. Say so briefly, then behave exactly as
+// the app did before audio existed: open the strip so the keyboard's own mic key
+// is one tap away, or drive the browser recogniser if there is one.
+function recFallback(msg) {
+  recBroken = true;
+  cancelRecording();
+  if (msg) toast(msg);
+  startDictation();
+}
+
+// Exactly one getUserMedia per take, and nothing between it and the recorder
+// starting.
+//
+// This used to wait up to 700ms for the fresh track to report itself unmuted,
+// and on a timeout drop the grant and ask again. That was backwards. On iOS a
+// just-granted track reports muted=true until something starts consuming it —
+// the "unmute" event fires *because* recording began, not before it. So the wait
+// always timed out, on perfectly good streams, and threw away the one grant that
+// worked in favour of a second one that really was dead. It broke the first take
+// as reliably as the second.
+//
+// Muted is therefore not consulted here at all. Whether audio is flowing is a
+// question only the analyser can answer, and only once the recorder is running.
+function recAcquire() {
+  return navigator.mediaDevices.getUserMedia({ audio: true });
+}
+
+// Must be called straight from the tap: iOS grants the microphone and resumes
+// an AudioContext only from inside a user gesture, so neither call can be
+// deferred behind any await of ours. Nothing else is interposed either — grant,
+// then start, with no wait in between, because a wait before the recorder
+// starts is what broke this before.
+function startRecording() {
+  // recording() cannot answer for the gap between the tap and the grant — the
+  // recorder does not exist yet — and that gap is exactly when the blur this
+  // tap caused comes due. Set synchronously, cleared on both exits.
+  recStarting = true;
+  recCancelled = false;
+  recPeak = 0;
+  recRevived = false;
+  recWarned = false;
+  // Before anything can await: this is inside the tap, and both creating and
+  // resuming an AudioContext need that gesture. It is also the fix itself as
+  // often as it is the measurement — an iOS audio session woken here hands over
+  // a capture that actually carries samples.
+  recAudioWake();
+  // A new take cancels the pending release: the microphone is wanted again.
+  clearTimeout(recReleaseTimer);
+  recReleaseTimer = null;
+  // The retained stream is only good while its track is live. Anything else is
+  // thrown away whole — including any recorder built on it.
+  const reuse = recStreamUsable();
+  if (!reuse) recRelease();
+  const acquire = reuse ? Promise.resolve(recStream) : recAcquire();
+  acquire.then((s) => {
+    recStarting = false;
+    // The gesture may have been spent by the time permission came back — the
+    // user closed the strip, or tapped the key again. Release and stand down.
+    // A cancel that arrived mid-acquire has already run recRelease(), so the
+    // grant now in hand is untracked and has to be stopped on its own.
+    if (recCancelled) {
+      for (const t of s.getTracks()) { try { t.stop(); } catch (e) {} }
+      if (recStream === s) recStream = null;
+      return;
+    }
+    const mime = recMime();
+    // Always a new MediaRecorder, even on a reused stream: a stopped one cannot
+    // be restarted, and reusing it is how the second take ends up empty.
+    const r = mime ? new MediaRecorder(s, { mimeType: mime }) : new MediaRecorder(s);
+    recChunks = [];
+    r.ondataavailable = (e) => {
+      if (e.data && e.data.size) recChunks.push(e.data);
+    };
+    r.onerror = () => recFallback("Recording failed — using phone dictation");
+    r.onstop = () => {
+      // recorder is nulled by both stop paths; only the uploading one leaves
+      // recBusy set, so that is what tells the two apart. The microphone is kept
+      // open either way, for the re-record that usually follows.
+      recRetire();
+      if (!recBusy) { recClearUI(); return; }
+      const blob = new Blob(recChunks, { type: r.mimeType || "audio/webm" });
+      recChunks = null;
+      // The decisive check, and the only one that catches the failure as it
+      // actually presents: 62KB of well-formed AAC whose every sample is zero.
+      // Size and the muted flag both called that recording healthy. The audio
+      // is the only witness that does not, so nothing under the floor is sent.
+      if (recMonitored) {
+        if (recPeak <= REC_DEAD_RMS) { recDeadCapture(); return; }
+      } else if (blob.size < REC_MIN_BLOB) {
+        // No analyser to ask — a browser without Web Audio. All that is left is
+        // the shape of the blob: too small to hold audio means it holds none.
+        recDeadCapture();
+        return;
+      }
+      // The indicator stays up, now reading "Transcribing…", until this lands.
+      uploadRecording(blob);
+    };
+    recorder = r;
+    recStream = s;
+    r.start();
+    recStarted = performance.now();
+    // Tapped after start() so the analyser and the recorder see the same audio
+    // from the same moment. recMonitored gates the silence check at stop: with
+    // no analyser there is no evidence either way, and the old blob-size
+    // heuristics are all this take gets.
+    recMonitor(s);
+    recMonitored = !!recAnalyser;
+    if (recMonitored) recLevelTimer = setInterval(recLevelTick, REC_LEVEL_MS);
+    // The strip has to be visible to show the indicator, but quiet: focusing the
+    // textarea raises the keyboard over the terminal, which is exactly what
+    // talking to it is meant to avoid.
+    if (!composeOpen) setCompose(true, true);
+    $("compose").classList.add("recording");
+    recSyncMic();
+    $("keybar").querySelector(".k-compose").classList.add("listening");
+    recSetLabel("Recording…");
+    recTick();
+    recTimer = setInterval(recTick, 1000);
+  }).catch((e) => {
+    recStarting = false;
+    // Whatever partial state the attempt left — a retained stream we were
+    // reusing, a grant from a failed retry — goes away with it.
+    recRelease();
+    const denied = e && (e.name === "NotAllowedError" || e.name === "SecurityError");
+    recFallback(denied ? "Microphone blocked — using phone dictation"
+                       : "Recording unavailable — using phone dictation");
+  });
+}
+
+// The microphone was granted but never delivered audio — the iOS standalone-PWA
+// muted-track failure, which outlives the page and clears only on a real relaunch.
+// Nothing here is retryable — asking for the microphone again is what deepens
+// it, not what clears it — so the user is told the one thing that does.
+//
+// Called once, from onstop, on the verdict of whichever evidence that take had:
+// the analyser's peak RMS, or the blob's size when there was no analyser.
+function recDeadCapture() {
+  recBusy = false;
+  recFallback("Mic is muted by iOS — close and reopen the app");
+}
+
+// Second tap: stop the capture and let onstop hand the blob to the upload.
+function stopRecording() {
+  if (!recorder) return;
+  const r = recorder;
+  recorder = null;             // onstop must not see a live recorder
+  recBusy = true;              // ...but must know this stop is the uploading one
+  recSyncMic();
+  clearInterval(recTimer);
+  recTimer = null;
+  // One last read before the sampler stops: a very short take can finish inside
+  // a single tick, and the peak it saw is what the silence gate rules on.
+  if (recMonitored) {
+    const rms = recRMS();
+    if (rms > recPeak) recPeak = rms;
+  }
+  clearInterval(recLevelTimer);
+  recLevelTimer = null;
+  recSetLabel("Transcribing…");
+  const rec = $("compose-rec");
+  rec.querySelector(".dot").style.visibility = "hidden";
+  const bar = rec.querySelector(".level");
+  if (bar) bar.style.visibility = "hidden";
+  try {
+    r.stop();
+  } catch (e) {
+    recBusy = false;
+    recFallback("Recording failed — using phone dictation");
+  }
+}
+
+// The captured audio, as raw body with the context the server needs in the query
+// string. Raw rather than multipart so the backend needs no form parser.
+async function uploadRecording(blob) {
+  const ctl = new AbortController();
+  recAbort = ctl;
+  const timer = setTimeout(() => ctl.abort(), REC_TIMEOUT);
+  try {
+    const url = apiURL("api/transcribe") +
+      "?session=" + encodeURIComponent(currentSession) +
+      "&dev=" + encodeURIComponent(cfg.devname) +
+      // Which shell build sent this. The server ignores unknown query params;
+      // its access log is the point, so a report of bad audio can be pinned to
+      // a specific deployed page rather than guessed at.
+      "&v=" + encodeURIComponent(REC_BUILD);
+    const r = await fetch(url, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": blob.type || "application/octet-stream" }),
+      body: blob,
+      signal: ctl.signal,
+    });
+    // Cancelled while we waited: the user has moved on, and writing into the box
+    // now would land text on a composition they already abandoned.
+    if (!recBusy) return;
+    // Everything non-200 is the same answer — 404 from an old backend, 503 from
+    // an install without the voice assets, 500 from a failed transcription. The
+    // user gets dictation, not a diagnosis.
+    if (!r.ok) { recFallback("Voice server unavailable — using phone dictation"); return; }
+    const data = await r.json();
+    if (!recBusy) return;
+    const text = data && typeof data.text === "string" ? data.text.trim() : "";
+    recBusy = false;
+    recAbort = null;
+    codeMicFinish(text);
+  } catch (e) {
+    if (!recBusy) return;      // our own abort unwinding
+    recFallback("Voice server unavailable — using phone dictation");
+  } finally {
+    clearTimeout(timer);
+    if (recAbort === ctl) recAbort = null;
+  }
+}
+
+// The transcript arrives as a proposal, not a command: it goes into the box for
+// the user to read, fix and send, exactly like something thumb-typed.
+//
+// Inserted at the caret rather than appended, because the errand this button
+// serves is mid-sentence: prose comes from the keyboard's own dictation, and the
+// user stops in the middle of it to say a path or a flag. Appending would send
+// that to the end of a line it does not belong to. The caret used is the one
+// recorded at the tap — the field has been blurred and hidden behind the
+// indicator ever since, so it cannot have moved, and reading it back off a
+// blurred textarea is not reliable across engines.
+function codeMicFinish(text) {
+  recClearUI();
+  if (!text) { toast("Nothing heard"); return; }
+  const ta = $("compose-text"), v = ta.value;
+  // No captured caret means nothing was ever focused: end of text, the old
+  // behaviour, which is also right for an empty box.
+  const start = recCaretStart === null ? v.length : Math.min(recCaretStart, v.length);
+  const end = recCaretEnd === null ? v.length : Math.min(recCaretEnd, v.length);
+  recCaretStart = recCaretEnd = null;
+  // One space on whichever side is jammed against a word, none where the text
+  // already has one and none at either boundary of the box.
+  const before = v.slice(0, start), after = v.slice(end);
+  const lead = before && !/\s$/.test(before) ? " " : "";
+  const trail = after && !/^\s/.test(after) ? " " : "";
+  ta.value = before + lead + text + trail + after;
+  // The keyboard comes up now, and only now: reviewing is a typing job, and this
+  // is the point where the terminal no longer has to stay visible. The caret is
+  // left at the end of what was just inserted, so resuming prose dictation
+  // carries on from there rather than from the end of the line.
+  ta.focus();
+  const caret = start + lead.length + text.length;
+  try { ta.setSelectionRange(caret, caret); } catch (e) {}
+  composeGrow();
+}
+
+// The pre-audio behaviour, kept whole as the fallback: the browser's own
+// recogniser when it works, and otherwise just the strip open and focused so the
+// keyboard's dictation key is one tap away.
+function startDictation() {
+  if (!SpeechRec || recogBroken) {
+    if (!composeOpen) setCompose(true);
+    else $("compose-text").focus();
+    return;
+  }
+  startListening();
+}
+
+// The strip's mic reflects the capture state machine and nothing else, so every
+// path that changes it — start, stop, cancel, a failure, the Settings switch —
+// lands here rather than reaching for the classes itself. recAvailable() is the
+// same test the capture path gates on, which is why a broken mic or a demo
+// session takes the button away instead of leaving it to fail on tap.
+function recSyncMic() {
+  const btn = $("compose-mic");
+  if (!btn) return;
+  const live = recording();
+  btn.classList.toggle("hide", !cfg.localVoice || !recAvailable());
+  btn.classList.toggle("recording", live);
+  btn.classList.toggle("busy", recBusy);
+  // The visible label swaps with the state, so the spoken one has to as well —
+  // a button reading "stop" to the eye and "record" to a screen reader is worse
+  // than either alone.
+  btn.setAttribute("aria-label",
+    live ? "Stop recording and transcribe"
+    : recBusy ? "Cancel transcription"
+    : "Record code via local transcription");
+}
+
+// The strip mic's whole job, and the only thing that starts a local recording.
+function toggleCodeMic() {
+  if (recBusy) { cancelRecording(); return; }   // a tap during the upload is a cancel
+  if (recording()) { stopRecording(); return; }
+  if (!cfg.localVoice || !recAvailable()) return;  // hidden in that case; guard anyway
+  // The phone's recogniser and this one must never run at once — two captures of
+  // one sentence, arriving at different times, into the same box. Stopping it
+  // keeps what it heard: it was dictating prose, and this tap is the user
+  // breaking off mid-sentence to say a path, not discarding the sentence. The
+  // reverse direction discards instead — see startListening().
+  if (listening()) stopListening();
+  const ta = $("compose-text");
+  // The transcript lands at the caret, and this is the moment to read it: the
+  // field is about to be hidden behind the recording indicator, and a textarea
+  // that is not focused does not report its selection dependably. Nothing
+  // focused means nothing to preserve, which resolves to the end of the text.
+  if (document.activeElement === ta) {
+    recCaretStart = ta.selectionStart;
+    recCaretEnd = ta.selectionEnd;
+  } else {
+    recCaretStart = recCaretEnd = null;
+  }
+  startRecording();
+}
+
 (function bindCompose() {
   const ta = $("compose-text"), btn = $("compose-send");
   ta.addEventListener("input", composeGrow);
@@ -3665,11 +4548,31 @@ function toggleCompose() {
   btn.addEventListener("pointerdown", e => e.preventDefault());
   btn.addEventListener("mousedown", e => e.preventDefault());
   btn.addEventListener("click", composeSend);
+  // Same trick again for the mic, for the same reason. Not `disabled` while
+  // uploading: the tap has to reach it, because that tap is the cancel.
+  const mic = $("compose-mic");
+  mic.addEventListener("pointerdown", e => e.preventDefault());
+  mic.addEventListener("mousedown", e => e.preventDefault());
+  mic.addEventListener("click", toggleCodeMic);
+  recSyncMic();
 })();
 
-// A backgrounded tab keeps the microphone hot otherwise.
+// A backgrounded tab keeps the microphone hot otherwise — true of the recogniser
+// and doubly so of a MediaRecorder, which iOS marks with a status-bar pill. This
+// also covers the stream retained between recordings: leaving the app is the
+// clearest possible sign that no quick re-record is coming.
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopListening();
+  if (!document.hidden) return;
+  stopListening();
+  cancelRecording();
+});
+
+// Backgrounding a standalone PWA does not reliably fire visibilitychange on iOS,
+// and a page frozen into the back/forward cache with a live track wakes up
+// holding a microphone it cannot record from. pagehide is the one that fires.
+window.addEventListener("pagehide", () => {
+  stopListening();
+  cancelRecording();
 });
 
 // xterm reads keystrokes through a hidden textarea; focusing it is what raises
