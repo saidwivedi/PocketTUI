@@ -15,3 +15,6 @@ _redirects
 deploy_cloudflare.sh
 .token
 deploy_test.sh
+# Built by setup_voice.sh: a ~150 MB model and a compiled binary.
+voice/
+.whisper-build/
