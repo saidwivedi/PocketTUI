@@ -15,31 +15,41 @@ once; the views hide themselves from the session list by being grouped clones.
 """
 
 import argparse
+import array
 import asyncio
+import dataclasses
 import fcntl
 import hmac
 import json
+import math
 import os
 import pty
 import re
 import secrets
+import shutil
 import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import time
+import wave
 from pathlib import Path
 
 from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 import uvicorn
+
+import resolver
 
 HERE = Path(__file__).resolve().parent
 HTML_PATH = HERE / "mobile_app.html"
 VENDOR_DIR = HERE / "vendor"
 TOKEN_PATH = HERE / ".token"
+VOICE_DIR = HERE / "voice"
 
 # Cache-busting stamp, injected into the HTML/sw at serve time. Bumping on every
 # server start is what makes iOS drop the old PWA shell after a redeploy.
@@ -362,6 +372,69 @@ def list_sessions() -> list[dict]:
     return sessions
 
 
+def pane_cwd(name: str) -> str:
+    """The working directory of the session's active pane, or "".
+
+    list-panes rather than display-message, for the reason given in active_pane:
+    display-message resolves its target against the calling client's session,
+    and this server has no tty and so no session of its own.
+    """
+    rc, out = tmux(
+        "list-panes", "-t", f"={name}", "-f", "#{pane_active}",
+        "-F", "#{pane_current_path}",
+    )
+    if rc != 0 or not out.strip():
+        return ""
+    path = out.strip().splitlines()[0].strip()
+    return path if os.path.isdir(path) else ""
+
+
+def capture_pane(name: str, lines: int = 60) -> list[str]:
+    """The visible text of the session's active pane, newest last, or [].
+
+    The transcription prompt and the register detection both want to know what
+    the user is looking at. `-p` prints to stdout instead of a buffer; the
+    pane_active filter picks the same pane every other helper here reads, and
+    for the same reason list-panes is used to find it rather than
+    display-message (see active_pane).
+    """
+    rc, out = tmux("list-panes", "-t", f"={name}", "-f", "#{pane_active}",
+                   "-F", "#{pane_id}")
+    if rc != 0 or not out.strip():
+        return []
+    pane = out.strip().splitlines()[0].strip()
+    rc, out = tmux("capture-pane", "-p", "-t", pane, "-S", f"-{max(0, lines)}")
+    if rc != 0:
+        return []
+    return [line.rstrip() for line in out.splitlines()][-lines:]
+
+
+def resolve_target(session: str, dev: str) -> str:
+    """The session name whose active pane reflects what this device sees.
+
+    The device's own grouped view is the pane the user is actually looking at,
+    so it is tried first; the base session is the fallback for a device that is
+    watching without a view of its own.
+    """
+    if not session:
+        return ""
+    for candidate in (view_name(session, dev) if dev else "", session):
+        if candidate and session_exists(candidate):
+            return candidate
+    return ""
+
+
+def tmux_names() -> list[str]:
+    """Session and window names, which are vocabulary the user says out loud."""
+    names: list[str] = []
+    for args in (("list-sessions", "-F", "#{session_name}"),
+                 ("list-windows", "-a", "-F", "#{window_name}")):
+        rc, out = tmux(*args)
+        if rc == 0:
+            names.extend(line.strip() for line in out.splitlines() if line.strip())
+    return names
+
+
 def active_pane(name: str) -> tuple[str, str]:
     """(pane_current_command, pane_title) of the session's active pane.
 
@@ -591,6 +664,387 @@ def api_alias(body: dict = Body(...)) -> Response:
     if rc != 0:
         return JSONResponse({"error": "could not set alias"}, status_code=500)
     return no_store(JSONResponse({"session": name, "alias": alias}))
+
+
+# ---------------------------------------------------------------------------
+# Voice transcription
+# ---------------------------------------------------------------------------
+# The phone records audio and posts the blob here; whisper.cpp turns it into
+# text locally, and the resolver repairs the technical tokens the acoustic model
+# had no way to know. Nothing leaves the machine.
+
+# A phone holding the mic key open still has to produce a request this server
+# will look at. 20 MB of AAC is far longer than anyone dictates in one breath.
+MAX_AUDIO_BYTES = 20 * 1024 * 1024
+MAX_AUDIO_SECONDS = 90
+
+# whisper on CPU runs roughly real-time on base.en, so a 90 s cap needs well
+# under 30 s; past that something is wrong and the phone is already waiting.
+WHISPER_TIMEOUT_S = 30
+FFMPEG_TIMEOUT_S = 15
+
+# The transcript is short and the audio pass dominates, so the snap can have far
+# more room than a resolve on every keystroke ever could.
+TRANSCRIBE_BUDGET_S = 2.0
+
+# Roughly 200 tokens: whisper truncates the prompt beyond its context anyway,
+# and a longer one starts to bias the decode towards vocabulary over what was
+# actually said.
+MAX_PROMPT_CHARS = 900
+
+# Live-debugging aid for the empty-transcript phone bug: logs the pipeline's
+# numbers per request and snapshots the last upload to fixed paths for offline
+# inspection. Defaults ON — this is the user's own machine while the bug is
+# being chased; flip the default off once it's found.
+VOICE_DEBUG = os.environ.get("POCKETTUI_VOICE_DEBUG", "1") == "1"
+VOICE_DEBUG_ORIG_PATH = HERE / ".last_voice.orig"
+VOICE_DEBUG_WAV_PATH = HERE / ".last_voice.wav"
+
+
+def whisper_paths() -> tuple[Path | None, Path | None]:
+    """(binary, model) for the local whisper install, or (None, None) if absent.
+
+    Both halves are needed, so a half-finished setup_voice.sh run reads the same
+    as no install at all rather than failing later inside the subprocess. None
+    rather than an empty Path because Path("") is Path("."), which is a real
+    (and truthy) path — an easy way to answer "installed" by accident.
+    """
+    missing = (None, None)
+    env_bin = os.environ.get("POCKETTUI_WHISPER_BIN", "")
+    binary = Path(env_bin) if env_bin else VOICE_DIR / "whisper-cli"
+    if not (binary.is_file() and os.access(binary, os.X_OK)):
+        return missing
+
+    env_model = os.environ.get("POCKETTUI_WHISPER_MODEL", "")
+    if env_model:
+        model = Path(env_model)
+        return (binary, model) if model.is_file() else missing
+
+    # base.en by preference, but any ggml in the directory beats none: swapping
+    # the model is meant to be a matter of dropping a different file in.
+    models = sorted(VOICE_DIR.glob("ggml-*.bin"))
+    if not models:
+        return missing
+    preferred = [m for m in models if "base.en" in m.name]
+    return binary, (preferred or models)[0]
+
+
+def transcribe_prompt(screen: list[str], cwd: str) -> str:
+    """A whisper --prompt naming the words this user is about to say.
+
+    whisper conditions on the prompt as if it were text it had just decoded, so
+    a natural sentence followed by the vocabulary biases it towards `pytest`
+    over "pie test" without teaching it a format it then tries to imitate.
+    """
+    vocab: list[str] = []
+    seen: set[str] = set()
+
+    def take(words) -> None:
+        for word in words:
+            word = str(word).strip()
+            # Single letters and pure numbers cost prompt budget and bias
+            # nothing; the point is names the model would otherwise miss.
+            if len(word) < 2 or word.lower() in seen or not any(c.isalpha() for c in word):
+                continue
+            seen.add(word.lower())
+            vocab.append(word)
+
+    # Nearest context first, so the truncation below drops the least useful.
+    take(resolver.screen_tokens(screen))
+    if cwd:
+        names, branches = resolver.cwd_vocabulary(cwd)
+        take(names)
+        take(branches)
+    take(tmux_names())
+
+    lead = "Terminal session. Commands and files: "
+    room = MAX_PROMPT_CHARS - len(lead)
+    kept: list[str] = []
+    used = 0
+    for word in vocab:
+        if used + len(word) + 2 > room:
+            break
+        kept.append(word)
+        used += len(word) + 2
+    if not kept:
+        return ""
+    return lead + ", ".join(kept) + "."
+
+
+# Below this fraction of full scale, no 20 ms frame in the clip holds anything
+# whisper should be asked about. Real speech in the benchmark peaks at frame RMS
+# around 0.3 of full scale, so this sits ~30x under the quietest thing that
+# matters — the gate is meant to catch an accidental tap, never a soft talker.
+SILENCE_RMS = 0.01
+MIN_AUDIO_SECONDS = 0.5
+
+
+@dataclasses.dataclass
+class SilenceCheck:
+    """The gate's verdict plus the metrics it was computed from.
+
+    Truthy/falsy exactly like the plain bool this replaces (`__bool__` mirrors
+    `verdict`), so every existing `if is_silent(wav):` / `assert is_silent(...)`
+    call site keeps working unchanged; callers that want the numbers (logging)
+    read the fields instead of recomputing them.
+    """
+
+    verdict: bool
+    duration_s: float = 0.0
+    peak_rms: float = 0.0        # fraction of full scale, whole-clip peak sample
+    max_frame_rms: float = 0.0   # fraction of full scale, peak 20ms-frame RMS
+
+    def __bool__(self) -> bool:
+        return self.verdict
+
+
+def is_silent(wav: Path) -> SilenceCheck:
+    """Whether the clip holds no speech worth spending a transcription on.
+
+    whisper hallucinates confidently on silence — it will answer a pocket tap
+    with a sentence nobody said — so the cheap check happens here rather than
+    letting the model invent something the user then has to delete.
+
+    Anything unreadable answers False: a clip this cannot parse is whisper's
+    problem to have, not a reason to silently drop what the user said.
+    """
+    try:
+        with wave.open(str(wav), "rb") as clip:
+            if clip.getsampwidth() != 2:  # decode_audio always writes s16
+                return SilenceCheck(False)
+            rate = clip.getframerate() or 16000
+            frames = clip.getnframes()
+            duration_s = frames / rate
+            if frames < rate * MIN_AUDIO_SECONDS:
+                return SilenceCheck(True, duration_s=duration_s)
+            samples = array.array("h", clip.readframes(frames))
+    except (OSError, wave.Error, ValueError):
+        return SilenceCheck(False)
+    if sys.byteorder == "big":
+        samples.byteswap()  # wave data is little-endian
+    if not samples:
+        return SilenceCheck(True, duration_s=duration_s)
+
+    peak_rms = max(abs(s) for s in samples) / 32768
+
+    # Peak frame RMS, not overall: a short word inside a long quiet recording
+    # has to keep the clip, and averaging would bury it.
+    step = max(1, int(rate * 0.02))
+    limit = SILENCE_RMS * 32768
+    max_frame_rms = 0.0
+    for start in range(0, len(samples) - step + 1, step):
+        window = samples[start:start + step]
+        rms = math.sqrt(sum(s * s for s in window) / len(window))
+        max_frame_rms = max(max_frame_rms, rms)
+        if rms >= limit:
+            return SilenceCheck(False, duration_s=duration_s, peak_rms=peak_rms,
+                                max_frame_rms=max_frame_rms / 32768)
+    return SilenceCheck(True, duration_s=duration_s, peak_rms=peak_rms,
+                        max_frame_rms=max_frame_rms / 32768)
+
+
+def run_whisper(binary: Path, model: Path, wav: Path, prompt: str) -> str:
+    """The transcript of `wav`, or "" if whisper produced nothing usable.
+
+    LD_LIBRARY_PATH points at the install directory because the binary ships
+    with its own ggml shared objects: the RUNPATH baked in at build time names
+    wherever it was compiled, which is not where it ends up.
+    """
+    argv = [
+        str(binary), "-m", str(model), "-f", str(wav),
+        "-t", str(min(8, os.cpu_count() or 4)),
+        "-nt",  # no timestamps — the compose bar wants a sentence
+        "-np",  # no progress prints, so stdout is only the transcript
+    ]
+    if prompt:
+        argv += ["--prompt", prompt]
+
+    env = dict(os.environ)
+    lib = str(binary.parent)
+    env["LD_LIBRARY_PATH"] = (
+        lib + os.pathsep + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else lib
+    )
+    proc = subprocess.run(argv, capture_output=True, text=True,
+                          timeout=WHISPER_TIMEOUT_S, env=env)
+    if proc.returncode != 0:
+        return ""
+    # whisper marks non-speech as bracketed events ([BLANK_AUDIO], [MUSIC]);
+    # they are not words the user said, so they must not reach the compose bar.
+    text = re.sub(r"[\[(](BLANK_AUDIO|INAUDIBLE|MUSIC|SOUND|NOISE)[^\])]*[\])]",
+                  " ", proc.stdout, flags=re.IGNORECASE)
+    return " ".join(text.split())
+
+
+# iOS MediaRecorder writes fragmented mp4 (audio/mp4; codecs=mp4a.40.2) whose
+# per-fragment timestamps restart at zero; ffmpeg's mp4 demuxer then decodes
+# only the first fragment instead of the whole recording. Below this size an
+# ADTS extraction is assumed to have failed rather than produced a real clip,
+# so the direct-decode fallback runs instead of handing whisper a fragment.
+MIN_EXTRACTED_AAC_BYTES = 256
+
+
+def _looks_like_aac_in_mp4(content_type: str) -> bool:
+    ct = content_type.lower()
+    return "mp4" in ct or "aac" in ct
+
+
+def _extract_aac(src: Path, aac: Path) -> bool:
+    """Pull the raw AAC stream out of a (possibly fragmented) mp4 container.
+
+    `-c copy -f adts` bypasses the mp4 demuxer's timestamp bookkeeping
+    entirely, which is what the fragmented-recording bug lives in. ffmpeg
+    prints many harmless "non monotonically increasing dts" warnings doing
+    this — expected noise, not a sign of failure; only the exit code and the
+    output size say whether it worked.
+    """
+    proc = subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+         "-y", "-i", str(src), "-c", "copy", "-f", "adts", str(aac)],
+        capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_S)
+    return (proc.returncode == 0 and aac.exists()
+            and aac.stat().st_size >= MIN_EXTRACTED_AAC_BYTES)
+
+
+def _decode_to_wav(src: Path, wav: Path) -> bool:
+    proc = subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+         "-t", str(MAX_AUDIO_SECONDS), "-i", str(src),
+         "-ar", "16000", "-ac", "1", "-f", "wav", "-y", str(wav)],
+        capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_S)
+    return proc.returncode == 0 and wav.exists() and wav.stat().st_size > 0
+
+
+def decode_audio(raw: bytes, wav: Path, content_type: str = "") -> str:
+    """Turn whatever the phone recorded into the 16 kHz mono WAV whisper wants.
+
+    Returns "" on success or an error key. For AAC-in-mp4 uploads (iOS
+    MediaRecorder), the container is often fragmented in a way that makes
+    ffmpeg's mp4 demuxer decode only the first fragment; extracting the raw
+    ADTS stream first (`-c copy -f adts`) bypasses that broken container
+    bookkeeping, then the ADTS is decoded to WAV as usual. Any other input
+    (webm/opus, wav, or a failed/undersized extraction) falls back to the
+    existing direct decode, so the client's Content-Type is a hint, never a
+    trust boundary — ffmpeg still reads the actual container from the bytes.
+    """
+    src = wav.with_suffix(".in")
+    src.write_bytes(raw)
+
+    if _looks_like_aac_in_mp4(content_type):
+        aac = wav.with_suffix(".aac")
+        if _extract_aac(src, aac) and _decode_to_wav(aac, wav):
+            return ""
+
+    if _decode_to_wav(src, wav):
+        return ""
+    return "undecodable_audio"
+
+
+@app.post("/api/transcribe")
+async def api_transcribe(request: Request) -> Response:
+    """Transcribe recorded audio into text the terminal would accept.
+
+    The body is the raw recording rather than a multipart form: the phone has
+    exactly one file to send, and reading it directly keeps python-multipart out
+    of the dependency list. Every failure answers a shape the client can fall
+    back on — it drops to the phone's own dictation rather than losing what the
+    user just said.
+    """
+    raw = await request.body()
+    session = str(request.query_params.get("session", ""))
+    dev = str(request.query_params.get("dev", ""))
+    content_type = request.headers.get("content-type", "")
+    # Reading the body needs the event loop, but ffmpeg and whisper must not
+    # hold it for the seconds they take — every other session on this server
+    # would stall behind them.
+    return await run_in_threadpool(
+        transcribe, raw, session, dev if DEV_RE.match(dev) else "",
+        content_type=content_type)
+
+
+def transcribe(raw: bytes, session: str, dev: str, content_type: str = "") -> Response:
+    """The transcription pipeline, off the event loop.
+
+    Split from the route so the subprocess work runs in the threadpool the way
+    every other handler here does, and so the tests can drive it without HTTP.
+    `content_type` is only for the debug log line below (see VOICE_DEBUG) —
+    decode_audio never trusts it, since ffmpeg reads the container from the
+    bytes themselves.
+    """
+    if not raw:
+        return JSONResponse({"error": "empty_audio"}, status_code=422)
+    if len(raw) > MAX_AUDIO_BYTES:
+        return JSONResponse({"error": "audio_too_large"}, status_code=413)
+
+    binary, model = whisper_paths()
+    if binary is None or model is None:
+        return JSONResponse({"error": "not_setup"}, status_code=503)
+    if not shutil.which("ffmpeg"):
+        return JSONResponse({"error": "no_ffmpeg"}, status_code=503)
+
+    if VOICE_DEBUG:
+        try:
+            VOICE_DEBUG_ORIG_PATH.write_bytes(raw)
+        except OSError:
+            pass
+
+    started = time.monotonic()
+    try:
+        with tempfile.TemporaryDirectory(prefix="pockettui-voice-") as tmp:
+            wav = Path(tmp) / "audio.wav"
+            error = decode_audio(raw, wav, content_type)
+            if error:
+                log(f"transcribe content-type={content_type!r} bytes={len(raw)} "
+                    f"decode_error={error}")
+                return JSONResponse({"error": error}, status_code=422)
+
+            if VOICE_DEBUG:
+                try:
+                    shutil.copyfile(wav, VOICE_DEBUG_WAV_PATH)
+                except OSError:
+                    pass
+
+            # An accidental tap costs nothing here, rather than a second of CPU
+            # and a hallucinated sentence in the user's compose bar.
+            check = is_silent(wav)
+            if check:
+                # Tests may stub is_silent down to a plain bool; only a real
+                # SilenceCheck carries metrics to log.
+                duration_s = getattr(check, "duration_s", 0.0)
+                peak_rms = getattr(check, "peak_rms", 0.0)
+                max_frame_rms = getattr(check, "max_frame_rms", 0.0)
+                log(f"transcribe content-type={content_type!r} bytes={len(raw)} "
+                    f"duration={duration_s:.2f}s peak={peak_rms:.4f} "
+                    f"max_frame_rms={max_frame_rms:.4f} silent=yes ms=0 raw=''")
+                return no_store(JSONResponse({"text": "", "raw": "", "ms": 0}))
+
+            # Gathered before the transcript so the prompt can steer the decode,
+            # and reused after it for the register and the vocabulary index.
+            target = resolve_target(session, dev)
+            screen = capture_pane(target) if target else []
+            cwd = pane_cwd(target) if target else ""
+
+            whisper_started = time.monotonic()
+            text = run_whisper(binary, model, wav, transcribe_prompt(screen, cwd))
+            whisper_ms = int((time.monotonic() - whisper_started) * 1000)
+            ms = int((time.monotonic() - started) * 1000)
+
+        log(f"transcribe content-type={content_type!r} bytes={len(raw)} "
+            f"duration={check.duration_s:.2f}s peak={check.peak_rms:.4f} "
+            f"max_frame_rms={check.max_frame_rms:.4f} silent=no "
+            f"whisper_ms={whisper_ms} ms={ms} raw={text[:80]!r}")
+
+        if not text:
+            return no_store(JSONResponse({"text": "", "raw": "", "ms": ms}))
+
+        result = resolver.resolve(text, screen=screen, cwd=cwd,
+                                  tmux_names=tmux_names(),
+                                  budget=TRANSCRIBE_BUDGET_S, asr=True)
+        return no_store(JSONResponse(
+            {"text": result["text"], "raw": text, "ms": ms}))
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "transcribe_timeout"}, status_code=500)
+    except Exception:  # noqa: BLE001 — the phone gets a shape, never a traceback
+        return JSONResponse({"error": "transcribe_failed"}, status_code=500)
 
 
 @app.post("/api/session")
