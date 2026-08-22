@@ -372,8 +372,9 @@ if [[ "$LOCAL_CHECKOUT" == "1" ]]; then
     # Only the files the backend actually runs, mirroring what the tarball ships.
     # Absent ones are skipped rather than fatal: a checkout is allowed to be
     # missing the built icons, and app.py + mobile_app.html were already checked.
-    for f in app.py requirements.txt mobile_app.html sw.js vendor \
-             icon-192.png icon-512.png pockettui.service install.sh run.sh; do
+    for f in app.py resolver.py requirements.txt mobile_app.html sw.js vendor \
+             icon-192.png icon-512.png pockettui.service install.sh run.sh \
+             setup_voice.sh; do
         [[ -e "$SRC_DIR/$f" ]] || continue
         # Installing from inside the install dir would be cp-onto-itself.
         [[ "$SRC_DIR/$f" -ef "$INSTALL_DIR/$f" ]] && continue
@@ -988,6 +989,119 @@ if command -v tmux >/dev/null 2>&1; then
             vsay "  Skipped — $TMUX_CONF was not touched. To do it yourself, add:"
             vsay "      $TMUX_LINE"
             note "skipped tmux.conf line (declined)"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Voice-to-text
+# ---------------------------------------------------------------------------
+# Optional in the same sense as the two steps above: the install is complete and
+# the backend is running without it. app.py answers the phone's code button with
+# a 503 "not_setup" while voice/ is absent, so nothing here can break a working
+# install — which is also why every failure below is a warning plus the run-later
+# hint, never a die. The work itself is setup_voice.sh, which ships next to
+# app.py and is idempotent, so the hint is always a valid thing to run.
+VOICE_SCRIPT="$INSTALL_DIR/setup_voice.sh"
+VOICE_HINT="cd $INSTALL_DIR && ./setup_voice.sh"
+
+# Both halves are needed for the mic to work, and app.py reads a half-finished
+# build the same way it reads no build at all — so "already set up" has to mean
+# both, or a re-run would decline to finish an interrupted one.
+voice_installed() {
+    [[ -x "$INSTALL_DIR/voice/whisper-cli" ]] && [[ -s "$INSTALL_DIR/voice/ggml-base.en.bin" ]]
+}
+
+# What setup_voice.sh cannot provide for itself. git is in there because it
+# clones whisper.cpp; ffmpeg is not, because it is a runtime dependency of the
+# transcription, not of the build — a missing one is a warning below, not a
+# reason to skip the build. Two spellings come out of one pass: a comma list to
+# read, and the package names to hand pkg_install_cmd. c++ is the compiler this
+# needs but nobody's package is called that, so it is quoted as its distro name.
+VOICE_MISSING=""
+VOICE_MISSING_PKGS=""
+voice_check_tools() {
+    local tool pkg
+    VOICE_MISSING=""
+    VOICE_MISSING_PKGS=""
+    for tool in cmake make c++ git; do
+        command -v "$tool" >/dev/null 2>&1 && continue
+        case "$tool:$PKG" in
+            c++:apt-get)          pkg="g++" ;;
+            c++:dnf|c++:yum)      pkg="gcc-c++" ;;
+            c++:zypper)           pkg="gcc-c++" ;;
+            c++:pacman)           pkg="gcc" ;;
+            c++:apk)              pkg="g++" ;;
+            c++:*)                pkg="a C++ compiler" ;;
+            *)                    pkg="$tool" ;;
+        esac
+        VOICE_MISSING="${VOICE_MISSING:+$VOICE_MISSING, }$tool"
+        VOICE_MISSING_PKGS="${VOICE_MISSING_PKGS:+$VOICE_MISSING_PKGS }$pkg"
+    done
+    [[ -n "$VOICE_MISSING" ]]
+}
+
+if [[ -f "$VOICE_SCRIPT" ]]; then
+    if voice_installed; then
+        step_quiet "Voice-to-text already set up"
+        vsay "  $INSTALL_DIR/voice already has whisper-cli and the model — nothing to do."
+    else
+        step_quiet "Optional: local voice-to-text for code dictation"
+        vsay "  Builds whisper.cpp here and downloads one ~142 MB English model."
+        vsay "  Everything stays on this machine; it needs no root."
+        if [[ "$INTERACTIVE" != "1" ]]; then
+            # Nobody to ask, and this is a multi-minute build — described rather
+            # than done, like the two optional steps above it. Printed in both
+            # modes: unlike those, this one is not written up in the notes file.
+            say "  ${C_DIM}Voice-to-text (the phone's code button) is not set up. To add it:"
+            say "      $VOICE_HINT$C_RESET"
+            note "skipped voice setup (non-interactive)"
+        elif confirm "  Set up local voice-to-text for code dictation? Builds whisper.cpp and downloads a ~142 MB model (needs cmake, make, a C++ compiler, ~1 GB disk during build)."; then
+            if voice_check_tools; then
+                # A compiler and cmake are not installable in user space the way
+                # micromamba and uv are, so this is the one place the package
+                # manager is quoted back rather than worked around.
+                say "  ${C_WARN}Not building: $VOICE_MISSING missing.$C_RESET Install with:"
+                say "      $(pkg_install_cmd "$VOICE_MISSING_PKGS")"
+                say "  Then set voice up with:"
+                say "      $VOICE_HINT"
+                say ""
+                note "skipped voice setup ($VOICE_MISSING missing)"
+            else
+                # Only needed once someone actually dictates, so it is said and
+                # then the build goes ahead regardless.
+                if ! command -v ffmpeg >/dev/null 2>&1; then
+                    say "  ${C_WARN}NOTE${C_RESET} ffmpeg is not installed — transcription needs it at"
+                    say "  runtime. Install it before using the mic:  $(pkg_install_cmd ffmpeg)"
+                fi
+                say "  Building whisper.cpp — this takes a few minutes."
+                say ""
+                # Its output goes straight to the terminal: a build this long
+                # with nothing on screen reads as a hang. `set -e` would take
+                # the whole install down with it, hence the explicit test.
+                if bash "$VOICE_SCRIPT"; then
+                    say ""
+                    say "  Voice is ready — the phone app's code button will transcribe now."
+                    note "set up voice-to-text in $INSTALL_DIR/voice"
+                    # A service started before voice/ existed has already decided
+                    # it is absent, so it has to look again.
+                    if [[ "$SERVICE_INSTALLED" == "1" ]] || [[ "$BACKGROUND_STARTED" == "1" ]]; then
+                        say "  ${C_DIM}Restart PocketTUI to pick it up.$C_RESET"
+                    fi
+                    say ""
+                else
+                    say ""
+                    say "  ${C_WARN}Voice setup did not finish — the rest of the install is fine"
+                    say "  and PocketTUI works without it.$C_RESET Try it again with:"
+                    say "      $VOICE_HINT"
+                    say ""
+                    note "voice setup failed (install unaffected)"
+                fi
+            fi
+        else
+            vsay "  Skipped — nothing was built. To do it later:"
+            vsay "      $VOICE_HINT"
+            note "skipped voice setup (declined)"
         fi
     fi
 fi
