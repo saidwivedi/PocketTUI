@@ -18,3 +18,5 @@ deploy_test.sh
 # Built by setup_voice.sh: a ~150 MB model and a compiled binary.
 voice/
 .whisper-build/
+# Opt-in voice debug captures (see resolver.py).
+.last_voice.*
