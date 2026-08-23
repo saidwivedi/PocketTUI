@@ -1074,20 +1074,36 @@ html.term-open, body.term-open {
   border-color: var(--umber);
   color: var(--paper);
 }
-/* On first run the demo is filled and Save outlined — most first-time visitors
-   are here to look before they connect. Past setup the emphasis flips back:
-   Save is the primary action and the demo is just still reachable. */
+/* On first run the demo reads as filled and Save outlined — most first-time
+   visitors are here to look before they connect. Past setup the emphasis flips
+   back: Save is the primary action and the demo is just still reachable.
+   Pinned to the sheet's own top-right corner rather than the actions row, so
+   it reads as an escape hatch from the whole screen, not one more button to
+   choose among Save/Cancel/Forget. The sheet is a fixed bottom panel that
+   never touches the safe-area strip, so no inset offset is needed here. */
 #btn-sheet-demo {
   display: none;
-  order: 3;             /* always rightmost, pushed away from Save */
+  position: absolute;
+  top: 20px; right: 22px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 10px 14px;
+  min-height: 40px;
+  border-radius: 12px;
+  cursor: pointer;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
   border-color: var(--umber);
   color: var(--umber);
   white-space: nowrap;
+  transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out);
 }
 #btn-sheet-demo.show { display: inline-block; }
-/* Save and Cancel stay grouped at the left; the demo sits alone on the right. */
-#sheet-settings .actions #btn-settings-cancel { order: 1; margin-right: 0; }
-#sheet-settings .actions #btn-settings-save { order: 2; margin-right: auto; }
+#btn-sheet-demo:active { transform: scale(0.96); }
+/* Room for the pinned demo button so the longer first-run title never runs
+   under it. */
+#sheet-title { padding-right: 84px; }
 #sheet-settings.setup #btn-sheet-demo {
   background: var(--umber);
   color: var(--paper);
@@ -1359,6 +1375,7 @@ html.term-open, body.term-open {
      ============================================================ -->
 <div class="sheet-scrim" id="sheet-scrim"></div>
 <div class="sheet" id="sheet-settings">
+  <button type="button" id="btn-sheet-demo">Try demo</button>
   <h2 id="sheet-title">Settings</h2>
   <p class="sheet-note" id="sheet-note">Your computer's terminal, on your phone.</p>
   <div class="sheet-install" id="sheet-install">
@@ -1384,7 +1401,6 @@ html.term-open, body.term-open {
     <button type="button" id="btn-settings-forget">Forget</button>
     <button type="button" id="btn-settings-cancel">Cancel</button>
     <button type="button" id="btn-settings-save">Save</button>
-    <button type="button" id="btn-sheet-demo">Try demo</button>
   </div>
   <div class="sheet-faq" id="sheet-faq">
     <p><b>What is this?</b> Your machine's tmux sessions, from any device.</p>
