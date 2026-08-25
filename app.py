@@ -935,13 +935,131 @@ def parakeet_recognizer(model_dir: Path):
     return recognizer
 
 
+# How many hotwords one request may carry. Measured, not guessed: 500 words
+# cost nothing over none in decode time (the context graph is built once per
+# stream and walked alongside the beam), so the cap is set by how much
+# vocabulary is worth having rather than by what the decoder can afford.
+MAX_HOTWORDS = 500
+
+# The boost applied to every hotword, and the ceiling no configuration may
+# cross. Above roughly 1.5 the context graph outweighs the acoustic score and
+# the decoder collapses into repeating hotwords back at the user — a failure
+# that produces confident nonsense rather than an error, so the ceiling is
+# structural: HOTWORD_SCORE_MAX clamps whatever is configured, which puts the
+# cliff out of reach of a typo in the environment rather than merely
+# undocumented.
+HOTWORD_SCORE_MAX = 1.5
+# 0.5 is the top of the band that leaves the 42-clip benchmark where it was
+# (23/42 strict, 25/42 blind at every score from 0.15 to 0.5; 0.6 and above
+# lose a clip). Neutral is the honest result and the expected one: the
+# benchmark is dictated by someone whose vocabulary the model already handles,
+# so what these words are for — a name only this user says — is the thing it
+# cannot measure. The default is therefore chosen as the most bias available
+# for free: the highest score that costs nothing on the clips that can be
+# checked, with the first observed regression a clear step above it.
+HOTWORD_SCORE_DEFAULT = 0.5
+
+
+def hotword_score() -> float:
+    """The per-hotword boost this request will use, clamped below the cliff.
+
+    POCKETTUI_HOTWORD_SCORE is for tuning against a recording of one's own
+    voice; anything unparseable reads as "unset" rather than as an error,
+    because a malformed number in the environment must not cost a user their
+    dictation.
+    """
+    raw = os.environ.get("POCKETTUI_HOTWORD_SCORE", "").strip()
+    try:
+        score = float(raw) if raw else HOTWORD_SCORE_DEFAULT
+    except ValueError:
+        score = HOTWORD_SCORE_DEFAULT
+    return max(0.0, min(HOTWORD_SCORE_MAX, score))
+
+
+def _hotword_pieces(word: str) -> list[str]:
+    """`word` split into the pieces sherpa-onnx can actually bias towards.
+
+    Two filters, both of them things the encoder does rather than opinions
+    about what makes a good hotword:
+
+    "/" is a separator, not a character. sherpa-onnx rewrites every "/" in the
+    hotwords string to a newline before parsing, so a path handed over whole
+    does not become one hotword — it becomes several, silently. Splitting here
+    makes that explicit and keeps the count honest: a path contributes its
+    segments, and the caller's budget is spent on segments it can see.
+
+    Everything else has to survive the bpe encoder, whose vocabulary is the
+    ASCII the model was trained on. A piece carrying anything else encodes to
+    an out-of-vocabulary token, which sherpa-onnx logs and drops — so it is
+    dropped here instead, where it costs a budget slot rather than a log line.
+    """
+    pieces = []
+    for piece in word.split("/"):
+        piece = piece.strip().strip(".,;:'\"()[]{}")
+        # Two characters is the floor a bpe piece is worth boosting at: below
+        # it the hotword matches inside half the words in the language and
+        # biases towards noise.
+        if len(piece) < 2 or len(piece) > 40:
+            continue
+        if not piece.isascii() or not any(c.isalpha() for c in piece):
+            continue
+        # Whitespace would make the line a multi-word phrase rather than the
+        # single word it is meant to be, and ":" leads sherpa's per-line score
+        # syntax. Neither can survive in a piece that reached here by splitting
+        # a shell word, so this is a guard rather than a filter.
+        if any(c.isspace() or c == ":" for c in piece):
+            continue
+        pieces.append(piece)
+    return pieces
+
+
+def parakeet_hotwords(history: list[str] | None = None,
+                      learned: list[str] | None = None) -> str:
+    """The vocabulary of this request as the hotwords string sherpa-onnx reads.
+
+    One phrase per line, each carrying its own ":score" — the per-stream form,
+    which is what lets the boost be configuration rather than something baked
+    into the recognizer at build time. The score is written on every line or
+    none: sherpa-onnx fills a missing score from the recognizer's default only
+    for the *other* list it is merging with, so a partially-scored list gets a
+    boost nobody chose.
+
+    Learned words come first because they are the strongest evidence this
+    server has — the user corrected this exact word by hand — and because the
+    cap is a real one at this vocabulary's size. History and ssh hosts follow
+    in the order they arrive, which history_vocabulary() has already sorted by
+    how often and how recently the user typed them.
+
+    Empty in, empty out: a machine with no history and nothing learned gets no
+    hotwords argument at all rather than an empty one.
+    """
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for source in (learned or [], history or []):
+        for word in source:
+            for piece in _hotword_pieces(word):
+                key = piece.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                ordered.append(piece)
+                if len(ordered) >= MAX_HOTWORDS:
+                    return _hotwords_text(ordered)
+    return _hotwords_text(ordered)
+
+
+def _hotwords_text(words: list[str]) -> str:
+    score = hotword_score()
+    return "\n".join(f"{word} :{score}" for word in words)
+
+
 def run_parakeet(model_dir: Path, wav: Path, hotwords: str | None = None) -> str:
     """The transcript of `wav`, or "" if Parakeet produced nothing usable.
 
-    `hotwords` is the seam for per-request vocabulary biasing — the words the
-    prompt does for whisper. It is unused today (callers pass None) and is here
-    so that adding it later touches this line and not the pipeline around it;
-    the recognizer is already built with the bpe vocabulary that consumes it.
+    `hotwords` is per-request vocabulary biasing — the channel that does for
+    Parakeet what --prompt does for whisper. See parakeet_hotwords() for the
+    string's shape; the recognizer is built with the bpe vocabulary that
+    consumes it.
     """
     recognizer = parakeet_recognizer(model_dir)
     with wave.open(str(wav)) as w:
@@ -1455,11 +1573,24 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "") -> Re
             learned = resolver.learned_words()
 
             decode_started = time.monotonic()
+            hotword_count = 0
             if engine == "parakeet":
-                # No prompt: Parakeet takes none. The vocabulary sources above
-                # still feed the resolver, and hotwords — Parakeet's equivalent
-                # channel — are the seam left open in run_parakeet().
-                text = run_parakeet(parakeet_model_dir(), wav, hotwords=None)
+                # No prompt: Parakeet takes none. The same vocabulary rides
+                # hotwords instead, which is this engine's equivalent channel.
+                # Biasing is an improvement to the decode, never a precondition
+                # for one — anything that goes wrong assembling or applying it
+                # costs the user their hotwords, not their transcript.
+                try:
+                    hotwords = parakeet_hotwords(history, learned)
+                except Exception:  # noqa: BLE001 — decode without them instead
+                    hotwords = ""
+                hotword_count = len(hotwords.splitlines()) if hotwords else 0
+                try:
+                    text = run_parakeet(parakeet_model_dir(), wav,
+                                        hotwords=hotwords or None)
+                except Exception:  # noqa: BLE001
+                    hotword_count = 0
+                    text = run_parakeet(parakeet_model_dir(), wav)
             else:
                 text = run_whisper(binary, model, wav,
                                    transcribe_prompt(screen, cwd, history,
@@ -1470,7 +1601,8 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "") -> Re
         log(f"transcribe content-type={content_type!r} bytes={len(raw)} "
             f"duration={check.duration_s:.2f}s peak={check.peak_rms:.4f} "
             f"max_frame_rms={check.max_frame_rms:.4f} silent=no "
-            f"engine={engine} decode_ms={decode_ms} ms={ms} raw={text[:80]!r}")
+            f"engine={engine} hotwords={hotword_count} "
+            f"decode_ms={decode_ms} ms={ms} raw={text[:80]!r}")
 
         if not text:
             return no_store(JSONResponse({"text": "", "raw": "", "ms": ms}))

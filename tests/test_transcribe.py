@@ -342,6 +342,111 @@ def test_the_recognizer_is_built_once_and_kept(parakeet_installed, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Hotwords — the vocabulary channel Parakeet has in place of a prompt
+# ---------------------------------------------------------------------------
+
+def lines_of(text):
+    """The bare words of a hotwords string, with the per-line score dropped."""
+    return [line.rsplit(" :", 1)[0] for line in text.splitlines()]
+
+
+def test_learned_words_come_before_history(monkeypatch):
+    """The user corrected these by hand: they outrank anything merely typed."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(history=["micromamba"], learned=["tokenhmr"])
+    assert lines_of(text) == ["tokenhmr", "micromamba"]
+
+
+def test_the_vocabulary_is_deduplicated_case_insensitively(monkeypatch):
+    """A word the user both typed and taught buys one slot, not two."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(history=["CameraHMR", "camerahmr", "sbatch"],
+                               learned=["camerahmr"])
+    assert lines_of(text) == ["camerahmr", "sbatch"]
+
+
+def test_the_vocabulary_is_capped(monkeypatch):
+    """500 words cost nothing to decode; the cap is what keeps that true."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(history=[f"word{n}" for n in range(900)])
+    assert len(text.splitlines()) == A.MAX_HOTWORDS
+
+
+def test_learned_words_survive_the_cap(monkeypatch):
+    """Ordering is what makes the cap safe: the best evidence is never cut."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(history=[f"word{n}" for n in range(900)],
+                               learned=["tokenhmr"])
+    assert lines_of(text)[0] == "tokenhmr"
+    assert len(text.splitlines()) == A.MAX_HOTWORDS
+
+
+def test_paths_are_split_on_the_separator_sherpa_treats_as_one(monkeypatch):
+    """"/" is a hotword separator in sherpa-onnx, not a character in a word.
+
+    Handed a path whole it would silently become several hotwords anyway, so
+    it is split here where the budget can see and count the pieces.
+    """
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(history=["work/pockettui/app.py"])
+    assert lines_of(text) == ["work", "pockettui", "app.py"]
+
+
+def test_words_the_encoder_cannot_segment_are_dropped(monkeypatch):
+    """Non-ASCII encodes to an out-of-vocabulary token sherpa-onnx discards.
+
+    Dropped here instead, where it costs a budget slot rather than a log line —
+    and with it everything else that cannot be a single scored hotword: bare
+    punctuation, a one-character word, and anything carrying the ":" that
+    leads sherpa's own score syntax.
+    """
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(
+        history=["café", "七", "-", "x", "12345", "host:22", "sbatch"])
+    assert lines_of(text) == ["sbatch"]
+
+
+def test_every_line_carries_a_score_or_none_would(monkeypatch):
+    """sherpa-onnx fills a missing score from a default nobody here chose, so
+    the list is scored throughout rather than in part."""
+    monkeypatch.setenv("POCKETTUI_HOTWORD_SCORE", "0.75")
+    text = A.parakeet_hotwords(history=["micromamba", "sbatch"])
+    assert text == "micromamba :0.75\nsbatch :0.75"
+
+
+def test_an_empty_vocabulary_is_an_empty_string(monkeypatch):
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    assert A.parakeet_hotwords(history=[], learned=[]) == ""
+    assert A.parakeet_hotwords() == ""
+
+
+def test_the_boost_cannot_reach_the_cliff(monkeypatch):
+    """Above ~1.5 the decoder repeats hotwords back at the user instead of
+    transcribing. Confident nonsense is worse than an error, so the ceiling is
+    structural rather than documented: no configuration can cross it."""
+    for configured in ("1.6", "3.0", "999"):
+        monkeypatch.setenv("POCKETTUI_HOTWORD_SCORE", configured)
+        assert A.hotword_score() == A.HOTWORD_SCORE_MAX
+    monkeypatch.setenv("POCKETTUI_HOTWORD_SCORE", "-2")
+    assert A.hotword_score() == 0.0
+
+
+def test_an_unparseable_boost_reads_as_unset(monkeypatch):
+    """A malformed number in the environment must not cost a user dictation."""
+    monkeypatch.setenv("POCKETTUI_HOTWORD_SCORE", "loud")
+    assert A.hotword_score() == A.HOTWORD_SCORE_DEFAULT
+    monkeypatch.setenv("POCKETTUI_HOTWORD_SCORE", "")
+    assert A.hotword_score() == A.HOTWORD_SCORE_DEFAULT
+
+
+def test_the_default_boost_is_the_measured_one(monkeypatch):
+    """0.5: the top of the band that leaves the 42-clip benchmark unchanged."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    assert A.hotword_score() == 0.5
+    assert A.HOTWORD_SCORE_DEFAULT < A.HOTWORD_SCORE_MAX
+
+
+# ---------------------------------------------------------------------------
 # Route logic
 # ---------------------------------------------------------------------------
 
@@ -422,12 +527,38 @@ def test_the_parakeet_route_answers_the_same_shape(parakeet_installed,
     assert payload["text"] == "pytest tests/test_app.py"
 
 
-def test_parakeet_is_asked_for_no_prompt(parakeet_installed, sherpa_importable,
-                                         monkeypatch, at_a_shell):
-    """Parakeet takes no --prompt; hotwords are the seam, unused for now."""
+def test_parakeet_is_asked_for_hotwords_not_a_prompt(parakeet_installed,
+                                                     sherpa_importable,
+                                                     monkeypatch, at_a_shell):
+    """Parakeet takes no --prompt; the same vocabulary rides hotwords instead."""
     seen = {}
     monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(R, "history_vocabulary", lambda: ["micromamba"])
+    monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "learned_words", lambda: ["tokenhmr"])
+
+    def spy(model_dir, wav, hotwords=None):
+        seen["hotwords"] = hotwords
+        return "git status"
+
+    monkeypatch.setattr(A, "run_parakeet", spy)
+    A.transcribe(b"audio bytes", "work", "phone")
+    # Learned first, then history — and every line scored, which is the form
+    # the per-stream path needs.
+    assert seen["hotwords"] == "tokenhmr :0.5\nmicromamba :0.5"
+
+
+def test_no_vocabulary_means_no_hotwords_argument(parakeet_installed,
+                                                  sherpa_importable,
+                                                  monkeypatch, at_a_shell):
+    """A fresh box has no history and nothing learned: it must not pass ""."""
+    seen = {}
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(R, "history_vocabulary", lambda: [])
+    monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "learned_words", lambda: [])
 
     def spy(model_dir, wav, hotwords=None):
         seen["hotwords"] = hotwords
@@ -438,6 +569,43 @@ def test_parakeet_is_asked_for_no_prompt(parakeet_installed, sherpa_importable,
     assert seen["hotwords"] is None
 
 
+def test_a_broken_vocabulary_still_gets_a_transcript(parakeet_installed,
+                                                     sherpa_importable,
+                                                     monkeypatch, at_a_shell):
+    """Biasing is an improvement to the decode, never a precondition for one."""
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+
+    def explode(*a, **k):
+        raise RuntimeError("vocabulary store is corrupt")
+
+    monkeypatch.setattr(A, "parakeet_hotwords", explode)
+    monkeypatch.setattr(A, "run_parakeet",
+                        lambda d, w, hotwords=None: "git status")
+    assert body(A.transcribe(b"audio bytes", "work", "phone"))["raw"] == "git status"
+
+
+def test_hotwords_the_decoder_rejects_fall_back_to_a_plain_decode(
+        parakeet_installed, sherpa_importable, monkeypatch, at_a_shell):
+    """sherpa-onnx refusing the hotwords costs them, not the user's transcript."""
+    calls = []
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(R, "history_vocabulary", lambda: ["micromamba"])
+    monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "learned_words", lambda: [])
+
+    def picky(model_dir, wav, hotwords=None):
+        calls.append(hotwords)
+        if hotwords:
+            raise RuntimeError("hotwords failed to encode")
+        return "git status"
+
+    monkeypatch.setattr(A, "run_parakeet", picky)
+    assert body(A.transcribe(b"audio bytes", "work", "phone"))["raw"] == "git status"
+    assert calls == ["micromamba :0.5", None]
+
+
 def test_the_log_line_names_the_engine(parakeet_installed, sherpa_importable,
                                        monkeypatch, at_a_shell):
     """Which model ran, and what it cost, has to be readable from the log."""
@@ -446,10 +614,16 @@ def test_the_log_line_names_the_engine(parakeet_installed, sherpa_importable,
     monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_parakeet", lambda d, w, hotwords=None: "git status")
+    monkeypatch.setattr(R, "history_vocabulary", lambda: ["micromamba", "sbatch"])
+    monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "learned_words", lambda: [])
 
     A.transcribe(b"audio bytes", "work", "phone")
-    assert any("engine=parakeet" in line and "decode_ms=" in line
-               for line in lines), lines
+    # How much vocabulary the decode was given belongs in the log beside what
+    # it cost: a transcript that ignored the user's words and one that never
+    # got them read identically otherwise.
+    assert any("engine=parakeet" in line and "hotwords=2" in line
+               and "decode_ms=" in line for line in lines), lines
 
 
 def test_the_log_line_names_whisper_too(installed, monkeypatch, at_a_shell):
