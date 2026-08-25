@@ -19,6 +19,7 @@ import array
 import asyncio
 import dataclasses
 import fcntl
+import getpass
 import hmac
 import json
 import math
@@ -692,6 +693,25 @@ TRANSCRIBE_BUDGET_S = 2.0
 # actually said.
 MAX_PROMPT_CHARS = 900
 
+# And a cap on the *count*, because the character budget stopped being the
+# binding constraint once history joined the sources. Ranking by rarity fills
+# the prompt with long separator-carrying paths (mean ~12 characters), so 900
+# chars now buys 65 words where it used to buy a handful — and whisper imitates
+# a prompt that dense instead of merely taking its vocabulary. It starts
+# emitting the separators it sees, turning spoken "dash dash force with lease"
+# into `-dash-force-with-lease` and "jellyfish piper-tts" into
+# `jellifish_piper-tts`, and at the extreme it runs whole phrases together
+# ("run pytest on tests" as "runPitastonTest"). Swept over the 42-clip
+# benchmark, exact-match peaks at 20 words (21/42, matching the old prompt) and
+# falls away on both sides — 19 at 12 words, 18 at 24, 16 at 40.
+MAX_PROMPT_WORDS = 20
+
+# How far past the visible pane the prompt's own capture reaches. The words the
+# user is about to say are often on the command they ran two screens ago, and a
+# capture-pane is cheap; 200 lines bounds what a session with a million-line
+# scrollback can cost the request.
+PROMPT_SCROLLBACK_LINES = 200
+
 # Live-debugging aid for the empty-transcript phone bug: logs the pipeline's
 # numbers per request and snapshots the last upload to fixed paths for offline
 # inspection. Opt-in diagnostic — off by default; set POCKETTUI_VOICE_DEBUG=1
@@ -729,46 +749,217 @@ def whisper_paths() -> tuple[Path | None, Path | None]:
     return binary, (preferred or models)[0]
 
 
-def transcribe_prompt(screen: list[str], cwd: str) -> str:
+def _is_common_english(word: str) -> bool:
+    """Is this a word whisper writes correctly with no help from the prompt?
+
+    The common-word list holds base forms, so an inflected one ("results",
+    "running", "machines") has to be reduced before it is looked up — otherwise
+    every plural in the scrollback buys space in a budget meant for names.
+    """
+    lowered = word.lower()
+    if lowered in resolver.COMMON_WORDS:
+        return True
+    for suffix in ("ing", "ers", "ed", "es", "er", "s"):
+        if lowered.endswith(suffix) and len(lowered) - len(suffix) >= 3:
+            stem = lowered[:-len(suffix)]
+            # Both spelling changes English makes when it inflects: a dropped
+            # "e" ("moving" → "move") and a doubled consonant ("running" → run).
+            candidates = [stem, stem + "e"]
+            if len(stem) >= 2 and stem[-1] == stem[-2]:
+                candidates.append(stem[:-1])
+            if any(c in resolver.COMMON_WORDS for c in candidates):
+                return True
+    return False
+
+
+def _prompt_rarity(word: str) -> float:
+    """How much this word needs to be in the prompt, 0.0 meaning not at all.
+
+    whisper already writes ordinary English correctly, so a bare dictionary word
+    in the vocabulary buys nothing and costs the budget a real identifier needs.
+    What earns space is everything the model cannot reach on its own: names with
+    separators or internal capitals, names carrying digits, and unusual bare
+    words like `camerahmr` or `sdwivedi` that are not English at all.
+    """
+    bare = word.strip(".,;:")
+    if not bare:
+        return 0.0
+    if _is_common_english(bare):
+        return 0.0
+
+    score = 0.5  # not a common word: already worth something
+    if any(c in bare for c in "_./-"):
+        score += 1.0
+    if bare[1:] != bare[1:].lower():  # camelCase, HTTPServer
+        score += 0.8
+    if any(c.isdigit() for c in bare) and any(c.isalpha() for c in bare):
+        score += 0.5
+    # A plain lowercase run of letters is dictionary-shaped even when it is not
+    # in the list, so it ranks below anything carrying a separator, a capital or
+    # a digit. Length is the only signal left for telling `pancake` from
+    # `camerahmr`, and it is a weak one, so it ramps rather than steps: a short
+    # bare word is probably English, a long one is probably a coined name.
+    if bare.isalpha() and bare.islower():
+        score += min(0.4, max(-0.3, (len(bare) - 7) * 0.1))
+    return score
+
+
+# Learned words are the strongest evidence in the prompt — the user corrected
+# whisper by hand, twice, on this exact word — but they are also the source
+# least able to say whether today's utterance will contain them. Capped so a
+# growing store cannot squeeze the screen and the cwd out of the 20 slots.
+MAX_PROMPT_LEARNED = 5
+
+
+def transcribe_prompt(screen: list[str], cwd: str,
+                      history: list[str] | None = None,
+                      scrollback: list[str] | None = None,
+                      learned: list[str] | None = None) -> str:
     """A whisper --prompt naming the words this user is about to say.
 
     whisper conditions on the prompt as if it were text it had just decoded, so
     a natural sentence followed by the vocabulary biases it towards `pytest`
     over "pie test" without teaching it a format it then tries to imitate.
-    """
-    vocab: list[str] = []
-    seen: set[str] = set()
 
-    def take(words) -> None:
-        for word in words:
+    The budget is spent on rarity rather than on source order alone. Every
+    candidate is scored by how badly whisper needs it — `sdwivedi` and
+    `test_camerahmr.py` are words the model cannot reach unaided, while `data`
+    and `report` are words it already writes correctly — and the cap then cuts
+    from the bottom of that ranking instead of from the end of the last source.
+
+    `scrollback` is a wider capture of the same pane, reaching back past the
+    visible screen. It is a separate parameter rather than a longer `screen`
+    because screen_tokens() keeps only its last MAX_SCREEN_LINES lines — the
+    exact window the register detection is entitled to see — so a longer list
+    handed to it would be truncated back to the visible screen and the older
+    lines lost.
+
+    `learned` are words this user has corrected by hand in past transcripts,
+    most recently reinforced first. They carry the highest source weight there
+    is and are capped at MAX_PROMPT_LEARNED — see that constant.
+    """
+    scored: list[tuple[float, float, int, str]] = []
+    seen: set[str] = set()
+    order = 0
+    lead = "Terminal session. Commands and files: "
+    room = MAX_PROMPT_CHARS - len(lead)
+    kept: list[str] = []
+    used = 0
+
+    def take(words, source: float, ranked: bool = False,
+             floor: float = 0.0) -> None:
+        """Score one source's words. `ranked` means the source already ordered
+        them by importance, and that ordering is folded into the score.
+
+        `floor` is a rarity this source's words are worth regardless of their
+        shape. Only the learned source sets it: shape is a guess at whether
+        whisper needs a word, and a learned word carries the answer — the user
+        already corrected this exact word by hand, twice.
+        """
+        nonlocal order
+        words = list(words)
+        for position, word in enumerate(words):
             word = str(word).strip()
             # Single letters and pure numbers cost prompt budget and bias
             # nothing; the point is names the model would otherwise miss.
             if len(word) < 2 or word.lower() in seen or not any(c.isalpha() for c in word):
                 continue
+            rarity = max(_prompt_rarity(word), floor)
+            if rarity <= 0.0:
+                # A bare English word the model already spells correctly. It
+                # would occupy budget a real identifier needs, so it is dropped
+                # outright rather than merely ranked last.
+                continue
+            weight = source
+            if ranked and words:
+                # Rarity says how badly whisper needs a word; it does not say
+                # whether the user will ever utter it. For a source that has
+                # already ranked its words by how much they are really used,
+                # that ranking must dominate shape — `echo LINE_1` … `LINE_60`
+                # are sixty separator-and-digit tokens scoring the shape maximum
+                # that this user ran once, and on shape alone they fill the
+                # whole prompt ahead of the paths he types daily. Rarity is
+                # scaled down to a tiebreaker so it orders words of comparable
+                # standing instead of reordering the list wholesale.
+                weight += 2.0 * (1.0 - position / len(words))
+                rarity *= 0.25
             seen.add(word.lower())
-            vocab.append(word)
+            # `order` keeps the sort total and therefore deterministic: equal
+            # scores stay in the order the sources produced them.
+            scored.append((rarity + weight, weight, -order, word))
+            order += 1
 
-    # Nearest context first, so the truncation below drops the least useful.
-    take(resolver.screen_tokens(screen))
+    username = ""
+    try:
+        # Home-directory paths are dictated constantly, and the username is
+        # otherwise only in the vocab when it happens to be on screen.
+        username = str(getpass.getuser()).strip()
+    except Exception:
+        username = ""
+    # The username is always included, ahead of the ranking: home-directory paths
+    # are dictated constantly and it is the one word whose absence is felt on
+    # every single one of them. Its slot and characters are reserved here, before
+    # any take() call, because `seen` only records that a word was *scored* — not
+    # that it will survive the cut below. Reserving after scoring and testing
+    # `not in seen` silently dropped the username whenever another source had
+    # also offered it (history, a cwd path segment) and the ranking then filled
+    # all MAX_PROMPT_WORDS slots with higher-scoring words. Adding it to `seen`
+    # now also keeps every later source from scoring it a second time.
+    if username and len(username) >= 2:
+        seen.add(username.lower())
+        kept.append(username)
+        used += len(username) + 1
+
+    # Learned words first, and at the top weight: every other source is a guess
+    # that the user might say a word, while this one is a record that whisper
+    # got this exact word wrong and the user fixed it by hand twice. Capped
+    # rather than trusted wholesale — see MAX_PROMPT_LEARNED. `floor` keeps a
+    # plain-looking learned word (`sdwivedi` scores like any lowercase run) from
+    # being dropped by the shape test, which is precisely the case where shape
+    # was the thing that failed.
+    take(list(learned or [])[:MAX_PROMPT_LEARNED], 4.0, floor=1.5)
+    # Source weight breaks ties between equally rare words: what is on screen is
+    # what the user is looking at, and is likelier to be what they are saying.
+    take(resolver.screen_tokens(screen), 3.0)
+    # Scrollback second, so a word visible right now is claimed by the line
+    # above at the full screen weight and only the older words arrive here.
+    # 2.5 rather than 3.0: what has scrolled off is still the user's own
+    # session and outranks the cwd listing, but a filename from an hour ago is
+    # not what they are looking at. The capture overlaps the visible screen and
+    # is passed whole — trimming it to the non-overlapping head would mean
+    # guessing where `screen` ended, and `seen` already does that exactly.
+    if scrollback:
+        take(resolver.screen_tokens(scrollback, limit=len(scrollback)), 2.5)
     if cwd:
         names, branches = resolver.cwd_vocabulary(cwd)
-        take(names)
-        take(branches)
-    take(tmux_names())
+        take(names, 2.0)
+        take(branches, 2.0)
+    take(tmux_names(), 1.0)
+    # Last by source weight, and deliberately so: history is the broadest source
+    # and the only one that can name a path nowhere near today's session, but a
+    # word in front of the user beats one from last month at equal rarity.
+    # `ranked`, because history_vocabulary() has already sorted it by how often
+    # and how recently each word was actually used.
+    take(history or [], 0.5, ranked=True)
 
-    lead = "Terminal session. Commands and files: "
-    room = MAX_PROMPT_CHARS - len(lead)
-    kept: list[str] = []
-    used = 0
-    for word in vocab:
-        if used + len(word) + 2 > room:
+    scored.sort(key=lambda t: (-t[0], -t[1], -t[2]))
+    for _, _, _, word in scored:
+        if len(kept) >= MAX_PROMPT_WORDS:
             break
+        # `continue`, not `break`: a single very long path must not end the fill
+        # when shorter words behind it still fit.
+        if used + len(word) + 1 > room:
+            continue
         kept.append(word)
-        used += len(word) + 2
+        used += len(word) + 1
     if not kept:
         return ""
-    return lead + ", ".join(kept) + "."
+    # Space-separated, not comma-joined: whisper conditions on the prompt as
+    # recently-decoded text, so a comma-separated list teaches it to emit
+    # comma-fragmented transcripts for spoken paths (", slash, is, last,
+    # cluster,"). Space-separated keeps the vocabulary bias without the
+    # format imitation.
+    return lead + " ".join(kept) + "."
 
 
 # Below this fraction of full scale, no 20 ms frame in the clip holds anything
@@ -1025,9 +1216,31 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "") -> Re
             target = resolve_target(session, dev)
             screen = capture_pane(target) if target else []
             cwd = pane_cwd(target) if target else ""
+            # A second, wider capture for the prompt vocabulary only. The words
+            # that have scrolled off are still worth biasing the decode
+            # towards; they must not reach the resolver, where the register
+            # detection and the window matching are entitled to see exactly the
+            # visible pane and nothing older.
+            scrollback = capture_pane(target, lines=PROMPT_SCROLLBACK_LINES) if target else []
+
+            # The paths a user dictates are frequently nowhere near this pane —
+            # a cluster mount typed a hundred times last month is in neither the
+            # screen nor the cwd, and the history file is the only source that
+            # has ever seen those words. Parsed once and cached, so this is a
+            # dict lookup on every request after the first.
+            # Configured ssh hosts ride the same channel, after history: they
+            # are the same kind of word (something the user says that is
+            # nowhere in this pane) and belong at the same low weight.
+            history = resolver.history_vocabulary() + resolver.ssh_hosts()
+            # Words this user has corrected by hand in past transcripts. Read
+            # from the same cached-on-(mtime, size) store the resolver uses, so
+            # this is a dict lookup once the file has been read.
+            learned = resolver.learned_words()
 
             whisper_started = time.monotonic()
-            text = run_whisper(binary, model, wav, transcribe_prompt(screen, cwd))
+            text = run_whisper(binary, model, wav,
+                               transcribe_prompt(screen, cwd, history, scrollback,
+                                                 learned))
             whisper_ms = int((time.monotonic() - whisper_started) * 1000)
             ms = int((time.monotonic() - started) * 1000)
 
@@ -1041,13 +1254,38 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "") -> Re
 
         result = resolver.resolve(text, screen=screen, cwd=cwd,
                                   tmux_names=tmux_names(),
-                                  budget=TRANSCRIBE_BUDGET_S, asr=True)
+                                  budget=TRANSCRIBE_BUDGET_S, asr=True,
+                                  extra_vocab=history)
         return no_store(JSONResponse(
             {"text": result["text"], "raw": text, "ms": ms}))
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "transcribe_timeout"}, status_code=500)
     except Exception:  # noqa: BLE001 — the phone gets a shape, never a traceback
         return JSONResponse({"error": "transcribe_failed"}, status_code=500)
+
+
+@app.post("/api/learn")
+def api_learn(body: dict = Body(...)) -> Response:
+    """Record that the user edited a transcript before sending it.
+
+    The edit is the only labelled data this feature ever gets: whisper proposed
+    `heard`, the user sent `sent`, and the difference between them names the
+    words it got wrong. Extraction and every gate on it live in the resolver —
+    this route only carries the pair across and appends what survives.
+
+    Always answers 200. The phone fires this and forgets it; there is no UI for
+    a failure to reach, and a learning miss costs the user nothing they would
+    ever notice. Nothing leaves this machine.
+    """
+    heard = str(body.get("heard", "") or "")
+    sent = str(body.get("sent", "") or "")
+    learned = 0
+    if heard.strip() and sent.strip() and heard != sent:
+        try:
+            learned = resolver.learn_corrections(heard, sent)
+        except Exception:  # noqa: BLE001 — never let a lesson break a send
+            learned = 0
+    return no_store(JSONResponse({"learned": learned}))
 
 
 @app.post("/api/session")
