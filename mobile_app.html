@@ -2173,11 +2173,16 @@ function useWebgl() {
 }
 
 // ============================================================
-// Image paths as links
+// Image paths and URLs as links
 // ============================================================
 // Anchored at / or ~ so a bare "logo.png" in prose is not a link, and stopped by
 // whitespace and the punctuation that usually brackets a path in output.
 const IMAGE_PATH_RE = /(?:~|\/)[^\s"'`()\[\]{}<>:;,]*\.(?:png|jpe?g|gif|webp|svg|bmp|mp4|webm|mov)\b/gi;
+
+// http(s) only. Everything up to whitespace or a quote/angle is taken, and the
+// trailing junk a terminal wraps around a URL is trimmed off afterwards by
+// trimUrl(), which needs to see the closers to balance them.
+const URL_RE = /https?:\/\/[^\s"'`<>]+/gi;
 
 // How far logicalLine() will walk in each direction, to bound the cost of the
 // hit-test that runs on every hover and every tap.
@@ -2274,7 +2279,7 @@ function stitchedText(text, cols) {
 // ranges and compete: overlapping ones collapse to the longest, so the stitched
 // full path swallows the bare "/000000.mp4" fragment its last row would match on
 // its own, while a row that genuinely holds two paths keeps both.
-function imagePathsOn(y) {
+function matchesOn(y, re, trim) {
   const buf = term.buffer.active, cols = term.cols;
   const logical = logicalLine(buf, y, cols);
   if (!logical) return [];
@@ -2285,12 +2290,14 @@ function imagePathsOn(y) {
   for (const src of [{ text: logical.text, map: null }, stitched]) {
     for (let r = rows; r >= 1; r--) {
       const text = src.text.slice(0, r * cols);
-      IMAGE_PATH_RE.lastIndex = 0;
+      re.lastIndex = 0;
       let m;
-      while ((m = IMAGE_PATH_RE.exec(text)) !== null) {
-        const last = m.index + m[0].length - 1;
+      while ((m = re.exec(text)) !== null) {
+        const path = trim ? trim(m[0]) : m[0];
+        if (!path) continue;
+        const last = m.index + path.length - 1;
         found.push({
-          path: m[0],
+          path: path,
           from: src.map ? src.map[m.index] : m.index,
           to: src.map ? src.map[last] : last,
         });
@@ -2311,28 +2318,112 @@ function imagePathsOn(y) {
     .sort((a, b) => a.from - b.from)
     .map(f => ({
       path: f.path,
+      from: f.from,
+      to: f.to,
       start: cellAt(f.from, logical.first, cols),
       // `to` is the last cell of the match, so the range is inclusive already.
       end: cellAt(f.to, logical.first, cols),
     }));
 }
 
+function imagePathsOn(y) {
+  return matchesOn(y, IMAGE_PATH_RE, null);
+}
+
+function urlsOn(y) {
+  return matchesOn(y, URL_RE, trimUrl);
+}
+
+// Closers and sentence punctuation the terminal wrapped around the URL rather
+// than the URL carrying them. Trailing punctuation goes unconditionally; a
+// closing bracket goes only when the URL has no matching opener, so a wiki link
+// like /wiki/Foo_(bar) keeps its paren.
+const URL_TRAIL_RE = /[.,;:!?'"]+$/;
+const URL_CLOSERS = { ")": "(", "]": "[", "}": "{" };
+
+function trimUrl(raw) {
+  let url = raw;
+  for (;;) {
+    const trimmed = url.replace(URL_TRAIL_RE, "");
+    const closer = URL_CLOSERS[trimmed.slice(-1)];
+    if (closer) {
+      const open = trimmed.split(closer).length - 1;
+      const close = trimmed.split(trimmed.slice(-1)).length - 1;
+      if (close > open) { url = trimmed.slice(0, -1); continue; }
+    }
+    if (trimmed === url) break;
+    url = trimmed;
+  }
+  // Nothing past the scheme is not a link.
+  return /^https?:\/\/[^\/]/i.test(url) ? url : "";
+}
+
+// Both kinds of link on a row, URLs first. A URL can hold a slash-anchored
+// substring that IMAGE_PATH_RE also matches (https://x.com/a.png), so an image
+// path inside a URL's cells is dropped and the whole URL wins; a real local path
+// (~ or /) never overlaps one.
+function linksOn(y) {
+  const urls = urlsOn(y).map(f => ({ ...f, url: f.path }));
+  const paths = imagePathsOn(y).filter(p => !urls.some(u => p.from <= u.to && u.from <= p.to));
+  return urls.concat(paths).sort((a, b) => a.from - b.from);
+}
+
 function provideImageLinks(y, callback) {
-  const links = imagePathsOn(y)
+  const links = linksOn(y)
     // xterm asks per row and drops what does not cover the row it asked about.
     .filter(f => f.start.y <= y && f.end.y >= y)
-    .map(f => ({ text: f.path, range: { start: f.start, end: f.end }, activate: () => showImage(f.path) }));
+    .map(f => ({
+      text: f.path,
+      range: { start: f.start, end: f.end },
+      activate: () => (f.url ? openUrl(f.url) : showImage(f.path)),
+    }));
   callback(links.length ? links : undefined);
 }
 
-// The path at a 1-based cell, or null. A wrapped path spans rows, so the cell is
-// compared as a linear position rather than per-row.
-function imagePathAt(x, y) {
+// The link at a 1-based cell, or null. A wrapped match spans rows, so the cell
+// is compared as a linear position rather than per-row.
+function linkAt(x, y) {
   const cols = term.cols;
   const pos = y * cols + x;
-  const hit = imagePathsOn(y).find(f =>
-    f.start.y * cols + f.start.x <= pos && pos <= f.end.y * cols + f.end.x);
-  return hit ? hit.path : null;
+  return linksOn(y).find(f =>
+    f.start.y * cols + f.start.x <= pos && pos <= f.end.y * cols + f.end.x) || null;
+}
+
+// A URL printed by a program running on the workstation names a host this phone
+// cannot reach. cfg.backend, when set, is the phone's actual route to that
+// workstation (e.g. a tailscale hostname), so it takes priority over the page's
+// own host; loc is only the fallback for a same-origin deploy. The scheme is
+// left alone: a dev server on cfg.backend may speak plain http while the page
+// itself is https, and a top-level navigation to http is not blocked the way a
+// subresource fetch would be. Port, path and query are the URL's own.
+const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0"];
+
+function localizeUrl(raw, loc) {
+  let u;
+  try { u = new URL(raw); } catch (e) { return raw; }
+  if (LOCAL_HOSTS.indexOf(u.hostname.toLowerCase()) === -1) return raw;
+  let targetHost = loc.hostname;
+  if (cfg.backend) {
+    try { targetHost = new URL(cfg.backend).hostname; } catch (e) { targetHost = loc.hostname; }
+  }
+  if (!targetHost || LOCAL_HOSTS.indexOf(targetHost.toLowerCase()) !== -1) return raw;
+  u.hostname = targetHost;
+  return u.href;
+}
+
+// Opens in the phone's browser. Not window.open: Safari's noopener path opens
+// a blank tab and returns null, so we go straight for a synchronous anchor
+// click, which iOS still counts as a user gesture from this handler.
+function openUrl(raw) {
+  const url = localizeUrl(raw, location);
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 // The overlay opens under the finger, so the click the browser synthesizes for
@@ -5165,13 +5256,16 @@ let selectEndedAt = 0;
     schedule();
   }, { passive: false });
 
-  // A tap on an image path opens the viewer. xterm's own linkifier resolves the
-  // link under the pointer from mousemove, which a touch never delivers, so the
-  // tap is read here from the cell the touch started on.
+  // A tap on an image path opens the viewer, a tap on a URL opens the browser.
+  // xterm's own linkifier resolves the link under the pointer from mousemove,
+  // which a touch never delivers, so the tap is read here from the cell the
+  // touch started on.
   host.addEventListener("touchend", () => {
     if (lastY === null || dragScrolled || edgeSwipe || termGesture || !term) return;
-    const path = imagePathAt(col, row + term.buffer.active.viewportY);
-    if (path) showImage(path);
+    const hit = linkAt(col, row + term.buffer.active.viewportY);
+    if (!hit) return;
+    if (hit.url) openUrl(hit.url);
+    else showImage(hit.path);
   }, { passive: true });
 
   // Let go mid-flick and the scroll keeps going, decaying, like a native list.
