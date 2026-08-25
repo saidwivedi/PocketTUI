@@ -6,6 +6,7 @@ alone. A regression that stops fixing "pie test" is an annoyance; one that
 starts rewriting a sentence is the failure this module is built to avoid.
 """
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -204,6 +205,19 @@ def test_rules_are_reduced_outside_shell():
     assert R.apply_rules("tests slash test dot py", "claude") == "tests/test.py"
 
 
+def test_comma_fragmented_dictation_does_not_glue_punctuation_mid_token():
+    """Whisper comma-separates list-ish dictation (a comma-list --prompt used
+    to teach it this format); joined path segments must not carry the comma
+    into the middle of the resulting token. Full-sentence recovery is not
+    required here — "slash, is" between common words staying literal is
+    accepted behavior.
+    """
+    spoken = ("Can you go to, slash, is, last, cluster, slash, fast, slash, "
+               "as, duetty, slash, work?")
+    result = R.apply_rules(spoken, "claude")
+    assert ",/" not in result
+
+
 # ---------------------------------------------------------------------------
 # ASR-only rules
 # ---------------------------------------------------------------------------
@@ -332,6 +346,158 @@ def test_matcher_never_swallows_an_operator(project, text, expected):
 
 
 # ---------------------------------------------------------------------------
+# Filesystem path snapping (ASR only)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def tree(tmp_path):
+    """A fake mount with the shape the real failure had: a directory whose
+    listing holds the word whisper mangled."""
+    (tmp_path / "cluster" / "fast" / "sdwivedi" / "work").mkdir(parents=True)
+    (tmp_path / "cluster" / "slow").mkdir()
+    (tmp_path / "archive").mkdir()
+    return tmp_path
+
+
+def test_snap_fixes_a_misheard_middle_segment(tree):
+    """`claster` names nothing, and the parent's listing holds `cluster`."""
+    spoken = f"go to {tree}/claster/fast"
+    assert R.snap_paths(spoken) == f"go to {tree}/cluster/fast"
+
+
+def test_snap_stops_at_a_segment_with_no_near_match(tree):
+    """A prefix we could not establish makes every deeper listing the wrong
+    directory, so the rest of the token is kept exactly as spoken."""
+    spoken = f"go to {tree}/qqqqqqqq/fast"
+    assert R.snap_paths(spoken) == spoken
+
+
+def test_snap_never_rewrites_a_segment_that_exists(tree):
+    """`work`, `fast` and `slow` are real words that also name real
+    directories; existing segments are not candidates at all."""
+    spoken = f"go to {tree}/cluster/slow"
+    assert R.snap_paths(spoken) == spoken
+
+
+def test_snap_keeps_the_tail_verbatim_after_it_stops(tree):
+    """The corrected prefix lands, the unresolvable segment and everything
+    under it do not."""
+    spoken = f"go to {tree}/claster/fast/qqqqqqqq/work"
+    assert R.snap_paths(spoken) == f"go to {tree}/cluster/fast/qqqqqqqq/work"
+
+
+def test_snap_merges_a_path_whisper_split_at_a_space(tree):
+    """`/cluster` does not exist at the root it was written against, but does
+    under the token to its left — so the space was whisper's, not the user's."""
+    spoken = f"go to {tree} /claster/fast"
+    assert R.snap_paths(spoken) == f"go to {tree}/cluster/fast"
+
+
+def test_snap_does_not_merge_two_independently_valid_paths(tmp_path):
+    """Both resolve from root, so they are two paths and the merge is off."""
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    spoken = f"diff {tmp_path}/one {tmp_path}/two"
+    assert R.snap_paths(spoken) == spoken
+
+
+def test_snap_preserves_trailing_sentence_punctuation(tree):
+    spoken = f"look in {tree}/claster,"
+    assert R.snap_paths(spoken) == f"look in {tree}/cluster,"
+
+
+def test_snap_leaves_a_lone_nonexistent_segment_alone(tmp_path):
+    """A single-segment path that does not exist must not put a listing of the
+    root behind an ordinary sentence."""
+    assert R.snap_paths("/qqqqqqqq is a word") == "/qqqqqqqq is a word"
+
+
+def test_snap_only_runs_on_transcripts(tree, project):
+    """Typed text means what it says — the same string is snapped as a
+    transcript and left alone when the user wrote it."""
+    typed = f"go to {tree}/claster/fast"
+    assert R.resolve(typed, screen=CLAUDE_SCREEN, cwd=project)["text"] == typed
+    assert R.resolve(typed, screen=CLAUDE_SCREEN, cwd=project,
+                     asr=True)["text"] == f"go to {tree}/cluster/fast"
+
+
+def test_snap_degrades_to_unchanged_past_its_deadline(tree, monkeypatch):
+    """A mount that has stopped answering costs the budget and nothing more."""
+    spoken = f"go to {tree}/claster/fast"
+    real_monotonic = time.monotonic
+    calls = {"n": 0}
+
+    def jumped():
+        calls["n"] += 1
+        return real_monotonic() if calls["n"] == 1 else real_monotonic() + 10.0
+
+    monkeypatch.setattr(time, "monotonic", jumped)
+    assert R.snap_paths(spoken) == spoken
+
+
+def test_snap_degrades_to_unchanged_when_the_filesystem_raises(tree, monkeypatch):
+    def boom(*args, **kwargs):
+        raise OSError("stale file handle")
+
+    monkeypatch.setattr(R.os, "scandir", boom)
+    monkeypatch.setattr(R.os.path, "lexists", boom)
+    spoken = f"go to {tree}/claster/fast"
+    assert R.snap_paths(spoken) == spoken
+
+
+def test_snap_fallback_takes_an_unambiguous_near_miss(tmp_path):
+    """A username has no pronunciation to be right about, so the phonetic
+    scorer finds nothing for whisper's "sdwedi" (it shares no metaphone key
+    with `sdwivedi`). Character overlap does, at 0.857 against a listing that
+    holds one plausible answer."""
+    (tmp_path / "sdwivedi" / "work").mkdir(parents=True)
+    (tmp_path / "mblack").mkdir()
+    assert R.snap_paths(f"go to {tmp_path}/sdwedi/work") \
+        == f"go to {tmp_path}/sdwivedi/work"
+
+
+def test_snap_fallback_needs_a_clear_winner(tmp_path):
+    """Two siblings the segment resembles equally well: neither is evidence,
+    so the walk stops rather than picking one."""
+    (tmp_path / "sdwivedi").mkdir()
+    (tmp_path / "sdwivedj").mkdir()
+    spoken = f"go to {tmp_path}/sdwivedx"
+    assert R.snap_paths(spoken) == spoken
+
+
+def test_snap_fallback_ignores_short_segments(tmp_path):
+    """Below five characters one edit flips the ranking, so the ratio stops
+    being evidence — "stvd" must not reach `stvx` on 0.75."""
+    (tmp_path / "abcd").mkdir()
+    (tmp_path / "work").mkdir()
+    spoken = f"go to {tmp_path}/abcx/work"
+    assert R.snap_paths(spoken) == spoken
+
+
+def test_snap_fallback_still_respects_the_digit_guard(tmp_path):
+    """The ratio treats digits as ordinary characters, so the guard has to
+    cover the fallback too: `sdwedi2` must not reach `sdwivedi`."""
+    (tmp_path / "sdwivedi").mkdir()
+    spoken = f"go to {tmp_path}/sdwedi2"
+    assert R.snap_paths(spoken) == spoken
+
+
+def test_snap_does_not_drop_a_digit_the_speaker_said(tree):
+    """metaphone() erases digits, so `cluster2` keys the same as `cluster`.
+    Dictated digits transcribe literally, so disagreeing on them means two
+    names rather than one mishearing."""
+    spoken = f"go to {tree}/cluster2/fast"
+    assert R.snap_paths(spoken) == spoken
+
+
+def test_snap_never_writes_to_the_filesystem(tree):
+    """Read-only by construction: the tree is byte-identical afterwards."""
+    before = sorted(p.relative_to(tree).as_posix() for p in tree.rglob("*"))
+    R.snap_paths(f"go to {tree}/claster/fast/qqqqqqqq")
+    assert sorted(p.relative_to(tree).as_posix() for p in tree.rglob("*")) == before
+
+
+# ---------------------------------------------------------------------------
 # Register detection
 # ---------------------------------------------------------------------------
 
@@ -419,6 +585,198 @@ def test_index_walk_tolerates_missing_dir():
 def test_git_branches_tolerates_absent_repo(tmp_path):
     assert R.git_branches(str(tmp_path)) == []
     assert R.git_branches("/nonexistent/xyz") == []
+
+
+def git_repo(path, *files):
+    """A repo at `path` with `files` committed, or a skip if git is unusable."""
+    import subprocess as sp
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "PATH": os.environ.get("PATH", ""), "HOME": str(path)}
+
+    def run(*args):
+        return sp.run(["git"] + list(args), cwd=str(path), env=env,
+                      capture_output=True, text=True, timeout=10)
+
+    try:
+        if run("init", "-q").returncode != 0:
+            pytest.skip("git init failed")
+    except (OSError, sp.SubprocessError):
+        pytest.skip("git is not available")
+    for name in files:
+        (path / name).write_text("")
+        run("add", name)
+        run("commit", "-q", "-m", name)
+    return run
+
+
+def test_git_touched_files_lists_recent_commits_and_working_changes(tmp_path):
+    run = git_repo(tmp_path, "committed_one.py", "committed_two.py")
+    (tmp_path / "dirty_file.py").write_text("x")
+    run("add", "dirty_file.py")
+    (tmp_path / "untracked_thing.md").write_text("x")
+
+    names = R.git_touched_files(str(tmp_path))
+    for expected in ("dirty_file.py", "untracked_thing.md",
+                     "committed_one.py", "committed_two.py"):
+        assert expected in names, expected
+    # Status is "right now", so it comes ahead of the commit history.
+    assert names.index("dirty_file.py") < names.index("committed_one.py")
+    # Newest commit first, which is the order git log already emits.
+    assert names.index("committed_two.py") < names.index("committed_one.py")
+
+
+def test_git_touched_files_are_basenames_and_deduped(tmp_path):
+    run = git_repo(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "leaf.py").write_text("")
+    run("add", "src/leaf.py")
+    run("commit", "-q", "-m", "one")
+    (tmp_path / "src" / "leaf.py").write_text("changed")
+
+    names = R.git_touched_files(str(tmp_path))
+    # The walk already holds "src/leaf.py"; this source is about the spoken
+    # filename, and it appears once even though status and log both print it.
+    assert names.count("leaf.py") == 1
+    assert not any("/" in name for name in names)
+
+
+def test_git_touched_files_respect_the_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "MAX_GIT_TOUCHED_FILES", 5)
+    git_repo(tmp_path)
+    for i in range(20):
+        (tmp_path / f"untracked{i}.py").write_text("")
+    assert len(R.git_touched_files(str(tmp_path))) == 5
+
+
+def test_git_touched_files_tolerate_absent_repo(tmp_path):
+    assert R.git_touched_files(str(tmp_path)) == []
+    assert R.git_touched_files("/nonexistent/xyz") == []
+
+
+def test_cwd_vocabulary_carries_the_recently_touched_files(tmp_path):
+    git_repo(tmp_path, "recently_edited.py")
+    R._cwd_cache.clear()
+    names, _ = R.cwd_vocabulary(str(tmp_path))
+    assert "recently_edited.py" in names
+
+
+# ---------------------------------------------------------------------------
+# SSH config hosts
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def ssh_config(tmp_path, monkeypatch):
+    """A ~/.ssh/config at a known path, with the module cache cleared.
+
+    The real config must never decide a test's outcome, so $HOME is pointed at
+    the fixture and the cache is emptied on the way in and out.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".ssh").mkdir()
+
+    def write(text: str):
+        path = tmp_path / ".ssh" / "config"
+        path.write_text(text)
+        R._ssh_cache["stamp"] = None
+        R._ssh_cache["hosts"] = []
+        return str(path)
+
+    R._ssh_cache["stamp"] = None
+    R._ssh_cache["hosts"] = []
+    yield write
+    R._ssh_cache["stamp"] = None
+    R._ssh_cache["hosts"] = []
+
+
+def test_ssh_hosts_reads_aliases_and_hostnames(ssh_config):
+    ssh_config("Host galton\n"
+               "  HostName galton.is.localnet\n"
+               "  User sdwivedi\n")
+    hosts = R.ssh_hosts()
+    assert "galton" in hosts
+    assert "galton.is.localnet" in hosts
+    # Only the two host keywords; nothing else on the block is a name.
+    assert "sdwivedi" not in hosts
+
+
+def test_ssh_hosts_takes_every_alias_on_a_host_line(ssh_config):
+    ssh_config("Host cluster login gate\n  HostName login.cluster.net\n")
+    hosts = R.ssh_hosts()
+    for alias in ("cluster", "login", "gate"):
+        assert alias in hosts, alias
+
+
+def test_ssh_hosts_skip_wildcard_patterns(ssh_config):
+    """A pattern is a rule about hosts, not a name anyone says out loud."""
+    ssh_config("Host *\n  ForwardAgent yes\n"
+               "Host *.cluster node?\n"
+               "Host realhost\n")
+    hosts = R.ssh_hosts()
+    assert hosts == ["realhost"]
+
+
+def test_ssh_hosts_ignore_comments_and_keyword_case(ssh_config):
+    ssh_config("# Host commented\n"
+               "hostname lowercase.example\n"
+               "HOST shouty\n")
+    hosts = R.ssh_hosts()
+    assert "commented" not in hosts
+    assert "lowercase.example" in hosts
+    assert "shouty" in hosts
+
+
+def test_ssh_hosts_accept_the_equals_form(ssh_config):
+    ssh_config("Host=galton\n")
+    assert R.ssh_hosts() == ["galton"]
+
+
+def test_ssh_hosts_are_deduped(ssh_config):
+    ssh_config("Host galton\n  HostName galton\n"
+               "Host galton\n")
+    assert R.ssh_hosts() == ["galton"]
+
+
+def test_ssh_hosts_are_empty_when_the_file_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    R._ssh_cache["stamp"] = None
+    R._ssh_cache["hosts"] = []
+    assert R.ssh_hosts() == []
+
+
+def test_ssh_hosts_are_empty_when_the_file_is_unreadable(ssh_config, monkeypatch):
+    ssh_config("Host galton\n")
+
+    def boom(*a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("builtins.open", boom)
+    assert R.ssh_hosts() == []
+
+
+def test_ssh_hosts_cache_serves_a_second_call_without_reparsing(ssh_config,
+                                                                monkeypatch):
+    ssh_config("Host galton\n")
+    assert R.ssh_hosts() == ["galton"]
+    monkeypatch.setattr("builtins.open",
+                        lambda *a, **k: pytest.fail("the config was re-read"))
+    assert R.ssh_hosts() == ["galton"]
+
+
+def test_ssh_hosts_cache_invalidates_when_the_file_changes(ssh_config):
+    """Same path, new content: the (path, mtime, size) stamp no longer matches.
+
+    The fixture's writer clears the cache, so the stamp is re-armed here from a
+    live call and the second write is what has to invalidate it.
+    """
+    ssh_config("Host galton\n")
+    assert R.ssh_hosts() == ["galton"]
+    # Written directly rather than through the fixture, so nothing but the
+    # stamp itself can be what notices the change. A different length is what
+    # keeps this independent of the clock's mtime resolution.
+    Path(os.path.expanduser(R.SSH_CONFIG_PATH)).write_text(
+        "Host newbox longer_alias\n")
+    assert R.ssh_hosts() == ["newbox", "longer_alias"]
 
 
 def test_subwords_splits_every_convention():
@@ -678,3 +1036,463 @@ def test_resolve_survives_a_broken_screen_payload(project):
     """Garbage from the client degrades to an echo rather than a 500."""
     result = R.resolve("hello there", screen=[None, 12, {"a": 1}], cwd=project)
     assert result["text"] == "hello there"
+
+
+# ---------------------------------------------------------------------------
+# Shell history vocabulary
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def history(tmp_path, monkeypatch):
+    """A history file at a known path, with the module cache cleared.
+
+    The real ~/.zsh_history must never decide a test's outcome, so $HISTFILE is
+    pointed at the fixture and the cache is emptied on the way in and out.
+    """
+    path = tmp_path / "history"
+
+    def write(text: str):
+        path.write_text(text)
+        R._history_cache["stamp"] = None
+        R._history_cache["words"] = []
+        return str(path)
+
+    monkeypatch.setenv("HISTFILE", str(path))
+    R._history_cache["stamp"] = None
+    R._history_cache["words"] = []
+    yield write
+    R._history_cache["stamp"] = None
+    R._history_cache["words"] = []
+
+
+def test_history_reads_the_zsh_extended_format(history):
+    history(": 1699999999:0;cd /is/cluster/fast/sdwivedi/work\n"
+            ": 1700000000:0;python train_camerahmr.py\n")
+    words = R.history_vocabulary()
+    assert "sdwivedi" in words
+    assert "cluster" in words
+    assert "train_camerahmr.py" in words
+    # The metadata prefix is stripped, not tokenized into vocabulary.
+    assert not any(w.startswith("1699999") for w in words)
+
+
+def test_history_reads_plain_lines(history):
+    history("cd /is/cluster/fast/sdwivedi/work\nls tests/test_camerahmr.py\n")
+    words = R.history_vocabulary()
+    assert "sdwivedi" in words
+    assert "test_camerahmr.py" in words
+
+
+def test_history_joins_multiline_entries(history):
+    """A backslash continuation is one command, and its tail is vocabulary too."""
+    history(": 1700000000:0;python train.py \\\n"
+            "  --config configs/camerahmr_base.yaml\n")
+    words = R.history_vocabulary()
+    assert "camerahmr_base.yaml" in words
+    assert "configs" in words
+
+
+def test_history_reads_only_the_tail_of_a_huge_file(history, monkeypatch):
+    """An ancient history file must not be read (or parsed) end to end."""
+    monkeypatch.setattr(R, "HISTORY_TAIL_BYTES", 2000)
+    old = "".join(f"echo ancient_marker_{n}\n" for n in range(5000))
+    history(old + "cd /is/cluster/fast/sdwivedi/work\n")
+    words = R.history_vocabulary()
+    assert "sdwivedi" in words
+    assert not any(w.startswith("ancient_marker_0") for w in words)
+
+
+def test_history_emits_path_segments_as_words(history):
+    history("rsync -a /is/cluster/fast/sdwivedi/work/pretrained_models /tmp/x\n")
+    words = R.history_vocabulary()
+    for segment in ("cluster", "fast", "sdwivedi", "pretrained_models"):
+        assert segment in words, segment
+
+
+def test_history_drops_the_value_of_a_credential_assignment(history):
+    history("export HF_TOKEN=hf_QQzzXXsecretvalue123\n"
+            "export PYTHONPATH=/is/cluster/fast/sdwivedi/work\n")
+    words = R.history_vocabulary()
+    assert not any("QQzzXXsecretvalue123" in w for w in words)
+    # The variable name is harmless, and the non-secret assignment keeps its
+    # value — that path is exactly what this source exists to supply.
+    assert "HF_TOKEN" in words
+    assert "sdwivedi" in words
+
+
+def test_history_drops_a_high_entropy_token(history):
+    history("curl https://api.example.com/v1 ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6\n"
+            "git commit -m fix\n")
+    words = R.history_vocabulary()
+    assert not any(w.startswith("ghp_") for w in words)
+    assert "commit" in words
+
+
+def test_history_drops_the_argument_after_a_secret_flag(history):
+    history("curl -H Authorization:Bearer-abcdef123456 https://api.example.com/v1\n")
+    words = R.history_vocabulary()
+    assert not any("abcdef123456" in w for w in words)
+
+
+def test_history_keeps_ordinary_commands_and_paths(history):
+    history("pytest tests/test_camerahmr.py\n"
+            "micromamba activate tokenhmr\n")
+    words = R.history_vocabulary()
+    for expected in ("pytest", "test_camerahmr.py", "micromamba", "tokenhmr"):
+        assert expected in words, expected
+
+
+def test_history_weights_repeated_and_recent_words_first(history):
+    history("".join("cd /is/cluster/fast/sdwivedi/work\n" for _ in range(20))
+            + "vim rarely_touched_file.txt\n")
+    words = R.history_vocabulary()
+    assert words.index("sdwivedi") < words.index("rarely_touched_file.txt")
+
+
+def test_history_cache_invalidates_when_the_file_changes(history):
+    history("cd /is/cluster/fast/sdwivedi/work\n")
+    first = R.history_vocabulary()
+    assert "sdwivedi" in first
+
+    # Same path, new content and a new mtime: the (path, mtime, size) stamp no
+    # longer matches, so the parse must run again rather than serve the old list.
+    path = history("cd /home/other/projects/newthing\n")
+    import os as _os
+    _os.utime(path, (0, 0))
+    R._history_cache["stamp"] = None
+    second = R.history_vocabulary()
+    assert "newthing" in second
+    assert "sdwivedi" not in second
+
+
+def test_history_cache_serves_a_second_call_without_reparsing(history, monkeypatch):
+    history("cd /is/cluster/fast/sdwivedi/work\n")
+    assert "sdwivedi" in R.history_vocabulary()
+    monkeypatch.setattr(R, "_read_history_tail",
+                        lambda path: pytest.fail("history was re-read"))
+    assert "sdwivedi" in R.history_vocabulary()
+
+
+def test_history_is_empty_when_the_file_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HISTFILE", str(tmp_path / "nope"))
+    R._history_cache["stamp"] = None
+    R._history_cache["words"] = []
+    assert R.history_vocabulary() == []
+
+
+def test_history_is_empty_when_the_file_is_unreadable(history, monkeypatch):
+    path = history("cd /is/cluster/fast/sdwivedi/work\n")
+
+    def boom(*a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("builtins.open", boom)
+    assert R.history_vocabulary() == []
+
+
+# ---------------------------------------------------------------------------
+# History vocabulary in the phonetic index
+# ---------------------------------------------------------------------------
+
+def test_extra_vocab_reaches_a_path_in_neither_the_screen_nor_the_cwd(project):
+    """The motivating failure: a path only the shell history has ever seen.
+
+    Without the history words the index has never encountered this path, so the
+    garbled transcript passes through untouched; with them it is reachable.
+    A path-shaped entry is allowed to match away from command position — that
+    is where paths are actually spoken.
+    """
+    text = "pretrained underscore modles"
+    without = R.resolve(text, screen=SHELL_SCREEN, cwd=project)
+    assert "pretrained_models" not in without["text"]
+
+    with_history = R.resolve(text, screen=SHELL_SCREEN, cwd=project,
+                             extra_vocab=["sdwivedi", "cluster", "pretrained_models"])
+    assert "pretrained_models" in with_history["text"]
+
+
+def test_extra_vocab_bare_words_stay_at_command_position(project):
+    """A bare history word is treated exactly like a $PATH name: a plausible
+    reading of what is being *run*, and not of a word inside a sentence."""
+    result = R.resolve("I was reading the notes", screen=CLAUDE_SCREEN,
+                       cwd=project, extra_vocab=["redis", "readline", "reading_list"])
+    assert result["text"] == "I was reading the notes"
+
+
+def test_extra_vocab_does_not_loosen_the_common_word_guard(project):
+    """History words broaden the index; they must not lower its bar.
+
+    `cluster` is a real history word and `clutter` is a real English one, and
+    the protection over common words has to keep the sentence intact.
+    """
+    text = "clear the clutter in the room"
+    result = R.resolve(text, screen=CLAUDE_SCREEN, cwd=project,
+                       extra_vocab=["cluster", "clutter_report", "roomba"])
+    assert result["text"] == text
+
+
+def test_extra_vocab_defaults_to_nothing(project):
+    """The parameter is optional: every existing caller keeps working."""
+    result = R.resolve("git status", screen=SHELL_SCREEN, cwd=project)
+    assert result["text"] == "git status"
+
+
+def test_build_index_ranks_history_below_the_screen(project):
+    """A tie between a screen word and a history word goes to the screen."""
+    index = R.build_index(screen=["camerahmr"], cwd="",
+                          extra_vocab=["camerahmr"])
+    entry = index.by_norm["camerahmr"]
+    assert entry.source == "screen"
+
+
+# ---------------------------------------------------------------------------
+# Learned corrections
+# ---------------------------------------------------------------------------
+# The gates in extract_corrections are the whole feature: an edit is only
+# evidence about what whisper mishears if it is not the user changing their
+# mind, tidying capitalization, or rephrasing. Each test below is one way an
+# edit can be something other than a mishearing.
+
+
+@pytest.fixture
+def store(tmp_path):
+    """A learned-correction store of this test's own, never the real one."""
+    return tmp_path / "learned.json"
+
+
+def test_a_misheard_word_is_extracted(store):
+    """The case the feature exists for: one word swapped for what was meant."""
+    pairs = R.extract_corrections(
+        "go to slash is slash cluster slash stved slash work",
+        "go to slash is slash cluster slash sdwivedi slash work")
+    assert pairs == [("stved", "sdwivedi")]
+
+
+def test_a_rewritten_sentence_teaches_nothing(store):
+    """The user changing their mind is not a mishearing.
+
+    A rewrite replaces a long span with an unrelated one, which the span cap
+    refuses outright; anything narrow enough to get past it is stopped by the
+    similarity band.
+    """
+    assert R.extract_corrections(
+        "please run the tests again on the cluster",
+        "actually never mind lets look at the deployment script instead") == []
+
+
+def test_a_correction_into_a_common_word_is_not_learned(store):
+    """whisper spells English correctly; a store full of "the" is noise."""
+    assert R.extract_corrections("run teh thing", "run the thing") == []
+
+
+def test_a_case_only_edit_is_not_learned(store):
+    """Tidying "Git" into "git" is register noise, not a mishearing."""
+    assert R.extract_corrections("Git status", "git status") == []
+    assert R.extract_corrections("check the readme.", "check the readme") == []
+
+
+def test_a_secret_shaped_token_is_never_learned(store):
+    """Nothing credential-shaped enters the store, a prompt, or an argv."""
+    secret = "AKIA9f3Kd82hSlwoP1zXq7Bn4vTyU0mE"
+    assert R.extract_corrections(f"the key is {secret}",
+                                 "the key is ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5") == []
+    assert R.extract_corrections("the key is wrongtoken", f"the key is {secret}") == []
+
+
+def test_words_that_sound_nothing_alike_are_not_learned(store):
+    """A one-word swap is only evidence if the two words could be confused."""
+    assert R.extract_corrections("open the notebook", "open the refrigerator") == []
+
+
+def test_a_shared_metaphone_passes_a_weak_character_ratio(store):
+    """`stved` is 0.5 on characters but the same sound — exactly the case.
+
+    The character band alone would keep the pair; this pins the phonetic route
+    open, since it is what covers the mishearings that drop whole syllables.
+    """
+    assert R.similarity("stved", "sdwivedi") < 0.8
+    assert R.extract_corrections("cd stved", "cd sdwivedi") == [("stved", "sdwivedi")]
+
+
+def test_an_insertion_teaches_nothing(store):
+    """Adding a word the user did not say says nothing about the microphone."""
+    assert R.extract_corrections("run the tests", "run all the tests") == []
+
+
+def test_a_many_to_one_span_collapses(store):
+    """"pie test" for `pytest` is the split whisper actually makes.
+
+    The span joins into one garble, which is then gated exactly like a
+    one-to-one pair — `pietest` and `pytest` sound alike, so it is kept.
+    """
+    assert R.extract_corrections("run pie test now", "run pytest now") == \
+        [("pietest", "pytest")]
+
+
+def test_a_span_of_single_letters_teaches_nothing(store):
+    """Spelled-out letters are not a garble worth storing.
+
+    "camera h m r" → `camerahmr` is a real mishearing, but the lesson it would
+    leave behind is a rewrite rule keyed on a string of single letters, which
+    is both unlikely to recur verbatim and the phonetic index's job anyway.
+    """
+    assert R.extract_corrections("cd camera h m r now", "cd camerahmr now") == []
+
+
+def test_one_event_does_not_promote(store):
+    """A single edit is as likely a rewrite as a mishearing."""
+    R.learn_corrections("cd stved", "cd sdwivedi", path=store)
+    assert R.load_learned(store)
+    assert R.learned_corrections(store) == []
+    assert R.learned_words(store) == []
+
+
+def test_two_events_promote(store):
+    """The same repair in two separate utterances is the evidence bar."""
+    R.learn_corrections("cd stved", "cd sdwivedi", path=store)
+    R.learn_corrections("open stved please", "open sdwivedi please", path=store)
+    promoted = R.learned_corrections(store)
+    assert [(e["wrong"], e["right"]) for e in promoted] == [("stved", "sdwivedi")]
+    assert promoted[0]["utterances"] == 2
+    assert R.learned_words(store) == ["sdwivedi"]
+
+
+def test_one_utterance_counts_once_however_often_the_word_appears(store):
+    """Otherwise a single sentence could promote a correction on its own."""
+    R.learn_corrections("stved and stved again", "sdwivedi and sdwivedi again",
+                        path=store)
+    assert R.learned_corrections(store) == []
+
+
+def test_the_store_is_bounded_and_evicts_the_oldest(store):
+    """Past the bound it is a log, not a vocabulary. Least recent goes first."""
+    import json
+    entries = [{"wrong": f"wrng{i}", "right": f"rght{i}", "count": 1,
+                "utterances": 1, "last_ts": float(i)}
+               for i in range(R.LEARNED_MAX_ENTRIES + 10)]
+    store.write_text(json.dumps(entries))
+    R.learn_corrections("cd stved", "cd sdwivedi", path=store, now=99999.0)
+    kept = json.loads(store.read_text())
+    assert len(kept) == R.LEARNED_MAX_ENTRIES
+    words = {e["wrong"] for e in kept}
+    assert "stved" in words          # the newest survives
+    assert "wrng0" not in words      # the oldest is gone
+    assert f"wrng{R.LEARNED_MAX_ENTRIES + 9}" in words
+
+
+def test_the_write_is_atomic(store):
+    """A reader must see the old store or the new one, never a partial one."""
+    R.learn_corrections("cd stved", "cd sdwivedi", path=store)
+    before = store.read_text()
+    real_replace = os.replace
+    seen = {}
+
+    def watch(src, dst):
+        # At the moment of the rename the destination still holds the old
+        # store: the new bytes were written somewhere else entirely.
+        seen["dst_before"] = Path(dst).read_text()
+        seen["tmp"] = str(src)
+        return real_replace(src, dst)
+
+    os.replace = watch
+    try:
+        R.learn_corrections("open stved", "open sdwivedi", path=store)
+    finally:
+        os.replace = real_replace
+    assert seen["dst_before"] == before
+    assert seen["tmp"] != str(store)
+    assert not list(store.parent.glob("*.tmp*"))
+
+
+def test_a_corrupt_store_degrades_to_empty(store):
+    """Half a file, or a file of nonsense, is an empty vocabulary — not a crash."""
+    store.write_text("{not json at all")
+    assert R.load_learned(store) == []
+    assert R.learned_corrections(store) == []
+    assert R.learned_words(store) == []
+    assert R.apply_learned_rules("cd stved", store) == "cd stved"
+
+    store.write_text('{"wrong": "a", "right": "b"}')   # an object, not a list
+    assert R.load_learned(store) == []
+
+    store.write_text('[{"wrong": "stved"}, 7, null]')  # entries missing halves
+    assert R.load_learned(store) == []
+
+
+def test_a_missing_store_is_not_an_error(store):
+    assert not store.exists()
+    assert R.load_learned(store) == []
+    assert R.learned_words(store) == []
+    assert R.apply_learned_rules("cd stved", store) == "cd stved"
+
+
+def test_the_exact_rewrite_keeps_punctuation(store):
+    """Same shape as the other ASR rules: the word changes, the comma stays."""
+    R.learn_corrections("cd stved", "cd sdwivedi", path=store)
+    R.learn_corrections("open stved", "open sdwivedi", path=store)
+    assert R.apply_learned_rules("go to stved, then home.", store) == \
+        "go to sdwivedi, then home."
+
+
+def test_the_exact_rewrite_is_case_insensitive_and_exact(store):
+    """It fires on the garble it was taught, and on nothing that resembles it."""
+    R.learn_corrections("cd stved", "cd sdwivedi", path=store)
+    R.learn_corrections("open stved", "open sdwivedi", path=store)
+    assert R.apply_learned_rules("Stved", store) == "sdwivedi"
+    assert R.apply_learned_rules("stveds", store) == "stveds"
+    assert R.apply_learned_rules("unstved", store) == "unstved"
+
+
+def test_the_exact_rewrite_fires_only_on_asr(store, project):
+    """Typed text means what it says — rewriting a typed word would be a bug."""
+    R.learn_corrections("cd stved", "cd sdwivedi", path=store)
+    R.learn_corrections("open stved", "open sdwivedi", path=store)
+    spoken = R.resolve("cd stved", screen=SHELL_SCREEN, cwd=project, asr=True,
+                       learned_path=store)
+    assert "sdwivedi" in spoken["text"]
+    typed = R.resolve("cd stved", screen=SHELL_SCREEN, cwd=project, asr=False,
+                      learned_path=store)
+    assert typed["text"] == "cd stved"
+
+
+def test_an_unpromoted_correction_changes_nothing(store, project):
+    """One event is in the store but reaches neither the rewrite nor the index."""
+    R.learn_corrections("cd stved", "cd sdwivedi", path=store)
+    result = R.resolve("cd stved", screen=SHELL_SCREEN, cwd=project, asr=True,
+                       learned_path=store)
+    assert result["text"] == "cd stved"
+
+
+def test_an_empty_store_changes_nothing(project):
+    """The no-learning case must be byte-identical to before the feature."""
+    for text in ("git status", "cd slash is slash cluster",
+                 "run the tests again"):
+        with_store = R.resolve(text, screen=SHELL_SCREEN, cwd=project, asr=True)
+        assert with_store["text"] == R.resolve(text, screen=SHELL_SCREEN,
+                                               cwd=project, asr=True)["text"]
+
+
+def test_the_exact_rewrite_reaches_a_path_segment(store, project):
+    """The word is learned bare and misheard inside a path — the common case.
+
+    `stved` scores 0.5 against `sdwivedi`, far below the snap pass's bar, so
+    the filesystem walk correctly refuses it. This is the gap learning covers.
+    """
+    R.learn_corrections("cd slash is slash cluster slash stved",
+                        "cd slash is slash cluster slash sdwivedi", path=store)
+    R.learn_corrections("the stved folder", "the sdwivedi folder", path=store)
+    result = R.resolve("Can you go to the folder called /is/cluster/fast/stved/work?",
+                       screen=CLAUDE_SCREEN, cwd=project, asr=True,
+                       learned_path=store)
+    # The question mark stays: this is Claude's prompt, where the sentence
+    # dressing is prose the user meant to type.
+    assert result["text"] == \
+        "Can you go to the folder called /is/cluster/fast/sdwivedi/work?"
+
+
+def test_the_exact_rewrite_never_matches_part_of_a_name(store):
+    """Only whole tokens and whole "/"-separated segments, never a substring."""
+    R.learn_corrections("cd stved", "cd sdwivedi", path=store)
+    R.learn_corrections("open stved", "open sdwivedi", path=store)
+    assert R.apply_learned_rules("/home/stvedish/work", store) == "/home/stvedish/work"
+    assert R.apply_learned_rules("/home/stved/work", store) == "/home/sdwivedi/work"

@@ -414,12 +414,28 @@ def test_prompt_is_capped(no_tmux):
 
 def test_prompt_has_no_duplicates(no_tmux):
     prompt = A.transcribe_prompt(["pytest pytest pytest resolver resolver"], "")
-    vocab = prompt.split(": ", 1)[1].rstrip(".").split(", ")
+    vocab = prompt.split(": ", 1)[1].rstrip(".").split(" ")
     assert len(vocab) == len(set(v.lower() for v in vocab))
 
 
-def test_prompt_is_empty_without_any_vocabulary(no_tmux):
+def test_prompt_vocabulary_is_space_separated_not_comma_joined(no_tmux):
+    """A comma-separated prompt teaches whisper to emit comma-fragmented
+    transcripts (whisper conditions on the prompt as recently-decoded text);
+    space-separating keeps the vocabulary bias without the format imitation.
+    """
+    prompt = A.transcribe_prompt(["$ pytest tests/test_camerahmr.py"], "")
+    assert ", " not in prompt.split(": ", 1)[1]
+
+
+def test_prompt_includes_the_login_username(no_tmux, monkeypatch):
+    monkeypatch.setattr(A.getpass, "getuser", lambda: "sdwivedi")
+    prompt = A.transcribe_prompt([], "")
+    assert "sdwivedi" in prompt
+
+
+def test_prompt_is_empty_without_any_vocabulary(no_tmux, monkeypatch):
     """Nothing worth saying means no --prompt at all, not an empty sentence."""
+    monkeypatch.setattr(A.getpass, "getuser", lambda: (_ for _ in ()).throw(Exception()))
     assert A.transcribe_prompt([], "") == ""
 
 
@@ -471,3 +487,351 @@ def test_real_audio_transcribes_and_resolves(tmp_path, monkeypatch):
     # directory that is actually there, with the filename spelled correctly.
     assert "tests/test_camerahmr.py" in payload["text"]
     assert payload["ms"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Rarity-ranked prompt budget
+# ---------------------------------------------------------------------------
+
+def vocab_of(prompt: str) -> list[str]:
+    """The words of a prompt, without the lead sentence or the final period."""
+    return prompt.split(": ", 1)[1].rstrip(".").split(" ")
+
+
+def test_prompt_excludes_bare_common_words(no_tmux):
+    """`report` and `machine` are words whisper already spells; they bias
+    nothing and would spend budget a real identifier needs."""
+    prompt = A.transcribe_prompt(
+        ["the report machine data results", "test_camerahmr.py"], "")
+    words = [w.lower() for w in vocab_of(prompt)]
+    assert "test_camerahmr.py" in words
+    for common in ("report", "machine", "data", "results"):
+        assert common not in words, common
+
+
+def test_prompt_ranks_a_rare_identifier_above_a_dictionary_word(no_tmux):
+    """Budget is spent on rarity, not on the order the sources produced.
+
+    `test_camerahmr.py` is unreachable for the model unaided even though it
+    appears last; `pancake` is a plain lowercase word it writes on its own.
+    """
+    prompt = A.transcribe_prompt(["pancake wagon test_camerahmr.py"], "")
+    words = [w.lower() for w in vocab_of(prompt)]
+    assert words.index("test_camerahmr.py") < words.index("pancake")
+
+
+def test_prompt_excludes_an_inflected_common_word(no_tmux):
+    """The list holds base forms; "results" is no rarer than "result"."""
+    prompt = A.transcribe_prompt(["results running machines reported"], "")
+    words = [w.lower() for w in vocab_of(prompt)]
+    for common in ("results", "running", "machines", "reported"):
+        assert common not in words, common
+
+
+def test_prompt_keeps_rare_words_when_the_budget_is_tight(no_tmux):
+    """The cap cuts from the bottom of the ranking, not the end of the list.
+
+    A screenful of forgettable lowercase words ahead of one separator-carrying
+    identifier used to push that identifier out of a full prompt entirely.
+    """
+    screen = [" ".join(f"widget{n}" for n in range(400))]
+    screen.append("tests/test_camerahmr.py")
+    prompt = A.transcribe_prompt(screen, "")
+    assert len(prompt) <= A.MAX_PROMPT_CHARS
+    assert "tests/test_camerahmr.py" in prompt
+
+
+def test_prompt_includes_history_vocabulary(no_tmux):
+    """The motivating failure: a path in neither the screen nor the cwd."""
+    prompt = A.transcribe_prompt(["$ ls"], "", ["sdwivedi", "cluster", "lustre"])
+    for word in ("sdwivedi", "cluster", "lustre"):
+        assert word in prompt, word
+
+
+def test_prompt_keeps_the_username_even_against_a_full_budget(no_tmux, monkeypatch):
+    """The one always-included word: home paths are dictated constantly."""
+    monkeypatch.setattr(A.getpass, "getuser", lambda: "sdwivedi")
+    screen = [" ".join(f"ident_number_{n}" for n in range(500))]
+    prompt = A.transcribe_prompt(screen, "")
+    assert len(prompt) <= A.MAX_PROMPT_CHARS
+    assert "sdwivedi" in vocab_of(prompt)
+
+
+def test_prompt_keeps_the_username_when_another_source_also_offers_it(
+        no_tmux, monkeypatch):
+    """The username appearing in a second source must not cost it its slot.
+
+    `seen` records that a word was scored, not that it will survive the cut, so
+    reserving the username only when it was `not in seen` dropped it whenever
+    another source had also offered it — here history, whose entries score far
+    below a cwd listing large enough to fill every slot on its own.
+    """
+    monkeypatch.setattr(A.getpass, "getuser", lambda: "crowded_user")
+    names = [f"deep_module_{n}/leaf_{n}.py" for n in range(40)]
+    monkeypatch.setattr(R, "cwd_vocabulary", lambda cwd: (names, []))
+    prompt = A.transcribe_prompt([], "/some/where", ["crowded_user", "cluster"])
+    assert "crowded_user" in vocab_of(prompt)
+    assert len(vocab_of(prompt)) <= A.MAX_PROMPT_WORDS
+    assert len(prompt) <= A.MAX_PROMPT_CHARS
+    # Reserved, not duplicated: `seen` still keeps the later sources off it.
+    assert vocab_of(prompt).count("crowded_user") == 1
+
+
+def test_prompt_ordering_is_deterministic(no_tmux):
+    screen = ["pytest tests/test_camerahmr.py resolver.py CameraHMR run2"]
+    history = ["sdwivedi", "cluster", "micromamba"]
+    first = A.transcribe_prompt(screen, "", history)
+    for _ in range(5):
+        assert A.transcribe_prompt(screen, "", history) == first
+
+
+def test_prompt_prefers_the_screen_over_history_at_equal_rarity(no_tmux):
+    """Both are rare; the word the user is looking at ranks first."""
+    prompt = A.transcribe_prompt(["screenhmr_thing.py"], "",
+                                 ["historyhmr_thing.py"])
+    words = vocab_of(prompt)
+    assert words.index("screenhmr_thing.py") < words.index("historyhmr_thing.py")
+
+
+def test_prompt_history_degrades_to_the_old_behaviour_when_absent(no_tmux):
+    """History is optional everywhere: a box with no history file is normal."""
+    assert A.transcribe_prompt(["test_camerahmr.py"], "", None) == \
+        A.transcribe_prompt(["test_camerahmr.py"], "")
+
+
+def test_prompt_never_carries_a_credential_from_history(no_tmux, tmp_path,
+                                                        monkeypatch):
+    """End to end through the real history reader, not a hand-made word list."""
+    hist = tmp_path / "history"
+    hist.write_text(
+        ": 1700000000:0;export HF_TOKEN=hf_QQzzXXsecretvalue1234567\n"
+        ": 1700000001:0;cd /is/cluster/fast/sdwivedi/work\n")
+    monkeypatch.setenv("HISTFILE", str(hist))
+    R._history_cache["stamp"] = None
+    R._history_cache["words"] = []
+    try:
+        prompt = A.transcribe_prompt([], "", R.history_vocabulary())
+        assert "sdwivedi" in prompt
+        assert "secretvalue" not in prompt
+    finally:
+        R._history_cache["stamp"] = None
+        R._history_cache["words"] = []
+
+
+def test_prompt_is_capped_by_word_count_not_only_characters(no_tmux):
+    """Past roughly sixty words whisper imitates the prompt's format — it runs
+    spoken words together ("run pytest on tests" -> "runPitastonTest") instead
+    of merely taking the vocabulary. Rarity ranking fills the prompt with long
+    paths, so the character budget alone no longer bounds the word count."""
+    screen = [" ".join(f"ident_number_{n}" for n in range(500))]
+    prompt = A.transcribe_prompt(screen, "", ["sdwivedi", "cluster"])
+    assert len(vocab_of(prompt)) <= A.MAX_PROMPT_WORDS
+    assert len(prompt) <= A.MAX_PROMPT_CHARS
+
+
+def test_prompt_fill_skips_an_oversize_word_rather_than_stopping(no_tmux):
+    """One path too long for the remaining room must not end the fill while
+    shorter words behind it still fit."""
+    long_path = "a_very/" * 30 + "leaf.py"
+    prompt = A.transcribe_prompt([long_path, "short_one.py"], "")
+    assert "short_one.py" in vocab_of(prompt)
+
+
+# ---------------------------------------------------------------------------
+# Scrollback, for the prompt only
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def recording_capture(monkeypatch, no_tmux):
+    """A pane whose capture_pane calls are recorded, visible vs scrollback.
+
+    The wide capture returns the visible screen preceded by older lines, which
+    is what a real `capture-pane -S -200` gives back: the tail of a longer
+    buffer, newest last.
+    """
+    calls: list[int] = []
+    scrolled_off = ["sai@box:~$ vim older_scrollback_file.py"]
+
+    def capture(name, lines=60):
+        calls.append(lines)
+        return SHELL_SCREEN if lines <= 60 else scrolled_off + SHELL_SCREEN
+
+    monkeypatch.setattr(A, "resolve_target", lambda s, d: "work")
+    monkeypatch.setattr(A, "capture_pane", capture)
+    monkeypatch.setattr(A, "pane_cwd", lambda name: "")
+    return calls
+
+
+def test_the_prompt_gets_its_own_wider_capture(installed, monkeypatch,
+                                               recording_capture):
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
+
+    A.transcribe(b"audio bytes", "work", "phone")
+    assert 60 in recording_capture, "the visible capture must keep its default"
+    assert A.PROMPT_SCROLLBACK_LINES in recording_capture
+
+
+def test_the_resolver_only_ever_sees_the_visible_screen(installed, monkeypatch,
+                                                        recording_capture):
+    """Register detection and window matching are entitled to exactly the pane
+    the user is looking at; the wider capture is prompt vocabulary alone."""
+    seen: dict = {}
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
+
+    real_resolve = R.resolve
+
+    def spy(text, **kwargs):
+        seen.update(kwargs)
+        return real_resolve(text, **kwargs)
+
+    monkeypatch.setattr(A.resolver, "resolve", spy)
+    A.transcribe(b"audio bytes", "work", "phone")
+    assert seen["screen"] == SHELL_SCREEN
+
+
+def test_the_prompt_reaches_words_that_scrolled_off(no_tmux):
+    """The point of the wider capture: MAX_SCREEN_LINES would have cut these."""
+    # Ordinary English filler, which the rarity gate drops: the assertion is
+    # about reach past the 60-line window, not about the word budget.
+    scrollback = ["the report was ready" for _ in range(150)]
+    scrollback.insert(0, "vim scrolled_off_thing.py")
+    prompt = A.transcribe_prompt(SHELL_SCREEN, "", None, scrollback)
+    assert "scrolled_off_thing.py" in prompt
+
+
+def test_the_visible_screen_still_outranks_the_scrollback(no_tmux):
+    """Both are rare; what is on screen right now ranks first."""
+    prompt = A.transcribe_prompt(["visiblehmr_thing.py"], "", None,
+                                 ["scrolledhmr_thing.py", "visiblehmr_thing.py"])
+    words = vocab_of(prompt)
+    assert words.index("visiblehmr_thing.py") < words.index("scrolledhmr_thing.py")
+
+
+def test_the_prompt_degrades_to_the_old_behaviour_without_scrollback(no_tmux):
+    assert A.transcribe_prompt(["test_camerahmr.py"], "", None, None) == \
+        A.transcribe_prompt(["test_camerahmr.py"], "")
+
+
+# ---------------------------------------------------------------------------
+# SSH hosts in the prompt vocabulary
+# ---------------------------------------------------------------------------
+
+def test_ssh_hosts_ride_the_history_channel(installed, monkeypatch, at_a_shell):
+    """One combined list, so they reach both the prompt and the resolver."""
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A.resolver, "history_vocabulary", lambda: ["sdwivedi"])
+    monkeypatch.setattr(A.resolver, "ssh_hosts", lambda: ["galtonhost"])
+
+    prompts: list[str] = []
+    monkeypatch.setattr(A, "run_whisper",
+                        lambda b, m, w, p: prompts.append(p) or "git status")
+    seen: dict = {}
+    real_resolve = R.resolve
+
+    def spy(text, **kwargs):
+        seen.update(kwargs)
+        return real_resolve(text, **kwargs)
+
+    monkeypatch.setattr(A.resolver, "resolve", spy)
+    A.transcribe(b"audio bytes", "work", "phone")
+
+    assert "galtonhost" in prompts[0]
+    # After history in the combined list: same channel, at the tail.
+    assert seen["extra_vocab"] == ["sdwivedi", "galtonhost"]
+
+
+# ---------------------------------------------------------------------------
+# Learned corrections
+# ---------------------------------------------------------------------------
+
+
+def test_learned_words_are_capped_in_the_prompt(no_tmux, monkeypatch):
+    """A growing store must not squeeze out the screen, the cwd or the name.
+
+    Learned words carry the top source weight, so without the cap a user who
+    has taught the app twenty words would have a prompt of nothing else.
+    """
+    monkeypatch.setattr(A.getpass, "getuser", lambda: "sdwivedi")
+    learned = [f"learnedword{i}" for i in range(20)]
+    prompt = A.transcribe_prompt(["$ pytest tests/test_camerahmr.py"], "",
+                                 learned=learned)
+    present = [w for w in learned if w in prompt]
+    assert len(present) == A.MAX_PROMPT_LEARNED
+    # Most recently reinforced first: the head of the list is what is kept.
+    assert present == learned[:A.MAX_PROMPT_LEARNED]
+    # And the reservations that were there before still hold.
+    assert "sdwivedi" in prompt
+    assert "test_camerahmr.py" in prompt
+
+
+def test_a_plain_looking_learned_word_survives_the_shape_test(no_tmux, monkeypatch):
+    """The shape test is a guess about need; a learned word carries the answer.
+
+    `report` is a common English word and is dropped outright from every other
+    source. Learned, it is a word whisper demonstrably got wrong for this user
+    — the shape test simply has no way to know that, and the store does.
+    """
+    monkeypatch.setattr(A.getpass, "getuser", lambda: "sdwivedi")
+    assert A._prompt_rarity("report") == 0.0
+    assert "report" not in A.transcribe_prompt(["report"], "")
+    assert "report" in A.transcribe_prompt([], "", learned=["report"])
+
+
+def test_learned_words_default_to_none(no_tmux, monkeypatch):
+    """The parameter is optional: every existing caller keeps working."""
+    monkeypatch.setattr(A.getpass, "getuser", lambda: "sdwivedi")
+    assert A.transcribe_prompt(["$ pytest"], "") == \
+        A.transcribe_prompt(["$ pytest"], "", learned=[])
+
+
+def test_learn_records_a_repeated_mishearing(tmp_path, monkeypatch):
+    """The route carries the pair across; the resolver decides what it means."""
+    store = tmp_path / "learned.json"
+    monkeypatch.setattr(R, "LEARNED_PATH", store)
+    monkeypatch.setattr(R, "_learned_cache", {"stamp": None, "entries": []})
+
+    assert body(A.api_learn({"heard": "cd stved", "sent": "cd sdwivedi"})) == \
+        {"learned": 1}
+    assert R.learned_words(store) == []          # one event is not evidence
+    A.api_learn({"heard": "open stved", "sent": "open sdwivedi"})
+    assert R.learned_words(store) == ["sdwivedi"]
+
+
+def test_learn_ignores_an_unedited_or_empty_send(tmp_path, monkeypatch):
+    """Nothing to compare, nothing to learn — and never an error."""
+    store = tmp_path / "learned.json"
+    monkeypatch.setattr(R, "LEARNED_PATH", store)
+    monkeypatch.setattr(R, "_learned_cache", {"stamp": None, "entries": []})
+
+    for payload in ({"heard": "cd stved", "sent": "cd stved"},
+                    {"heard": "", "sent": "cd sdwivedi"},
+                    {"heard": "cd stved", "sent": ""},
+                    {}):
+        assert body(A.api_learn(payload)) == {"learned": 0}
+    assert not store.exists()
+
+
+def test_learn_never_fails_the_send(tmp_path, monkeypatch):
+    """The phone fires this and forgets it; there is no failure for it to see."""
+    monkeypatch.setattr(R, "LEARNED_PATH", tmp_path / "nope" / "learned.json")
+    monkeypatch.setattr(R, "_learned_cache", {"stamp": None, "entries": []})
+    response = A.api_learn({"heard": "cd stved", "sent": "cd sdwivedi"})
+    assert response.status_code == 200
+    assert body(response) == {"learned": 0}
+
+
+def test_an_unreadable_store_leaves_the_prompt_alone(tmp_path, monkeypatch):
+    """A corrupt store is an empty vocabulary everywhere, including here."""
+    store = tmp_path / "learned.json"
+    store.write_text("{ not json")
+    monkeypatch.setattr(R, "LEARNED_PATH", store)
+    monkeypatch.setattr(R, "_learned_cache", {"stamp": None, "entries": []})
+    assert R.learned_words() == []
+    monkeypatch.setattr(A.getpass, "getuser", lambda: "sdwivedi")
+    assert A.transcribe_prompt([], "", learned=R.learned_words()) == \
+        A.transcribe_prompt([], "")
