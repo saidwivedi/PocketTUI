@@ -546,6 +546,75 @@ def test_snap_does_not_drop_a_digit_the_speaker_said(tree):
     assert R.snap_paths(spoken) == spoken
 
 
+@pytest.fixture
+def relproj(tmp_path):
+    """A project the way a dictated relative path expects to find one."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_camerahmr.py").write_text("")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "run_bench.sh").write_text("")
+    (tmp_path / "vendor").mkdir()
+    return str(tmp_path)
+
+
+def test_snap_fixes_a_relative_path_against_the_request_cwd(relproj):
+    """"tests/test_x.py" is the shape dictation actually produces.
+
+    Nothing about it is rooted, so it is only checkable against the directory
+    the request came from.
+    """
+    assert R.snap_paths("tesst/test_camerahmr.py", cwd=relproj) == \
+        "tests/test_camerahmr.py"
+    assert R.snap_paths("scripts/run_bench.sh", cwd=relproj) == \
+        "scripts/run_bench.sh"
+
+
+def test_a_relative_token_is_never_rooted_at_the_filesystem_root(relproj):
+    """The walk anchors at the cwd, never at "/".
+
+    Treating a relative token as absolute used to consume its first character
+    as the leading separator and return "/est/test_camerahmr.py".
+    """
+    for text in ("tests/test_camerahmr.py", "tesst/test_camerahmr.py"):
+        assert not R.snap_paths(text, cwd=relproj).startswith("/")
+    assert R._snap_walk("tests/test_camerahmr.py", os.path.expanduser("~"), 0) == \
+        "tests/test_camerahmr.py"
+
+
+@pytest.mark.parametrize("text", [
+    # A bare word is never a path, so the filesystem is never asked about it.
+    "vendorr",
+    "checkpoint",
+    # Prose that happens to hold a slash: neither segment names anything here.
+    "either/or",
+    "read/write access",
+    # A first segment that names nothing stops the walk before it starts, so
+    # the segments under it are kept exactly as spoken.
+    "qqqqqqqq/test_camerahmr.py",
+])
+def test_relative_snapping_leaves_everything_else_alone(relproj, text):
+    assert R.snap_paths(text, cwd=relproj) == text
+
+
+def test_a_relative_path_needs_a_cwd_to_be_relative_to(relproj):
+    """With no usable cwd there is no anchor, so the token passes through."""
+    assert R.snap_paths("tesst/test_camerahmr.py") == "tesst/test_camerahmr.py"
+    assert R.snap_paths("tesst/test_camerahmr.py", cwd="") == \
+        "tesst/test_camerahmr.py"
+    # An unreadable or missing cwd degrades to the same no-op rather than
+    # raising or probing something else.
+    missing = os.path.join(relproj, "no-such-dir")
+    assert R.snap_paths("tesst/test_camerahmr.py", cwd=missing) == \
+        "tesst/test_camerahmr.py"
+
+
+def test_absolute_and_home_snapping_is_unchanged_by_a_cwd(tree):
+    """A cwd is the anchor for relative tokens only; rooted ones ignore it."""
+    spoken = f"go to {tree}/claster/fast"
+    assert R.snap_paths(spoken, cwd=str(tree)) == R.snap_paths(spoken)
+    assert R.snap_paths(spoken, cwd=str(tree)) == f"go to {tree}/cluster/fast"
+
+
 def test_snap_never_writes_to_the_filesystem(tree):
     """Read-only by construction: the tree is byte-identical afterwards."""
     before = sorted(p.relative_to(tree).as_posix() for p in tree.rglob("*"))
