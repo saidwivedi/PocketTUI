@@ -3912,6 +3912,10 @@ function setCompose(open, quiet) {
   // Same for a recording: the strip going away is the user abandoning it, so the
   // capture is dropped rather than left running behind a closed bar.
   if (!open) cancelRecording();
+  // A transcript the user walked away from teaches nothing: whatever they do
+  // with the box next is a new errand, and comparing it against a proposal from
+  // the last one would invent an edit nobody made.
+  if (!open) learnHeard = null;
   // The strip is a flex sibling of #term-host, so showing it takes rows away
   // from the terminal — xterm only learns that from a fit.
   refit(0);
@@ -3945,6 +3949,25 @@ function composeSend() {
   const text = ta.value;
   if (!text || !term) return;
   term.paste(text);
+  // The edit the user made to a dictated transcript before sending it is the
+  // only evidence this app ever gets about what the microphone gets wrong, and
+  // this is the one moment it exists. Read here, between the paste and the
+  // clear, because `text` is the outgoing message and learnHeard is about to be
+  // reset — and deliberately not before the paste, since nothing about learning
+  // may stand between the user's tap and their text reaching the terminal.
+  const heard = learnHeard;
+  learnHeard = null;
+  if (heard && text !== heard) learnSend(heard, text);
+  // Blur before clearing, not after. Dictated text leaves iOS holding an open
+  // composition on this field — the keyboard's mic key does it directly, and the
+  // code button's focus()/setSelectionRange() at the end of codeMicFinish() puts
+  // the field back under the same keyboard. Assigning "" to a field WebKit still
+  // considers under composition does not stick: the composition buffer reconciles
+  // afterwards and writes its text back, so the message sends but the box stays
+  // full. Blurring ends the composition first, which discards that buffer and
+  // makes the clear final. Typed text has no pending composition and does not
+  // care either way, so the ordering costs the working path nothing.
+  ta.blur();
   ta.value = "";
   recogText = "";
   composeGrow();
@@ -4202,6 +4225,27 @@ const REC_NO_VOICE_MSG =
 // does not report a trustworthy selection. null means there was never a caret to
 // speak of, which resolves to the end of the text.
 let recCaretStart = null, recCaretEnd = null;
+
+// The single code-mode transcript inserted since the last send, as it was
+// inserted. null means none; "" means more than one, which is not a usable
+// signal — see codeMicFinish(). Reset on every send and every close.
+let learnHeard = null;
+
+// Tell the backend what it proposed and what the user actually sent, so a word
+// it mishears the same way twice becomes part of this user's vocabulary.
+//
+// Fire and forget, in every sense: no await, no error surfaced, no UI. The send
+// has already happened by the time this runs and nothing here may delay or
+// disturb it. A failure costs one missed lesson, which the user cannot see.
+function learnSend(heard, sent) {
+  try {
+    fetch(apiURL("api/learn"), {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ heard: heard, sent: sent }),
+    }).catch(() => {});
+  } catch (e) { /* learning is never worth an exception */ }
+}
 
 // --- Level monitoring -----------------------------------------------------
 // The muted-track failure hands over a track that reports readyState "live" and
@@ -4717,6 +4761,11 @@ function codeMicFinish(text) {
   const lead = before && !/\s$/.test(before) ? " " : "";
   const trail = after && !/^\s/.test(after) ? " " : "";
   ta.value = before + lead + text + trail + after;
+  // What the backend proposed, remembered for composeSend() to compare against
+  // what actually gets sent. Two transcripts in one message make the comparison
+  // ambiguous — there is no telling which one an edit belongs to — so the
+  // second one poisons the slot rather than replacing it.
+  learnHeard = learnHeard === null ? text : "";
   // The keyboard comes up now, and only now: reviewing is a typing job, and this
   // is the point where the terminal no longer has to stay visible. The caret is
   // left at the end of what was just inserted, so resuming prose dictation
