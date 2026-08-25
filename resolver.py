@@ -1984,6 +1984,15 @@ PATH_SNAP_FALLBACK_MIN_CHARS = 5
 
 _PATH_TOKEN_RE = re.compile(r"^(/|~/)")
 
+# A relative path is only worth probing the filesystem for when the token could
+# not be anything else: two or more segments around a real "/", each of them
+# path-shaped. A bare word never qualifies — without this the snapper would put
+# a directory listing behind every noun in a sentence — and neither does a
+# spoken "either/or", whose segments are ordinary words that match nothing in
+# any project directory. The evidence that settles it is the filesystem's, in
+# _snap_walk; this pattern only decides what is cheap enough to ask about.
+_REL_PATH_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+/?$")
+
 # Trailing sentence punctuation is not part of the path. Stripped before every
 # probe and reattached to whatever the walk produces.
 _PATH_TRAIL = ",.?!"
@@ -2077,14 +2086,31 @@ def _snap_segment(parent: str, segment: str, deadline: float) -> str:
     return best
 
 
-def _snap_walk(token: str, home: str, deadline: float) -> str:
+def _snap_walk(token: str, home: str, deadline: float, cwd: str = "") -> str:
     """Rewrite the nonexistent segments of one path token; keep the rest verbatim.
 
     The walk stops at the first segment that neither exists nor snaps: past a
     prefix we could not establish, every deeper listing is of the wrong
     directory, so the remaining segments are kept exactly as spoken.
+
+    Where the walk starts and what is written back are two different things. An
+    absolute token is probed from "/" and keeps its "/"; a "~/" token is probed
+    from the home directory but keeps the "~/" it was spoken with; a relative
+    token is probed from `cwd` and gets no prefix at all. Conflating the two —
+    prepending the probe root to the output — is what turned a relative
+    "test/test_x.py" into "/est/test_x.py".
     """
-    lead = "~/" if token.startswith("~/") else "/"
+    if token.startswith("~/"):
+        lead, probe_root = "~/", home
+    elif token.startswith("/"):
+        lead, probe_root = "/", "/"
+    else:
+        # Relative, and only ever walked against a caller-supplied cwd: with no
+        # cwd there is no directory this token is relative *to*, and probing the
+        # server's own working directory would answer a question nobody asked.
+        if not cwd:
+            return token
+        lead, probe_root = "", cwd
     rest = token[len(lead):]
     segments = [s for s in rest.split("/") if s]
     if not segments:
@@ -2093,7 +2119,6 @@ def _snap_walk(token: str, home: str, deadline: float) -> str:
     # Probing "/" itself for a lone "/foo" in prose would put a directory
     # listing behind an ordinary sentence, so a single segment is only walked
     # when it already exists.
-    probe_root = home if lead == "~/" else "/"
     if len(segments) < 2 and not _snap_exists(os.path.join(probe_root, segments[0])):
         return token
 
@@ -2147,12 +2172,19 @@ def _snap_merges(first: str, second: str, home: str, deadline: float) -> bool:
     return bool(_snap_segment(base, head, deadline))
 
 
-def snap_paths(text: str, budget: float = PATH_SNAP_BUDGET_S) -> str:
+def snap_paths(text: str, budget: float = PATH_SNAP_BUDGET_S,
+               cwd: str = "") -> str:
     """Correct dictated path tokens against the filesystem. Never raises.
 
     Runs after apply_rules, so a spoken "slash is slash cluster" has already
     become one token by the time it gets here. Anything that goes wrong — a
     hung mount, a permission error, the budget — leaves the text as it was.
+
+    `cwd` is the directory the request came from, and it is what makes a
+    relative token ("tests/test_x.py") checkable at all: without it such a
+    token names nothing in particular and is passed through untouched. Only
+    tokens shaped like a multi-segment path are considered, and the walk still
+    has to find the first segment in that directory before it looks any deeper.
     """
     tokens = text.split()
     if not tokens:
@@ -2160,19 +2192,32 @@ def snap_paths(text: str, budget: float = PATH_SNAP_BUDGET_S) -> str:
     deadline = time.monotonic() + max(0.01, budget)
     try:
         home = os.path.expanduser("~")
+        # A cwd that is not a readable directory is no anchor at all; dropping
+        # it here makes every relative token a pass-through rather than a
+        # question asked of a directory that cannot answer.
+        base = cwd if cwd and os.path.isdir(cwd) else ""
+
+        def is_path_token(tok: str) -> bool:
+            return bool(_PATH_TOKEN_RE.match(tok)
+                        or (base and _REL_PATH_TOKEN_RE.match(
+                            tok.rstrip(_PATH_TRAIL))))
+
         out: list[str] = []
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            if not _PATH_TOKEN_RE.match(token):
+            if not is_path_token(token):
                 out.append(token)
                 i += 1
                 continue
             body = token.rstrip(_PATH_TRAIL)
             trail = token[len(body):]
             # A split path is merged before the walk, so the walk sees the whole
-            # thing and can carry a corrected prefix into the second half.
-            while i + 1 < len(tokens) and _PATH_TOKEN_RE.match(tokens[i + 1]):
+            # thing and can carry a corrected prefix into the second half. The
+            # merge reads both halves as rooted paths, so it stays confined to
+            # the tokens that are ones.
+            while _PATH_TOKEN_RE.match(body) and i + 1 < len(tokens) \
+                    and _PATH_TOKEN_RE.match(tokens[i + 1]):
                 nxt = tokens[i + 1]
                 nxt_body = nxt.rstrip(_PATH_TRAIL)
                 if not _snap_merges(body, nxt_body, home, deadline):
@@ -2180,7 +2225,7 @@ def snap_paths(text: str, budget: float = PATH_SNAP_BUDGET_S) -> str:
                 body = body.rstrip("/") + "/" + nxt_body.lstrip("/")
                 trail = nxt[len(nxt_body):]
                 i += 1
-            out.append(_snap_walk(body, home, deadline) + trail)
+            out.append(_snap_walk(body, home, deadline, base) + trail)
             i += 1
         return " ".join(out)
     except Exception:  # noqa: BLE001 — a snap failure must not cost the transcript
@@ -2619,7 +2664,7 @@ def resolve(text: str, screen=None, cwd: str = "", tmux_names=None,
         # index, so a path the filesystem settled is not second-guessed by a
         # phonetic match against the screen.
         if asr:
-            snapped = snap_paths(current)
+            snapped = snap_paths(current, cwd=cwd)
             if snapped != current:
                 spans = _merge_spans(spans, _rule_spans(current, snapped),
                                      current, snapped)
