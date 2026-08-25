@@ -19,6 +19,8 @@ the per-register tightening exist to buy that stubbornness.
 
 from __future__ import annotations
 
+import difflib
+import json
 import os
 import re
 import subprocess
@@ -40,6 +42,10 @@ MAX_WALK_ENTRIES = 2000
 MAX_WALK_DEPTH = 3
 MAX_PATH_ENTRIES = 4000
 MAX_SCREEN_LINES = 60
+# Recently-touched filenames are a short, high-value list, not a listing: past
+# the few dozen most recent the names are no longer "what the user is working
+# on", which is the only thing this source claims to know.
+MAX_GIT_TOUCHED_FILES = 40
 SKIP_DIRS = frozenset({
     "node_modules", "__pycache__", ".git", ".venv", "venv", "dist", "build",
     ".mypy_cache", ".pytest_cache", ".tox", ".idea", "target",
@@ -360,14 +366,27 @@ def similarity(a: str, b: str) -> float:
 # ---------------------------------------------------------------------------
 
 # Priority decides ties: what is on screen right now beats what merely exists on
-# the filesystem, and both beat the long tail of $PATH.
+# the filesystem, and both beat the long tail of $PATH. Shell history sits at
+# the bottom — it is the broadest source and the least current, so it wins a tie
+# only when nothing nearer to the user has an answer at all.
 SOURCE_PRIORITY = {
     "screen": 5,
     "cwd": 4,
     "branch": 3,
     "path": 2,
     "tmux": 1,
+    "history": 1,
 }
+
+# Sources that are broad rather than nearby: hundreds or thousands of names the
+# user is not looking at, where something will sound like almost any English
+# word. Both are useful for what the user is *running* or has run, and both need
+# the extra guards in match_window before a fuzzy hit on them may stand.
+_WIDE_SOURCES = frozenset({"path", "history"})
+
+# Carries a separator, so it is a path or a dotted filename rather than a bare
+# word — the shape that is plausible mid-sentence and not only after a prompt.
+_PATH_SHAPED_RE = re.compile(r"[/._-]")
 
 _SPLIT_RE = re.compile(r"[^A-Za-z0-9_./~=+-]+")
 _SUBWORD_RE = re.compile(r"[_\-./]+")
@@ -471,14 +490,19 @@ class Index:
         return str(text).lower() in self._surfaces
 
 
-def screen_tokens(lines) -> list[str]:
+def screen_tokens(lines, limit: int = MAX_SCREEN_LINES) -> list[str]:
     """Identifier-shaped words from the terminal buffer, original casing kept.
 
     Case is preserved because the screen is the one source that shows how the
     user's own project spells things — `CameraHMR` is not `camerahmr`.
+
+    `limit` is the visible screen by default and must stay that way for the
+    index: register detection and match_window are entitled to see exactly what
+    the user is looking at and nothing older. Only the transcription prompt,
+    which merely biases the decode, passes a wider capture.
     """
     tokens: list[str] = []
-    for line in list(lines or [])[-MAX_SCREEN_LINES:]:
+    for line in list(lines or [])[-max(1, limit):]:
         for tok in _TOKEN_RE.findall(str(line)):
             tok = tok.strip("./-")
             if len(tok) >= 3 and any(c.isalpha() for c in tok):
@@ -549,6 +573,75 @@ def git_branches(cwd: str, deadline: float = 0.0) -> list[str]:
     return [line.strip() for line in p.stdout.splitlines() if line.strip()][:400]
 
 
+def _git_lines(cwd: str, args: list[str], deadline: float) -> list[str]:
+    """One git invocation's stdout lines, or nothing at all.
+
+    Same convention as git_branches, and for the same reasons: the timeout is
+    capped to what remains of the request budget, and git being absent or `cwd`
+    not being a repo is an ordinary outcome rather than an error to report.
+    """
+    timeout = 0.5
+    if deadline:
+        timeout = min(0.25, max(0.05, deadline - time.monotonic()))
+    try:
+        p = subprocess.run(["git"] + args, cwd=cwd, capture_output=True,
+                           text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if p.returncode != 0:
+        return []
+    return p.stdout.splitlines()
+
+
+def git_touched_files(cwd: str, deadline: float = 0.0) -> list[str]:
+    """Basenames of the files this repo was recently working on, newest first.
+
+    The cwd walk already supplies every tracked path, so this source is not
+    about reach but about order: the handful of files edited today are what the
+    user is talking about, and putting their names in the vocabulary is what
+    gets a dictated `resolver.py` back from a monorepo's thousands of names.
+
+    Basenames only. The walk already holds the full relative paths, and it is
+    the spoken filename — not the path git prints — that has to be matched.
+
+    Status first because it is "right now"; the log's own order is then kept
+    verbatim, since git already emits it newest-commit-first and re-sorting it
+    would throw away the one thing this source knows.
+    """
+    if not cwd or not os.path.isdir(cwd):
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def keep(path: str) -> None:
+        # A rename prints "old -> new"; the new name is the one that exists.
+        # Paths with spaces or quotes in them come back quoted.
+        path = path.split(" -> ")[-1].strip().strip('"')
+        name = os.path.basename(path.rstrip("/"))
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+
+    for line in _git_lines(cwd, ["status", "--porcelain"], deadline):
+        if not line.strip():
+            continue
+        # Porcelain v1 is fixed-width: two status columns and a space, then the
+        # path. Slicing beats splitting, since the path may itself hold spaces.
+        keep(line[3:])
+        if len(names) >= MAX_GIT_TOUCHED_FILES:
+            return names
+    # `--pretty=format:` prints an empty line per commit, which the strip below
+    # drops; --name-only then gives one path per line with no status columns.
+    for line in _git_lines(cwd, ["log", "--name-only", "--pretty=format:", "-5"],
+                           deadline):
+        if not line.strip():
+            continue
+        keep(line.strip())
+        if len(names) >= MAX_GIT_TOUCHED_FILES:
+            break
+    return names
+
+
 # Unlocked by design: every access is a single dict get/set, atomic under the
 # GIL, and a torn read at worst serves one stale or one-scan-early result —
 # never a corrupt one. The one place two steps must not interleave (_cwd_cache's
@@ -602,6 +695,11 @@ def cwd_vocabulary(cwd: str, deadline: float = 0.0) -> tuple[list[str], list[str
     Five seconds is long enough that a burst of keystroke-debounced resolves
     walks the tree once, and short enough that a file created mid-session shows
     up while the user is still talking about it.
+
+    Recently-touched filenames join the names rather than becoming a third
+    source: they are cwd files, indexed at the same "cwd" priority, and the
+    only thing that distinguishes them is that they come first — which is
+    exactly what a list already carries.
     """
     now = time.monotonic()
     hit = _cwd_cache.get(cwd)
@@ -611,6 +709,8 @@ def cwd_vocabulary(cwd: str, deadline: float = 0.0) -> tuple[list[str], list[str
         return [], []
     names = walk_names(cwd, deadline)
     branches = [] if (deadline and time.monotonic() > deadline) else git_branches(cwd, deadline)
+    if not (deadline and time.monotonic() > deadline):
+        names = git_touched_files(cwd, deadline) + names
     # Unbounded growth is not a risk worth code, but a long-running server
     # visiting many cwds should not keep every one forever. The check and the
     # clear must not interleave across threads, or a clear from one racing
@@ -622,14 +722,656 @@ def cwd_vocabulary(cwd: str, deadline: float = 0.0) -> tuple[list[str], list[str
     return names, branches
 
 
+# ---------------------------------------------------------------------------
+# Shell history vocabulary
+# ---------------------------------------------------------------------------
+# The screen and the cwd only know about the place the user is standing. The
+# paths they dictate are often somewhere else entirely — a cluster mount typed a
+# hundred times last month and not once today — and for those the history file
+# is the only source that has ever seen the words.
+
+HISTORY_TAIL_LINES = 2000
+HISTORY_TAIL_BYTES = 400_000
+HISTORY_COMMANDS = 800
+HISTORY_MAX_WORDS = 800
+HISTORY_WORDS_PER_COMMAND = 12
+
+# zsh's EXTENDED_HISTORY prefix: ": <start>:<elapsed>;<command>".
+_HIST_META_RE = re.compile(r"^:\s*\d+:\d+;")
+# Assignment whose value is a credential by name. Matched on the LHS only, so
+# `PYTHONPATH=/is/cluster/...` keeps its value and `API_TOKEN=hunter2` does not.
+_SECRET_LHS_RE = re.compile(r"(?i)(pass|token|secret|key|auth|cred)")
+_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*)=(.*)$")
+# Flags whose next argument is a credential rather than a word worth learning.
+_SECRET_FLAGS = frozenset({
+    "-H", "--header", "--password", "--pass", "--token", "--secret",
+    "--api-key", "--apikey", "--key", "-u", "--user", "--auth", "-p",
+    "--credential", "--credentials", "-d", "--data",
+})
+_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
+# Shell syntax is never something the user dictates, so a token still carrying
+# any of it after the quote strip is punctuation rather than vocabulary:
+# `${#PS1`, `2>/dev/null`, `$CMUX_DIR`, `*.py`, `foo=bar,baz`.
+_SHELL_SYNTAX_RE = re.compile(r"[$*?!#%^~@:,+\\\[\]{}()<>=|&;\"'`]")
+
+
+def _is_secretish(token: str) -> bool:
+    """Does this token have the shape of a credential rather than a name?
+
+    Deliberately trigger-happy: a vocabulary word wrongly dropped costs one
+    missed correction, while a leaked one is handed to a subprocess as argv
+    where any `ps` can read it. Two shapes are exempted because they are what
+    this source exists to supply and neither looks like a key: anything with a
+    "/" is a path, and a token whose separators split it into ordinary words
+    (`rarely_touched_file.txt`, `train_camerahmr_stage2.yaml`) is a filename.
+    """
+    if len(token) < 20:
+        return False
+    if _HEX_RE.match(token) and len(token) >= 32:
+        return True
+
+    # A "/" alone does not make something a path — an AWS secret key is mostly
+    # base64 and carries slashes too — so the test is whether the pieces the
+    # separators cut it into read as words. Short pieces that are letters, or
+    # letters trailed by digits (`stage2`, `epoch120`), are name-shaped; a
+    # 30-character run of mixed case and digits is not.
+    pieces = [p for p in _SUBWORD_RE.split(token) if p]
+
+    def name_shaped(piece: str) -> bool:
+        if len(piece) > 14:
+            return False
+        return bool(re.fullmatch(r"[A-Za-z]+[0-9]*|[0-9]+", piece))
+
+    if len(pieces) >= 2 and all(name_shaped(p) for p in pieces):
+        return False
+    # A URL's scheme is not a name-shaped piece, but the host and repo path
+    # after it are exactly the vocabulary wanted (`saidwivedi`, `PocketTUI`).
+    body = re.sub(r"^[a-z][a-z0-9+.-]*://", "", token)
+    if "/" in token and all(name_shaped(p) for p in re.split(r"[/.]", body) if p):
+        return False
+    # A long run mixing cases and digits is what a token or a hash looks like;
+    # a name that long is almost always separated into words somehow.
+    classes = (any(c.islower() for c in token) + any(c.isupper() for c in token)
+               + any(c.isdigit() for c in token))
+    return classes >= 2
+
+
+def _history_files() -> list[str]:
+    """Candidate history paths, most authoritative first."""
+    env = os.environ.get("HISTFILE", "").strip()
+    if env:
+        return [os.path.expanduser(env)]
+    home = os.path.expanduser("~")
+    return [os.path.join(home, ".zsh_history"), os.path.join(home, ".bash_history")]
+
+
+def _read_history_tail(path: str) -> list[str]:
+    """The last few thousand lines of `path`, or nothing at all.
+
+    Only the tail is read: a history file that has been accumulating for years
+    is megabytes, and the recent end is the only part whose vocabulary is worth
+    biasing towards anyway.
+    """
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > HISTORY_TAIL_BYTES:
+                fh.seek(size - HISTORY_TAIL_BYTES)
+                fh.readline()  # discard the partial line the seek landed in
+            data = fh.read()
+    except OSError:
+        return []
+    text = data.decode("utf-8", "replace")
+    return text.splitlines()[-HISTORY_TAIL_LINES:]
+
+
+def _history_commands(lines: list[str]) -> list[str]:
+    """Whole commands from raw history lines, both zsh formats and bash.
+
+    zsh writes a "\\" continuation for a multi-line command and repeats no
+    metadata prefix on the continuation, so a line is a new command exactly when
+    the previous one did not end in a backslash.
+    """
+    commands: list[str] = []
+    continuing = False
+    for line in lines:
+        stripped = _HIST_META_RE.sub("", line) if _HIST_META_RE.match(line) else line
+        if continuing and commands:
+            commands[-1] += "\n" + stripped
+        else:
+            commands.append(stripped)
+        continuing = stripped.endswith("\\")
+    return [c for c in commands if c.strip()]
+
+
+def _command_words(command: str) -> list[str]:
+    """Vocabulary words from one command line, credentials filtered out.
+
+    Path tokens contribute their segments as well as the whole string: whisper
+    needs "sdwivedi" and "cluster" as words it can emit, and the joined
+    `/is/cluster/fast/sdwivedi/work` biases nothing on its own.
+    """
+    words: list[str] = []
+    skip_next = False
+    for raw in command.split():
+        token = raw.strip("'\"`;|&()<>{}[],")
+        if skip_next:
+            skip_next = False
+            continue
+        if raw in _SECRET_FLAGS or token in _SECRET_FLAGS:
+            skip_next = True
+            continue
+        if not token:
+            continue
+        assign = _ASSIGN_RE.match(token)
+        if assign:
+            name, value = assign.group(1), assign.group(2)
+            if _SECRET_LHS_RE.search(name):
+                # The name itself is harmless and often worth having; only the
+                # value it holds is dropped.
+                token = name
+            else:
+                token = name
+                if value and not _is_secretish(value):
+                    words.extend(_path_words(value))
+        if _is_secretish(token):
+            continue
+        words.extend(_path_words(token))
+    return words
+
+
+def _path_words(token: str) -> list[str]:
+    """The token itself when it is a plain word, plus its path segments."""
+    out: list[str] = []
+    if _is_secretish(token) or _SHELL_SYNTAX_RE.search(token):
+        return out
+
+    def keep(word: str) -> None:
+        word = word.strip("./-~")
+        if _SHELL_SYNTAX_RE.search(word):
+            return
+        if len(word) >= 3 and any(c.isalpha() for c in word) and word not in out:
+            out.append(word)
+
+    if "/" in token:
+        for segment in token.split("/"):
+            keep(segment)
+        # The whole path is still worth having when it is short enough to be
+        # spoken as one thing; a 90-character one only eats prompt budget.
+        if len(token) <= 40:
+            keep(token)
+    else:
+        keep(token)
+    return out
+
+
+# (path, mtime, size) -> words. Parsing a history file is far too expensive to
+# repeat per keystroke-debounced resolve, and the file only changes when a shell
+# writes to it, so the stat triple is an exact staleness test.
+_history_cache: dict[str, object] = {"stamp": None, "words": []}
+
+
+def history_vocabulary(deadline: float = 0.0) -> list[str]:
+    """Words from the user's shell history, most worth biasing towards first.
+
+    Ordered by a frequency-and-recency weight: a path typed once last year is
+    behind one typed twenty times this week. Missing, unreadable or empty
+    history is not an error — it is the common case on a fresh box, and the
+    caller simply gets a thinner vocabulary.
+    """
+    if deadline and time.monotonic() > deadline:
+        return list(_history_cache["words"])  # type: ignore[arg-type]
+
+    path = ""
+    stamp = None
+    for candidate in _history_files():
+        try:
+            st = os.stat(candidate)
+        except OSError:
+            continue
+        path, stamp = candidate, (candidate, st.st_mtime, st.st_size)
+        break
+    if not path:
+        _history_cache["stamp"] = None
+        _history_cache["words"] = []
+        return []
+
+    if _history_cache["stamp"] == stamp:
+        return list(_history_cache["words"])  # type: ignore[arg-type]
+
+    commands = _history_commands(_read_history_tail(path))[-HISTORY_COMMANDS:]
+    # Repetition is the stronger signal and recency the tiebreaker, not the
+    # other way round: a word typed in thirty commands is vocabulary the user
+    # lives in, while thirty distinct words from one afternoon's throwaway loop
+    # (`echo LINE_1` … `echo LINE_60`) are each seen exactly once. Summing a
+    # per-occurrence recency would rank those sixty one-offs above a path used
+    # daily for a year, so occurrences are counted and recency only breaks ties
+    # between words of equal count.
+    counts: dict[str, int] = {}
+    last_seen: dict[str, int] = {}
+    total = len(commands) or 1
+    for position, command in enumerate(commands):
+        # One command may not flood the vocabulary. A single `printf` loop or a
+        # pasted 60-argument invocation produces dozens of distinct
+        # identifier-shaped tokens, all with the same weight, and unbounded they
+        # crowd out the paths the user actually types every day.
+        for word in _command_words(command)[:HISTORY_WORDS_PER_COMMAND]:
+            counts[word] = counts.get(word, 0) + 1
+            last_seen[word] = position
+
+    def weight(word: str) -> float:
+        return counts[word] + last_seen[word] / total
+
+    ranked = sorted(counts, key=lambda w: (-weight(w), w))
+    words = ranked[:HISTORY_MAX_WORDS]
+    _history_cache["stamp"] = stamp
+    _history_cache["words"] = words
+    return list(words)
+
+
+# ---------------------------------------------------------------------------
+# SSH config hosts
+# ---------------------------------------------------------------------------
+# The hosts a user says out loud — "ssh into galton", "scp it to the cluster" —
+# are names no other source has: they are not on screen, not under the cwd, and
+# a host reached daily for a year may be nowhere in the history tail.
+
+SSH_CONFIG_PATH = "~/.ssh/config"
+SSH_MAX_HOSTS = 200
+
+# A pattern is a rule about hosts, not the name of one: `Host *` carries global
+# options and `Host *.cluster` matches a family. Neither is ever spoken.
+_SSH_GLOB_CHARS = "*?"
+
+# (path, mtime, size) -> hosts, the same exact staleness test _history_cache
+# uses. No deadline parameter: a config file is dozens of lines, so there is no
+# scan here worth abandoning half-way — unlike the history tail, which is read
+# and parsed by the hundred-kilobyte.
+_ssh_cache: dict[str, object] = {"stamp": None, "hosts": []}
+
+
+def ssh_hosts() -> list[str]:
+    """Host names and aliases from ~/.ssh/config, in the order they appear.
+
+    Only that one file. `Include` directives are deliberately not followed: the
+    included files are usually generated fleet inventories of hundreds of hosts,
+    which is a vocabulary this feature would be worse for having.
+
+    A missing, unreadable or hostless config is the common case and not an
+    error — the caller simply gets nothing.
+    """
+    path = os.path.expanduser(SSH_CONFIG_PATH)
+    try:
+        st = os.stat(path)
+    except OSError:
+        _ssh_cache["stamp"] = None
+        _ssh_cache["hosts"] = []
+        return []
+    stamp = (path, st.st_mtime, st.st_size)
+    if _ssh_cache["stamp"] == stamp:
+        return list(_ssh_cache["hosts"])  # type: ignore[arg-type]
+
+    try:
+        with open(path, "r", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return []
+
+    hosts: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        # ssh_config is "keyword value..." on whitespace (or an "=" the keyword
+        # may be separated by), with the keyword case-insensitive.
+        parts = line.strip().replace("=", " ", 1).split()
+        if len(parts) < 2 or parts[0].startswith("#"):
+            continue
+        keyword = parts[0].lower()
+        if keyword not in ("host", "hostname"):
+            continue
+        # `Host a b c` defines three aliases; HostName normally takes one value,
+        # and reading the rest of its line the same way costs nothing.
+        for value in parts[1:]:
+            if any(c in value for c in _SSH_GLOB_CHARS) or value in seen:
+                continue
+            seen.add(value)
+            hosts.append(value)
+            if len(hosts) >= SSH_MAX_HOSTS:
+                break
+        if len(hosts) >= SSH_MAX_HOSTS:
+            break
+
+    _ssh_cache["stamp"] = stamp
+    _ssh_cache["hosts"] = hosts
+    return list(hosts)
+
+
+# ---------------------------------------------------------------------------
+# Learned corrections
+# ---------------------------------------------------------------------------
+# When the user edits a transcript in the compose box before sending it, the
+# edit is a labelled example: whisper heard one thing, the user meant another.
+# Nothing about it is asked for and nothing about it is shown — the pair is
+# extracted from the diff, and once the same pair has turned up in two separate
+# utterances the corrected word becomes part of this user's vocabulary.
+#
+# Two utterances, not one, because a single edit is as likely to be the user
+# changing their mind as it is to be a mishearing. Requiring the same wrong
+# word to be corrected the same way twice is what separates the two: a rewrite
+# is never repeated verbatim, a mishearing always is.
+
+LEARNED_PATH = HERE / ".voice_learned.json"
+
+# Past this many pairs the store is a log rather than a vocabulary. Bounded by
+# eviction of the least recently reinforced, so the words the user has stopped
+# saying make room for the ones they have started saying.
+LEARNED_MAX_ENTRIES = 500
+
+# How many separate utterances must show the same correction before it is
+# believed. See above: this is the whole gate against learning a rewrite.
+LEARNED_PROMOTE_AT = 2
+
+# A replace span wider than this on either side is a rewritten phrase, not a
+# misheard word. Three tokens is enough for the compound cases whisper actually
+# produces ("camera h m r" for `camerahmr`) and short enough that a re-worded
+# sentence has no way through.
+LEARNED_MAX_SPAN = 3
+
+# The similarity floor for believing that `right` is what `wrong` sounded like.
+# Below it the two words share nothing acoustically and the edit was the user
+# saying something else. A shared metaphone key passes independently: `stved`
+# and `sdwivedi` are 0.615 on characters but the same sound, which is exactly
+# the case learning exists to cover.
+LEARNED_MIN_SIMILARITY = 0.40
+
+# (mtime, size) -> entries, the same staleness test _history_cache uses.
+_learned_cache: dict[str, object] = {"stamp": None, "entries": []}
+
+
+def _learnable_word(token: str) -> str:
+    """`token` stripped of dictation punctuation, or "" if it is not a word.
+
+    Identifier-shaped means letters, digits and the separators that appear
+    inside real names — a token carrying a slash is a path, and paths are the
+    snap pass's business, not this one.
+    """
+    word = token.strip().strip(",.!?;:\"'()[]{}")
+    if not (2 <= len(word) <= 64):
+        return ""
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.\-]*", word):
+        return ""
+    if not any(c.isalpha() for c in word):
+        return ""
+    return word
+
+
+def _learnable_pair(wrong: str, right: str) -> tuple[str, str] | None:
+    """One (misheard, corrected) pair, or None if the edit teaches nothing.
+
+    Every gate here is a way for an edit to be something other than a
+    mishearing, and each one has cost a wrong lesson somewhere:
+
+    * A pure case or punctuation change is register noise — the user tidying
+      "Git" into "git" is already the sentence-dressing rule's job.
+    * A `right` that is a bare common English word teaches whisper a word it
+      already knows; the store would fill with "the" and "for".
+    * Words that sound nothing alike were a rewrite, not a repair.
+    * Anything credential-shaped never enters a file, a prompt or an argv.
+    """
+    wrong, right = _learnable_word(wrong), _learnable_word(right)
+    if not wrong or not right:
+        return None
+    if wrong.lower() == right.lower():
+        return None
+    if _is_secretish(wrong) or _is_secretish(right):
+        return None
+    # Whisper spells English correctly; a correction into a bare common word is
+    # the user rephrasing. `right` carrying a separator or a digit is a name
+    # that merely happens to start with one ("data_v2"), and is kept.
+    if right.lower() in COMMON_WORDS and right.isalpha():
+        return None
+    if similarity(wrong.lower(), right.lower()) < LEARNED_MIN_SIMILARITY \
+            and metaphone(wrong) != metaphone(right):
+        return None
+    return wrong, right
+
+
+def extract_corrections(heard: str, sent: str) -> list[tuple[str, str]]:
+    """The (misheard, corrected) pairs one edited transcript is evidence for.
+
+    `heard` is the text this module handed the compose box; `sent` is what the
+    user actually sent after editing it. The difference between them is aligned
+    token-wise, and only a `replace` — a span of words swapped for a span of
+    words — can carry a mishearing. An insertion is the user adding something
+    they did not say, a deletion is them cutting something they did; neither
+    says anything about what whisper heard wrong.
+
+    Returns pairs in the order they appear, deduplicated. A rewritten sentence
+    returns nothing: its replace spans are far wider than LEARNED_MAX_SPAN, and
+    what survives that is caught by the similarity band in _learnable_pair.
+    """
+    a, b = str(heard or "").split(), str(sent or "").split()
+    if not a or not b:
+        return []
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    try:
+        opcodes = difflib.SequenceMatcher(None, [t.lower() for t in a],
+                                          [t.lower() for t in b],
+                                          autojunk=False).get_opcodes()
+    except Exception:  # noqa: BLE001 — an unlearnable edit, not an error
+        return []
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag != "replace":
+            continue
+        left, right = a[i1:i2], b[j1:j2]
+        if len(left) > LEARNED_MAX_SPAN or len(right) > LEARNED_MAX_SPAN:
+            continue
+        # Equal-length spans align positionally: word one was heard as word
+        # one. Unequal spans have no such alignment in general, and the one
+        # heuristic worth having is the many-to-one case whisper actually
+        # produces — "camera h m r" for `camerahmr` — where the whole span
+        # collapses into a single word. Anything else is skipped rather than
+        # guessed at.
+        if len(left) == len(right):
+            candidates = list(zip(left, right))
+        elif len(right) == 1:
+            candidates = [("".join(_learnable_word(t) for t in left), right[0])]
+        else:
+            continue
+        for wrong, corrected in candidates:
+            pair = _learnable_pair(wrong, corrected)
+            if pair and pair not in seen:
+                seen.add(pair)
+                pairs.append(pair)
+    return pairs
+
+
+def load_learned(path=None) -> list[dict]:
+    """The learned-correction store, or an empty list.
+
+    A missing, unreadable or malformed store is the common case (nothing has
+    been learned yet) and never an error: the caller simply gets no learned
+    vocabulary. Cached on (mtime, size) like history_vocabulary, so the
+    transcribe path re-reads only when learn_corrections has written.
+    """
+    target = Path(path) if path else LEARNED_PATH
+    try:
+        st = os.stat(target)
+    except OSError:
+        if not path:
+            _learned_cache["stamp"] = None
+            _learned_cache["entries"] = []
+        return []
+    stamp = (str(target), st.st_mtime, st.st_size)
+    if not path and _learned_cache["stamp"] == stamp:
+        return list(_learned_cache["entries"])  # type: ignore[arg-type]
+
+    entries: list[dict] = []
+    try:
+        with open(target, "r", errors="replace") as fh:
+            raw = json.load(fh)
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                wrong = str(item.get("wrong", "") or "")
+                right = str(item.get("right", "") or "")
+                if not wrong or not right:
+                    continue
+                entries.append({
+                    "wrong": wrong,
+                    "right": right,
+                    "count": int(item.get("count", 0) or 0),
+                    "utterances": int(item.get("utterances", 0) or 0),
+                    "last_ts": float(item.get("last_ts", 0.0) or 0.0),
+                })
+    except Exception:  # noqa: BLE001 — a corrupt store is an empty one
+        entries = []
+
+    if not path:
+        _learned_cache["stamp"] = stamp
+        _learned_cache["entries"] = entries
+    return list(entries)
+
+
+def learn_corrections(heard: str, sent: str, path=None, now: float = 0.0) -> int:
+    """Fold one edited transcript into the store. Returns the pairs recorded.
+
+    Each pair the edit is evidence for has its `utterances` count raised by
+    one — one edit is one utterance's worth of evidence for a given pair, no
+    matter how many times the word appeared in it, which is what keeps a single
+    sentence from promoting a correction on its own.
+
+    The write is atomic (tmp + rename): the transcribe path reads this file on
+    every request, and a reader must see either the old store or the new one,
+    never a half-written one.
+    """
+    pairs = extract_corrections(heard, sent)
+    if not pairs:
+        return 0
+    target = Path(path) if path else LEARNED_PATH
+    stamp = now or time.time()
+
+    entries = load_learned(path)
+    by_key = {(e["wrong"].lower(), e["right"].lower()): e for e in entries}
+    for wrong, right in pairs:
+        entry = by_key.get((wrong.lower(), right.lower()))
+        if entry is None:
+            entry = {"wrong": wrong, "right": right, "count": 0,
+                     "utterances": 0, "last_ts": stamp}
+            by_key[(wrong.lower(), right.lower())] = entry
+            entries.append(entry)
+        entry["count"] += 1
+        entry["utterances"] += 1
+        entry["last_ts"] = stamp
+
+    # Oldest-by-last_ts first out: the bound is on a vocabulary, and the words
+    # this user has not said in months are the ones worth losing.
+    if len(entries) > LEARNED_MAX_ENTRIES:
+        entries.sort(key=lambda e: e["last_ts"], reverse=True)
+        entries = entries[:LEARNED_MAX_ENTRIES]
+
+    tmp = target.with_name(target.name + f".tmp{os.getpid()}")
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(entries, fh)
+        os.replace(tmp, target)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return 0
+    if not path:
+        _learned_cache["stamp"] = None
+    return len(pairs)
+
+
+def learned_corrections(path=None) -> list[dict]:
+    """The promoted entries — those seen in enough separate utterances.
+
+    Most recently reinforced first, which is the order every consumer wants:
+    the prompt takes the head of this list, and the rewrite pass reads it whole.
+    """
+    entries = [e for e in load_learned(path)
+               if e.get("utterances", 0) >= LEARNED_PROMOTE_AT]
+    entries.sort(key=lambda e: e["last_ts"], reverse=True)
+    return entries
+
+
+def learned_words(path=None) -> list[str]:
+    """The corrected spellings this user has taught, most recent first."""
+    words: list[str] = []
+    seen: set[str] = set()
+    for entry in learned_corrections(path):
+        word = entry["right"]
+        if word.lower() not in seen:
+            seen.add(word.lower())
+            words.append(word)
+    return words
+
+
+def apply_learned_rules(text: str, path=None) -> str:
+    """Rewrite tokens the user has twice corrected by hand. ASR transcripts only.
+
+    An exact, case-insensitive match, with the token's punctuation kept — the
+    same shape as the other ASR rules, and deliberately no fuzzier than that.
+    The evidence is that this exact garble meant this exact word; it is not
+    evidence about anything that merely resembles the garble, and the phonetic
+    index is already where resemblance is judged.
+
+    A path segment counts as a match. `sdwivedi` is learned as a bare word,
+    because that is how the user corrected it, but the place it is misheard
+    most is inside a dictated home path — and the snap pass cannot help there,
+    since a mishearing that drops syllables scores below its bar. Only whole
+    "/"-separated segments are considered, so a garble is never matched against
+    part of some longer name.
+    """
+    entries = learned_corrections(path)
+    if not entries:
+        return text
+    # Most recent first, so the newest lesson wins if the user has corrected
+    # the same garble two different ways.
+    table: dict[str, str] = {}
+    for entry in entries:
+        table.setdefault(entry["wrong"].lower(), entry["right"])
+    tokens = text.split()
+    out = list(tokens)
+    for i, token in enumerate(tokens):
+        bare = token.strip(",.!?;:")
+        if not bare:
+            continue
+        head = token[:len(token) - len(token.lstrip(",.!?;:"))]
+        tail = token[len(head) + len(bare):]
+        replacement = table.get(bare.lower())
+        if replacement is None and "/" in bare:
+            segments = bare.split("/")
+            hit = False
+            for j, segment in enumerate(segments):
+                mapped = table.get(segment.lower())
+                if mapped is not None:
+                    segments[j] = mapped
+                    hit = True
+            replacement = "/".join(segments) if hit else None
+        if replacement is None:
+            continue
+        out[i] = head + replacement + tail
+    return " ".join(out)
+
+
 def build_index(screen=None, cwd: str = "", tmux_names=None,
-                deadline: float = 0.0) -> Index:
+                deadline: float = 0.0, extra_vocab=None) -> Index:
     """Assemble the vocabulary for one request from every source available.
 
     `deadline` bounds the expensive sources — the cwd walk, git branches, a
     cold $PATH scan. Screen tokens are cheap and always included; everything
     else is skipped once the deadline has passed, which just means a thinner
     vocabulary rather than a slow answer.
+
+    `extra_vocab` is words the caller already has in hand — shell history, in
+    practice. It is added last and at the lowest priority: it broadens what the
+    index can reach without letting a word the user typed months ago outrank
+    the filename in front of them.
     """
     index = Index()
     # Added in priority order so the first surface to claim a normalized form is
@@ -642,6 +1384,8 @@ def build_index(screen=None, cwd: str = "", tmux_names=None,
     index.add_many(path_commands(deadline), "path")
     if tmux_names and not (deadline and time.monotonic() > deadline):
         index.add_many(tmux_names, "tmux")
+    if extra_vocab:
+        index.add_many(extra_vocab, "history")
     return index
 
 
@@ -885,11 +1629,14 @@ def apply_rules(text: str, register: str) -> str:
                                                 and out[-2] in ("|", ";", "&&", "||"))
             if not out or prev in _PATH_LEAD_WORDS \
                     or (prev_at_command and prev in _PATH_COMMANDS):
-                path = "/" + tokens[i + 1]
+                # Whisper comma-separates list-ish dictation; strip each
+                # consumed segment's trailing punctuation so it doesn't end up
+                # embedded mid-token (e.g. "/is,/cluster").
+                path = "/" + tokens[i + 1].rstrip(",.")
                 i += 2
                 while i + 1 < n and tokens[i].lower().strip(",.") == "slash" \
                         and _is_wordish(tokens[i + 1]):
-                    path += "/" + tokens[i + 1]
+                    path += "/" + tokens[i + 1].rstrip(",.")
                     i += 2
                 out.append(path)
                 continue
@@ -921,7 +1668,13 @@ def apply_rules(text: str, register: str) -> str:
                     right = right.lower().strip(",.")
                 elif num_case:
                     right = NUMBER_WORDS[right.lower()]
-                out[-1] = left + char + right
+                # Whisper comma-separates list-ish dictation; strip the left
+                # side's trailing punctuation so it doesn't end up mid-token
+                # (e.g. "cluster,/fast"). `right` is left alone — if the chain
+                # continues it becomes a future left and gets stripped then; a
+                # final segment's trailing punctuation is genuine sentence
+                # punctuation and must survive.
+                out[-1] = left.rstrip(",.") + char + right
                 i += 2
                 continue
 
@@ -1081,12 +1834,16 @@ ASR_COMMAND_RULES = {
 }
 
 
-def apply_asr_rules(text: str, register: str = "claude") -> str:
+def apply_asr_rules(text: str, register: str = "claude",
+                    learned_path=None) -> str:
     """Undo known acoustic-model mishearings, before the spoken-syntax rules.
 
     The output is still spoken-form text ("pipe", not "|"): this pass only puts
     back the word the speaker said, and apply_rules turns it into a character
     exactly as it would have if whisper had heard it right the first time.
+
+    `learned_path` overrides the learned-correction store, for tests; the
+    default is the one store this machine keeps.
 
     The command-position and sentence-dressing rules are shell-only: they
     read a capitalized word or a trailing period as noise because a shell
@@ -1106,9 +1863,258 @@ def apply_asr_rules(text: str, register: str = "claude") -> str:
             if crule and crule[0](tokens, i):
                 out[i] = crule[1]
     result = " ".join(out)
+    # After the table, before the sentence dressing: a learned correction is
+    # the same kind of repair as the table's entries — putting back the word
+    # the speaker said — and the dressing rules should see the sentence as it
+    # was meant, not as it was misheard.
+    result = apply_learned_rules(result, learned_path)
     if register == "shell":
         result = _strip_sentence_dressing(result)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Filesystem path snapping (ASR only)
+# ---------------------------------------------------------------------------
+# A dictated absolute path is the one place where the ground truth is not the
+# screen or the index but the filesystem itself: "/is/claster/fast" is wrong in
+# a way `ls /is` can settle. This pass walks a path token segment by segment and
+# only ever rewrites a segment that does NOT exist, against the listing of a
+# parent that does.
+
+# Its own budget, separate from the request's: a network mount that has gone
+# away must cost the transcript this much and no more.
+PATH_SNAP_BUDGET_S = 0.20
+
+# One directory's listing, capped. A home on a cluster filer can hold tens of
+# thousands of entries, and the segment we are looking for is not more likely to
+# be the ten-thousandth than the tenth.
+MAX_SNAP_ENTRIES = 3000
+
+# A snapped segment must clear the tightest register threshold — this pass has
+# no sentence context to fall back on, only the fact that the word names nothing
+# that exists. The metaphone rung of score_entry sits at 0.85, so this admits a
+# same-sounding segment ("claster"/"cluster") and nothing weaker.
+PATH_SNAP_MIN = max(THRESHOLDS.values())
+
+# ...and must beat its runner-up by this much. Mirrors match_window's tie
+# handling: where two entries explain the segment equally well, neither is
+# evidence, so the walk stops rather than picking one.
+PATH_SNAP_MARGIN = 0.05
+
+# The character-overlap fallback, for segments no pronunciation explains — see
+# _snap_segment. Measured against the real listing that produced this feature:
+# the live model's "sdwedi" takes `sdwivedi` at 0.857 with a 0.324 margin, while
+# every other model's garble of the same word ("stved", "stvved", "stivadi")
+# fails both gates at once — 0.571-0.667 ratios and margins under 0.045. The
+# thresholds sit in that gap rather than at the edge of either side of it.
+PATH_SNAP_FALLBACK_MIN = 0.80
+PATH_SNAP_FALLBACK_MARGIN = 0.10
+PATH_SNAP_FALLBACK_MIN_CHARS = 5
+
+_PATH_TOKEN_RE = re.compile(r"^(/|~/)")
+
+# Trailing sentence punctuation is not part of the path. Stripped before every
+# probe and reattached to whatever the walk produces.
+_PATH_TRAIL = ",.?!"
+
+
+def _snap_listing(directory: str, deadline: float) -> list[str]:
+    """Entry names in `directory`, bounded and never raising.
+
+    Read-only and non-following: scandir yields names without a stat, so a dead
+    automount costs one failed open rather than a hung request.
+    """
+    if deadline and time.monotonic() > deadline:
+        return []
+    names: list[str] = []
+    try:
+        with os.scandir(directory) as it:
+            for entry in it:
+                names.append(entry.name)
+                if len(names) >= MAX_SNAP_ENTRIES:
+                    break
+                if len(names) % 200 == 0 and deadline and time.monotonic() > deadline:
+                    break
+    except OSError:
+        return []
+    return names
+
+
+def _snap_exists(path: str) -> bool:
+    """lexists, never raising — a symlink into a dead mount is still a segment."""
+    try:
+        return os.path.lexists(path)
+    except OSError:
+        return False
+
+
+def _snap_best(names: list[str], score) -> tuple[str, float, float]:
+    """(best name, its score, the runner-up's) under `score`."""
+    best, best_score, runner_up = "", 0.0, 0.0
+    for name in names:
+        value = score(name)
+        if value > best_score:
+            best, best_score, runner_up = name, value, best_score
+        elif value > runner_up:
+            runner_up = value
+    return best, best_score, runner_up
+
+
+def _snap_segment(parent: str, segment: str, deadline: float) -> str:
+    """The entry of `parent` that `segment` was meant to be, or "".
+
+    Two scorers, tried in order. First score_entry, against the same Entry
+    shape the index uses, so a segment snaps here on exactly the evidence it
+    would need anywhere else. That scorer is phonetic, and a username is the
+    one path segment with no pronunciation to be right about: whisper renders
+    `sdwivedi` as "sdwedi" or "stved", which share no metaphone key with it.
+
+    So when the phonetic scorer finds nothing, character overlap gets a turn at
+    a looser bar. That is only safe because of where it runs: the candidates are
+    one real directory's listing rather than a vocabulary of guesses, so the
+    answer is either in that closed set or the walk stops. The margin still has
+    to be clear, and a short segment is excluded outright — at four characters
+    an edit flips the ranking, and the ratio stops being evidence.
+
+    An empty return means no confident match, which stops the walk.
+    """
+    names = _snap_listing(parent, deadline)
+    if not names:
+        return ""
+    # Dictated digits survive transcription literally, so a segment and a
+    # candidate that disagree on them are two different names rather than one
+    # mishearing. Neither scorer sees digits — metaphone() drops them and the
+    # ratio treats them as ordinary characters — so both need this guard.
+    digits = [c for c in segment if c.isdigit()]
+    names = [n for n in names if [c for c in n if c.isdigit()] == digits]
+    if not names:
+        return ""
+
+    best, best_score, runner_up = _snap_best(
+        names, lambda n: score_entry(segment, [segment], Entry(n, "cwd")))
+    if best_score >= PATH_SNAP_MIN and best_score - runner_up >= PATH_SNAP_MARGIN:
+        return best
+
+    if len(segment) < PATH_SNAP_FALLBACK_MIN_CHARS:
+        return ""
+    low = segment.lower()
+    best, best_score, runner_up = _snap_best(
+        names, lambda n: difflib.SequenceMatcher(None, low, n.lower()).ratio())
+    if best_score < PATH_SNAP_FALLBACK_MIN \
+            or best_score - runner_up < PATH_SNAP_FALLBACK_MARGIN:
+        return ""
+    return best
+
+
+def _snap_walk(token: str, home: str, deadline: float) -> str:
+    """Rewrite the nonexistent segments of one path token; keep the rest verbatim.
+
+    The walk stops at the first segment that neither exists nor snaps: past a
+    prefix we could not establish, every deeper listing is of the wrong
+    directory, so the remaining segments are kept exactly as spoken.
+    """
+    lead = "~/" if token.startswith("~/") else "/"
+    rest = token[len(lead):]
+    segments = [s for s in rest.split("/") if s]
+    if not segments:
+        return token
+
+    # Probing "/" itself for a lone "/foo" in prose would put a directory
+    # listing behind an ordinary sentence, so a single segment is only walked
+    # when it already exists.
+    probe_root = home if lead == "~/" else "/"
+    if len(segments) < 2 and not _snap_exists(os.path.join(probe_root, segments[0])):
+        return token
+
+    out: list[str] = []
+    prefix = probe_root
+    for i, segment in enumerate(segments):
+        if deadline and time.monotonic() > deadline:
+            out.extend(segments[i:])
+            break
+        candidate = os.path.join(prefix, segment)
+        if _snap_exists(candidate):
+            out.append(segment)
+            prefix = candidate
+            continue
+        snapped = _snap_segment(prefix, segment, deadline)
+        if not snapped:
+            out.extend(segments[i:])
+            break
+        out.append(snapped)
+        prefix = os.path.join(prefix, snapped)
+    return lead + "/".join(out)
+
+
+def _snap_resolves_to_dir(token: str, home: str) -> str:
+    """The filesystem directory `token` names, or "" — the merge's precondition."""
+    probe = home + token[1:] if token.startswith("~/") else token
+    try:
+        return probe if os.path.isdir(probe) else ""
+    except OSError:
+        return ""
+
+
+def _snap_merges(first: str, second: str, home: str, deadline: float) -> bool:
+    """Whether whisper split one path into `first` and `second` at a space.
+
+    Gated entirely on filesystem evidence: the left side must be a real
+    directory, the right side's head must NOT exist at the root it was written
+    against, and it must exist (or confidently snap) under the left. Two paths
+    that are each valid from root are two paths.
+    """
+    base = _snap_resolves_to_dir(first, home)
+    if not base:
+        return False
+    head = second[len("~/") if second.startswith("~/") else 1:].split("/")[0]
+    if not head:
+        return False
+    if _snap_exists(os.path.join(home if second.startswith("~/") else "/", head)):
+        return False
+    if _snap_exists(os.path.join(base, head)):
+        return True
+    return bool(_snap_segment(base, head, deadline))
+
+
+def snap_paths(text: str, budget: float = PATH_SNAP_BUDGET_S) -> str:
+    """Correct dictated path tokens against the filesystem. Never raises.
+
+    Runs after apply_rules, so a spoken "slash is slash cluster" has already
+    become one token by the time it gets here. Anything that goes wrong — a
+    hung mount, a permission error, the budget — leaves the text as it was.
+    """
+    tokens = text.split()
+    if not tokens:
+        return text
+    deadline = time.monotonic() + max(0.01, budget)
+    try:
+        home = os.path.expanduser("~")
+        out: list[str] = []
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if not _PATH_TOKEN_RE.match(token):
+                out.append(token)
+                i += 1
+                continue
+            body = token.rstrip(_PATH_TRAIL)
+            trail = token[len(body):]
+            # A split path is merged before the walk, so the walk sees the whole
+            # thing and can carry a corrected prefix into the second half.
+            while i + 1 < len(tokens) and _PATH_TOKEN_RE.match(tokens[i + 1]):
+                nxt = tokens[i + 1]
+                nxt_body = nxt.rstrip(_PATH_TRAIL)
+                if not _snap_merges(body, nxt_body, home, deadline):
+                    break
+                body = body.rstrip("/") + "/" + nxt_body.lstrip("/")
+                trail = nxt[len(nxt_body):]
+                i += 1
+            out.append(_snap_walk(body, home, deadline) + trail)
+            i += 1
+        return " ".join(out)
+    except Exception:  # noqa: BLE001 — a snap failure must not cost the transcript
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -1267,8 +2273,24 @@ def match_window(window: str, words: list[str], index: Index, register: str,
         # binary sounds like any given English word (rview, tload, oclock). It
         # is a good source for what the user is *running* and a terrible one for
         # everything else, so a fuzzy hit on it only counts in command position.
-        if entry.source == "path" and not at_command and score < 1.0:
-            continue
+        # Shell history is the same kind of source and needs most of the same
+        # handling — hundreds of names the user is not currently looking at,
+        # among which something sounds like almost any English word
+        # ("loading"/`left.png`, "a timeout"/`auto-mode`). It broadens what the
+        # index can reach; it must not gain the right to overrule ordinary
+        # prose to do it.
+        #
+        # The one difference from $PATH: a $PATH entry is only a plausible
+        # reading in command position because it names something to *run*,
+        # while a remembered path is plausible wherever a path is spoken —
+        # "go to the folder called /is/cluster/fast/sdwivedi" is the case this
+        # source exists for, and it is nowhere near a command position. So the
+        # position rule is applied to history entries that look like bare
+        # commands, and lifted for the ones that carry a path's separators.
+        if entry.source == "path" or (entry.source == "history"
+                                      and not _PATH_SHAPED_RE.search(entry.surface)):
+            if not at_command and score < 1.0:
+                continue
         # The metaphone-equality tier (score_entry's 0.85 rung) is a phonetic
         # guess, and $PATH is thousands of names — long enough that some
         # binary collides on sound with almost any multi-word window ("cat
@@ -1276,7 +2298,7 @@ def match_window(window: str, words: list[str], index: Index, register: str,
         # `gftype`/`keytool`). Three guards keep that guess from outrunning
         # its evidence, matching the same reasoning the length filter in
         # score_entry already applies, just tightened for this source/tier:
-        if entry.source == "path" and score == 0.85:
+        if entry.source in _WIDE_SOURCES and score == 0.85:
             # (a) A window's first word that is ALREADY a verbatim index
             # entry (here, `cat` itself sits on $PATH) is not a mistake to
             # fix — the multi-word window it anchors must not overrule that
@@ -1415,7 +2437,8 @@ def _shift_spans(spans: list[dict], text: str) -> list[dict]:
 
 
 def resolve(text: str, screen=None, cwd: str = "", tmux_names=None,
-            budget: float = TIME_BUDGET_S, asr: bool = False) -> dict:
+            budget: float = TIME_BUDGET_S, asr: bool = False,
+            extra_vocab=None, learned_path=None) -> dict:
     """Correct one dictated line. Never raises; on any trouble, echoes the input.
 
     The phases run rules → matching, each over the output of the last, so span
@@ -1427,6 +2450,15 @@ def resolve(text: str, screen=None, cwd: str = "", tmux_names=None,
     `asr` marks the text as a speech-recognition transcript rather than
     something a person typed, which admits the ASR_RULES pass — see
     apply_asr_rules for why that distinction has to be made by the caller.
+
+    `extra_vocab` widens the phonetic index with words the caller supplies
+    (shell history from the transcribe path). It only ever adds candidates:
+    every threshold, the common-English-word protection and the per-register
+    tightening apply to them exactly as they do to a filename off the screen.
+
+    Words the user has taught by editing past transcripts join `extra_vocab` on
+    the same terms. `learned_path` overrides the store they come from, for
+    tests; the default is the one store this machine keeps.
     """
     raw = str(text or "")
     fallback = {"text": raw, "register": "claude", "spans": []}
@@ -1438,7 +2470,7 @@ def resolve(text: str, screen=None, cwd: str = "", tmux_names=None,
     try:
         register = detect_register(screen)
 
-        current = apply_asr_rules(raw, register) if asr else raw
+        current = apply_asr_rules(raw, register, learned_path) if asr else raw
         spans: list[dict] = []
 
         if time.monotonic() > deadline:
@@ -1449,12 +2481,26 @@ def resolve(text: str, screen=None, cwd: str = "", tmux_names=None,
             spans = _rule_spans(current, ruled)
             current = ruled
 
+        # After the rules, so spoken slashes are already one token; before the
+        # index, so a path the filesystem settled is not second-guessed by a
+        # phonetic match against the screen.
+        if asr:
+            snapped = snap_paths(current)
+            if snapped != current:
+                spans = _merge_spans(spans, _rule_spans(current, snapped),
+                                     current, snapped)
+                current = snapped
+
         if time.monotonic() > deadline:
             return {"text": current, "register": register,
                     "spans": _shift_spans(spans, current)}
 
+        # A word the user has corrected by hand twice is vocabulary this
+        # machine has evidence for, on exactly the footing of a word off the
+        # screen: it widens the candidate pool and clears the same thresholds.
+        vocab = list(extra_vocab or []) + learned_words(learned_path)
         index = build_index(screen=screen, cwd=cwd, tmux_names=tmux_names,
-                            deadline=deadline)
+                            deadline=deadline, extra_vocab=vocab)
         final, token_spans = resolve_tokens(current, index, register, deadline)
 
         if final != current:
