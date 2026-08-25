@@ -198,6 +198,62 @@ def test_en_dash_before_word_becomes_hyphen_flag():
     assert R.apply_rules("ls – la", "shell") == "ls -la"
 
 
+# ---------------------------------------------------------------------------
+# Verbatim-transcriber conventions
+# ---------------------------------------------------------------------------
+# Parakeet writes every spoken separator as a word, so "git commit dash m" and
+# "no dash build" reach the rules in the same shape and only position tells
+# them apart. These pin the gates that separate a flag from a hyphen.
+
+@pytest.mark.parametrize("spoken,expected", [
+    # A dash while the line is still naming what to run is a flag, however many
+    # subcommands deep, and whichever side of a pipe it falls on.
+    ("git commit dash m fix the bug", "git commit -m fix the bug"),
+    ("pip install dash e dot", "pip install -e dot"),
+    ("tmux new dash s tokenhmr", "tmux new -s tokenhmr"),
+    ("micromamba install dash c forge ffmpeg", "micromamba install -c forge ffmpeg"),
+    ("ps aux pipe grep uvicorn pipe head dash n5",
+     "ps aux | grep uvicorn | head -n5"),
+])
+def test_dash_after_a_command_is_a_flag_not_a_hyphen(spoken, expected):
+    assert R.apply_rules(spoken, "shell") == expected
+
+
+@pytest.mark.parametrize("spoken,expected", [
+    # Past the command prefix the dash hyphenates the name it sits inside;
+    # a long word on the right is a name even at command position.
+    ("pip install dash dash no dash build dash isolation",
+     "pip install --no-build-isolation"),
+    ("micromamba install dash c conda dash forge", "micromamba install -c conda-forge"),
+    ("git checkout dash b feature dash bar", "git checkout -b feature-bar"),
+])
+def test_dash_past_the_command_prefix_still_hyphenates(spoken, expected):
+    assert R.apply_rules(spoken, "shell") == expected
+
+
+def test_plus_at_command_position_is_a_mode_argument():
+    """"chmod plus x" is "+x" standing alone, not a glued "chmod+x"."""
+    assert R.apply_rules("chmod plus x run dot sh", "shell") == "chmod +x run.sh"
+    assert R.apply_rules("chmod plus r notes dot txt", "shell") == "chmod +r notes.txt"
+    # "plus" is an ordinary English word, so unlike a dash it earns the
+    # standalone reading only under a real command — never under whatever word
+    # happens to start a sentence. (The joiner's own reading of that line is
+    # unchanged by this rule and is pinned elsewhere.)
+    assert "+x" not in R.apply_rules("the plus x in that sentence",
+                                     "shell").split()
+
+
+def test_a_joiner_chain_of_common_words_is_an_identifier():
+    """"test slash test underscore main dot py" is a path spelled out loud.
+
+    Both sides of that first slash are ordinary English, which is what the
+    prose guard holds back — but the chain continuing into another separator is
+    the evidence that this is a name being spelled, not a sentence.
+    """
+    assert R.apply_rules("test slash test underscore main dot py", "shell") == \
+        "test/test_main.py"
+
+
 def test_rules_are_reduced_outside_shell():
     """Standalone symbols and bare digits are shell-only; joiners survive."""
     assert R.apply_rules("cat log pipe grep error", "claude") == \
@@ -848,6 +904,52 @@ def test_alternates_are_capped_and_exclude_the_winner():
                                                index, "shell", 0.80)
     assert surface not in alternates
     assert len(alternates) <= 3
+
+
+def test_a_remembered_name_spelled_out_merges_away_from_command_position():
+    """A verbatim transcriber writes "CameraHMR" as the words it sounds like.
+
+    Remembered commands are normally held to command position — mid-sentence
+    they would overrule ordinary prose. A window whose letters spell the entry
+    exactly is different evidence: those are the same characters in the same
+    order, not a guess about what one word sounded like.
+    """
+    index = R.Index()
+    index.add("CameraHMR", "history")
+    surface, _, _, _ = R.match_window("camera hmr", ["camera", "hmr"], index,
+                                      "shell", 0.80, at_command=False)
+    assert surface == "CameraHMR"
+
+
+def test_one_word_against_a_remembered_command_stays_guarded():
+    """The single-word case the position guard exists for is untouched."""
+    index = R.Index()
+    index.add("rview", "history")
+    assert R.match_window("review", ["review"], index, "shell", 0.80,
+                          at_command=False)[0] == ""
+
+
+@pytest.mark.parametrize("spoken,expected", [
+    # The separator claimed the first half of the name; the second half was
+    # left standing beside it as its own word.
+    ("pretrained_models/camera hmr", "pretrained_models/CameraHMR"),
+    # ...and here the second half was in turn claimed by the next separator.
+    ("work/interact vlm/outputs", "work/InteractVLM/outputs"),
+])
+def test_a_name_split_across_a_path_separator_is_rejoined(spoken, expected):
+    index = R.Index()
+    index.add("CameraHMR", "history")
+    index.add("InteractVLM", "history")
+    text, _ = R.resolve_tokens(spoken, index, "shell")
+    assert text == expected
+
+
+def test_a_word_after_a_path_is_only_absorbed_when_it_spells_the_name():
+    """Without an exact spelling, the word after a path stays a separate word."""
+    index = R.Index()
+    index.add("CameraHMR", "history")
+    text, _ = R.resolve_tokens("pretrained_models/camera checkpoint", index, "shell")
+    assert text == "pretrained_models/camera checkpoint"
 
 
 def test_source_priority_breaks_ties():

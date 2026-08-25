@@ -1530,6 +1530,58 @@ def _is_wordish(tok: str) -> bool:
     return bool(tok) and bool(re.match(r"^[A-Za-z0-9]", tok))
 
 
+# A short flag as it is dictated: one or two letters ("dash m", "dash rf"),
+# optionally with the flag's argument already glued on by the recognizer
+# ("dash n5"). Longer runs are words, and a word right of a dash mid-line is a
+# hyphenated name rather than an option.
+_FLAG_SHAPED = re.compile(r"^[A-Za-z]{1,2}[0-9]*$")
+
+
+def _at_flag_position(out: list[str], right: str,
+                      command_only: bool = False) -> bool:
+    """Is a single dash here starting a flag rather than hyphenating a name?
+
+    Verbatim transcribers write the separator as a word, so "git commit dash m"
+    and "no dash build" arrive in the same shape and only context separates
+    them. The one that holds: a flag can only appear while the line is still
+    naming what to run — the command and any subcommands ("git commit", "pip
+    install", "tmux new"). Once an operand has been spoken the dash is
+    hyphenating that operand's name, which is what "no dash build" and
+    "conda dash forge" are.
+
+    So the left context has to be nothing but bare command words, and the right
+    side has to look like a flag rather than a word. Both halves are needed:
+    without the shape test "git commit dash message" would lose its hyphen, and
+    without the position test "flash dash attn" would gain a space.
+
+    `command_only` additionally demands that the segment be headed by a name
+    that really is a command. A dash carries its own evidence — nobody dictates
+    one mid-sentence — but "plus" is an ordinary English word, so "the plus x in
+    that sentence" would otherwise read its "the" as a command and rewrite
+    prose.
+    """
+    if not _FLAG_SHAPED.match(right.strip(",.")):
+        return False
+    # An operator starts a fresh command, so only the words since the last one
+    # count: in "ps aux | grep uvicorn | head dash n5" the flag belongs to
+    # `head`, which is at command position in its own segment.
+    prefix = out
+    for j in range(len(out) - 1, -1, -1):
+        if out[j] in OPERATORS:
+            prefix = out[j + 1:]
+            break
+    # Every token in the segment a bare word, so nothing that is already an
+    # operand: a path, a flag, an option's value, or a name ends the command
+    # prefix. Two words of prefix past the command is the ceiling ("git stash
+    # pop" style); beyond that the words are arguments, not subcommands.
+    if not 1 <= len(prefix) <= 3:
+        return False
+    if not all(re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", tok.strip(",."))
+               for tok in prefix):
+        return False
+    return not command_only or _known_shell_command(prefix[0].strip(",.").lower())
+
+
 def _tokenize(text: str) -> list[str]:
     """Whitespace tokens, with em/en dashes split out so rules can see them."""
     spaced = text
@@ -1605,10 +1657,12 @@ def apply_rules(text: str, register: str) -> str:
                     # Continuing a flag the rules already began: "--no" then
                     # "dash build" is one option, "--no-build".
                     out[-1] = left + "-" + right
-                elif is_en or len(out) == 1:
+                elif is_en or len(out) == 1 or _at_flag_position(out, right):
                     # A flag: either the phone substituted an en dash (which it
                     # only does where the user paused, i.e. between the command
-                    # and its options), or the left token is the command itself.
+                    # and its options), the left token is the command itself, or
+                    # nothing but the command and its subcommands has been said
+                    # yet and the right side is flag-shaped.
                     out.append("-" + right)
                 elif _is_wordish(left):
                     # Mid-line between two words: hyphenating one name.
@@ -1641,6 +1695,16 @@ def apply_rules(text: str, register: str) -> str:
                 out.append(path)
                 continue
 
+        if low == "plus" and not strict and out and i + 1 < n \
+                and _at_flag_position(out, tokens[i + 1], command_only=True):
+            # "chmod plus x" is the mode argument "+x", which stands apart from
+            # the command the way a flag does. Everywhere else "plus" joins
+            # ("c plus plus", "g plus plus"), so this is gated on exactly the
+            # position that makes a dash a flag rather than a hyphen.
+            out.append("+" + tokens[i + 1].strip(",."))
+            i += 2
+            continue
+
         if low in JOINERS and out and i + 1 < n:
             char = JOINERS[low]
             left, right = out[-1], tokens[i + 1]
@@ -1656,12 +1720,18 @@ def apply_rules(text: str, register: str) -> str:
             # "head tilde three" is HEAD~3: a number word directly right of a
             # ~, = or : is the digit, because nothing spells a number out there.
             num_case = right.lower() in NUMBER_WORDS and char in "~=:"
+            # A chain that keeps going is an identifier being spelled out:
+            # "test slash test underscore ..." names a file, and no sentence
+            # puts a second punctuation name two words after the first. This is
+            # what lets the guard below stay on for prose while a path built
+            # out of ordinary words still joins.
+            chain_case = i + 2 < n and tokens[i + 2].lower().strip(",.") in JOINERS
             # "the dot at the end" is someone describing punctuation, not naming
             # a file: joining two ordinary English words is never right unless
             # one of the shapes above says this is a token after all.
             prose = (left.lower().strip(",.") in COMMON_WORDS
                      and right.lower().strip(",.") in COMMON_WORDS
-                     and not ext_case and not num_case)
+                     and not ext_case and not num_case and not chain_case)
             if _is_wordish(left) and _is_wordish(right) and not prose \
                     and (not strict or ext_case or num_case or char in "/_"):
                 if ext_case:
@@ -2287,8 +2357,20 @@ def match_window(window: str, words: list[str], index: Index, register: str,
         # source exists for, and it is nowhere near a command position. So the
         # position rule is applied to history entries that look like bare
         # commands, and lifted for the ones that carry a path's separators.
-        if entry.source == "path" or (entry.source == "history"
-                                      and not _PATH_SHAPED_RE.search(entry.surface)):
+        #
+        # The exception, for both sources: a multi-word window whose letters
+        # spell the entry exactly. A verbatim transcriber writes a compound name
+        # as the words it sounds like ("camera hmr", "interact vlm"), and those
+        # are the same letters in the same order as the name — evidence of a
+        # different kind from the phonetic near-miss this guard exists to stop.
+        # One spoken word matching one remembered command is the dangerous case
+        # and stays guarded; the merge of several into a name that is spelled
+        # that way is not a guess about what a word sounded like.
+        spelled_merge = len(words) > 1 and norm == entry.norm
+        if not spelled_merge and (
+                entry.source == "path"
+                or (entry.source == "history"
+                    and not _PATH_SHAPED_RE.search(entry.surface))):
             if not at_command and score < 1.0:
                 continue
         # The metaphone-equality tier (score_entry's 0.85 rung) is a phonetic
@@ -2338,6 +2420,46 @@ def match_window(window: str, words: list[str], index: Index, register: str,
         if len(alternates) >= 3:
             break
     return best.surface, best_score, alternates, best.source
+
+
+def _merge_path_tail(tokens: list[str], i: int, index: Index, register: str,
+                     threshold: float) -> tuple[str, int] | None:
+    """Rejoin a compound name the rules split across a path separator.
+
+    "pretrained underscore models slash camera hmr" leaves the joiner pass as
+    "pretrained_models/camera hmr": the slash claimed the first half of the
+    name and the second half was left standing beside it. The whole token is
+    not a window the matcher can use — the path prefix is part of it — so the
+    merge is tried on the path's last segment alone, and only the segment is
+    rewritten.
+
+    The bar is the same one the spelled-merge exception sets: the segment plus
+    the words after it have to spell a known name exactly. That is what
+    separates this from guessing that a word after a path belongs to it.
+    """
+    token = tokens[i]
+    head, sep, tail = token.rpartition("/")
+    if not sep or not tail or not _is_wordish(tail):
+        return None
+    for size in range(min(3, len(tokens) - i - 1), 0, -1):
+        rest = tokens[i + 1:i + 1 + size]
+        if any(w in OPERATORS or w.startswith("-") for w in rest):
+            continue
+        # The name's second half may itself have been claimed by the next
+        # separator — "interact vlm slash outputs" leaves "vlm/outputs" — so the
+        # last of the words being merged contributes only its leading segment,
+        # and whatever the separator took stays on the far side of the join.
+        last, lsep, after = rest[-1].partition("/")
+        words = [tail] + rest[:-1] + [last]
+        if not last or not _is_wordish(last):
+            continue
+        surface, score, _, _ = match_window(" ".join(words), words, index,
+                                            register, threshold, False)
+        # An exact spelling merge only: score_entry's top rung, reached because
+        # the letters line up, not because the sound was close.
+        if surface and score >= 0.95 and normalize(" ".join(words)) == normalize(surface):
+            return head + sep + surface + lsep + after, size + 1
+    return None
 
 
 def resolve_tokens(text: str, index: Index, register: str,
@@ -2398,6 +2520,18 @@ def resolve_tokens(text: str, index: Index, register: str,
                 break
 
         if best is None:
+            merged = _merge_path_tail(tokens, i, index, register, threshold)
+            if merged is not None:
+                surface, size = merged
+                start = sum(len(t) + 1 for t in out)
+                out.append(surface)
+                spans.append({
+                    "start": start, "end": start + len(surface),
+                    "original": " ".join(tokens[i:i + size]),
+                    "alternates": [], "source": "rule",
+                })
+                i += size
+                continue
             out.append(tokens[i])
             i += 1
             continue
