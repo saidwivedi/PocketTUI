@@ -11,3 +11,10 @@
 fastapi>=0.100
 starlette>=1.0
 uvicorn[standard]>=0.23
+
+# The primary speech recognizer (Parakeet-TDT). Pinned to a floor rather than
+# left open because app.py builds the recognizer with modeling_unit="bpe", which
+# older sherpa-onnx releases handle differently. Nothing here is required for
+# the server to start: an install without the ONNX model, or without this wheel
+# at all, falls back to the whisper.cpp build setup_voice.sh makes.
+sherpa-onnx>=1.13.6

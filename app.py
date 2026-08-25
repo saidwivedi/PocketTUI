@@ -670,9 +670,10 @@ def api_alias(body: dict = Body(...)) -> Response:
 # ---------------------------------------------------------------------------
 # Voice transcription
 # ---------------------------------------------------------------------------
-# The phone records audio and posts the blob here; whisper.cpp turns it into
-# text locally, and the resolver repairs the technical tokens the acoustic model
-# had no way to know. Nothing leaves the machine.
+# The phone records audio and posts the blob here; a local acoustic model turns
+# it into text — Parakeet-TDT through sherpa-onnx where it is installed, else
+# whisper.cpp — and the resolver repairs the technical tokens the model had no
+# way to know. Nothing leaves the machine.
 
 # A phone holding the mic key open still has to produce a request this server
 # will look at. 20 MB of AAC is far longer than anyone dictates in one breath.
@@ -747,6 +748,221 @@ def whisper_paths() -> tuple[Path | None, Path | None]:
         return missing
     preferred = [m for m in models if "base.en" in m.name]
     return binary, (preferred or models)[0]
+
+
+# ---------------------------------------------------------------------------
+# Parakeet-TDT (sherpa-onnx)
+# ---------------------------------------------------------------------------
+# The primary engine. Parakeet decodes an utterance in ~0.23 s where whisper
+# base.en takes seconds, and it writes ordinary English better, so whisper stays
+# only as the fallback for an install that has not fetched the ONNX model (or
+# cannot import sherpa-onnx). The two engines are picked between per request,
+# never blended: whichever runs, the resolver downstream sees the same shape.
+#
+# The model directory ships as one of sherpa-onnx's release tarballs; the v2
+# (English) build is what setup_voice.sh fetches and what the probe prefers by
+# name. Any directory holding the four expected files works, which is what makes
+# swapping in a different Parakeet build a matter of dropping it into
+# voice/parakeet/.
+PARAKEET_DIR = VOICE_DIR / "parakeet"
+PARAKEET_FILES = ("encoder.int8.onnx", "decoder.int8.onnx",
+                  "joiner.int8.onnx", "tokens.txt")
+
+# Beam search rather than greedy: both score the same on the 42-clip benchmark
+# (16/42 exact after the resolver), but only modified_beam_search can take
+# hotwords, and hotwords are the next step for this engine. Choosing it now
+# means that step is a config change rather than a re-verification.
+PARAKEET_DECODING = "modified_beam_search"
+
+# Same ceiling whisper's threads have: enough to use the machine, bounded so a
+# many-core server does not hand one utterance every core it owns.
+PARAKEET_THREADS = min(4, os.cpu_count() or 4)
+
+
+def parakeet_model_dir() -> Path | None:
+    """The Parakeet model directory, or None if this install has no usable one.
+
+    Mirrors whisper_paths() down to the shape of the preference: an override
+    wins, otherwise the directory is discovered by glob under voice/parakeet/,
+    and a directory missing any of the four files it needs reads as "not
+    installed" rather than failing later inside sherpa-onnx.
+
+    The preference is by name, the way base.en is preferred among the ggml
+    models. This product transcribes English — the whisper half only ever
+    downloads `.en` models — and Parakeet's v2 is the English build where v3 is
+    multilingual and measurably worse on English. So a v2 present anywhere in
+    the directory wins, and only if there is none does the newest of whatever
+    else is there get used. Someone who actually wants v3 names it in
+    POCKETTUI_PARAKEET_MODEL, which is the same escape hatch
+    POCKETTUI_WHISPER_MODEL is for the ggml side.
+    """
+    env_dir = os.environ.get("POCKETTUI_PARAKEET_MODEL", "")
+    if env_dir:
+        candidate = Path(env_dir)
+        return candidate if _parakeet_dir_complete(candidate) else None
+
+    # Descending, so that among equally-preferred builds the newest version
+    # wins; the glob's shape is what makes any sherpa-onnx Parakeet tarball a
+    # drop-in rather than something this function has to know the name of.
+    candidates = [c for c in sorted(PARAKEET_DIR.glob("sherpa-onnx-*parakeet*"),
+                                    reverse=True)
+                  if _parakeet_dir_complete(c)]
+    preferred = [c for c in candidates if "-v2-" in c.name]
+    usable = preferred or candidates
+    return usable[0] if usable else None
+
+
+def _parakeet_dir_complete(path: Path) -> bool:
+    return path.is_dir() and all((path / name).is_file() for name in PARAKEET_FILES)
+
+
+def parakeet_available() -> bool:
+    """Can this install decode with Parakeet — the module and a model both?
+
+    The import is the expensive half of the answer (sherpa-onnx pulls in its
+    native library), so it is attempted only once a model directory has been
+    found; an install with no model never pays for it.
+    """
+    if parakeet_model_dir() is None:
+        return False
+    try:
+        import sherpa_onnx  # noqa: F401
+    except Exception:  # noqa: BLE001 — a broken wheel reads as "not installed"
+        return False
+    return True
+
+
+def voice_engine() -> str:
+    """Which engine this request will use: "parakeet", "whisper", or "".
+
+    "" means neither is installed, which is the only case that answers
+    not_setup. POCKETTUI_VOICE_ENGINE forces a choice, and a forced engine that
+    is not actually installed reports "" rather than silently falling through to
+    the other one — a machine pinned to an engine should say so plainly instead
+    of quietly running the model its operator ruled out.
+    """
+    forced = os.environ.get("POCKETTUI_VOICE_ENGINE", "").strip().lower()
+    if forced == "parakeet":
+        return "parakeet" if parakeet_available() else ""
+    if forced == "whisper":
+        return "whisper" if whisper_paths()[0] is not None else ""
+    if parakeet_available():
+        return "parakeet"
+    return "whisper" if whisper_paths()[0] is not None else ""
+
+
+def _bpe_vocab_text(tokens: Path) -> str:
+    """tokens.txt rendered as the "piece<TAB>score" vocabulary sherpa-onnx reads.
+
+    The score is a constant -1.0: sherpa-onnx uses the vocab to *segment*
+    hotwords, not to weight them (hotwords_score does the weighting), so the
+    per-piece log-probability the format carries is never consulted.
+    """
+    lines = []
+    for line in tokens.read_text(encoding="utf-8").splitlines():
+        # "<piece> <id>" — split from the right, because a piece may itself
+        # contain spaces and only the trailing id is guaranteed to be one field.
+        piece = line.rsplit(" ", 1)[0]
+        if piece:
+            lines.append(f"{piece}\t-1.0")
+    return "\n".join(lines) + "\n"
+
+
+def parakeet_bpe_vocab(model_dir: Path) -> Path:
+    """Path to the bpe.vocab sherpa-onnx needs for hotwords, writing it if absent.
+
+    The release tarballs ship tokens.txt but no bpe.vocab, and sherpa-onnx needs
+    the vocab to turn a hotword's spelling into the pieces the model decodes in.
+    The file it wants is derivable from tokens.txt alone, so it is synthesized
+    once rather than made a second download.
+
+    Written beside the model where that directory is writable, and into a cache
+    directory otherwise — a model tree mounted read-only, or shared between
+    installs, must still be able to run this engine rather than failing at
+    build time over a file it can regenerate in a second.
+    """
+    tokens = model_dir / "tokens.txt"
+    vocab = model_dir / "bpe.vocab"
+    if vocab.is_file():
+        return vocab
+    if not os.access(model_dir, os.W_OK):
+        cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+        vocab = cache / "pockettui" / f"{model_dir.name}.bpe.vocab"
+        vocab.parent.mkdir(parents=True, exist_ok=True)
+        if vocab.is_file():
+            return vocab
+    # Written whole via a temporary name, so an interrupted write cannot leave a
+    # truncated vocab that would be trusted on the next request.
+    tmp = vocab.with_name(vocab.name + ".part")
+    tmp.write_text(_bpe_vocab_text(tokens), encoding="utf-8")
+    tmp.replace(vocab)
+    return vocab
+
+
+# The recognizer costs ~1.8 s to build and nothing to keep, and this server is
+# long-lived, so it is built on the first transcription and held for the life of
+# the process. Keyed by model directory so an override taking effect mid-process
+# (as the tests do) rebuilds rather than serving the previous model.
+_parakeet_recognizer: tuple[str, object] | None = None
+
+
+def parakeet_recognizer(model_dir: Path):
+    """The resident OfflineRecognizer for `model_dir`, built on first use."""
+    global _parakeet_recognizer
+    key = str(model_dir)
+    if _parakeet_recognizer is not None and _parakeet_recognizer[0] == key:
+        return _parakeet_recognizer[1]
+
+    import sherpa_onnx
+
+    # modeling_unit and bpe_vocab travel together or not at all: sherpa-onnx
+    # 1.13.6 segfaults on modeling_unit="bpe" with an empty bpe_vocab, taking
+    # the whole server down rather than raising. Building the pair here — the
+    # only place either is passed — is what makes that combination unreachable.
+    vocab = parakeet_bpe_vocab(model_dir)
+    recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+        encoder=str(model_dir / "encoder.int8.onnx"),
+        decoder=str(model_dir / "decoder.int8.onnx"),
+        joiner=str(model_dir / "joiner.int8.onnx"),
+        tokens=str(model_dir / "tokens.txt"),
+        num_threads=PARAKEET_THREADS,
+        model_type="nemo_transducer",
+        decoding_method=PARAKEET_DECODING,
+        modeling_unit="bpe",
+        bpe_vocab=str(vocab),
+    )
+    _parakeet_recognizer = (key, recognizer)
+    return recognizer
+
+
+def run_parakeet(model_dir: Path, wav: Path, hotwords: str | None = None) -> str:
+    """The transcript of `wav`, or "" if Parakeet produced nothing usable.
+
+    `hotwords` is the seam for per-request vocabulary biasing — the words the
+    prompt does for whisper. It is unused today (callers pass None) and is here
+    so that adding it later touches this line and not the pipeline around it;
+    the recognizer is already built with the bpe vocabulary that consumes it.
+    """
+    recognizer = parakeet_recognizer(model_dir)
+    with wave.open(str(wav)) as w:
+        if w.getnchannels() != 1 or w.getsampwidth() != 2:
+            return ""
+        rate = w.getframerate()
+        frames = w.readframes(w.getnframes())
+    # int16 PCM to the float32 in [-1, 1) sherpa-onnx wants. array rather than
+    # numpy: this is the only array work in the server and numpy is not a
+    # dependency it otherwise needs.
+    pcm = array.array("h")
+    pcm.frombytes(frames)
+    samples = [s / 32768.0 for s in pcm]
+    if not samples:
+        return ""
+
+    stream = recognizer.create_stream(hotwords=hotwords) if hotwords \
+        else recognizer.create_stream()
+    stream.accept_waveform(rate, samples)
+    recognizer.decode_stream(stream)
+    return " ".join(stream.result.text.split())
 
 
 def _is_common_english(word: str) -> bool:
@@ -1164,9 +1380,10 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "") -> Re
     # Assets before body: an install without the voice pieces answers the same
     # way whatever it was sent, which lets the phone probe with an empty body
     # before it records rather than telling the user after the fact.
-    binary, model = whisper_paths()
-    if binary is None or model is None:
+    engine = voice_engine()
+    if not engine:
         return JSONResponse({"error": "not_setup"}, status_code=503)
+    binary, model = whisper_paths() if engine == "whisper" else (None, None)
     if not shutil.which("ffmpeg"):
         return JSONResponse({"error": "no_ffmpeg"}, status_code=503)
 
@@ -1237,17 +1454,23 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "") -> Re
             # this is a dict lookup once the file has been read.
             learned = resolver.learned_words()
 
-            whisper_started = time.monotonic()
-            text = run_whisper(binary, model, wav,
-                               transcribe_prompt(screen, cwd, history, scrollback,
-                                                 learned))
-            whisper_ms = int((time.monotonic() - whisper_started) * 1000)
+            decode_started = time.monotonic()
+            if engine == "parakeet":
+                # No prompt: Parakeet takes none. The vocabulary sources above
+                # still feed the resolver, and hotwords — Parakeet's equivalent
+                # channel — are the seam left open in run_parakeet().
+                text = run_parakeet(parakeet_model_dir(), wav, hotwords=None)
+            else:
+                text = run_whisper(binary, model, wav,
+                                   transcribe_prompt(screen, cwd, history,
+                                                     scrollback, learned))
+            decode_ms = int((time.monotonic() - decode_started) * 1000)
             ms = int((time.monotonic() - started) * 1000)
 
         log(f"transcribe content-type={content_type!r} bytes={len(raw)} "
             f"duration={check.duration_s:.2f}s peak={check.peak_rms:.4f} "
             f"max_frame_rms={check.max_frame_rms:.4f} silent=no "
-            f"whisper_ms={whisper_ms} ms={ms} raw={text[:80]!r}")
+            f"engine={engine} decode_ms={decode_ms} ms={ms} raw={text[:80]!r}")
 
         if not text:
             return no_store(JSONResponse({"text": "", "raw": "", "ms": ms}))

@@ -60,6 +60,19 @@ def at_a_shell(monkeypatch, no_tmux):
     monkeypatch.setattr(A, "pane_cwd", lambda name: "")
 
 
+@pytest.fixture(autouse=True)
+def no_engine_override(monkeypatch):
+    """No env-forced engine and no real Parakeet model, whatever the shell set.
+
+    Every test below that does not say otherwise means "the whisper path", and
+    that only holds if the machine running the suite is not itself pointing at a
+    Parakeet install through the environment.
+    """
+    monkeypatch.delenv("POCKETTUI_VOICE_ENGINE", raising=False)
+    monkeypatch.delenv("POCKETTUI_PARAKEET_MODEL", raising=False)
+    monkeypatch.setattr(A, "PARAKEET_DIR", Path("/nonexistent-parakeet"))
+
+
 @pytest.fixture
 def installed(tmp_path, monkeypatch):
     """A voice/ directory that looks complete without containing a real model."""
@@ -71,6 +84,30 @@ def installed(tmp_path, monkeypatch):
     monkeypatch.delenv("POCKETTUI_WHISPER_BIN", raising=False)
     monkeypatch.delenv("POCKETTUI_WHISPER_MODEL", raising=False)
     return tmp_path
+
+
+@pytest.fixture
+def parakeet_installed(tmp_path, monkeypatch):
+    """A Parakeet model directory holding the four files the probe looks for.
+
+    The contents are not models — every test using this stubs the recognizer
+    out. What it proves is the discovery and selection logic, which is the only
+    part of the engine that runs on a machine with no sherpa-onnx.
+    """
+    model = tmp_path / "parakeet" / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
+    model.mkdir(parents=True)
+    for name in A.PARAKEET_FILES:
+        (model / name).write_text("▁t 1\n▁th 2\n" if name == "tokens.txt" else "x")
+    monkeypatch.setattr(A, "VOICE_DIR", tmp_path)
+    monkeypatch.setattr(A, "PARAKEET_DIR", tmp_path / "parakeet")
+    return model
+
+
+@pytest.fixture
+def sherpa_importable(monkeypatch):
+    """sherpa-onnx present, whether or not this machine really has it."""
+    import types
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", types.ModuleType("sherpa_onnx"))
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +144,201 @@ def test_env_overrides_are_respected(installed, tmp_path, monkeypatch):
     monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(other))
     _, model = A.whisper_paths()
     assert model == other
+
+
+# ---------------------------------------------------------------------------
+# Engine selection
+# ---------------------------------------------------------------------------
+# The Parakeet half is stubbed at the sherpa-onnx boundary: what these prove is
+# which engine a given install picks, not what either engine decodes.
+
+def test_parakeet_is_discovered_by_glob(parakeet_installed, sherpa_importable):
+    """A tarball unpacked into voice/parakeet/ is found without configuration."""
+    assert A.parakeet_model_dir() == parakeet_installed
+    assert A.parakeet_available()
+
+
+def test_v2_wins_when_several_models_are_present(parakeet_installed):
+    """The base.en rule, applied to Parakeet: prefer the English build by name.
+
+    v3 sorts above v2 and is the newer release, so without an explicit
+    preference it would win — and it is multilingual, measurably worse on the
+    English this product transcribes. Someone who wants it names it in
+    POCKETTUI_PARAKEET_MODEL.
+    """
+    for version in ("v1", "v3"):
+        other = parakeet_installed.parent / f"sherpa-onnx-nemo-parakeet-tdt-0.6b-{version}-int8"
+        other.mkdir()
+        for name in A.PARAKEET_FILES:
+            (other / name).write_text("x")
+    assert A.parakeet_model_dir() == parakeet_installed
+
+
+def test_the_newest_wins_when_there_is_no_v2(parakeet_installed):
+    """No English build to prefer: fall back to the newest of what is there."""
+    import shutil as sh
+    sh.rmtree(parakeet_installed)
+    for version in ("v3", "v4"):
+        other = parakeet_installed.parent / f"sherpa-onnx-nemo-parakeet-tdt-0.6b-{version}-int8"
+        other.mkdir()
+        for name in A.PARAKEET_FILES:
+            (other / name).write_text("x")
+    assert A.parakeet_model_dir().name.endswith("v4-int8")
+
+
+def test_an_incomplete_v2_does_not_shadow_a_working_model(parakeet_installed):
+    """Preference applies among usable models, not ahead of usability."""
+    (parakeet_installed / "joiner.int8.onnx").unlink()
+    other = parakeet_installed.parent / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+    other.mkdir()
+    for name in A.PARAKEET_FILES:
+        (other / name).write_text("x")
+    assert A.parakeet_model_dir() == other
+
+
+def test_a_half_unpacked_model_reads_as_absent(parakeet_installed,
+                                               sherpa_importable):
+    """Same rule whisper_paths() follows: fail the probe, not the decode."""
+    (parakeet_installed / "joiner.int8.onnx").unlink()
+    assert A.parakeet_model_dir() is None
+    assert not A.parakeet_available()
+
+
+def test_parakeet_model_env_override(parakeet_installed, tmp_path, monkeypatch):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    for name in A.PARAKEET_FILES:
+        (elsewhere / name).write_text("x")
+    monkeypatch.setenv("POCKETTUI_PARAKEET_MODEL", str(elsewhere))
+    assert A.parakeet_model_dir() == elsewhere
+
+
+def test_parakeet_env_override_pointing_nowhere_is_absent(parakeet_installed,
+                                                          tmp_path, monkeypatch):
+    """An override is a statement, not a hint: it does not fall back to the glob."""
+    monkeypatch.setenv("POCKETTUI_PARAKEET_MODEL", str(tmp_path / "absent"))
+    assert A.parakeet_model_dir() is None
+
+
+def test_parakeet_is_preferred_when_both_are_installed(installed,
+                                                       parakeet_installed,
+                                                       sherpa_importable):
+    assert A.voice_engine() == "parakeet"
+
+
+def test_a_missing_model_falls_back_to_whisper(installed, sherpa_importable):
+    """sherpa-onnx installed but no model downloaded: whisper still answers."""
+    assert A.parakeet_model_dir() is None
+    assert A.voice_engine() == "whisper"
+
+
+def test_a_missing_sherpa_falls_back_to_whisper(installed, parakeet_installed,
+                                                monkeypatch):
+    """The model is on disk but the wheel is not: whisper, not a 503."""
+    monkeypatch.setattr(A, "parakeet_available", lambda: False)
+    # whisper_paths() reads VOICE_DIR, which parakeet_installed has repointed.
+    monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
+    monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
+    assert A.voice_engine() == "whisper"
+
+
+def test_env_can_force_either_engine(installed, parakeet_installed,
+                                     sherpa_importable, monkeypatch):
+    monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
+    monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
+    monkeypatch.setenv("POCKETTUI_VOICE_ENGINE", "whisper")
+    assert A.voice_engine() == "whisper"
+    monkeypatch.setenv("POCKETTUI_VOICE_ENGINE", "parakeet")
+    assert A.voice_engine() == "parakeet"
+
+
+def test_forcing_an_engine_that_is_absent_is_not_a_silent_fallback(
+        installed, monkeypatch):
+    """Pinned to Parakeet with no Parakeet: not_setup, not a quiet whisper run."""
+    monkeypatch.setenv("POCKETTUI_VOICE_ENGINE", "parakeet")
+    assert A.voice_engine() == ""
+
+
+def test_neither_engine_is_the_only_not_setup(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "VOICE_DIR", tmp_path / "absent")
+    monkeypatch.delenv("POCKETTUI_WHISPER_BIN", raising=False)
+    assert A.voice_engine() == ""
+
+
+# ---------------------------------------------------------------------------
+# The bpe vocabulary sherpa-onnx will not ship
+# ---------------------------------------------------------------------------
+
+def test_bpe_vocab_is_synthesized_from_tokens(parakeet_installed):
+    vocab = A.parakeet_bpe_vocab(parakeet_installed)
+    assert vocab.read_text().splitlines() == ["▁t\t-1.0", "▁th\t-1.0"]
+
+
+def test_bpe_vocab_keeps_pieces_that_contain_a_space(tmp_path):
+    """Only the trailing id is one field, so the split has to come from the right."""
+    tokens = tmp_path / "tokens.txt"
+    tokens.write_text("<unk> 0\n  1\n▁a 2\n")
+    assert A._bpe_vocab_text(tokens).splitlines() == ["<unk>\t-1.0", " \t-1.0",
+                                                      "▁a\t-1.0"]
+
+
+def test_an_existing_bpe_vocab_is_left_alone(parakeet_installed):
+    vocab = parakeet_installed / "bpe.vocab"
+    vocab.write_text("mine\t-1.0\n")
+    assert A.parakeet_bpe_vocab(parakeet_installed).read_text() == "mine\t-1.0\n"
+
+
+def test_a_read_only_model_directory_still_gets_a_vocab(parakeet_installed,
+                                                        tmp_path, monkeypatch):
+    """A model tree mounted read-only must run, not fail at recognizer build."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(A.os, "access", lambda path, mode: False)
+    vocab = A.parakeet_bpe_vocab(parakeet_installed)
+    assert vocab.parent == tmp_path / "cache" / "pockettui"
+    assert vocab.read_text().splitlines() == ["▁t\t-1.0", "▁th\t-1.0"]
+    assert not (parakeet_installed / "bpe.vocab").exists()
+
+
+def test_the_bpe_vocab_is_never_passed_empty(parakeet_installed, monkeypatch):
+    """The segfault guard: sherpa-onnx 1.13.6 dies on modeling_unit=bpe with an
+    empty bpe_vocab, so the two must be passed together and the vocab non-empty.
+
+    Asserted at the boundary rather than by inspection, because the failure mode
+    is a process death that no exception handler downstream could report.
+    """
+    import types
+    seen = {}
+
+    def from_transducer(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    fake = types.ModuleType("sherpa_onnx")
+    fake.OfflineRecognizer = types.SimpleNamespace(from_transducer=from_transducer)
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", fake)
+    monkeypatch.setattr(A, "_parakeet_recognizer", None)
+
+    A.parakeet_recognizer(parakeet_installed)
+    assert seen["modeling_unit"] == "bpe"
+    assert seen["bpe_vocab"] and Path(seen["bpe_vocab"]).stat().st_size > 0
+    # Hotwords are the reason for the vocab, and only this method takes them.
+    assert seen["decoding_method"] == "modified_beam_search"
+
+
+def test_the_recognizer_is_built_once_and_kept(parakeet_installed, monkeypatch):
+    """~1.8 s to build and nothing to hold: a long-lived server builds it once."""
+    import types
+    builds = []
+
+    fake = types.ModuleType("sherpa_onnx")
+    fake.OfflineRecognizer = types.SimpleNamespace(
+        from_transducer=lambda **kw: builds.append(kw) or object())
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", fake)
+    monkeypatch.setattr(A, "_parakeet_recognizer", None)
+
+    first = A.parakeet_recognizer(parakeet_installed)
+    assert A.parakeet_recognizer(parakeet_installed) is first
+    assert len(builds) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +400,83 @@ def test_success_shape(installed, monkeypatch, at_a_shell):
     assert payload["raw"] == "pie test tests slash test underscore app dot py"
     assert payload["text"] == "pytest tests/test_app.py"
     assert isinstance(payload["ms"], int) and payload["ms"] >= 0
+
+
+def test_the_parakeet_route_answers_the_same_shape(parakeet_installed,
+                                                   sherpa_importable,
+                                                   monkeypatch, at_a_shell):
+    """Different engine, identical contract: the resolver's repair in text."""
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(
+        A, "run_parakeet",
+        lambda d, w, hotwords=None: "pie test tests slash test underscore app dot py")
+
+    def explode(*a, **k):
+        raise AssertionError("whisper must not run when Parakeet is selected")
+
+    monkeypatch.setattr(A, "run_whisper", explode)
+    payload = body(A.transcribe(b"audio bytes", "work", "phone"))
+    assert set(payload) == {"text", "raw", "ms"}
+    assert payload["raw"] == "pie test tests slash test underscore app dot py"
+    assert payload["text"] == "pytest tests/test_app.py"
+
+
+def test_parakeet_is_asked_for_no_prompt(parakeet_installed, sherpa_importable,
+                                         monkeypatch, at_a_shell):
+    """Parakeet takes no --prompt; hotwords are the seam, unused for now."""
+    seen = {}
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+
+    def spy(model_dir, wav, hotwords=None):
+        seen["hotwords"] = hotwords
+        return "git status"
+
+    monkeypatch.setattr(A, "run_parakeet", spy)
+    A.transcribe(b"audio bytes", "work", "phone")
+    assert seen["hotwords"] is None
+
+
+def test_the_log_line_names_the_engine(parakeet_installed, sherpa_importable,
+                                       monkeypatch, at_a_shell):
+    """Which model ran, and what it cost, has to be readable from the log."""
+    lines = []
+    monkeypatch.setattr(A, "log", lines.append)
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_parakeet", lambda d, w, hotwords=None: "git status")
+
+    A.transcribe(b"audio bytes", "work", "phone")
+    assert any("engine=parakeet" in line and "decode_ms=" in line
+               for line in lines), lines
+
+
+def test_the_log_line_names_whisper_too(installed, monkeypatch, at_a_shell):
+    lines = []
+    monkeypatch.setattr(A, "log", lines.append)
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
+
+    A.transcribe(b"audio bytes", "work", "phone")
+    assert any("engine=whisper" in line and "decode_ms=" in line
+               for line in lines), lines
+
+
+def test_a_parakeet_crash_answers_a_shape_not_a_traceback(parakeet_installed,
+                                                          sherpa_importable,
+                                                          monkeypatch, no_tmux):
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+
+    def boom(*a, **k):
+        raise RuntimeError("onnxruntime exploded")
+
+    monkeypatch.setattr(A, "run_parakeet", boom)
+    response = A.transcribe(b"audio bytes", "work", "phone")
+    assert response.status_code == 500
+    assert body(response) == {"error": "transcribe_failed"}
 
 
 def test_the_asr_rules_run_on_the_transcript(installed, monkeypatch,
@@ -486,6 +795,73 @@ def test_real_audio_transcribes_and_resolves(tmp_path, monkeypatch):
     # The repair the pipeline exists to make: the model's "test/" becomes the
     # directory that is actually there, with the filename spelled correctly.
     assert "tests/test_camerahmr.py" in payload["text"]
+    assert payload["ms"] > 0
+
+
+def _real_parakeet_reason() -> str:
+    """Why the real-Parakeet test cannot run here, or "" if it can.
+
+    Evaluated at collection, and deliberately not via parakeet_available(): the
+    autouse fixture blanks PARAKEET_DIR for every other test, and this needs the
+    unpatched answer.
+    """
+    try:
+        import sherpa_onnx  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return "sherpa-onnx is not installed"
+    if A.parakeet_model_dir() is None:
+        return "voice/parakeet/ holds no model (run setup_voice.sh)"
+    if not (BENCH_AUDIO / "p01.wav").exists():
+        return "benchmark audio is not present"
+    return ""
+
+
+@pytest.mark.skipif(bool(_real_parakeet_reason()), reason=_real_parakeet_reason())
+def test_real_audio_through_parakeet(tmp_path, monkeypatch):
+    """The same clip, end to end through the real ONNX model.
+
+    Parakeet gets the command word right where base.en does not — it writes
+    "run pytest on ...", not "Run pitest on ..." — and it reassembles the spoken
+    filename into `test_camerahmr.py`, which is the repair this pipeline exists
+    to make.
+
+    The directory is deliberately NOT asserted, and the difference is worth
+    recording. Parakeet transcribes verbatim: it writes the spoken separator as
+    the word "slash", where whisper writes the character. The resolver's path
+    snapper matches candidates that already contain a "/", so whisper's
+    "test/test_camerahmr.py" reaches it and becomes "tests/test_camerahmr.py"
+    while Parakeet's "test slash test_camerahmr.py" does not — a spoken "slash"
+    between two words is never turned into a separator. That is a pre-existing
+    gap in the resolver, not in this engine, and closing it is a resolver change
+    with its own benchmark to answer to; the test documents the current
+    behaviour rather than asserting a repair the pipeline does not yet make.
+    """
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_camerahmr.py").write_text("")
+    (tmp_path / "app.py").write_text("")
+    R._cwd_cache.clear()
+
+    # Undo the autouse blanking: this is the one test that wants the real model.
+    monkeypatch.setattr(A, "PARAKEET_DIR", A.VOICE_DIR / "parakeet")
+    monkeypatch.setenv("POCKETTUI_VOICE_ENGINE", "parakeet")
+    monkeypatch.setattr(A, "tmux", lambda *a: (1, ""))
+    monkeypatch.setattr(A, "resolve_target", lambda s, d: "work")
+    monkeypatch.setattr(A, "capture_pane", lambda name, lines=60: [
+        "sai@box:~/work$ ls tests/",
+        "test_camerahmr.py",
+        "sai@box:~/work$ ",
+    ])
+    monkeypatch.setattr(A, "pane_cwd", lambda name: str(tmp_path))
+
+    response = A.transcribe((BENCH_AUDIO / "p01.wav").read_bytes(), "work", "phone")
+    assert response.status_code == 200
+    payload = body(response)
+
+    assert payload["raw"], "the real model produced no transcript at all"
+    # The filename, spelled the way the filesystem spells it — which the model
+    # heard as "test underscore camera hmr dot py" and could not have known.
+    assert "test_camerahmr.py" in payload["text"]
+    assert "camera hmr" not in payload["text"]
     assert payload["ms"] > 0
 
 
