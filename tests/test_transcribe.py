@@ -1646,3 +1646,23 @@ def test_an_unreadable_store_leaves_the_prompt_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(A.getpass, "getuser", lambda: "sdwivedi")
     assert A.transcribe_prompt([], "", learned=R.learned_words()) == \
         A.transcribe_prompt([], "")
+
+
+# ---------------------------------------------------------------------------
+# Build version
+# ---------------------------------------------------------------------------
+
+def test_version_is_read_from_the_stamped_file(tmp_path, monkeypatch):
+    """The trailing newline git archive leaves behind is not part of the value."""
+    stamp = tmp_path / "VERSION"
+    stamp.write_text("0.1.123\n")
+    monkeypatch.setattr(A, "VERSION_PATH", stamp)
+    assert body(A.api_version()) == {"version": "0.1.123"}
+
+
+def test_an_unstamped_install_reports_an_empty_version(tmp_path, monkeypatch):
+    """A checkout and a pre-versioning install both answer, they just say nothing."""
+    monkeypatch.setattr(A, "VERSION_PATH", tmp_path / "absent" / "VERSION")
+    response = A.api_version()
+    assert response.status_code == 200
+    assert body(response) == {"version": ""}
