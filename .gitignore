@@ -23,3 +23,4 @@ voice/
 # Corrections learned from edited transcripts (see resolver.py). Personal
 # vocabulary, local to this machine.
 .voice_learned.json
+explore/
