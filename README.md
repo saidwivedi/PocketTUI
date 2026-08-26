@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="icon.svg" alt="PocketTUI" width="96" height="96">
+<img src="assets/icon.svg" alt="PocketTUI" width="96" height="96">
 
 # PocketTUI
 
