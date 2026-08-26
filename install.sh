@@ -390,6 +390,10 @@ remote_version() {
 # Install directory
 # ---------------------------------------------------------------------------
 FRESH_DIR=1
+# Set on the paths below that are conceptually a re-install rather than an
+# update, so the pairing token is minted fresh even where UPDATE=1 is also
+# set to reuse the update file-replacement flow.
+ROTATE_TOKEN=0
 # ./install.sh inside a clone, with no POCKETTUI_DIR set to send it elsewhere:
 # the install dir *is* the checkout. There is nothing to overwrite and nothing
 # to ask about — just build the venv where the sources already are.
@@ -398,6 +402,9 @@ if [[ "$LOCAL_CHECKOUT" == "1" ]] && [[ -e "$INSTALL_DIR" ]] \
     FRESH_DIR=0
     step_quiet "Installing into this checkout at $INSTALL_DIR"
     vsay "  The sources are already here; only .venv and start.sh are added."
+    # ROTATE_TOKEN is left at 0 here: this path is re-run often during
+    # development, and rotating the token on every re-run would unpair an
+    # already-paired phone constantly.
 elif [[ -e "$INSTALL_DIR" ]]; then
     FRESH_DIR=0
     OLD_VERSION="$(installed_version)"
@@ -415,6 +422,7 @@ elif [[ -e "$INSTALL_DIR" ]]; then
             say "  That is already the current version — nothing to update to."
             if confirm "  Re-install it anyway?"; then
                 UPDATE=1
+                ROTATE_TOKEN=1
             fi
         elif [[ "$NEW_VERSION" != "unknown" ]]; then
             if confirm "  Update to version $NEW_VERSION?"; then
@@ -454,7 +462,12 @@ elif [[ -e "$INSTALL_DIR" ]]; then
                  icon-192.png icon-512.png vendor; do
             [[ -e "$INSTALL_DIR/$f" ]] && vsay "    $f"
         done
-        vsay "  Kept as they are: .token, voice/, .voice_learned.json, .venv."
+        if [[ "$ROTATE_TOKEN" == "1" ]]; then
+            vsay "  Kept as they are: voice/, .voice_learned.json, .venv."
+            vsay "  A new pairing code is generated, since this is a re-install."
+        else
+            vsay "  Kept as they are: .token, voice/, .voice_learned.json, .venv."
+        fi
         # The tarball ships the complete vendor set, so anything left in there
         # afterwards is a file upstream deleted — it would otherwise be served
         # for the life of the install. Scoped to vendor/ alone: it is the only
@@ -465,6 +478,7 @@ elif [[ -e "$INSTALL_DIR" ]]; then
         fi
     else
         step_quiet "Replacing existing install at $INSTALL_DIR (POCKETTUI_FORCE=1)"
+        ROTATE_TOKEN=1
         vsay "  These are overwritten by the new copy:"
         for f in app.py mobile_app.html sw.js pockettui.service install.sh \
                  icon-192.png icon-512.png vendor; do
@@ -472,6 +486,7 @@ elif [[ -e "$INSTALL_DIR" ]]; then
         done
         # The venv is rebuilt on top of whatever is there; nothing else is removed.
         [[ -e "$INSTALL_DIR/.venv" ]] && vsay "    .venv (dependencies reinstalled)"
+        vsay "    .token (a new pairing code is generated)"
         vsay "  Anything else already in that directory is left alone."
         note "replaced files in $INSTALL_DIR"
     fi
@@ -857,6 +872,12 @@ fi
 # installer must not rotate it, or every already-paired phone breaks silently.
 # TOKEN_KEPT drives the wording of the summary line further down; the
 # keep-or-mint decision below is made the same way, off the same read_token().
+# A re-install (POCKETTUI_FORCE=1, or answering yes to "Re-install it
+# anyway?") sets ROTATE_TOKEN=1 to mint a new one instead: dropping the old
+# .token here makes read_token() below come back empty, so the existing
+# generate+write path naturally mints a fresh token without duplicating its
+# logic.
+[[ "$ROTATE_TOKEN" == "1" ]] && rm -f "$INSTALL_DIR/.token"
 TOKEN_KEPT=0
 "$VENV_PY" -c "
 import sys
@@ -1756,8 +1777,10 @@ To invalidate it and force every paired phone to enter a new one:
 
     $VENV_PY $INSTALL_DIR/app.py --rotate-token
 
-Re-running install.sh does **not** rotate the code; an existing one is kept so
-already-paired phones keep working.
+Updating (\`--update\`) does **not** rotate the code; an existing one is kept
+so already-paired phones keep working. Forcing a re-install over an existing
+directory (\`POCKETTUI_FORCE=1\`, or choosing to re-install when already on
+the latest version) mints a new one.
 
 ## Updating
 
