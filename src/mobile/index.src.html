@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<!-- black-translucent, not "default": with "default" iOS paints the status-bar
+     strip itself and the page stops below it, so nothing the page draws can
+     reach it. Translucent makes the page render edge-to-edge under the status
+     bar (viewport-fit=cover is set above), which is what lets the terminal
+     background and .term-safetop actually fill the strip. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PocketTUI">
+<meta name="theme-color" content="#FAF8F3" id="meta-theme-color">
+<link rel="apple-touch-icon" href="icon-192.png?v=__CACHE_VERSION__">
+<link rel="apple-touch-icon" sizes="180x180" href="icon-512.png?v=__CACHE_VERSION__">
+<link rel="manifest" href="manifest.json?v=__CACHE_VERSION__">
+<link rel="stylesheet" href="vendor/xterm.css?v=__CACHE_VERSION__">
+@include boot-theme.js
+<title>PocketTUI</title>
+@include styles.css
+</head>
+<body>
+
+<!-- ============================================================
+     SVG ICON SPRITE (defined once, used via <use>)
+     ============================================================ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2.5" y="4" width="19" height="16" rx="2.5"/>
+      <path d="M7 9.5l3 2.5-3 2.5"/>
+      <path d="M12.5 15h4.5"/>
+    </symbol>
+    <symbol id="i-reload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12a9 9 0 1 1-2.6-6.4"/>
+      <path d="M21 3v6h-6"/>
+    </symbol>
+    <symbol id="i-theme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/>
+    </symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3.2"/>
+      <path d="M19.4 15a1.6 1.6 0 0 0 .32 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.32 1.6 1.6 0 0 0-1 1.47V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1.05-1.46 1.6 1.6 0 0 0-1.77.32l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .32-1.77 1.6 1.6 0 0 0-1.47-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.46-1.05 1.6 1.6 0 0 0-.32-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.32H9a1.6 1.6 0 0 0 1-1.47V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.47 1.6 1.6 0 0 0 1.77-.32l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.32 1.77V9a1.6 1.6 0 0 0 1.47 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.47 1z"/>
+    </symbol>
+    <symbol id="i-fwd" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 5l7 7-7 7"/>
+    </symbol>
+    <symbol id="i-arrows" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.5l3 3.2h-6z" fill="currentColor" stroke="none"/>
+      <path d="M12 20.5l-3-3.2h6z" fill="currentColor" stroke="none"/>
+      <path d="M3.5 12l3.2-3v6z" fill="currentColor" stroke="none"/>
+      <path d="M20.5 12l-3.2 3v-6z" fill="currentColor" stroke="none"/>
+      <path d="M12 8.6v6.8M8.6 12h6.8"/>
+    </symbol>
+    <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>
+    </symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="2.5" width="6" height="11" rx="3"/>
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>
+      <path d="M12 17.5V21M9 21h6"/>
+    </symbol>
+    <!-- Rides beside the strip mic's "code" label at a size the key bar's glyphs
+         work at, so it is drawn tighter than #i-mic rather than scaled down. -->
+    <symbol id="i-mic-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="2.5" width="6" height="10.5" rx="3"/>
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>
+      <path d="M12 17.5V21"/>
+    </symbol>
+    <!-- The same button once it is recording: one square, the universal stop. -->
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 19.5V5"/>
+      <path d="M5.5 11.5L12 5l6.5 6.5"/>
+    </symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M16.5 4.5l3 3L8 19l-4 1 1-4z"/>
+      <path d="M14.5 6.5l3 3"/>
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 5v14M5 12h14"/>
+    </symbol>
+  </defs>
+</svg>
+
+<!-- ============================================================
+     SESSION LIST
+     ============================================================ -->
+<div class="screen active" id="screen-list">
+  <div class="topbar">
+    <div class="brand">
+      <a href="https://pockettui.com/">
+        <span class="glyph"><svg><use href="#i-logo"/></svg></span>
+        <span class="name">PocketTUI</span>
+      </a>
+    </div>
+    <div class="right">
+      <button class="icon-btn" id="btn-reload" aria-label="Reload sessions"><svg><use href="#i-reload"/></svg></button>
+      <button class="icon-btn" id="btn-theme" aria-label="Toggle theme"><svg><use href="#i-theme"/></svg></button>
+      <button class="icon-btn" id="btn-settings" aria-label="Settings"><svg><use href="#i-gear"/></svg></button>
+    </div>
+  </div>
+  <div class="list-wrap">
+    <div class="a2hs-hint" id="a2hs-hint">
+      <span id="a2hs-hint-text"></span>
+      <button type="button" id="a2hs-hint-dismiss" aria-label="Dismiss">✕</button>
+    </div>
+    <div class="list-new"><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg>New session</button></div>
+    <div class="eyebrow" id="list-eyebrow">Sessions</div>
+    <div id="list"></div>
+    <div id="list-empty">No tmux sessions yet — New session starts one.</div>
+    <div id="list-error">Couldn't reach your computer.</div>
+  </div>
+</div>
+
+<!-- ============================================================
+     TERMINAL
+     ============================================================ -->
+<div class="screen" id="screen-term">
+  <div class="term-safetop"></div>
+  <button type="button" id="demo-badge" aria-label="Leave the demo">DEMO</button>
+  <!-- xterm appends its own layers here on open(); these two stay alongside and
+       are positioned over the grid whenever a selection is up. -->
+  <div id="term-host">
+    <div class="sel-handle" id="sel-handle-start" role="slider" aria-label="Selection start"></div>
+    <div class="sel-handle" id="sel-handle-end" role="slider" aria-label="Selection end"></div>
+  </div>
+  <div id="compose">
+    <!-- Deliberately an exact mirror of the attribute set xterm puts on its own
+         hidden textarea: autocorrect off, autocapitalize off, spellcheck false.
+         The terminal's keyboard is the reference — on the affected device it
+         provably raises no accessory strip, while this field did, and these
+         attributes were the only difference left. autocapitalize in particular is
+         reported to keep iOS's predictive bar even with the other two off.
+         autocomplete=off is ours; xterm predates it. iOS honours these only in
+         part, so this is a best effort rather than a guarantee. The cost is
+         autocapitalisation of thumb-typed text only: dictation does its own, since
+         the mic key runs its own speech-to-text. -->
+    <textarea id="compose-text" rows="1" placeholder="Dictate or type…"
+              autocapitalize="off" autocorrect="off" spellcheck="false"
+              autocomplete="off" enterkeyhint="enter"
+              aria-label="Compose text to send"></textarea>
+    <!-- Takes the textarea's place while the mic key is recording. aria-live so a
+         screen reader announces the state change the pulsing dot signals visually;
+         the ticking seconds are marked off, or every tick would be announced. -->
+    <div id="compose-rec" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <!-- Live input level, driven by the analyser's RMS. Decoration to a screen
+           reader, but the only thing on screen that says the microphone is
+           actually hearing something rather than merely being open. -->
+      <span class="level" aria-hidden="true"><span class="level-fill"></span></span>
+      <span class="label">Recording…</span>
+      <span class="elapsed" aria-hidden="true">0:00</span>
+    </div>
+    <!-- Clear and Send. There used to be a third control here — a "code" chip
+         that ran the local recorder while the key bar's mic ran the phone's
+         dictation — and having two microphones on screen meant the user had to
+         know which engine each one was before speaking. One mic key on the bar
+         chooses its engine from Settings now, and the slot it vacated goes to
+         the thing the strip actually lacked: a way to empty the box without
+         selecting its contents by thumb. -->
+    <div id="compose-actions">
+      <button type="button" id="compose-clear" aria-label="Clear composed text">
+        <svg aria-hidden="true"><use href="#i-close"/></svg>
+      </button>
+      <button type="button" id="compose-send" aria-label="Send"><svg><use href="#i-send"/></svg></button>
+    </div>
+  </div>
+  <div class="keybar" id="keybar"></div>
+</div>
+
+<!-- ============================================================
+     SETTINGS
+     ============================================================ -->
+<div class="sheet-scrim" id="sheet-scrim"></div>
+<div class="sheet" id="sheet-settings">
+  <button type="button" id="btn-sheet-demo">Try demo</button>
+  <h2 id="sheet-title">Settings</h2>
+  <p class="sheet-note" id="sheet-note">Your computer's terminal, on your phone.</p>
+  <div class="sheet-install" id="sheet-install">
+    <label>Install the backend</label>
+    <div class="cmd">
+      <code id="install-cmd">curl -fsSL https://pockettui.com/install.sh | bash</code>
+      <button type="button" id="btn-copy-install">Copy</button>
+    </div>
+  </div>
+  <label for="backend-url">Computer address</label>
+  <input id="backend-url" type="url" inputmode="url" autocapitalize="off" autocorrect="off"
+         spellcheck="false" placeholder="my-host.example.net/pockettui">
+  <label for="backend-token">Pairing code</label>
+  <input id="backend-token" type="text" inputmode="latin" autocapitalize="characters" autocorrect="off"
+         spellcheck="false" placeholder="XXXXX-XXXXX" maxlength="11">
+  <label for="backend-devname">Device name</label>
+  <input id="backend-devname" type="text" autocapitalize="off" autocorrect="off"
+         spellcheck="false" placeholder="iphone" maxlength="16">
+  <label for="backend-port" class="opt">Port <span>optional</span></label>
+  <input id="backend-port" type="text" inputmode="numeric" autocapitalize="off"
+         autocorrect="off" spellcheck="false" placeholder="5560">
+  <div class="actions">
+    <button type="button" id="btn-settings-forget">Forget</button>
+    <button type="button" id="btn-settings-cancel">Cancel</button>
+    <button type="button" id="btn-settings-save">Save</button>
+  </div>
+  <div class="sheet-faq" id="sheet-faq">
+    <p><b>What is this?</b> Your machine's tmux sessions, from any device.</p>
+    <p><b>How does it work?</b> xterm.js relays keys over a WebSocket straight to
+      your machine, authenticated by the pairing code the installer printed.
+      Nothing is stored off-device.</p>
+  </div>
+  <!-- Which engine the key bar's mic key talks to. One choice rather than a
+       switch, because the two local engines are genuinely different answers and
+       the phone's own recogniser is the third — a checkbox could only ever have
+       said "local or not" and left the rest to guess. Rows the backend cannot
+       serve are disabled with the command that fixes them, so the picker never
+       offers what would fail on the first word. -->
+  <label id="voice-label">Dictation</label>
+  <div class="radio-group" id="voice-engine" role="radiogroup" aria-labelledby="voice-label">
+    <label class="radio-row">
+      <input type="radio" name="voice-engine" value="phone">
+      <span class="name">Phone dictation</span>
+      <span class="note">the keyboard's own mic</span>
+    </label>
+    <label class="radio-row" id="voice-row-parakeet">
+      <input type="radio" name="voice-engine" value="parakeet">
+      <span class="name">Parakeet</span>
+      <span class="note"></span>
+    </label>
+    <label class="radio-row" id="voice-row-whisper">
+      <input type="radio" name="voice-engine" value="whisper">
+      <span class="name">Whisper</span>
+      <span class="note"></span>
+    </label>
+  </div>
+  <!-- First run only. Pairing is the moment the local engines stop being greyed
+       rows and become a real choice, and it is also the moment the sheet used to
+       close — so the one time the picker had something to say was the one time
+       nobody saw it. The sheet stays for this step instead, and closing it is
+       this button rather than the Save above, which has already done its job. -->
+  <div class="actions" id="voice-confirm-row">
+    <button type="button" id="btn-voice-confirm">Confirm</button>
+  </div>
+  <!-- Last in the sheet because it is a diagnostic, not part of connecting. -->
+  <div class="toggle-row">
+    <label for="dbg-toggle">Debug log</label>
+    <input id="dbg-toggle" type="checkbox">
+  </div>
+</div>
+
+<!-- ============================================================
+     NEW SESSION
+     ============================================================ -->
+<div class="sheet" id="sheet-new">
+  <h2>New session</h2>
+  <label for="new-name">Name</label>
+  <input id="new-name" type="text" autocapitalize="off" autocorrect="off"
+         spellcheck="false" placeholder="notes">
+  <label for="new-dir" class="opt">Folder <span>optional</span></label>
+  <input id="new-dir" type="text" autocapitalize="off" autocorrect="off"
+         spellcheck="false" placeholder="~/work/myproject">
+  <div class="actions">
+    <button type="button" id="btn-new-cancel">Cancel</button>
+    <button type="button" class="primary" id="btn-new-create">Create</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Offered after a long press. Copy and Paste both have to run inside the tap
+     itself — iOS grants the clipboard only from a user gesture. Copy is hidden
+     when the press found no word to select, leaving Paste as the whole point of
+     a long press on empty space. -->
+<div id="sel-pill">
+  <button type="button" id="btn-sel-copy">Copy</button>
+  <button type="button" id="btn-sel-paste">Paste</button>
+  <button type="button" id="btn-sel-cancel">Cancel</button>
+</div>
+
+<!-- ============================================================
+     IMAGE VIEWER
+     ============================================================ -->
+<div class="viewer" id="viewer">
+  <button class="icon-btn viewer-close" type="button" id="btn-viewer-close" aria-label="Close image">&times;</button>
+  <img id="viewer-img" alt="">
+  <video id="viewer-video" controls playsinline preload="metadata"></video>
+</div>
+
+<script src="vendor/xterm.js?v=__CACHE_VERSION__"></script>
+<script src="vendor/addon-fit.js?v=__CACHE_VERSION__"></script>
+<script src="vendor/addon-webgl.js?v=__CACHE_VERSION__"></script>
+<script>
+@include js
+</script>
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f9d127e4c47940619d123b24e482c842"}'></script><!-- End Cloudflare Web Analytics -->
+</body>
+</html>

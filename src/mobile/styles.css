@@ -1,0 +1,1225 @@
+<style>
+/* ============================================================
+   POCKETTUI — soft paper, editorial
+   Light by day, warm dark by night.
+   ============================================================ */
+
+:root {
+  /* Paper palette (light, default) */
+  --paper: #FAF8F3;
+  --paper-rec: #F4EFE3;     /* recessed surface */
+  --card: #FFFDF7;
+  --card-2: #FBF7EB;
+  --hair: #ECE6D8;          /* hairline border */
+  --hair-strong: #DDD4BE;
+  --ink: #1a1814;
+  --ink-2: #3d362d;
+  --secondary: #6b6357;
+  --tertiary: #8a8073;
+  --whisper: #b6ad9d;
+
+  /* Single accent — umber/sienna */
+  --umber: #b85c38;
+  --umber-soft: rgba(184, 92, 56, 0.10);
+  --umber-tint: rgba(184, 92, 56, 0.06);
+
+  /* Status */
+  --good: #5b6e4e;
+  --warn: #a86a3a;
+  --bad: #9c4439;
+
+  /* System */
+  --safe-top: env(safe-area-inset-top);
+  --safe-bot: env(safe-area-inset-bottom);
+
+  /* Type */
+  --serif: ui-serif, "Iowan Old Style", "Apple Garamond", Georgia, "Times New Roman", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0.05, 0.36, 1);
+}
+
+:root[data-theme="dark"] {
+  --paper: #16140f;
+  --paper-rec: #1a1813;
+  --card: #1f1c16;
+  --card-2: #25211a;
+  --hair: #2e2a21;
+  --hair-strong: #3b362a;
+  --ink: #f3ede0;
+  --ink-2: #d8d1c0;
+  --secondary: #a89e8c;
+  --tertiary: #7d7466;
+  --whisper: #5a5347;
+
+  --umber: #d4865a;
+  --umber-soft: rgba(212, 134, 90, 0.14);
+  --umber-tint: rgba(212, 134, 90, 0.08);
+
+  --good: #7a8e6a;
+  --warn: #c98a5a;
+  --bad: #c46a5e;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+*:focus-visible { outline: 1.5px solid var(--umber); outline-offset: 2px; }
+
+html, body {
+  margin: 0; padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior-y: contain;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  min-height: 100vh;
+  /* Subtle paper grain — SVG noise, very low opacity */
+  background-image:
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.045 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 200px 200px;
+}
+
+:root[data-theme="dark"] body {
+  background-image:
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.035 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ============================================================
+   SCREENS
+   ============================================================ */
+.screen { display: none; }
+.screen.active { display: block; }
+
+#screen-list {
+  padding-top: var(--safe-top);
+  padding-bottom: calc(40px + var(--safe-bot));
+}
+
+/* ============================================================
+   TOP BAR
+   ============================================================ */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 22px 12px;
+  position: sticky; top: var(--safe-top); z-index: 50;
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+}
+.topbar .brand {
+  display: flex; align-items: center; gap: 9px;
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.topbar .brand .glyph {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--umber);
+}
+.topbar .brand .glyph svg { width: 100%; height: 100%; }
+.topbar .brand a { display: flex; align-items: center; gap: 9px; color: inherit; text-decoration: none; }
+.topbar .right { display: flex; gap: 4px; align-items: center; padding-left: 8px; }
+.icon-btn {
+  background: transparent; border: none;
+  color: var(--secondary);
+  padding: 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: color 0.18s var(--ease-out), background 0.18s var(--ease-out);
+}
+.icon-btn svg { width: 20px; height: 20px; }
+.icon-btn:hover { color: var(--ink); background: var(--umber-tint); }
+.icon-btn:active { transform: scale(0.94); }
+.icon-btn.spin svg { animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* The one control that creates something is labelled — a bare + never says what
+   it makes. Outlined in the accent so it reads as an action rather than a
+   heading, since it now sits at the end of the Sessions eyebrow. */
+.pill-btn {
+  background: transparent;
+  border: 1px solid var(--umber);
+  color: var(--umber);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.006em;
+  line-height: 1;
+  white-space: nowrap;
+  /* 35px tall — an inch under the 36px icon buttons so it does not dwarf the
+     11px eyebrow label it shares a row with, still a comfortable thumb target. */
+  padding: 9px 12px 9px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+  transition: background 0.18s var(--ease-out), color 0.18s var(--ease-out);
+}
+.pill-btn svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.pill-btn:hover { background: var(--umber-tint); }
+.pill-btn:active { transform: scale(0.96); }
+
+/* ============================================================
+   SESSION LIST
+   ============================================================ */
+.list-wrap {
+  padding: 0 22px 40px;
+  animation: fade-in 0.32s var(--ease-out);
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tertiary);
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 14px;
+}
+.eyebrow::after {
+  content: ""; flex: 1; height: 1px; background: var(--hair);
+}
+/* Its own row above the Sessions rule, right-aligned over the cards it adds to.
+   .list-wrap has no top padding — it was built for a 16px text eyebrow — so the
+   clearance under the sticky topbar is set here, and sits larger than the gap
+   down to the label the button introduces. */
+.list-new {
+  display: flex; justify-content: flex-end;
+  margin: 14px 0 14px;
+}
+
+/* "Add to Home Screen" hint — a slim strip above the list, shown only to
+   phone users in a plain browser tab who haven't dismissed it before. */
+.a2hs-hint {
+  display: none;
+  align-items: center; gap: 10px;
+  background: var(--umber-tint);
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  padding: 10px 10px 10px 14px;
+  margin-top: 14px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+.a2hs-hint.show { display: flex; }
+.a2hs-hint span { flex: 1; }
+.a2hs-hint button {
+  background: transparent; border: none;
+  color: var(--secondary);
+  font-size: 15px;
+  line-height: 1;
+  padding: 6px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.a2hs-hint button:hover { color: var(--ink); }
+
+.item {
+  background: var(--card);
+  border: 1px solid var(--hair);
+  border-radius: 16px;
+  padding: 18px 20px 16px;
+  margin-bottom: 14px;
+  position: relative;
+  cursor: pointer;
+  transition: border-color 0.18s var(--ease-out), background 0.18s var(--ease-out),
+              transform 0.14s var(--ease-out);
+}
+.item:hover { border-color: var(--hair-strong); }
+.item:active { transform: scale(0.985); background: var(--card-2); }
+
+.item .item-head {
+  display: flex; gap: 12px; align-items: flex-start;
+}
+.item .item-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-top: 8px;
+  flex: 0 0 auto;
+  background: var(--whisper);
+}
+.item .item-dot.live {
+  background: var(--good);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 18%, transparent);
+}
+.item .title {
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.012em;
+  line-height: 1.32;
+  color: var(--ink);
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* The real session name, demoted under an alias: same mono voice as the metadata
+   row, so the alias is the only thing reading as a title. */
+.item .realname {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--tertiary);
+  letter-spacing: -0.005em;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+.item .chev {
+  color: var(--whisper);
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+.item .chev svg { width: 18px; height: 18px; }
+/* Sits in the head row next to the chevron; quiet until the row is touched, so
+   it never competes with the session name. */
+.item .btn-alias {
+  padding: 4px;
+  margin-top: -1px;
+  color: var(--whisper);
+}
+.item .btn-alias svg { width: 16px; height: 16px; }
+.item:hover .btn-alias { color: var(--secondary); }
+
+.item .item-meta {
+  margin-left: 20px;
+  margin-top: 5px;
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--tertiary);
+  letter-spacing: -0.005em;
+}
+.item .item-meta .sep { color: var(--whisper); }
+.item .item-meta .cmd { color: var(--umber); font-weight: 600; }
+
+#list-empty, #list-error {
+  text-align: center;
+  padding: 64px 20px;
+  color: var(--tertiary);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  display: none;
+}
+/* The empty state carries the same offer as the eyebrow, where the eye already
+   is — the sentence alone left the user hunting for a control. */
+/* Demo row — a card like a session, but dashed so it never reads as one. */
+.item.demo {
+  background: var(--umber-tint);
+  border-style: dashed;
+  border-color: var(--hair-strong);
+  margin-top: 4px;
+}
+.item.demo .title { color: var(--umber); }
+.item.demo .item-meta { margin-left: 0; }
+
+/* ============================================================
+   TERMINAL SCREEN
+   ============================================================ */
+#screen-term {
+  position: fixed; inset: 0;
+  /* Anchored by inset alone, never sized: a declared viewport height (100dvh)
+     makes this a viewport-sized fixed container, which iOS renders a bottom gap
+     short in the installed app (WebKit's Safari 26.1 fix names exactly that),
+     with top:0 putting the whole shortfall under the key bar. Pinning both
+     edges instead makes the bottom the screen's real bottom by construction.
+     The under-notch strip this used to paint is covered by syncChrome, which
+     keeps html/body on the terminal background while this screen is up. */
+  /* The terminal's own background, not the app's paper — html/body are painted
+     to the same value while this screen is up, so the strip under the notch
+     matches the terminal instead of flashing white. */
+  background: var(--term-bg, var(--paper));
+  flex-direction: column;
+  overscroll-behavior: none;
+}
+#screen-term.active { display: flex; }
+
+/* No rubber-banding behind the fixed terminal surface. overflow:hidden stops the
+   user scrolling but not iOS scrolling a focused input into view — that pan is
+   undone in applyViewport the moment it appears instead. Deliberately NOT
+   position:fixed on the root: a fixed body in the iOS standalone app misplaces
+   the whole fixed layer (the screen renders shifted up with a blank band at the
+   bottom), which the production client — identical here — has never shown. */
+html.term-open, body.term-open {
+  overscroll-behavior: none;
+  overflow: hidden;
+}
+
+/* No title bar on the terminal screen — the notch strip is just terminal
+   background, and the whole rest of the viewport is grid. */
+.term-safetop {
+  flex: 0 0 auto;
+  height: var(--safe-top);
+}
+
+
+#term-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 2px 0 4px;
+  overflow: hidden;
+  /* The selection handles are absolutely positioned children of the host, so
+     their coordinates are the host's own box. */
+  position: relative;
+  /* Vertical drags are ours (they become wheel reports), so the browser must not
+     claim them for panning; taps still come through as click. */
+  touch-action: none;
+  overscroll-behavior: none;
+  /* A long press here is ours — it starts the selection gesture — so iOS must not
+     answer it with the magnifier loupe or the callout menu first. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none; user-select: none;
+}
+#term-host .xterm { height: 100%; }
+#term-host .xterm-viewport { overscroll-behavior: none; }
+
+/* Floating Copy/Cancel pill, shown beside a finished long-press selection.
+   Same ink-on-paper chip the toast is, but interactive and positioned by JS. */
+#sel-pill {
+  position: fixed;
+  display: none;
+  z-index: 310;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--ink);
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
+}
+#sel-pill.show { display: flex; }
+#sel-pill button {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--paper);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  min-height: 30px;
+  padding: 0 13px;
+  cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+}
+#sel-pill button:active { background: rgba(250, 248, 243, 0.16); }
+/* A long press on empty space has nothing to copy, so the pill comes up as
+   Paste/Cancel alone rather than offering a Copy that would return "". */
+#sel-pill.no-copy #btn-sel-copy { display: none; }
+
+/* Selection handles — the lollipop dots that hang off each end of a selection,
+   the way every mobile text field draws them. The element itself is the 44px
+   touch target (a thumb is nowhere near as precise as the 16px dot it aims at);
+   the dot and the stem that ties it to the cell edge are drawn by pseudo
+   elements inside it, so growing the target never grows the graphic.
+   left/top are set by JS to the exact cell corner — see placeHandles(). */
+.sel-handle {
+  position: absolute;
+  display: none;
+  width: 44px; height: 44px;
+  /* The anchor point is the top-centre of the box, so JS positions a cell
+     corner and the dot hangs below it. */
+  margin-left: -22px;
+  z-index: 25;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.sel-handle.show { display: block; }
+/* The stem: a hairline from the cell edge down to the dot. */
+.sel-handle::before {
+  content: "";
+  position: absolute;
+  left: 50%; top: 0;
+  width: 2px; height: 8px;
+  margin-left: -1px;
+  background: var(--umber);
+}
+/* The dot itself, 16px, centred under the stem. */
+.sel-handle::after {
+  content: "";
+  position: absolute;
+  left: 50%; top: 7px;
+  width: 16px; height: 16px;
+  margin-left: -8px;
+  border-radius: 50%;
+  background: var(--umber);
+  box-shadow: 0 1px 3px rgba(20, 16, 10, 0.35);
+}
+
+/* Demo badge — floats over the grid's top-right, tap to leave demo mode. */
+#demo-badge {
+  display: none;
+  position: absolute;
+  top: calc(var(--safe-top) + 4px); right: 8px;
+  z-index: 30;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--paper);
+  background: var(--umber);
+  border: none;
+  border-radius: 999px;
+  padding: 4px 10px;
+  cursor: pointer;
+  opacity: 0.86;
+  box-shadow: 0 2px 10px rgba(20, 16, 10, 0.24);
+}
+#demo-badge.show { display: block; }
+#demo-badge:active { transform: scale(0.94); }
+
+/* ============================================================
+   COMPOSE STRIP — dictation staging, above the key bar
+   ============================================================ */
+/* Dictating straight into xterm's hidden textarea duplicates the text: xterm's
+   IME handling re-sends what the composition already delivered. So dictation
+   lands in a textarea of our own and reaches the terminal only on Send, as one
+   paste. Shares the key bar's material — the two read as one docked surface. */
+#compose {
+  display: none;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 253, 247, 0.94);
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  border-top: 1px solid var(--hair);
+  z-index: 20;
+  /* Single source for each button's own box: both the "code" chip and Send
+     read these two, so they are the same rendered box by construction rather
+     than by one button's content happening to measure out to match the
+     other's. Width clears the "code" chip's widest content (13px icon + 5px
+     gap + the "code" label + 22px of horizontal padding) with room to spare
+     across fonts. */
+  --compose-btn-w: 72px;
+  --compose-btn-h: 38px;
+  /* The actions column's resting height, derived from the button height above
+     so it can never drift out of sync: two stacked buttons plus the 8px gap
+     between them. The field's starting min-height reads this same variable. */
+  --compose-actions-h: calc(2 * var(--compose-btn-h) + 8px);
+}
+:root[data-theme="dark"] #compose { background: rgba(31, 28, 22, 0.94); }
+#compose.open { display: flex; align-items: flex-start; }
+/* The "code" chip and Send, stacked into one column at the strip's right edge
+   instead of sitting beside the field — the textarea keeps the width both used
+   to split. Top-aligned with the field, which is fixed to this same height, so
+   the two always read as one row regardless of how much text the field holds. */
+#compose-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: var(--compose-actions-h);
+}
+/* A well to speak into: recessed surface, hairline rim, capsule at one line. The
+   radius stays put as the field grows, so it eases into a soft rounded rect
+   rather than tracking the height. */
+#compose-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--sans);
+  /* 16px is the floor iOS zooms the page below, and a zoomed page leaves the
+     terminal mis-fitted behind the keyboard. */
+  font-size: 16px;
+  line-height: 1.35;
+  color: var(--ink);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 18px;
+  padding: 8px 14px;
+  /* Fixed at the actions column's height rather than at one text row with
+     46px of the button stack left dangling below it — and fixed rather than
+     growing, so the strip's height never moves as you type. Longer text
+     scrolls inside the box instead; the browser's own textarea scrolling
+     keeps the caret in view as it goes. */
+  height: var(--compose-actions-h);
+  resize: none;
+  overflow-y: auto;
+  caret-color: var(--umber);
+  -webkit-appearance: none;
+}
+#compose-text::placeholder { color: var(--whisper); }
+/* No focus ring: the strip only exists while focused, so the treatment would be
+   on permanently and say nothing. */
+#compose-text:focus { outline: none; }
+
+/* The one lit control on the bar. Empty it recedes into the same well material
+   as the field; the moment there is something to send it fills with umber. */
+#compose-send {
+  flex: 0 0 auto;
+  /* Height and width both come from the shared variables the "code" chip
+     below uses, so at rest the two are the same box exactly, not a circle
+     floating 2px shy of the capsule's top and a different width besides. */
+  width: var(--compose-btn-w);
+  height: var(--compose-btn-h);
+  padding: 0;
+  border-radius: 19px;
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  color: var(--tertiary);
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  /* --whisper is the quieter token, but at 1.9:1 on this background the arrow
+     stops reading as a control; --tertiary clears 3:1 in both themes. */
+  transition: background 0.14s var(--ease-out), border-color 0.14s var(--ease-out),
+              color 0.14s var(--ease-out);
+  -webkit-user-select: none; user-select: none;
+}
+#compose-send svg { width: 17px; height: 17px; }
+#compose-send.armed {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+}
+#compose-send:active { transform: scale(0.94); }
+
+/* Clear. Same box as Send exactly — the two are one stacked column and any
+   difference between them would read as a mistake — but it never lights: it
+   undoes, and an undo that draws the eye competes with the thing it sits under. */
+#compose-clear {
+  flex: 0 0 auto;
+  width: var(--compose-btn-w);
+  height: var(--compose-btn-h);
+  padding: 0;
+  border-radius: 19px;
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  color: var(--tertiary);
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background 0.14s var(--ease-out), border-color 0.14s var(--ease-out),
+              color 0.14s var(--ease-out);
+  -webkit-user-select: none; user-select: none;
+}
+#compose-clear svg { width: 15px; height: 15px; }
+#compose-clear:active { transform: scale(0.94); }
+
+/* Recording status, shown in place of the textarea while the mic key is capturing
+   audio. It occupies the field's slot so the strip's height never changes between
+   speaking and reviewing — the terminal keeps the same rows throughout. */
+#compose-rec {
+  display: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  /* Matches #compose-text's single-line box exactly: same font, padding, border,
+     radius, and now min-height, so the swap reads as the field changing mode,
+     not as a new bar. */
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.35;
+  color: var(--ink-2);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 18px;
+  padding: 8px 14px;
+  min-height: var(--compose-actions-h);
+  -webkit-user-select: none; user-select: none;
+}
+#compose.recording #compose-rec { display: flex; }
+/* The textarea is hidden rather than removed: it keeps whatever was already
+   composed, which the transcript is appended to when the recording lands. */
+#compose.recording #compose-text { display: none; }
+/* Umber rather than a literal red: it is the app's one accent, it clears contrast
+   in both themes, and it is already what a live mic key fills with. */
+#compose-rec .dot {
+  flex: 0 0 auto;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--umber);
+  animation: rec-pulse 1.4s var(--ease-out) infinite;
+}
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.82); }
+}
+/* The dot is decoration; the label is the signal. Reduced motion loses the
+   pulse but keeps the level: the dot's opacity is driven by the analyser, so it
+   still brightens with the voice rather than sitting inert. */
+@media (prefers-reduced-motion: reduce) {
+  #compose-rec .dot { animation: none; }
+}
+/* Live input level. A track the width of the elapsed counter, filled from the
+   left by a transform so the 10Hz repaint never touches layout. It exists to
+   answer one question at a glance — is the microphone hearing me — which no
+   amount of "Recording…" ever could. */
+#compose-rec .level {
+  flex: 0 0 auto;
+  width: 34px; height: 4px;
+  border-radius: 2px;
+  background: var(--hair);
+  overflow: hidden;
+}
+#compose-rec .level-fill {
+  display: block;
+  width: 100%; height: 100%;
+  border-radius: 2px;
+  background: var(--umber);
+  transform: scaleX(0);
+  transform-origin: left center;
+  /* Just enough smoothing that speech reads as a level rather than a flicker,
+     far too little to hide a mic that has gone dead. */
+  transition: transform 90ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  #compose-rec .level-fill { transition: none; }
+}
+/* Tabular figures so a ticking counter does not shuffle the label beside it. */
+#compose-rec .elapsed {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   KEY BAR — docked above the soft keyboard
+   ============================================================ */
+.keybar {
+  flex: 0 0 auto;
+  /* Nine keys have to fit 390px without scrolling: the row shares its slack
+     evenly, and width rather than height is what keeps them tappable. */
+  display: flex; gap: 3px;
+  padding: 2px 3px calc(2px + var(--kb-safe, var(--safe-bot)));
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  background: rgba(255, 253, 247, 0.94);
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  border-top: 1px solid var(--hair);
+  z-index: 20;
+}
+:root[data-theme="dark"] .keybar { background: rgba(31, 28, 22, 0.94); }
+.keybar::-webkit-scrollbar { display: none; }
+.keybar button {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--ink-2);
+  background: var(--card-2);
+  border: 1px solid var(--hair-strong);
+  border-radius: 7px;
+  /* Compact chips: at 33px the width is what carries the tap target, and every
+     row of height saved here goes straight to the grid. */
+  min-width: 30px; min-height: 33px;
+  padding: 0 4px;
+  /* Word keys take the larger share of the row's width — see .narrow. Basis 0,
+     not auto: the label's own width must not leak into the split, or esc and
+     shift end up different sizes. */
+  flex: 1.1 1 0;
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out),
+              border-color 0.14s var(--ease-out);
+  -webkit-user-select: none; user-select: none;
+}
+.keybar button:active { transform: scale(0.93); background: var(--hair); }
+/* Held for auto-repeat — :active is unreliable across a long press on iOS. */
+.keybar button.held { background: var(--hair); }
+.keybar button.sticky-on {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+  font-weight: 700;
+}
+/* Recording: the armed-modifier fill, since it is the same idea — a key that is
+   on and stays on until tapped again — plus a slow breath so it reads as live
+   rather than merely latched. Both capture engines land here now, so it is the
+   one place on screen that says the microphone is open. */
+.keybar button.listening {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+  animation: mic-pulse 1.6s var(--ease-out) infinite;
+}
+/* Uploading keeps the fill — the take is still the app's to finish — but drops
+   the breath and dims, to say the tap now cancels rather than stops. No spinner:
+   the strip's own "Transcribing…" is where the wait is reported. */
+.keybar button.busy {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+  opacity: 0.5;
+}
+/* While a local take is running the key IS the stop control, so the mic glyph
+   gives way to the square — nothing on screen should still offer to start what
+   is already started. Both faces ship in the markup and CSS swaps them, so the
+   change costs no DOM work mid-recording. */
+.k-compose > span { display: inline-flex; align-items: center; }
+.k-compose .stop { display: none; }
+/* Outweighs `.keybar button.glyph-key svg` above, which would otherwise size
+   the square at the mic glyph's 15px — a filled shape reads heavier than an
+   outlined one at the same box, so it is drawn smaller to match. */
+.keybar button.k-compose .stop svg { width: 12px; height: 12px; }
+.k-compose.listening .idle,
+.k-compose.busy .idle { display: none; }
+.k-compose.listening .stop,
+.k-compose.busy .stop { display: inline-flex; }
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.62; }
+}
+/* Motion is the decoration, not the signal — the fill still says "recording". */
+@media (prefers-reduced-motion: reduce) {
+  .keybar button.listening { animation: none; }
+}
+/* Arrows are single glyphs: they need their own font size to stay legible next
+   to the 10.5px words, but a smaller floor and a smaller share of the slack, so
+   the row's spare width goes to the labels that actually need it. */
+.keybar button.narrow { min-width: 28px; flex-grow: 1; font-size: 13px; }
+.keybar button.glyph-key svg { width: 15px; height: 15px; }
+
+/* Arrow cluster — collapsed, the four arrows are one button; expanded, they take
+   a second row in the inverted-T of a real keyboard.
+
+   Collapsed stays flex on purpose. The row's character comes from flex-basis:auto
+   plus unequal grow factors, so a wide label like "shift" ends up wider than
+   "esc"; grid's fr units divide the track evenly and would flatten that. Grid
+   earns its place only in the expanded state, where `grid-row: span 2` says
+   "esc is one key two rows tall" outright — the thing flexbox cannot say. */
+.keybar > .expanded-only { display: none; }
+.keybar.expanded {
+  display: grid;
+  /* Ten tracks: four word keys, backspace, enter, the three-wide arrow cluster,
+     and one column shared by close and compose. Word keys keep the collapsed
+     row's larger share; backspace gives up width here — expanded is an arrow-work
+     mode, and enter is the key the thumb reaches for most while working the
+     cluster, so it takes the wider of the two glyph columns, right beside the
+     arrows. Ten 30px floors would overflow a 320px screen by 3px, and the word
+     keys do not need that floor here — spanning both rows already gives them a
+     69px tap target — so the width minimum drops to the glyph keys' 28px across
+     the board. */
+  grid-template-columns: repeat(4, minmax(28px, 1.1fr)) minmax(28px, 0.85fr)
+                         minmax(28px, 1fr) repeat(4, minmax(28px, 1.15fr));
+  grid-template-rows: auto auto;
+  /* Two rows of chips would otherwise stretch to the bar's own height. */
+  align-items: stretch;
+}
+/* The keys that persist across both rows are laid out by span, not duplicated, so
+   every listener and every bit of armed-modifier state survives the toggle. */
+.keybar.expanded > .span-2 { grid-row: span 2; }
+.keybar.expanded > .expanded-only { display: inline-flex; }
+.keybar.expanded > .collapsed-only { display: none; }
+/* Columns 7-9 are the inverted-T: up centred over left/down/right. Backspace and
+   enter are placed explicitly too — column 5 for backspace, column 6 for enter
+   — so enter lands on the wider track right next to the cluster. An explicit
+   column alone leaves the row to auto-placement's flow cursor, which enter (later
+   in source order but an earlier column) would drag past column 5 — so the row
+   is pinned here too, matching .span-2 above instead of relying on it. */
+.keybar.expanded > .k-bs    { grid-column: 5; grid-row: 1 / span 2; }
+.keybar.expanded > .k-enter { grid-column: 6; grid-row: 1 / span 2; }
+.keybar.expanded > .k-up    { grid-column: 8; grid-row: 1; }
+.keybar.expanded > .k-left  { grid-column: 7; grid-row: 2; }
+.keybar.expanded > .k-down  { grid-column: 8; grid-row: 2; }
+.keybar.expanded > .k-right { grid-column: 9; grid-row: 2; }
+/* Close sits on the top row: it is the control that undoes the expansion, so it
+   reads better level with the row that appeared than buried at the bottom. */
+.keybar.expanded > .k-close   { grid-column: 10; grid-row: 1; }
+.keybar.expanded > .k-compose { grid-column: 10; grid-row: 2; }
+
+/* ============================================================
+   SETTINGS SHEET
+   ============================================================ */
+.sheet-scrim {
+  position: fixed; inset: 0;
+  background: rgba(20, 16, 10, 0.34);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.24s var(--ease-out);
+  z-index: 200;
+}
+.sheet-scrim.show { opacity: 1; pointer-events: auto; }
+
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  background: var(--card);
+  border-top: 1px solid var(--hair);
+  border-radius: 20px 20px 0 0;
+  padding: 22px 22px calc(22px + var(--safe-bot));
+  transform: translateY(100%);
+  transition: transform 0.28s var(--ease-out);
+  z-index: 210;
+  box-shadow: 0 -8px 32px rgba(20, 16, 10, 0.16);
+  /* First run stacks the install block, three fields, the buttons and the FAQ —
+     taller than a short phone in landscape, and a fixed sheet clips the overflow
+     off the top of the screen with no way to reach it. Cap it and scroll inside
+     instead, so the last field is always reachable. */
+  max-height: 88vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+.sheet.show { transform: translateY(0); }
+.sheet h2 {
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.012em;
+  margin: 0 0 14px;
+  color: var(--ink);
+}
+.sheet label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tertiary);
+  margin-bottom: 7px;
+}
+.sheet input + label { margin-top: 16px; }
+.sheet label.opt span {
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--whisper);
+}
+.sheet-note {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--secondary);
+  margin: -6px 0 16px;
+}
+.sheet-note.hide { display: none; }
+/* First run only: the backend has to exist before an address can point at it,
+   so the install line comes before the fields. */
+.sheet-install { display: none; margin: 0 0 16px; }
+.sheet-install.show { display: block; }
+.sheet-install p {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--secondary);
+  margin: 0 0 8px;
+}
+.sheet-install .cmd {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--card-2);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding: 9px 10px;
+}
+/* Wrapped, not scrolled: this gets piped into bash, so it should be readable
+   in full before anyone runs it. */
+.sheet-install code {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.sheet-install button {
+  flex-shrink: 0;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+.sheet-install button:active { transform: scale(0.96); }
+/* First run only: below the fields, so it answers rather than gates. */
+.sheet-faq {
+  display: none;
+  border-top: 1px solid var(--hair);
+  margin-top: 18px;
+  padding-top: 14px;
+}
+.sheet-faq.show { display: block; }
+.sheet-faq p {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--tertiary);
+  margin: 0 0 8px;
+}
+.sheet-faq p:last-child { margin-bottom: 0; }
+.sheet-faq b { font-weight: 600; color: var(--secondary); }
+.sheet-faq a { color: var(--umber); text-decoration: underline; }
+.sheet input {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  padding: 12px 13px;
+  transition: border-color 0.18s var(--ease-out);
+}
+.sheet input:focus { border-color: var(--umber); outline: none; }
+#backend-token { letter-spacing: 0.06em; }
+/* A switch rather than a labelled field: it has no value to type, and the label
+   has to sit beside the control instead of above it like the inputs do. */
+.sheet .toggle-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+}
+.sheet .toggle-row label { margin-bottom: 0; }
+.sheet .toggle-row input {
+  /* Bypasses .sheet input entirely — the native control is the whole widget. */
+  width: 44px; flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  background: none;
+  accent-color: var(--umber);
+  transform: scale(1.1);
+}
+/* Three stacked rows rather than a segmented control: the names are words of
+   unequal length and each carries a second line of its own, which a segment
+   cannot hold. Same recessed well and hairline rim as the fields above, so the
+   group reads as one more thing in the sheet rather than a widget visiting. */
+#voice-label { margin-top: 18px; }
+.sheet .radio-group {
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.sheet .radio-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0 10px;
+  margin: 0;
+  padding: 11px 13px;
+  background: var(--paper-rec);
+  /* Undo .sheet label's field-caption treatment: these are names to read, not
+     column headings. */
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+.sheet .radio-row + .radio-row { border-top: 1px solid var(--hair); }
+.sheet .radio-row input {
+  /* Bypasses .sheet input entirely — the native control is the whole widget. */
+  width: auto; flex: 0 0 auto;
+  grid-row: 1 / span 2;
+  padding: 0;
+  border: none;
+  background: none;
+  accent-color: var(--umber);
+  transform: scale(1.1);
+}
+.sheet .radio-row .name { grid-column: 2; }
+/* The second line only appears where there is something to say — an engine that
+   is not installed, mostly — so an empty one takes no room at all. */
+.sheet .radio-row .note {
+  grid-column: 2;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--whisper);
+}
+.sheet .radio-row .note:empty { display: none; }
+/* Unavailable: still legible, plainly not choosable. The note beside it is the
+   only part that stays at full strength, because it is the instruction. */
+.sheet .radio-row.off { cursor: default; color: var(--whisper); }
+.sheet .radio-row.off input { opacity: 0.4; }
+.sheet .actions {
+  display: flex; gap: 10px; justify-content: flex-end;
+  margin-top: 18px;
+}
+.sheet .actions button {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 11px 20px;
+  border-radius: 12px;
+  cursor: pointer;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--secondary);
+  transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out);
+}
+.sheet .actions button:active { transform: scale(0.96); }
+/* Sits apart from Cancel/Save, at the far left: it is the destructive one, and
+   nobody should reach it while aiming for Save. Hidden during first-run setup,
+   where there is nothing stored yet to forget. */
+#btn-settings-forget {
+  display: none;
+  order: -1;
+  margin-right: auto;
+  border-color: transparent;
+  color: var(--secondary);
+}
+#btn-settings-forget.show { display: block; }
+.sheet .actions button.primary {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+}
+/* The first-run voice step's own action row. Absent entirely the rest of the
+   time — past setup the picker applies on the tap and the sheet's Save/Cancel
+   row is the only one there is. */
+#voice-confirm-row { display: none; }
+#voice-confirm-row.show { display: flex; }
+.sheet .actions button[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+/* On first run the demo reads as filled and Save outlined — most first-time
+   visitors are here to look before they connect. Past setup the emphasis flips
+   back: Save is the primary action and the demo is just still reachable.
+   Pinned to the sheet's own top-right corner rather than the actions row, so
+   it reads as an escape hatch from the whole screen, not one more button to
+   choose among Save/Cancel/Forget. The sheet is a fixed bottom panel that
+   never touches the safe-area strip, so no inset offset is needed here. */
+#btn-sheet-demo {
+  display: none;
+  position: absolute;
+  top: 20px; right: 22px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 10px 14px;
+  min-height: 40px;
+  border-radius: 12px;
+  cursor: pointer;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  border-color: var(--umber);
+  color: var(--umber);
+  white-space: nowrap;
+  transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out);
+}
+#btn-sheet-demo.show { display: inline-block; }
+#btn-sheet-demo:active { transform: scale(0.96); }
+/* Room for the pinned demo button so the longer first-run title never runs
+   under it. */
+#sheet-title { padding-right: 84px; }
+#sheet-settings.setup #btn-sheet-demo {
+  background: var(--umber);
+  color: var(--paper);
+}
+#sheet-settings.setup #btn-settings-save {
+  border-color: var(--umber);
+  color: var(--umber);
+}
+#sheet-settings:not(.setup) #btn-settings-save {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+}
+
+/* ============================================================
+   TOAST
+   ============================================================ */
+/* --kb-inset is how much of the layout viewport the soft keyboard is sitting on
+   top of. Fixed positioning anchors to the layout viewport, not the visible one,
+   so without it a toast fired while typing renders behind the keyboard — which is
+   exactly when an error toast matters most. applyViewport() keeps it current. */
+.toast {
+  position: fixed; left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  bottom: calc(92px + var(--safe-bot) + var(--kb-inset, 0px));
+  background: var(--ink);
+  color: var(--paper);
+  padding: 11px 18px;
+  border-radius: 999px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  opacity: 0;
+  transition: opacity 0.24s var(--ease-out), transform 0.24s var(--ease-out);
+  z-index: 300;
+  pointer-events: none;
+  max-width: 86%;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.22);
+}
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ============================================================
+   DEBUG PANEL
+   ============================================================ */
+/* Top-anchored on purpose: a phone has no console, and the one place a keyboard
+   can never reach is the top of the screen. pointer-events:none because it hangs
+   over the terminal — every tap has to pass straight through it. Dark and
+   translucent in both themes; it is an instrument, not part of the paper. */
+#dbg-panel {
+  position: fixed;
+  top: calc(8px + var(--safe-top, 0px)); left: 8px; right: 8px;
+  max-height: 35vh;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(12, 10, 7, 0.82);
+  color: #d8d2c4;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  z-index: 500;
+  pointer-events: none;
+}
+
+/* ============================================================
+   IMAGE VIEWER
+   ============================================================ */
+/* Near-opaque rather than a tinted scrim: the point is to judge the image, so
+   nothing of the terminal behind it should bleed through. Same ground in both
+   themes — an image is not paper. */
+.viewer {
+  position: fixed; inset: 0;
+  display: none;
+  align-items: center; justify-content: center;
+  padding: calc(8px + var(--safe-top)) 8px calc(8px + var(--safe-bot));
+  background: rgba(12, 10, 7, 0.97);
+  z-index: 400;
+}
+.viewer.show { display: flex; }
+.viewer img, .viewer video {
+  max-width: 100%; max-height: 100%;
+  border-radius: 4px;
+}
+/* The page viewport is locked (user-scalable=no) so the browser's own pinch
+   never fires here; zoom/pan is ours, and the image must not compete with it
+   for the touch. Video keeps its native controls and gets no gestures. */
+.viewer img { touch-action: none; }
+/* showImage() picks one of these per open; this is just the at-rest default so
+   they never both render before the first tap sets it explicitly. */
+.viewer video { display: none; }
+.viewer .viewer-close {
+  position: absolute;
+  /* A zoomed image is a transformed box that paints over the button and swallows
+     its taps; at high zoom the X is the only way out, so it stays on top. */
+  z-index: 1;
+  top: calc(6px + var(--safe-top)); right: 10px;
+  color: rgba(243, 237, 224, 0.82);
+  font-family: var(--sans);
+  font-size: 24px;
+  line-height: 1;
+  padding: 10px 14px;
+}
+.viewer .viewer-close:hover { color: #f3ede0; background: rgba(243, 237, 224, 0.12); }
+</style>
