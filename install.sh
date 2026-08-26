@@ -1285,7 +1285,7 @@ fi
 # Voice-to-text
 # ---------------------------------------------------------------------------
 # Optional in the same sense as the two steps above: the install is complete and
-# the backend is running without it. app.py answers the phone's code button with
+# the backend is running without it. app.py answers the mic key with
 # a 503 "not_setup" while voice/ is absent, so nothing here can break a working
 # install — which is also why every failure below is a warning plus the run-later
 # hint, never a die. The work itself is setup_voice.sh, which ships next to
@@ -1379,23 +1379,30 @@ if [[ -f "$VOICE_SCRIPT" ]]; then
         elif [[ "$HAVE_PARAKEET" == "1" ]]; then
             vsay "  Parakeet is set up; whisper (the fallback engine) is not."
         else
-            vsay "  Transcribes the phone's code button locally — nothing leaves this machine."
+            vsay "  Transcribes dictation locally — nothing leaves this machine."
         fi
         if [[ "$UPDATE" == "1" ]]; then
             # An update installs the version that is on offer, nothing else. A
             # 600 MB download is not part of that, and someone updating has
-            # already had this question once — one line, and on with it.
-            say "  ${C_DIM}Voice-to-text (the phone's code button) is not fully set up. To add it:"
-            say "      $VOICE_HINT$C_RESET"
-            note "left voice setup alone (update)"
+            # already had this question once — one line, and on with it. One
+            # engine installed is a complete setup (the menu below offers a
+            # single engine), so there's nothing to say unless neither is in.
+            if [[ "$HAVE_WHISPER" == "0" && "$HAVE_PARAKEET" == "0" ]]; then
+                say "  ${C_DIM}Voice-to-text (local dictation) is not set up. To add it:"
+                say "      $VOICE_HINT$C_RESET"
+                note "left voice setup alone (update)"
+            fi
         elif [[ "$INTERACTIVE" != "1" ]]; then
             # Nobody to ask, and this can be a multi-minute build or a 600 MB
             # download — described rather than done, like the two optional
             # steps above it. Printed in both modes: unlike those, this one is
-            # not written up in the notes file.
-            say "  ${C_DIM}Voice-to-text (the phone's code button) is not fully set up. To add it:"
-            say "      $VOICE_HINT$C_RESET"
-            note "skipped voice setup (non-interactive)"
+            # not written up in the notes file. One engine installed is a
+            # complete setup, so this only fires when neither is in.
+            if [[ "$HAVE_WHISPER" == "0" && "$HAVE_PARAKEET" == "0" ]]; then
+                say "  ${C_DIM}Voice-to-text (local dictation) is not set up. To add it:"
+                say "      $VOICE_HINT$C_RESET"
+                note "skipped voice setup (non-interactive)"
+            fi
         else
             VOICE_CHOICE="$(voice_ask_engine)"
             # An engine already installed is dropped from the choice rather than
@@ -1456,7 +1463,7 @@ if [[ -f "$VOICE_SCRIPT" ]]; then
                     # it, hence the explicit test.
                     if bash "$VOICE_SCRIPT" "$VOICE_FLAG"; then
                         say ""
-                        say "  Voice is ready — the phone app's code button will transcribe now."
+                        say "  Voice is ready — the mic key will transcribe now."
                         note "set up voice-to-text in $INSTALL_DIR/voice"
                         # A service started before voice/ existed has already
                         # decided it is absent, so it has to look again.
