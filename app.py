@@ -51,6 +51,9 @@ HTML_PATH = HERE / "mobile_app.html"
 VENDOR_DIR = HERE / "vendor"
 TOKEN_PATH = HERE / ".token"
 VOICE_DIR = HERE / "voice"
+# Stamped into the tarball by deploy_cloudflare.sh. Absent from a git checkout
+# and from installs made before versioning existed, which reads as "unknown".
+VERSION_PATH = HERE / "VERSION"
 
 # Cache-busting stamp, injected into the HTML/sw at serve time. Bumping on every
 # server start is what makes iOS drop the old PWA shell after a redeploy.
@@ -597,6 +600,22 @@ def vendor(name: str) -> Response:
         return Response(status_code=404)
     kind = "text/css" if path.suffix == ".css" else "application/javascript"
     return FileResponse(path, media_type=kind)
+
+
+@app.get("/api/version")
+def api_version() -> Response:
+    """Which build this install is running, or "" when it cannot say.
+
+    A checkout has no VERSION file and neither does an install predating the
+    stamp, so an empty string is a normal answer rather than an error — the
+    caller compares it against $BASE_URL/version.txt and treats a blank as
+    "unknown", exactly as install.sh does.
+    """
+    try:
+        version = VERSION_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        version = ""
+    return no_store(JSONResponse({"version": version}))
 
 
 @app.get("/api/sessions")

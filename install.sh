@@ -8,17 +8,31 @@
 # https://pockettui.com/app/ — it asks for this machine's address
 # on first run, so nothing about your host is baked into it.
 #
+# Re-running it on a machine that already has PocketTUI updates that install in
+# place, keeping the pairing code, the venv and the voice models:
+#
+#   curl -fsSL https://pockettui.com/install.sh | bash -s -- --update
+#
+# or, once installed, just `pockettui update`.
+#
 # Environment:
 #   POCKETTUI_DIR      install directory   (default: ~/pockettui)
+#   POCKETTUI_UPDATE   1 to update an existing install (same as --update)
 #   POCKETTUI_FORCE    1 to overwrite an existing install
 #   POCKETTUI_VERBOSE  1 for the full per-step detail (same as --verbose)
 #   POCKETTUI_SERVICE_NAME  systemd unit / launchd label  (default: pockettui)
+#   POCKETTUI_BASE_URL where install.sh, the tarball and version.txt live
+#   POCKETTUI_BIN      directory for the `pockettui` command (default: ~/.local/bin)
 #   PORT               port to serve on    (default: 5560)
 
 set -eu
 
-BASE_URL="https://pockettui.com"
+# Overridable so a test harness (or a private mirror) can point the whole script
+# at another origin: the tarball, version.txt and the copy of install.sh the
+# wrapper re-fetches all hang off this one value.
+BASE_URL="${POCKETTUI_BASE_URL:-https://pockettui.com}"
 TARBALL_URL="$BASE_URL/pockettui.tar.gz"
+VERSION_URL="$BASE_URL/version.txt"
 INSTALL_DIR="${POCKETTUI_DIR:-$HOME/pockettui}"
 PORT="${PORT:-5560}"
 # Overridable so a second install on another port can have its own unit rather
@@ -47,9 +61,14 @@ fi
 # prompts and failures still say everything they said before, because a failed
 # install has to stay diagnosable from the terminal alone.
 VERBOSE="${POCKETTUI_VERBOSE:-0}"
+# Update an install that is already there rather than refusing to touch it. As a
+# flag it survives the documented pipe (`curl … | bash -s -- --update`); as an
+# environment variable it is what the wrapper and any automation can set.
+UPDATE="${POCKETTUI_UPDATE:-0}"
 for arg in ${@+"$@"}; do
     case "$arg" in
         -v|--verbose) VERBOSE=1 ;;
+        --update)     UPDATE=1 ;;
     esac
 done
 
@@ -169,7 +188,10 @@ pkg_name() {
 # Everything here installs under the user's own home and needs no password. The
 # alternative — asking for sudo from a script that may be running piped from
 # curl, with no terminal to type into — is worse on every axis.
-USER_BIN="$HOME/.local/bin"
+# Also where the `pockettui` command is written. Overridable so a test run — or
+# a machine that puts user binaries somewhere else — can be pointed elsewhere
+# without writing into the real ~/.local/bin.
+USER_BIN="${POCKETTUI_BIN:-$HOME/.local/bin}"
 
 # conda-forge's name for this platform, used to build the micromamba URL.
 mamba_platform() {
@@ -332,6 +354,39 @@ if [[ "$LOCAL_CHECKOUT" != "1" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Versions
+# ---------------------------------------------------------------------------
+# The stamp deploy_cloudflare.sh puts in the tarball, read back from disk. An
+# install made before versioning existed, and a checkout, have no VERSION file:
+# both answer "unknown" rather than failing, and every comparison below treats
+# an unknown as "cannot tell, so offer the update".
+installed_version() {
+    local v=""
+    if [[ -r "$INSTALL_DIR/VERSION" ]]; then
+        v="$(tr -d '[:space:]' < "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
+    fi
+    printf '%s' "${v:-unknown}"
+}
+
+# What the site is serving, for the "update to what?" half of the question. Only
+# ever advisory: no network, no version.txt (an older deploy), or a proxy
+# serving an error page all read as "unknown" and change nothing but the
+# wording. Short timeouts because this runs before anything useful has happened
+# and a hung fetch would look like a hung installer.
+remote_version() {
+    local v=""
+    if command -v curl >/dev/null 2>&1; then
+        v="$(curl -fsSL --max-time 5 "$VERSION_URL" 2>/dev/null \
+             | head -1 | tr -d '[:space:]' || true)"
+    fi
+    # A stamp is digits-dot-digits-dot-digits; anything else came from an error page.
+    case "$v" in
+        [0-9]*.[0-9]*.[0-9]*) printf '%s' "$v" ;;
+        *)                    printf 'unknown' ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
 # Install directory
 # ---------------------------------------------------------------------------
 FRESH_DIR=1
@@ -345,24 +400,90 @@ if [[ "$LOCAL_CHECKOUT" == "1" ]] && [[ -e "$INSTALL_DIR" ]] \
     vsay "  The sources are already here; only .venv and start.sh are added."
 elif [[ -e "$INSTALL_DIR" ]]; then
     FRESH_DIR=0
-    if [[ "${POCKETTUI_FORCE:-}" != "1" ]]; then
-        die "$INSTALL_DIR already exists.
-  To reinstall over it (your pairing code is kept):
-      curl -fsSL $BASE_URL/install.sh | POCKETTUI_FORCE=1 bash
+    OLD_VERSION="$(installed_version)"
+    # Not asked for outright, but there is a terminal to ask on: an existing
+    # install is much more often a user who wants the new version than one who
+    # meant to install a second time, so offer that instead of refusing.
+    if [[ "$UPDATE" != "1" ]] && [[ "${POCKETTUI_FORCE:-}" != "1" ]] \
+       && [[ "$INTERACTIVE" == "1" ]]; then
+        NEW_VERSION="$(remote_version)"
+        say ""
+        say "  PocketTUI is already installed at $INSTALL_DIR (version $OLD_VERSION)."
+        if [[ "$NEW_VERSION" != "unknown" ]] && [[ "$NEW_VERSION" == "$OLD_VERSION" ]]; then
+            # Nothing new to fetch. Still offered, because a re-install is also
+            # how a half-finished one gets repaired.
+            say "  That is already the current version — nothing to update to."
+            if confirm "  Re-install it anyway?"; then
+                UPDATE=1
+            fi
+        elif [[ "$NEW_VERSION" != "unknown" ]]; then
+            if confirm "  Update to version $NEW_VERSION?"; then
+                UPDATE=1
+            fi
+        else
+            # No version.txt to compare against, so the question cannot name a
+            # target. Updating is still the right thing to offer.
+            if confirm "  Update it to the current version?"; then
+                UPDATE=1
+            fi
+        fi
+        if [[ "$UPDATE" != "1" ]]; then
+            say ""
+            say "  Left alone — nothing was changed."
+            say "  To install a second copy somewhere else:"
+            say "      curl -fsSL $BASE_URL/install.sh | POCKETTUI_DIR=~/somewhere bash"
+            say ""
+            exit 0
+        fi
+        say ""
+    fi
+    if [[ "$UPDATE" != "1" ]] && [[ "${POCKETTUI_FORCE:-}" != "1" ]]; then
+        die "$INSTALL_DIR already exists (version $OLD_VERSION).
+  To update it in place (pairing code, voice models and venv are kept):
+      curl -fsSL $BASE_URL/install.sh | bash -s -- --update
+  Or, if PocketTUI is already on your PATH:
+      pockettui update
   Or install somewhere else:
       curl -fsSL $BASE_URL/install.sh | POCKETTUI_DIR=~/somewhere bash"
     fi
-    step_quiet "Replacing existing install at $INSTALL_DIR (POCKETTUI_FORCE=1)"
-    vsay "  These are overwritten by the new copy:"
-    for f in app.py mobile_app.html sw.js pockettui.service install.sh \
-             icon-192.png icon-512.png vendor; do
-        [[ -e "$INSTALL_DIR/$f" ]] && vsay "    $f"
-    done
-    # The venv is rebuilt on top of whatever is there; nothing else is removed.
-    [[ -e "$INSTALL_DIR/.venv" ]] && vsay "    .venv (dependencies reinstalled)"
-    vsay "  Anything else already in that directory is left alone."
-    note "replaced files in $INSTALL_DIR"
+    if [[ "$UPDATE" == "1" ]]; then
+        step_quiet "Updating the install at $INSTALL_DIR (from version $OLD_VERSION)"
+        vsay "  The new copy replaces the program files:"
+        for f in app.py resolver.py mobile_app.html sw.js pockettui.service \
+                 install.sh setup_voice.sh requirements.txt \
+                 icon-192.png icon-512.png vendor; do
+            [[ -e "$INSTALL_DIR/$f" ]] && vsay "    $f"
+        done
+        vsay "  Kept as they are: .token, voice/, .voice_learned.json, .venv."
+        # The tarball ships the complete vendor set, so anything left in there
+        # afterwards is a file upstream deleted — it would otherwise be served
+        # for the life of the install. Scoped to vendor/ alone: it is the only
+        # directory whose contents are entirely ours.
+        if [[ -d "$INSTALL_DIR/vendor" ]]; then
+            rm -rf "${INSTALL_DIR:?}/vendor"
+            vsay "  cleared vendor/ so removed files do not linger"
+        fi
+    else
+        step_quiet "Replacing existing install at $INSTALL_DIR (POCKETTUI_FORCE=1)"
+        vsay "  These are overwritten by the new copy:"
+        for f in app.py mobile_app.html sw.js pockettui.service install.sh \
+                 icon-192.png icon-512.png vendor; do
+            [[ -e "$INSTALL_DIR/$f" ]] && vsay "    $f"
+        done
+        # The venv is rebuilt on top of whatever is there; nothing else is removed.
+        [[ -e "$INSTALL_DIR/.venv" ]] && vsay "    .venv (dependencies reinstalled)"
+        vsay "  Anything else already in that directory is left alone."
+        note "replaced files in $INSTALL_DIR"
+    fi
 fi
+
+# Only ever set on the branch above, which is the only place an install can
+# already exist. A fresh install is not an update however it was invoked, so the
+# flag is cleared rather than left to drive the update-only wording below.
+if [[ "$FRESH_DIR" == "1" ]]; then
+    UPDATE=0
+fi
+OLD_VERSION="${OLD_VERSION:-unknown}"
 
 if [[ "$LOCAL_CHECKOUT" == "1" ]]; then
     step_quiet "Copying source from this checkout"
@@ -562,6 +683,149 @@ $ENV_PATH_LINE
 exec "$VENV_PY" app.py --port $PORT "\$@"
 EOF
 chmod +x "$INSTALL_DIR/start.sh"
+
+# ---------------------------------------------------------------------------
+# The `pockettui` command
+# ---------------------------------------------------------------------------
+# Regenerated on every run, exactly like start.sh, so it always names the
+# install it belongs to. Two things a user needs a command for after the
+# install: updating, and knowing which version is on this machine.
+#
+# `update` re-fetches install.sh rather than running the copy in the install
+# dir. The copy is the one that shipped with the *installed* version, so an
+# updater bug would be permanent — a self-update that cannot be fixed by
+# updating. The local copy stays as the offline fallback.
+#
+# Built in two halves, and the split is deliberate: the three values that vary
+# per install are interpolated by the first heredoc, and the body — which is
+# full of $ and backslashes the wrapper has to evaluate for itself — comes from
+# a quoted one, where nothing is substituted and nothing has to be escaped.
+# Escaping a whole script by hand is how a generator writes a file that is one
+# missed backslash away from being silently wrong.
+WRAPPER_PATH="$USER_BIN/pockettui"
+WRAPPER_WRITTEN=0
+WRAPPER_CONTENT="$(cat <<EOF
+#!/bin/bash
+# The PocketTUI command (generated by install.sh).
+set -eu
+
+INSTALL_DIR="$INSTALL_DIR"
+BASE_URL="$BASE_URL"
+SERVICE_NAME="$SERVICE_NAME"
+WRAPPER_BIN="$USER_BIN"
+EOF
+cat <<'EOF'
+
+local_version() {
+    if [[ -r "$INSTALL_DIR/VERSION" ]]; then
+        tr -d '[:space:]' < "$INSTALL_DIR/VERSION"
+    else
+        printf 'unknown'
+    fi
+}
+
+# Advisory only, exactly as in install.sh: no network, no version.txt, or a
+# captive portal serving HTML all read as "unknown" rather than as a version.
+remote_version() {
+    local v=""
+    if command -v curl >/dev/null 2>&1; then
+        v="$(curl -fsSL --max-time 5 "$BASE_URL/version.txt" 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+    fi
+    case "$v" in
+        [0-9]*.[0-9]*.[0-9]*) printf '%s' "$v" ;;
+        *)                    printf 'unknown' ;;
+    esac
+}
+
+# Which install.sh to hand the job to, printed for the caller. The fresh copy
+# from the site is preferred over the one in the install dir: that one shipped
+# with the version being replaced, so an updater bug in it would be permanent —
+# a self-update that cannot be fixed by updating. The installed copy is the
+# fallback for a machine that cannot reach the site.
+FRESH_INSTALLER=""
+cleanup() { [[ -n "$FRESH_INSTALLER" ]] && rm -f "$FRESH_INSTALLER"; return 0; }
+trap cleanup EXIT
+
+# Everything this install was configured with, handed back to the installer so
+# an update lands on the same directory, the same origin, the same unit name and
+# the same bin dir it came from — not on whatever the defaults would pick.
+INSTALLER_ENV=(POCKETTUI_DIR="$INSTALL_DIR" POCKETTUI_BASE_URL="$BASE_URL"
+               POCKETTUI_SERVICE_NAME="$SERVICE_NAME" POCKETTUI_BIN="$WRAPPER_BIN")
+
+run_installer() {
+    FRESH_INSTALLER="${TMPDIR:-/tmp}/pockettui-install.$$.sh"
+    if command -v curl >/dev/null 2>&1 && curl -fsSL --max-time 30 "$BASE_URL/install.sh" -o "$FRESH_INSTALLER" 2>/dev/null; then
+        env "${INSTALLER_ENV[@]}" bash "$FRESH_INSTALLER" --update ${@+"$@"}
+    elif [[ -f "$INSTALL_DIR/install.sh" ]]; then
+        echo "Could not fetch $BASE_URL/install.sh — using the copy in $INSTALL_DIR." >&2
+        env "${INSTALLER_ENV[@]}" bash "$INSTALL_DIR/install.sh" --update ${@+"$@"}
+    else
+        echo "Could not fetch $BASE_URL/install.sh, and there is no copy at" >&2
+        echo "$INSTALL_DIR/install.sh. Check your network and try again." >&2
+        return 1
+    fi
+}
+
+case "${1:-}" in
+    update)
+        shift
+        run_installer ${@+"$@"}
+        ;;
+    version|--version|-V)
+        have="$(local_version)"
+        there="$(remote_version)"
+        echo "installed  $have"
+        if [[ "$there" == "unknown" ]]; then
+            echo "latest     unknown (could not reach $BASE_URL)"
+        elif [[ "$there" == "$have" ]]; then
+            echo "latest     $there  (up to date)"
+        else
+            echo "latest     $there"
+            echo
+            echo "An update is available. Install it with:  pockettui update"
+        fi
+        ;;
+    *)
+        echo "usage: pockettui update | version"
+        echo
+        echo "  update   fetch and install the current version, in place"
+        echo "  version  what is installed here, and what is current"
+        ;;
+esac
+EOF
+)"
+
+# A re-run that would write the same bytes has changed nothing outside the
+# install dir, and must not claim it did — same reasoning as the unit file.
+WRAPPER_SAME=0
+[[ -e "$WRAPPER_PATH" ]] && [[ "$(cat "$WRAPPER_PATH" 2>/dev/null || true)" == "$WRAPPER_CONTENT" ]] \
+    && WRAPPER_SAME=1
+
+# Never fatal: the command is a convenience and the curl one-liner does the same
+# job, so an unwritable ~/.local/bin costs a line in the changelog, not the run.
+if mkdir -p "$USER_BIN" 2>/dev/null \
+   && printf '%s\n' "$WRAPPER_CONTENT" > "$WRAPPER_PATH" 2>/dev/null; then
+    chmod +x "$WRAPPER_PATH" 2>/dev/null || true
+    WRAPPER_WRITTEN=1
+    vsay "  wrote $WRAPPER_PATH"
+    if [[ "$WRAPPER_SAME" != "1" ]]; then
+        touched_outside
+        note "wrote the 'pockettui' command to $WRAPPER_PATH"
+    fi
+else
+    vsay "  could not write $WRAPPER_PATH — the 'pockettui' command was skipped"
+    note "could not write $WRAPPER_PATH (no 'pockettui' command)"
+fi
+
+# Worth a line only when the command exists but nothing would find it. Same
+# question the micromamba/uv rescue paths raise about this directory.
+WRAPPER_OFF_PATH=0
+if [[ "$WRAPPER_WRITTEN" == "1" ]]; then
+    case ":$PATH:" in
+        *":$USER_BIN:"*) ;;
+        *) WRAPPER_OFF_PATH=1 ;;
+    esac
+fi
 
 # ---------------------------------------------------------------------------
 # Pairing token
@@ -937,7 +1201,11 @@ TMUX_LINE="set-environment -gu ZDOTDIR"
 # .zshrc in a directory that is gone, and the shell comes up with none of the
 # user's config. app.py already pins ZDOTDIR=$HOME for the sessions it creates,
 # so this line only matters for sessions the user makes some other way.
-if command -v tmux >/dev/null 2>&1; then
+#
+# An update skips the offer entirely: it was already answered on the install
+# that is being updated, and re-asking an optional question on every version
+# bump is how an update stops being a thing people run.
+if [[ "$UPDATE" != "1" ]] && command -v tmux >/dev/null 2>&1; then
     # An already-present uncommented copy means there is nothing to do; a
     # commented-out one does not count. Leading whitespace and any internal
     # spacing are tolerated so re-runs never stack duplicates.
@@ -1093,7 +1361,14 @@ if [[ -f "$VOICE_SCRIPT" ]]; then
         else
             vsay "  Transcribes the phone's code button locally — nothing leaves this machine."
         fi
-        if [[ "$INTERACTIVE" != "1" ]]; then
+        if [[ "$UPDATE" == "1" ]]; then
+            # An update installs the version that is on offer, nothing else. A
+            # 600 MB download is not part of that, and someone updating has
+            # already had this question once — one line, and on with it.
+            say "  ${C_DIM}Voice-to-text (the phone's code button) is not fully set up. To add it:"
+            say "      $VOICE_HINT$C_RESET"
+            note "left voice setup alone (update)"
+        elif [[ "$INTERACTIVE" != "1" ]]; then
             # Nobody to ask, and this can be a multi-minute build or a 600 MB
             # download — described rather than done, like the two optional
             # steps above it. Printed in both modes: unlike those, this one is
@@ -1457,6 +1732,20 @@ To invalidate it and force every paired phone to enter a new one:
 Re-running install.sh does **not** rotate the code; an existing one is kept so
 already-paired phones keep working.
 
+## Updating
+
+    pockettui update
+
+or, the same thing without relying on the command being on your PATH:
+
+    curl -fsSL $BASE_URL/install.sh | bash -s -- --update
+
+An update replaces the program files in place. The pairing code, the voice
+models in \`voice/\`, the learned-word store and this install's Python
+environment are all kept, so nothing has to be paired or downloaded again.
+\`pockettui version\` says which build is installed here and whether there is
+a newer one.
+
 $README_SERVICE
 
 ## Reaching it from your phone
@@ -1524,6 +1813,7 @@ not an open shell.
 - \`app.py\` — the backend
 - \`start.sh\` — runs it on port $PORT with this install's interpreter
 - \`.token\` — the pairing code
+- \`VERSION\` — which build this is
 - \`.venv\` / \`.micromamba\` — this install's Python environment
 READMEEOF
 
@@ -1533,10 +1823,18 @@ READMEEOF
 # --verbose keeps the full changelog: on a `curl | bash` install, the question
 # "what did that just do to my machine?" deserves an answer that does not
 # require reading the script.
+# What is on disk now that the tarball has been unpacked, which is the only
+# version worth reporting: the one the user is about to run.
+NOW_VERSION="$(installed_version)"
+
 if [[ "$VERBOSE" == "1" ]]; then
     say ""
     say "============================================================"
-    say "Installed to $INSTALL_DIR"
+    if [[ "$UPDATE" == "1" ]]; then
+        say "Updated $INSTALL_DIR"
+    else
+        say "Installed to $INSTALL_DIR"
+    fi
     say ""
     say "What this script changed:"
     # ${arr[@]+...} because bash 3.2 — still /bin/bash on macOS — treats an empty
@@ -1558,6 +1856,19 @@ if [[ "$VERBOSE" == "1" ]]; then
     # Only true when nothing outside $INSTALL_DIR was touched. DID cannot answer
     # this: it also holds install-dir work and steps the user declined.
     [[ "$OUTSIDE" -eq 0 ]] && say "  Nothing else on this machine was modified."
+fi
+
+# The one thing an update is asked to report, and it is not verbose-only: the
+# whole reason for running it was to change this number. A version that did not
+# move (a re-install, or a deploy that has not landed yet) is said as plainly as
+# one that did, rather than dressed up as a successful upgrade.
+if [[ "$UPDATE" == "1" ]]; then
+    say ""
+    if [[ "$NOW_VERSION" == "$OLD_VERSION" ]]; then
+        say "  ${C_OK}Re-installed version $NOW_VERSION.$C_RESET"
+    else
+        say "  ${C_OK}Updated $OLD_VERSION -> $NOW_VERSION.$C_RESET"
+    fi
 fi
 
 # A backup only exists when the user asked for an overwrite, so it is never
@@ -1690,5 +2001,21 @@ if [[ "$SERVER_UP" != "1" ]]; then
 elif [[ "$BACKGROUND_STARTED" == "1" ]]; then
     say "  ${C_DIM}Running on port $PORT. No service manager here, so start it"
     say "  again after a reboot: $INSTALL_DIR/start.sh$C_RESET"
+fi
+
+# How to get the next version. A fresh install has never been told; an update
+# already knows and does not need telling again. The command is only named as a
+# command when a shell would actually find it — off PATH it is a full path, and
+# the curl line is what the user gets either way.
+if [[ "$UPDATE" != "1" ]]; then
+    say ""
+    if [[ "$WRAPPER_WRITTEN" == "1" ]] && [[ "$WRAPPER_OFF_PATH" != "1" ]]; then
+        say "  ${C_DIM}To update later:  pockettui update$C_RESET"
+    elif [[ "$WRAPPER_OFF_PATH" == "1" ]]; then
+        say "  ${C_DIM}To update later:  $WRAPPER_PATH update"
+        say "  ($USER_BIN is not on your PATH — add it to use 'pockettui' by name.)$C_RESET"
+    else
+        say "  ${C_DIM}To update later:  curl -fsSL $BASE_URL/install.sh | bash -s -- --update$C_RESET"
+    fi
 fi
 say ""
