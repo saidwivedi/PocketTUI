@@ -17,6 +17,14 @@
 # before the flags existed.
 set -eu
 
+C_RESET=""; C_STEP=""; C_OK=""; C_DIM=""
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+    C_RESET=$'\033[0m'
+    C_STEP=$'\033[36m'
+    C_OK=$'\033[32m'
+    C_DIM=$'\033[2m'
+fi
+
 DO_WHISPER=0
 DO_PARAKEET=0
 case "${1:-}" in
@@ -26,11 +34,11 @@ case "${1:-}" in
   "")
     if [ -t 0 ]; then
       echo "Which voice engine should PocketTUI use?"
-      echo "  1) Parakeet (recommended, ~600 MB download, fastest)"
-      echo "  2) Whisper (~142 MB, builds whisper.cpp)"
-      echo "  3) Both"
-      echo "  4) None — use phone dictation"
-      printf 'choice [1-4]: '
+      echo "  ${C_STEP}1) Parakeet${C_RESET} ${C_OK}(recommended, ~600 MB download, fastest)${C_RESET}"
+      echo "  ${C_STEP}2) Whisper${C_RESET} ${C_DIM}(~142 MB, builds whisper.cpp)${C_RESET}"
+      echo "  ${C_STEP}3) Both${C_RESET}"
+      echo "  ${C_STEP}4) None${C_RESET} ${C_DIM}— use phone dictation${C_RESET}"
+      printf 'choice %s[1-4]%s: ' "$C_DIM" "$C_RESET"
       read -r choice
       case "$choice" in
         1) DO_PARAKEET=1 ;;

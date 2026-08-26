@@ -1335,11 +1335,11 @@ voice_ask_engine() {
     local reply
     {
         printf '  Which voice engine should PocketTUI use?\n'
-        printf '    1) Parakeet (recommended, ~600 MB download, fastest)\n'
-        printf '    2) Whisper (~142 MB, builds whisper.cpp)\n'
-        printf '    3) Both\n'
-        printf '    4) None — use phone dictation\n'
-        printf '  choice [1-4]: '
+        printf '    %s1) Parakeet%s %s(recommended, ~600 MB download, fastest)%s\n' "$C_STEP" "$C_RESET" "$C_OK" "$C_RESET"
+        printf '    %s2) Whisper%s %s(~142 MB, builds whisper.cpp)%s\n' "$C_STEP" "$C_RESET" "$C_DIM" "$C_RESET"
+        printf '    %s3) Both%s\n' "$C_STEP" "$C_RESET"
+        printf '    %s4) None%s %s— use phone dictation%s\n' "$C_STEP" "$C_RESET" "$C_DIM" "$C_RESET"
+        printf '  choice %s[1-4]%s: ' "$C_DIM" "$C_RESET"
     } >&3
     IFS= read -r reply <&3 || reply=4
     printf '%s' "$reply"
