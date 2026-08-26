@@ -904,6 +904,120 @@ def test_ssh_hosts_cache_invalidates_when_the_file_changes(ssh_config):
     assert R.ssh_hosts() == ["newbox", "longer_alias"]
 
 
+# ---------------------------------------------------------------------------
+# Home-directory dotfiles
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def home_dotfiles(tmp_path, monkeypatch):
+    """A $HOME whose dotfiles the test writes, with the cache cleared around it."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    def write(*names: str):
+        for name in names:
+            (tmp_path / name).write_text("x\n")
+        R._dotfile_cache["stamp"] = None
+        R._dotfile_cache["names"] = []
+        return tmp_path
+
+    R._dotfile_cache["stamp"] = None
+    R._dotfile_cache["names"] = []
+    yield write
+    R._dotfile_cache["stamp"] = None
+    R._dotfile_cache["names"] = []
+
+
+def test_dotfile_names_drop_the_leading_dot(home_dotfiles):
+    """Nobody dictates the dot: "open bashrc" is the whole utterance."""
+    home_dotfiles(".bashrc", ".zshrc", ".vimrc")
+    assert R.dotfile_names() == ["bashrc", "vimrc", "zshrc"]
+
+
+def test_dotfile_names_take_the_config_shapes(home_dotfiles):
+    home_dotfiles(".bashrc", ".gitconfig", ".profile", ".tmux.conf",
+                  ".zshenv", ".gitignore")
+    names = R.dotfile_names()
+    for expected in ("bashrc", "gitconfig", "profile", "zshenv", "gitignore"):
+        assert expected in names, expected
+    # A dotted name is kept whole: it is one thing the user says, and the
+    # matcher already splits a surface into its subwords when it scores one.
+    assert "tmux.conf" in names
+
+
+def test_dotfile_names_skip_state_files(home_dotfiles):
+    """History, caches and authority files are never said out loud.
+
+    This is the noise the cap exists to survive: a real home holds sixty
+    `.python_history-<pid>.tmp` files and a handful of `.bak` copies.
+    """
+    home_dotfiles(".bashrc", ".zsh_history", ".viminfo", ".lesshst",
+                  ".zcompdump", ".Xauthority", ".xsession-errors",
+                  ".python_history-02006.tmp", ".tmux.conf.bak.20260818")
+    assert R.dotfile_names() == ["bashrc"]
+
+
+def test_dotfile_names_skip_directories(home_dotfiles):
+    """`.config` and `.cargo` are places, not files anyone asks to open."""
+    home_dotfiles(".bashrc")
+    for name in (".config", ".cargo", ".ssh"):
+        (Path(os.environ["HOME"]) / name).mkdir()
+    R._dotfile_cache["stamp"] = None
+    assert R.dotfile_names() == ["bashrc"]
+
+
+def test_dotfile_names_ignore_ordinary_files(home_dotfiles):
+    home_dotfiles(".bashrc")
+    (Path(os.environ["HOME"]) / "notes.txt").write_text("x\n")
+    R._dotfile_cache["stamp"] = None
+    assert R.dotfile_names() == ["bashrc"]
+
+
+def test_dotfile_names_are_capped(home_dotfiles):
+    home_dotfiles(*[f".thing{n}rc" for n in range(60)])
+    assert len(R.dotfile_names()) == R.DOTFILE_MAX_NAMES
+
+
+def test_dotfile_names_are_empty_when_home_is_unreadable(home_dotfiles,
+                                                         monkeypatch):
+    home_dotfiles(".bashrc")
+
+    def boom(*a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(R.os, "listdir", boom)
+    assert R.dotfile_names() == []
+
+
+def test_dotfile_names_cache_serves_a_second_call_without_restatting(
+        home_dotfiles, monkeypatch):
+    """The listing is the stamp, so it is re-read; the work behind it is not.
+
+    Per-entry `isfile` is what the cache exists to skip — one stat for every
+    config-shaped name, on a path the transcribe route takes per request.
+    """
+    home_dotfiles(".bashrc")
+    assert R.dotfile_names() == ["bashrc"]
+    monkeypatch.setattr(R.os.path, "isfile",
+                        lambda *a, **k: pytest.fail("the entries were restatted"))
+    assert R.dotfile_names() == ["bashrc"]
+
+
+def test_dotfile_names_cache_invalidates_when_home_changes(home_dotfiles):
+    """A new dotfile changes the listing, which is the stamp.
+
+    A directory's (mtime, size) is not: the size stays at the block size and
+    the mtime resolution is coarse enough that a file written in the same
+    instant as the last one leaves it untouched, so a stamp of the shape the
+    history and ssh sources use would serve a stale answer here.
+    """
+    home_dotfiles(".bashrc")
+    assert R.dotfile_names() == ["bashrc"]
+    # Written directly rather than through the fixture, so nothing but the
+    # stamp itself can be what notices the new entry.
+    (Path(os.environ["HOME"]) / ".zshrc").write_text("x\n")
+    assert R.dotfile_names() == ["bashrc", "zshrc"]
+
+
 def test_subwords_splits_every_convention():
     assert R.subwords("test_camerahmr.py") == ["test", "camerahmr", "py"]
     assert R.subwords("getUserName") == ["get", "User", "Name"]
