@@ -265,6 +265,73 @@ def test_neither_engine_is_the_only_not_setup(tmp_path, monkeypatch):
     assert A.voice_engine() == ""
 
 
+def test_a_request_can_ask_for_either_installed_engine(installed,
+                                                       parakeet_installed,
+                                                       sherpa_importable,
+                                                       monkeypatch):
+    """The per-request choice, where the env has not pinned one."""
+    monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
+    monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
+    assert A.voice_engine("whisper") == "whisper"
+    assert A.voice_engine("parakeet") == "parakeet"
+
+
+def test_the_env_outranks_what_the_request_asked_for(installed,
+                                                     parakeet_installed,
+                                                     sherpa_importable,
+                                                     monkeypatch):
+    """The operator's rollback has to survive a phone that disagrees with it."""
+    monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
+    monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
+    monkeypatch.setenv("POCKETTUI_VOICE_ENGINE", "whisper")
+    assert A.voice_engine("parakeet") == "whisper"
+
+
+def test_asking_for_an_absent_engine_is_not_a_silent_fallback(installed):
+    """The client owns the fallback, so it must be told, not quietly re-routed."""
+    assert A.voice_engine("parakeet") == ""
+    assert A.voice_engine() == "whisper"
+
+
+def test_an_unknown_requested_engine_reads_as_no_request(installed):
+    assert A.voice_engine("nonesuch") == "whisper"
+
+
+# ---------------------------------------------------------------------------
+# Voice status
+# ---------------------------------------------------------------------------
+
+def test_voice_status_names_both_engines(installed, parakeet_installed,
+                                         sherpa_importable, monkeypatch):
+    monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
+    monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
+    assert body(A.api_voice_status()) == {
+        "engines": {"parakeet": True, "whisper": True}, "active": "parakeet"}
+
+
+def test_voice_status_with_only_whisper(installed):
+    assert body(A.api_voice_status()) == {
+        "engines": {"parakeet": False, "whisper": True}, "active": "whisper"}
+
+
+def test_voice_status_with_neither_engine(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "VOICE_DIR", tmp_path / "absent")
+    monkeypatch.delenv("POCKETTUI_WHISPER_BIN", raising=False)
+    assert body(A.api_voice_status()) == {
+        "engines": {"parakeet": False, "whisper": False}, "active": ""}
+
+
+def test_voice_status_reflects_the_env_force(installed, parakeet_installed,
+                                             sherpa_importable, monkeypatch):
+    """Both installed, one pinned: the picker has to show which one wins."""
+    monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
+    monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
+    monkeypatch.setenv("POCKETTUI_VOICE_ENGINE", "whisper")
+    payload = body(A.api_voice_status())
+    assert payload["engines"] == {"parakeet": True, "whisper": True}
+    assert payload["active"] == "whisper"
+
+
 # ---------------------------------------------------------------------------
 # The bpe vocabulary sherpa-onnx will not ship
 # ---------------------------------------------------------------------------
@@ -588,6 +655,63 @@ def test_the_parakeet_route_answers_the_same_shape(parakeet_installed,
     assert payload["text"] == "pytest tests/test_app.py"
 
 
+def test_the_engine_parameter_picks_the_engine(installed, parakeet_installed,
+                                               sherpa_importable, monkeypatch,
+                                               at_a_shell):
+    """Both installed, so only the request decides which of them decodes."""
+    monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
+    monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
+    monkeypatch.setattr(A, "run_parakeet",
+                        lambda d, w, hotwords=None: "git diff")
+
+    assert body(A.transcribe(b"audio bytes", "work", "phone",
+                             engine="whisper"))["raw"] == "git status"
+    assert body(A.transcribe(b"audio bytes", "work", "phone",
+                             engine="parakeet"))["raw"] == "git diff"
+    # Nothing asked for: the preference still stands.
+    assert body(A.transcribe(b"audio bytes", "work", "phone"))["raw"] == "git diff"
+
+
+def test_asking_for_an_engine_this_install_lacks_is_not_setup(installed,
+                                                              monkeypatch):
+    """whisper could have answered, but the client is the half that falls back."""
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    response = A.transcribe(b"audio bytes", "work", "phone", engine="parakeet")
+    assert response.status_code == 503
+    assert body(response) == {"error": "not_setup"}
+
+
+def test_an_unknown_engine_parameter_is_ignored(installed, monkeypatch,
+                                                at_a_shell):
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
+    payload = body(A.transcribe(b"audio bytes", "work", "phone", engine="nonesuch"))
+    assert payload["raw"] == "git status"
+
+
+def test_the_env_force_outranks_the_engine_parameter(installed,
+                                                     parakeet_installed,
+                                                     sherpa_importable,
+                                                     monkeypatch, at_a_shell):
+    monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
+    monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
+    monkeypatch.setenv("POCKETTUI_VOICE_ENGINE", "whisper")
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
+
+    def explode(*a, **k):
+        raise AssertionError("the pinned engine must be the one that runs")
+
+    monkeypatch.setattr(A, "run_parakeet", explode)
+    payload = body(A.transcribe(b"audio bytes", "work", "phone", engine="parakeet"))
+    assert payload["raw"] == "git status"
+
+
 def test_parakeet_is_asked_for_hotwords_not_a_prompt(parakeet_installed,
                                                      sherpa_importable,
                                                      monkeypatch, at_a_shell):
@@ -597,6 +721,7 @@ def test_parakeet_is_asked_for_hotwords_not_a_prompt(parakeet_installed,
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(R, "history_vocabulary", lambda: ["micromamba"])
     monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "dotfile_names", lambda: [])
     monkeypatch.setattr(R, "learned_words", lambda: ["tokenhmr"])
 
     def spy(model_dir, wav, hotwords=None):
@@ -619,6 +744,7 @@ def test_no_vocabulary_means_no_hotwords_argument(parakeet_installed,
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(R, "history_vocabulary", lambda: [])
     monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "dotfile_names", lambda: [])
     monkeypatch.setattr(R, "learned_words", lambda: [])
 
     def spy(model_dir, wav, hotwords=None):
@@ -654,6 +780,7 @@ def test_hotwords_the_decoder_rejects_fall_back_to_a_plain_decode(
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(R, "history_vocabulary", lambda: ["micromamba"])
     monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "dotfile_names", lambda: [])
     monkeypatch.setattr(R, "learned_words", lambda: [])
 
     def picky(model_dir, wav, hotwords=None):
@@ -677,6 +804,7 @@ def test_the_log_line_names_the_engine(parakeet_installed, sherpa_importable,
     monkeypatch.setattr(A, "run_parakeet", lambda d, w, hotwords=None: "git status")
     monkeypatch.setattr(R, "history_vocabulary", lambda: ["micromamba", "sbatch"])
     monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "dotfile_names", lambda: [])
     monkeypatch.setattr(R, "learned_words", lambda: [])
 
     A.transcribe(b"audio bytes", "work", "phone")
@@ -1337,6 +1465,7 @@ def test_ssh_hosts_ride_the_history_channel(installed, monkeypatch, at_a_shell):
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A.resolver, "history_vocabulary", lambda: ["sdwivedi"])
     monkeypatch.setattr(A.resolver, "ssh_hosts", lambda: ["galtonhost"])
+    monkeypatch.setattr(A.resolver, "dotfile_names", lambda: [])
 
     prompts: list[str] = []
     monkeypatch.setattr(A, "run_whisper",
@@ -1354,6 +1483,77 @@ def test_ssh_hosts_ride_the_history_channel(installed, monkeypatch, at_a_shell):
     assert "galtonhost" in prompts[0]
     # After history in the combined list: same channel, at the tail.
     assert seen["extra_vocab"] == ["sdwivedi", "galtonhost"]
+
+
+# ---------------------------------------------------------------------------
+# Home dotfiles in the request vocabulary
+# ---------------------------------------------------------------------------
+
+def test_dotfile_names_ride_the_history_channel(installed, monkeypatch,
+                                                at_a_shell):
+    """"open bashrc" has no other source: a zsh user's history never held it."""
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A.resolver, "history_vocabulary", lambda: ["sdwivedi"])
+    monkeypatch.setattr(A.resolver, "ssh_hosts", lambda: ["galtonhost"])
+    monkeypatch.setattr(A.resolver, "dotfile_names", lambda: ["bashrc", "zshrc"])
+
+    prompts: list[str] = []
+    monkeypatch.setattr(A, "run_whisper",
+                        lambda b, m, w, p: prompts.append(p) or "git status")
+    seen: dict = {}
+    real_resolve = R.resolve
+
+    def spy(text, **kwargs):
+        seen.update(kwargs)
+        return real_resolve(text, **kwargs)
+
+    monkeypatch.setattr(A.resolver, "resolve", spy)
+    A.transcribe(b"audio bytes", "work", "phone")
+
+    assert "bashrc" in prompts[0]
+    # Last in the combined list: the same low-weight channel, at its tail.
+    assert seen["extra_vocab"] == ["sdwivedi", "galtonhost", "bashrc", "zshrc"]
+
+
+def test_dotfile_names_reach_the_parakeet_hotwords(parakeet_installed,
+                                                   sherpa_importable,
+                                                   monkeypatch, at_a_shell):
+    """The engine that missed this word takes vocabulary by hotwords, not prompt."""
+    seen = {}
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(R, "history_vocabulary", lambda: [])
+    monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "dotfile_names", lambda: ["bashrc", "vimrc"])
+    monkeypatch.setattr(R, "learned_words", lambda: [])
+
+    def spy(model_dir, wav, hotwords=None):
+        seen["hotwords"] = hotwords
+        return "git status"
+
+    monkeypatch.setattr(A, "run_parakeet", spy)
+    A.transcribe(b"audio bytes", "work", "phone")
+    assert seen["hotwords"] == "bashrc :0.5\nvimrc :0.5"
+
+
+def test_learned_words_still_outrank_the_dotfiles(monkeypatch):
+    """The new source joins the low-priority tail; it does not jump the queue."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(history=["micromamba", "bashrc"],
+                               learned=["tokenhmr"])
+    assert lines_of(text) == ["tokenhmr", "micromamba", "bashrc"]
+
+
+def test_a_dotfile_named_after_an_english_word_is_dropped(monkeypatch):
+    """A dotfile whose name is a word Parakeet already writes buys no slot.
+
+    The history filters run over this source unchanged, which is the point of
+    routing it through the same channel rather than a new one.
+    """
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(history=["local", "bashrc"])
+    assert lines_of(text) == ["bashrc"]
 
 
 # ---------------------------------------------------------------------------
