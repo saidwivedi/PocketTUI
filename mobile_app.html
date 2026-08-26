@@ -1118,6 +1118,15 @@ html.term-open, body.term-open {
   border-color: var(--umber);
   color: var(--paper);
 }
+/* The first-run voice step's own action row. Absent entirely the rest of the
+   time — past setup the picker applies on the tap and the sheet's Save/Cancel
+   row is the only one there is. */
+#voice-confirm-row { display: none; }
+#voice-confirm-row.show { display: flex; }
+.sheet .actions button[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
 /* On first run the demo reads as filled and Save outlined — most first-time
    visitors are here to look before they connect. Past setup the emphasis flips
    back: Save is the primary action and the demo is just still reachable.
@@ -1474,6 +1483,14 @@ html.term-open, body.term-open {
       <span class="note"></span>
     </label>
   </div>
+  <!-- First run only. Pairing is the moment the local engines stop being greyed
+       rows and become a real choice, and it is also the moment the sheet used to
+       close — so the one time the picker had something to say was the one time
+       nobody saw it. The sheet stays for this step instead, and closing it is
+       this button rather than the Save above, which has already done its job. -->
+  <div class="actions" id="voice-confirm-row">
+    <button type="button" id="btn-voice-confirm">Confirm</button>
+  </div>
   <!-- Last in the sheet because it is a diagnostic, not part of connecting. -->
   <div class="toggle-row">
     <label for="dbg-toggle">Debug log</label>
@@ -1786,6 +1803,11 @@ $("btn-theme").addEventListener("click", () => {
 // ============================================================
 // One scrim serves every sheet, so closing means closing whichever is open.
 function showSheet(on, id="sheet-settings") {
+  // Closing the settings sheet ends the first-run voice step however it was
+  // closed — Confirm, Cancel or the scrim. The device is paired by then, so
+  // dismissing it is a real answer: keep the resolved engine unstored and let
+  // it keep tracking the backend, which is what unset has always meant.
+  if (voiceStep && !(on && id === "sheet-settings")) showVoiceStep(false);
   $("sheet-settings").classList.toggle("show", on && id === "sheet-settings");
   $("sheet-new").classList.toggle("show", on && id === "sheet-new");
   $("sheet-scrim").classList.toggle("show", on);
@@ -1839,6 +1861,9 @@ function formatTokenDisplay(v) {
 }
 
 let setupMode = false;
+// True between a first-run save and its Confirm: the sheet is still open, but
+// on the voice step rather than the address one.
+let voiceStep = false;
 
 function openSettings(firstRun) {
   setupMode = !!firstRun;
@@ -1866,7 +1891,35 @@ function openSettings(firstRun) {
   $("sheet-install").classList.toggle("show", !!firstRun);
   $("sheet-faq").classList.toggle("show", !!firstRun);
   $("sheet-settings").classList.toggle("setup", !!firstRun);
+  // The voice step is something a save opens, never something the sheet opens
+  // with: until the code is entered there is nothing to confirm.
+  showVoiceStep(false);
   showSheet(true);
+}
+
+// The first-run voice step: on or off. Off is also what every ordinary visit to
+// Settings looks like, so this is what returns the sheet to normal.
+function showVoiceStep(on) {
+  voiceStep = on;
+  $("voice-confirm-row").classList.toggle("show", on);
+  $("btn-voice-confirm").classList.toggle("primary", on);
+  if (on) syncVoiceConfirm();
+}
+
+// Brings the picker to the top of the sheet. The address fields above it are
+// answered by now and the FAQ below is about connecting, so what the step is
+// asking should be the first thing in view rather than something to scroll for.
+function revealVoiceStep() {
+  $("voice-label").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// Confirm commits whatever the picker is showing, so it is only inert while the
+// picker is showing nothing — which the auto-resolved pre-selection means is
+// nearly never. It stays a real tap rather than a formality: the engine it
+// confirms is one the user has now actually seen.
+function syncVoiceConfirm() {
+  const sel = $("voice-engine").querySelector("input:checked");
+  $("btn-voice-confirm").disabled = !sel;
 }
 
 // The address was reachable but the code was wrong — send them straight back
@@ -1918,6 +1971,8 @@ $("btn-settings-save").addEventListener("click", () => {
   if (setupMode && !v) { toast("Enter your computer address"); return; }
   const tok = normalizeToken($("backend-token").value);
   if (setupMode && !isValidToken(tok)) { toast("Enter the 10-character pairing code"); return; }
+  // Asked before the write, because the write is what makes it false.
+  const wasUnpaired = needsSetup();
   cfg.backend = v;
   cfg.token = tok;
   // Cleaning can empty the field outright ("!!!"), which would leave this device
@@ -1925,9 +1980,43 @@ $("btn-settings-save").addEventListener("click", () => {
   const dev = cleanDevName($("backend-devname").value);
   if (dev) cfg.devname = dev;
   setupMode = false;
-  showSheet(false);
-  // Reload against the new backend so a bad URL surfaces straight away.
+  // A save that paired this device stays open on the voice step. Everything the
+  // picker knows was learned before there were credentials to ask with, so the
+  // status is re-fetched from scratch rather than reused.
+  const pairing = wasUnpaired && !needsSetup();
+  if (pairing) {
+    $("sheet-settings").classList.remove("setup");
+    $("sheet-title").textContent = "Dictation";
+    $("sheet-note").classList.add("hide");
+    $("btn-settings-cancel").style.display = "";
+    showVoiceStep(true);
+    syncVoicePicker();
+    revealVoiceStep();
+    fetchVoiceStatus(true).then(() => {
+      syncVoicePicker();
+      syncVoiceConfirm();
+      // Again once the answer is in: the notes that appear and disappear with it
+      // change the section's height, and the first scroll aimed at the old one.
+      revealVoiceStep();
+    });
+  } else {
+    showSheet(false);
+  }
+  // Reload against the new backend so a bad URL surfaces straight away. Not
+  // awaited either way: the list is being built behind the voice step, and is
+  // there the moment it closes.
   loadSessions(true);
+});
+// Ends the first-run voice step. The tap is the choice — including the one the
+// picker had already resolved on the user's behalf, which is written here so an
+// engine confirmed during setup is stored exactly like one picked later from
+// Settings, rather than left unset and re-resolved on every reload.
+$("btn-voice-confirm").addEventListener("click", () => {
+  const sel = $("voice-engine").querySelector("input:checked");
+  if (!sel) return;
+  if (cfg.voiceEngine !== sel.value) cfg.voiceEngine = sel.value;
+  showVoiceStep(false);
+  showSheet(false);
 });
 // Paints the picker from the stored choice and whatever the backend last said.
 // Called twice per open — once from what is already known so the sheet is never
@@ -1941,6 +2030,12 @@ function syncVoicePicker() {
   // told us nothing. Both read as unavailable either way — there is nothing to
   // send audio to — but the note says which it is.
   const reachable = !!voiceStatus && !demoMode;
+  // And "not paired yet" is a third thing again. On a first run there is no
+  // computer to have been asked, so "not installed" and "unreachable" are both
+  // claims about a machine we have never spoken to — and the user, reading
+  // them, concludes their setup is broken before it has begun. The demo is left
+  // on the unreachable wording: it genuinely has a backend it cannot use.
+  const unpaired = !demoMode && needsSetup();
   for (const name of ["parakeet", "whisper"]) {
     const row = rows[name];
     const input = row.querySelector("input");
@@ -1951,14 +2046,25 @@ function syncVoicePicker() {
     // show as picked, or the sheet reads as having silently changed the setting
     // — which is exactly what the session fallback deliberately does not do.
     input.disabled = !ok && cfg.voiceEngine !== name;
-    row.querySelector(".note").textContent =
-      ok ? "" : reachable ? "not installed — run setup_voice.sh" : "computer unreachable";
+    row.querySelector(".note").textContent = ok ? ""
+      : unpaired ? "pair with your computer first"
+      : reachable ? "not installed — run setup_voice.sh"
+      : "computer unreachable";
   }
   // The stored choice when there is one, resolved otherwise: an unset device
   // shows the answer it is actually using rather than nothing selected at all.
-  const sel = cfg.voiceEngine || resolveVoiceEngine();
+  // Said out loud on the row too, because a selected radio with no explanation
+  // reads as something the user chose and forgot rather than something the
+  // computer answered — and the whole point of the unset state is that it
+  // tracks the backend.
+  const auto = !cfg.voiceEngine;
+  const sel = cfg.voiceEngine || settledVoiceEngine();
   for (const input of $("voice-engine").querySelectorAll("input")) {
-    input.checked = input.value === sel;
+    const on = input.value === sel;
+    input.checked = on;
+    const note = input.parentNode.querySelector(".note");
+    const hint = input.value === "phone" ? "the keyboard's own mic" : note.textContent;
+    note.textContent = on && auto ? (hint ? hint + " · auto" : "auto") : hint;
   }
 }
 
@@ -1983,6 +2089,9 @@ $("voice-engine").addEventListener("change", (e) => {
   // cancelRecording() already resyncs through recClearUI(); a change made with
   // nothing running is the case that needs telling.
   recSyncMic();
+  // The picked row is now the stored one, so the auto hint has to come off it.
+  syncVoicePicker();
+  if (voiceStep) syncVoiceConfirm();
 });
 // Applies on the tap rather than on Save: the reason to reach for it is that
 // something is already going wrong, and Cancel must not be able to lose it.
@@ -4477,12 +4586,23 @@ function recAvailable() {
 // here rather than at three call sites: the demo, a missing MediaRecorder, a
 // latched failure, the session-long fallback.
 function resolveVoiceEngine() {
+  const want = settledVoiceEngine();
+  if (want === "phone") return "phone";
+  if (!recAvailable()) return "phone";
+  return want;
+}
+
+// The same resolution minus everything that is only true of the tap in hand.
+// The Settings picker asks this one: it is describing the setting, not a
+// recording, and recAvailable() is false for the whole of the sheet's life —
+// there is no session open behind it — so asking resolveVoiceEngine() there
+// would paint "Phone dictation" on a computer that is running Parakeet.
+function settledVoiceEngine() {
   if (voiceForcedPhone) return "phone";
   let want = cfg.voiceEngine;
   if (!want && cfg.legacyLocalVoiceOff) want = "phone";
   if (!want) want = (voiceStatus && voiceStatus.active) || "phone";
   if (want === "phone") return "phone";
-  if (!recAvailable()) return "phone";
   // Only a status we actually have may veto: a backend that never answered has
   // said nothing about what it can run, and the upload's own 503 is the check
   // that catches it. Failing closed here would silently strand the setting on
