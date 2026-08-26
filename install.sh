@@ -47,7 +47,7 @@ MIN_PY_MINOR=10
 # directory it resolves to actually holds the app.
 SRC_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
 LOCAL_CHECKOUT=0
-if [[ -n "$SRC_DIR" ]] && [[ -f "$SRC_DIR/app.py" ]] && [[ -f "$SRC_DIR/mobile_app.html" ]]; then
+if [[ -n "$SRC_DIR" ]] && [[ -f "$SRC_DIR/app.py" ]] && [[ -f "$SRC_DIR/build_mobile.py" ]]; then
     LOCAL_CHECKOUT=1
 fi
 
@@ -491,11 +491,13 @@ if [[ "$LOCAL_CHECKOUT" == "1" ]]; then
     mkdir -p "$INSTALL_DIR"
     [[ "$FRESH_DIR" == "1" ]] && note "created $INSTALL_DIR"
     # Only the files the backend actually runs, mirroring what the tarball ships.
-    # Absent ones are skipped rather than fatal: a checkout is allowed to be
-    # missing the built icons, and app.py + mobile_app.html were already checked.
-    for f in app.py resolver.py requirements.txt mobile_app.html sw.js vendor \
-             icon-192.png icon-512.png pockettui.service install.sh run.sh \
-             setup_voice.sh; do
+    # Absent ones are skipped rather than fatal. The front end is not in this
+    # list: a checkout keeps it split under src/ and its icons in assets/, so
+    # mobile_app.html, sw.js and the icons are built into $INSTALL_DIR further
+    # down, once there is a Python to run build_mobile.py with. app.py was
+    # already checked.
+    for f in app.py resolver.py requirements.txt vendor \
+             pockettui.service install.sh run.sh setup_voice.sh; do
         [[ -e "$SRC_DIR/$f" ]] || continue
         # Installing from inside the install dir would be cp-onto-itself.
         [[ "$SRC_DIR/$f" -ef "$INSTALL_DIR/$f" ]] && continue
@@ -632,6 +634,24 @@ else
     die "could not build a Python environment. Install Python 3.${MIN_PY_MINOR}+ and re-run:  $(pkg_install_cmd "$(pkg_name venv)")"
 fi
 step_done "$ENV_LABEL"
+
+# ---------------------------------------------------------------------------
+# The front end, from a checkout
+# ---------------------------------------------------------------------------
+# The tarball ships mobile_app.html, sw.js and the icons already built. A
+# checkout does not: they are assembled from src/mobile/ and assets/. This runs
+# here rather than with the rest of the copying because it needs an interpreter,
+# and the one just built is the only one this script is sure of. build_mobile.py
+# is stdlib-only, so nothing is installed yet and that is fine.
+if [[ "$LOCAL_CHECKOUT" == "1" ]]; then
+    step "Front end"
+    if ! (cd "$SRC_DIR" && "$VENV_PY" build_mobile.py --assemble-only \
+              --emit-runtime "$INSTALL_DIR" >/dev/null); then
+        die "could not build the front end from $SRC_DIR"
+    fi
+    vsay "  assembled mobile_app.html, sw.js and the icons into $INSTALL_DIR"
+    step_done "ok"
+fi
 
 step "Dependencies"
 # Inside an environment we just made, so nothing here is a system change and

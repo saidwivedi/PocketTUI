@@ -574,20 +574,33 @@ def service_worker() -> Response:
     return no_store(Response(js, media_type="application/javascript"))
 
 
+def _icon_path(name: str) -> Path | None:
+    """An icon from the flat install layout, or the repo's assets/ dir.
+
+    An install has its icons next to app.py; a checkout keeps them in assets/
+    and only the build copies them out. Serving both means running from a
+    checkout does not need a build first.
+    """
+    for path in (HERE / name, HERE / "assets" / name):
+        if path.exists():
+            return path
+    return None
+
+
 @app.get("/icon.svg")
 def icon_svg() -> Response:
     # Not part of the installed runtime (nothing references it), so answer 404
     # rather than raising when the file is absent.
-    path = HERE / "icon.svg"
-    if not path.exists():
+    path = _icon_path("icon.svg")
+    if path is None:
         return Response(status_code=404)
     return FileResponse(path, media_type="image/svg+xml")
 
 
 @app.get("/icon-{size}.png")
 def icon_png(size: str) -> Response:
-    path = HERE / f"icon-{size}.png"
-    if not path.exists():
+    path = _icon_path(f"icon-{size}.png")
+    if path is None:
         return Response(status_code=404)
     return FileResponse(path, media_type="image/png")
 
