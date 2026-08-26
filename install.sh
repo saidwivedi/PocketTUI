@@ -295,6 +295,26 @@ confirm() {
     [[ "$reply" == "y" || "$reply" == "Y" || "$reply" == "yes" || "$reply" == "YES" ]]
 }
 
+# Ask what to do about an existing install: update, re-install (rotates the
+# pairing code), or leave it alone. $1 is the label for option 1, since
+# whether it names a target version (or is honestly a re-apply when the
+# remote is the same version) depends on what the caller already worked out.
+# Default on empty input is 1 (Update) — that is what almost everyone here
+# wants, and it keeps `[Enter]` doing the same thing y/N update prompts used
+# to. Only INTERACTIVE (fd 3 open) calls this.
+existing_install_ask() {
+    local update_label="$1" reply
+    {
+        printf '    %s1) %s%s\n' "$C_STEP" "$update_label" "$C_RESET"
+        printf '    %s2) Re-install%s %s— fresh copy, generates a NEW pairing code%s\n' "$C_STEP" "$C_RESET" "$C_DIM" "$C_RESET"
+        printf '    %s3) Leave it alone%s\n' "$C_STEP" "$C_RESET"
+        printf '  choice %s[1-3]%s: ' "$C_DIM" "$C_RESET"
+    } >&3
+    IFS= read -r reply <&3 || reply=1
+    [[ -z "$reply" ]] && reply=1
+    printf '%s' "$reply"
+}
+
 # ---------------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------------
@@ -416,25 +436,19 @@ elif [[ -e "$INSTALL_DIR" ]]; then
         NEW_VERSION="$(remote_version)"
         say ""
         say "  PocketTUI is already installed at $INSTALL_DIR (version $OLD_VERSION)."
+        UPDATE_LABEL="Update — keeps your pairing code"
         if [[ "$NEW_VERSION" != "unknown" ]] && [[ "$NEW_VERSION" == "$OLD_VERSION" ]]; then
-            # Nothing new to fetch. Still offered, because a re-install is also
-            # how a half-finished one gets repaired.
-            say "  That is already the current version — nothing to update to."
-            if confirm "  Re-install it anyway?"; then
-                UPDATE=1
-                ROTATE_TOKEN=1
-            fi
+            UPDATE_LABEL="Re-apply the current version — keeps your pairing code"
         elif [[ "$NEW_VERSION" != "unknown" ]]; then
-            if confirm "  Update to version $NEW_VERSION?"; then
-                UPDATE=1
-            fi
-        else
-            # No version.txt to compare against, so the question cannot name a
-            # target. Updating is still the right thing to offer.
-            if confirm "  Update it to the current version?"; then
-                UPDATE=1
-            fi
+            say "  Version $NEW_VERSION is available."
+            UPDATE_LABEL="Update — keeps your pairing code, -> $NEW_VERSION"
         fi
+        EXISTING_CHOICE="$(existing_install_ask "$UPDATE_LABEL")"
+        case "$EXISTING_CHOICE" in
+            2) UPDATE=1; ROTATE_TOKEN=1 ;;
+            1) UPDATE=1 ;;
+            *) UPDATE=0 ;;
+        esac
         if [[ "$UPDATE" != "1" ]]; then
             say ""
             say "  Left alone — nothing was changed."
