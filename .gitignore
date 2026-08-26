@@ -24,3 +24,9 @@ voice/
 # vocabulary, local to this machine.
 .voice_learned.json
 explore/
+# Assembled by build_mobile.py from src/mobile/. The runtime layout is flat, so
+# these live at the root even though their source is split under src/.
+/mobile_app.html
+/sw.js
+/icon-192.png
+/icon-512.png
