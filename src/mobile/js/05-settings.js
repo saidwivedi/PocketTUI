@@ -173,6 +173,9 @@ $("btn-settings-save").addEventListener("click", () => {
   if (setupMode && !isValidToken(tok)) { toast("Enter the 10-character pairing code"); return; }
   // Asked before the write, because the write is what makes it false.
   const wasUnpaired = needsSetup();
+  // Also asked before the write: a re-pair onto a different backend/token needs
+  // the same voice step as a first pairing, even though wasUnpaired is false.
+  const credsChanged = cfg.backend !== v || cfg.token !== tok;
   cfg.backend = v;
   cfg.token = tok;
   // Cleaning can empty the field outright ("!!!"), which would leave this device
@@ -180,10 +183,13 @@ $("btn-settings-save").addEventListener("click", () => {
   const dev = cleanDevName($("backend-devname").value);
   if (dev) cfg.devname = dev;
   setupMode = false;
-  // A save that paired this device stays open on the voice step. Everything the
-  // picker knows was learned before there were credentials to ask with, so the
-  // status is re-fetched from scratch rather than reused.
-  const pairing = wasUnpaired && !needsSetup();
+  // A save that paired this device, or re-paired it onto a different backend or
+  // token, stays open on the voice step. A new backend's engines are unknown
+  // even if this device was already paired to some other install, so the choice
+  // is re-asked; everything the picker knows was learned before there were
+  // credentials to ask with, so the status is re-fetched from scratch rather
+  // than reused.
+  const pairing = (wasUnpaired || credsChanged) && !needsSetup();
   if (pairing) {
     $("sheet-settings").classList.remove("setup");
     $("sheet-title").textContent = "Dictation";
