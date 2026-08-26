@@ -1005,19 +1005,37 @@ fi
 VOICE_SCRIPT="$INSTALL_DIR/setup_voice.sh"
 VOICE_HINT="cd $INSTALL_DIR && ./setup_voice.sh"
 
-# Both halves are needed for the mic to work, and app.py reads a half-finished
-# build the same way it reads no build at all — so "already set up" has to mean
-# both, or a re-run would decline to finish an interrupted one.
-voice_installed() {
+# Whisper needs both its files (a half-finished build reads as no build at
+# all); Parakeet needs a model directory holding all four files sherpa-onnx
+# requires — mirrors app.py's _parakeet_dir_complete()/PARAKEET_FILES, so this
+# check and the one that decides whether app.py can load Parakeet never
+# disagree. Either engine alone is enough for the mic to work; app.py prefers
+# Parakeet when both are present.
+voice_installed_whisper() {
     [[ -x "$INSTALL_DIR/voice/whisper-cli" ]] && [[ -s "$INSTALL_DIR/voice/ggml-base.en.bin" ]]
 }
 
-# What setup_voice.sh cannot provide for itself. git is in there because it
-# clones whisper.cpp; ffmpeg is not, because it is a runtime dependency of the
-# transcription, not of the build — a missing one is a warning below, not a
-# reason to skip the build. Two spellings come out of one pass: a comma list to
-# read, and the package names to hand pkg_install_cmd. c++ is the compiler this
-# needs but nobody's package is called that, so it is quoted as its distro name.
+voice_installed_parakeet() {
+    local dir
+    for dir in "$INSTALL_DIR"/voice/parakeet/sherpa-onnx-*parakeet*; do
+        [[ -d "$dir" ]] || continue
+        [[ -f "$dir/encoder.int8.onnx" ]] || continue
+        [[ -f "$dir/decoder.int8.onnx" ]] || continue
+        [[ -f "$dir/joiner.int8.onnx" ]] || continue
+        [[ -f "$dir/tokens.txt" ]] || continue
+        return 0
+    done
+    return 1
+}
+
+# What setup_voice.sh cannot provide for itself, and only for choices that
+# include whisper — Parakeet is a plain download and needs none of this. git
+# is in there because it clones whisper.cpp; ffmpeg is not, because it is a
+# runtime dependency of the transcription, not of the build — a missing one is
+# a warning below, not a reason to skip the build. Two spellings come out of
+# one pass: a comma list to read, and the package names to hand
+# pkg_install_cmd. c++ is the compiler this needs but nobody's package is
+# called that, so it is quoted as its distro name.
 VOICE_MISSING=""
 VOICE_MISSING_PKGS=""
 voice_check_tools() {
@@ -1041,67 +1059,126 @@ voice_check_tools() {
     [[ -n "$VOICE_MISSING" ]]
 }
 
+# Ask which engine(s) to install, the same four choices setup_voice.sh offers
+# when run with no flag — this is the interactive equivalent of that menu. Any
+# reply other than 1-3 (including EOF) reads as choice 4, None. Only
+# INTERACTIVE (fd 3 open) calls this; a non-interactive run never does.
+voice_ask_engine() {
+    local reply
+    {
+        printf '  Which voice engine should PocketTUI use?\n'
+        printf '    1) Parakeet (recommended, ~600 MB download, fastest)\n'
+        printf '    2) Whisper (~142 MB, builds whisper.cpp)\n'
+        printf '    3) Both\n'
+        printf '    4) None — use phone dictation\n'
+        printf '  choice [1-4]: '
+    } >&3
+    IFS= read -r reply <&3 || reply=4
+    printf '%s' "$reply"
+}
+
 if [[ -f "$VOICE_SCRIPT" ]]; then
-    if voice_installed; then
+    HAVE_WHISPER=0; voice_installed_whisper && HAVE_WHISPER=1
+    HAVE_PARAKEET=0; voice_installed_parakeet && HAVE_PARAKEET=1
+
+    if [[ "$HAVE_WHISPER" == "1" && "$HAVE_PARAKEET" == "1" ]]; then
         step_quiet "Voice-to-text already set up"
-        vsay "  $INSTALL_DIR/voice already has whisper-cli and the model — nothing to do."
+        vsay "  $INSTALL_DIR/voice already has Parakeet and whisper-cli — nothing to do."
     else
         step_quiet "Optional: local voice-to-text for code dictation"
-        vsay "  Builds whisper.cpp here and downloads one ~142 MB English model."
-        vsay "  Everything stays on this machine; it needs no root."
+        if [[ "$HAVE_WHISPER" == "1" ]]; then
+            vsay "  Whisper is set up; Parakeet (faster, more accurate) is not."
+        elif [[ "$HAVE_PARAKEET" == "1" ]]; then
+            vsay "  Parakeet is set up; whisper (the fallback engine) is not."
+        else
+            vsay "  Transcribes the phone's code button locally — nothing leaves this machine."
+        fi
         if [[ "$INTERACTIVE" != "1" ]]; then
-            # Nobody to ask, and this is a multi-minute build — described rather
-            # than done, like the two optional steps above it. Printed in both
-            # modes: unlike those, this one is not written up in the notes file.
-            say "  ${C_DIM}Voice-to-text (the phone's code button) is not set up. To add it:"
+            # Nobody to ask, and this can be a multi-minute build or a 600 MB
+            # download — described rather than done, like the two optional
+            # steps above it. Printed in both modes: unlike those, this one is
+            # not written up in the notes file.
+            say "  ${C_DIM}Voice-to-text (the phone's code button) is not fully set up. To add it:"
             say "      $VOICE_HINT$C_RESET"
             note "skipped voice setup (non-interactive)"
-        elif confirm "  Set up local voice-to-text for code dictation? Builds whisper.cpp and downloads a ~142 MB model (needs cmake, make, a C++ compiler, ~1 GB disk during build)."; then
-            if voice_check_tools; then
-                # A compiler and cmake are not installable in user space the way
-                # micromamba and uv are, so this is the one place the package
-                # manager is quoted back rather than worked around.
-                say "  ${C_WARN}Not building: $VOICE_MISSING missing.$C_RESET Install with:"
-                say "      $(pkg_install_cmd "$VOICE_MISSING_PKGS")"
-                say "  Then set voice up with:"
-                say "      $VOICE_HINT"
-                say ""
-                note "skipped voice setup ($VOICE_MISSING missing)"
+        else
+            VOICE_CHOICE="$(voice_ask_engine)"
+            # An engine already installed is dropped from the choice rather than
+            # rebuilt or re-downloaded — setup_voice.sh's per-half idempotency
+            # would skip it anyway, but this keeps the flag sent matching what
+            # is actually about to happen.
+            WANT_WHISPER=0; WANT_PARAKEET=0
+            case "$VOICE_CHOICE" in
+                1) WANT_PARAKEET=1 ;;
+                2) WANT_WHISPER=1 ;;
+                3) WANT_WHISPER=1; WANT_PARAKEET=1 ;;
+                *) WANT_WHISPER=-1 ;;  # sentinel for "4 / None"
+            esac
+            if [[ "$WANT_WHISPER" == "-1" ]]; then
+                vsay "  Skipped — nothing was installed. Phone dictation works regardless."
+                vsay "  To add local voice-to-text later:"
+                vsay "      $VOICE_HINT"
+                note "skipped voice setup (declined)"
             else
-                # Only needed once someone actually dictates, so it is said and
-                # then the build goes ahead regardless.
-                if ! command -v ffmpeg >/dev/null 2>&1; then
-                    say "  ${C_WARN}NOTE${C_RESET} ffmpeg is not installed — transcription needs it at"
-                    say "  runtime. Install it before using the mic:  $(pkg_install_cmd ffmpeg)"
-                fi
-                say "  Building whisper.cpp — this takes a few minutes."
-                say ""
-                # Its output goes straight to the terminal: a build this long
-                # with nothing on screen reads as a hang. `set -e` would take
-                # the whole install down with it, hence the explicit test.
-                if bash "$VOICE_SCRIPT"; then
-                    say ""
-                    say "  Voice is ready — the phone app's code button will transcribe now."
-                    note "set up voice-to-text in $INSTALL_DIR/voice"
-                    # A service started before voice/ existed has already decided
-                    # it is absent, so it has to look again.
-                    if [[ "$SERVICE_INSTALLED" == "1" ]] || [[ "$BACKGROUND_STARTED" == "1" ]]; then
-                        say "  ${C_DIM}Restart PocketTUI to pick it up.$C_RESET"
-                    fi
-                    say ""
-                else
-                    say ""
-                    say "  ${C_WARN}Voice setup did not finish — the rest of the install is fine"
-                    say "  and PocketTUI works without it.$C_RESET Try it again with:"
+                [[ "$HAVE_WHISPER" == "1" ]] && WANT_WHISPER=0
+                [[ "$HAVE_PARAKEET" == "1" ]] && WANT_PARAKEET=0
+                if [[ "$WANT_WHISPER" == "0" && "$WANT_PARAKEET" == "0" ]]; then
+                    vsay "  Already installed — nothing to do."
+                    note "skipped voice setup (chosen engine already installed)"
+                elif [[ "$WANT_WHISPER" == "1" ]] && voice_check_tools; then
+                    # A compiler and cmake are not installable in user space the
+                    # way micromamba and uv are, so this is the one place the
+                    # package manager is quoted back rather than worked around.
+                    # Parakeet is a plain download and needs none of this, so a
+                    # Parakeet-only choice never reaches here.
+                    say "  ${C_WARN}Not building whisper: $VOICE_MISSING missing.$C_RESET Install with:"
+                    say "      $(pkg_install_cmd "$VOICE_MISSING_PKGS")"
+                    say "  Then set voice up with:"
                     say "      $VOICE_HINT"
                     say ""
-                    note "voice setup failed (install unaffected)"
+                    note "skipped voice setup ($VOICE_MISSING missing)"
+                else
+                    # Only needed once someone actually dictates, so it is said
+                    # and then setup goes ahead regardless.
+                    if ! command -v ffmpeg >/dev/null 2>&1; then
+                        say "  ${C_WARN}NOTE${C_RESET} ffmpeg is not installed — transcription needs it at"
+                        say "  runtime. Install it before using the mic:  $(pkg_install_cmd ffmpeg)"
+                    fi
+                    if [[ "$WANT_WHISPER" == "1" && "$WANT_PARAKEET" == "1" ]]; then
+                        VOICE_FLAG="--all"
+                        say "  Setting up whisper and Parakeet — this takes a few minutes."
+                    elif [[ "$WANT_WHISPER" == "1" ]]; then
+                        VOICE_FLAG="--whisper"
+                        say "  Building whisper.cpp — this takes a few minutes."
+                    else
+                        VOICE_FLAG="--parakeet"
+                        say "  Downloading Parakeet — this takes a while on a slow connection."
+                    fi
+                    say ""
+                    # Its output goes straight to the terminal: a build or a
+                    # 600 MB download this long with nothing on screen reads as
+                    # a hang. `set -e` would take the whole install down with
+                    # it, hence the explicit test.
+                    if bash "$VOICE_SCRIPT" "$VOICE_FLAG"; then
+                        say ""
+                        say "  Voice is ready — the phone app's code button will transcribe now."
+                        note "set up voice-to-text in $INSTALL_DIR/voice"
+                        # A service started before voice/ existed has already
+                        # decided it is absent, so it has to look again.
+                        if [[ "$SERVICE_INSTALLED" == "1" ]] || [[ "$BACKGROUND_STARTED" == "1" ]]; then
+                            say "  ${C_DIM}Restart PocketTUI to pick it up.$C_RESET"
+                        fi
+                        say ""
+                    else
+                        say ""
+                        say "  ${C_WARN}Voice setup did not finish — the rest of the install is fine"
+                        say "  and PocketTUI works without it.$C_RESET Try it again with:"
+                        say "      $VOICE_HINT"
+                        say ""
+                        note "voice setup failed (install unaffected)"
+                    fi
                 fi
             fi
-        else
-            vsay "  Skipped — nothing was built. To do it later:"
-            vsay "      $VOICE_HINT"
-            note "skipped voice setup (declined)"
         fi
     fi
 fi
