@@ -1030,22 +1030,59 @@ def parakeet_hotwords(history: list[str] | None = None,
     in the order they arrive, which history_vocabulary() has already sorted by
     how often and how recently the user typed them.
 
+    History and ssh words are filtered twice more on the way in, because both
+    of the ways that source wastes the cap are mechanical. Bare English is
+    dropped for the same reason the prompt drops it — Parakeet already writes
+    "and" and "here" correctly, so a slot spent there is a slot a name needed.
+    And a numeric-suffix family collapses to its first member: one `echo LINE_1
+    … LINE_60` in the scrollback would otherwise buy 60 of the 500 slots for a
+    word the user typed once. Learned words bypass both, exactly as they bypass
+    the prompt's shape test: shape is a guess at whether the model needs a word,
+    and a learned word carries the answer.
+
     Empty in, empty out: a machine with no history and nothing learned gets no
     hotwords argument at all rather than an empty one.
     """
     ordered: list[str] = []
     seen: set[str] = set()
-    for source in (learned or [], history or []):
+    families: set[str] = set()
+    for source, trusted in ((learned or [], True), (history or [], False)):
         for word in source:
             for piece in _hotword_pieces(word):
                 key = piece.lower()
                 if key in seen:
                     continue
+                if not trusted:
+                    if _is_common_english(piece):
+                        continue
+                    family = _hotword_family(piece)
+                    if family in families:
+                        continue
+                    families.add(family)
                 seen.add(key)
                 ordered.append(piece)
                 if len(ordered) >= MAX_HOTWORDS:
                     return _hotwords_text(ordered)
     return _hotwords_text(ordered)
+
+
+def _hotword_family(piece: str) -> str:
+    """The key that makes `LINE_1` and `LINE_60` one word rather than sixty.
+
+    Stripping the trailing digit run is the whole rule: `LINE_1` and `LINE_60`
+    share the stem "line_", `global_step500` and `global_step2000` share
+    "global_step". It is deliberately blunt, so `sherpa-v2` and `sherpa-v3`
+    collapse too — telling a version suffix from a counter needs machinery this
+    does not have, and losing the second version of a name costs one slot while
+    keeping a generated family costs dozens.
+
+    A stem shorter than three characters is not a family, it is a coincidence:
+    `v1` and `v2` are separate words, not two members of "v".
+    """
+    stem = piece.rstrip("0123456789")
+    if len(stem) == len(piece) or len(stem) < 3:
+        return piece.lower()
+    return stem.lower()
 
 
 def _hotwords_text(words: list[str]) -> str:
