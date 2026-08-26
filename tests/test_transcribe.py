@@ -368,17 +368,78 @@ def test_the_vocabulary_is_deduplicated_case_insensitively(monkeypatch):
 def test_the_vocabulary_is_capped(monkeypatch):
     """500 words cost nothing to decode; the cap is what keeps that true."""
     monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
-    text = A.parakeet_hotwords(history=[f"word{n}" for n in range(900)])
+    text = A.parakeet_hotwords(history=[f"hmr{n}x" for n in range(900)])
     assert len(text.splitlines()) == A.MAX_HOTWORDS
 
 
 def test_learned_words_survive_the_cap(monkeypatch):
     """Ordering is what makes the cap safe: the best evidence is never cut."""
     monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
-    text = A.parakeet_hotwords(history=[f"word{n}" for n in range(900)],
+    text = A.parakeet_hotwords(history=[f"hmr{n}x" for n in range(900)],
                                learned=["tokenhmr"])
     assert lines_of(text)[0] == "tokenhmr"
     assert len(text.splitlines()) == A.MAX_HOTWORDS
+
+
+def test_the_cap_is_filled_with_what_survives_the_filters(monkeypatch):
+    """A dropped word does not spend a slot — it is skipped, not blanked.
+
+    The filters run before the cap is counted against, so a history full of
+    English and of one generated family still fills all 500 slots from the
+    words that earned them.
+    """
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    history = ["and", "the", "here"] + [f"LINE_{n}" for n in range(60)] \
+        + [f"hmr{n}x" for n in range(900)]
+    lines = lines_of(A.parakeet_hotwords(history=history))
+    assert len(lines) == A.MAX_HOTWORDS
+    assert lines[:2] == ["LINE_0", "hmr0x"]
+    assert not {"and", "the", "here"} & set(lines)
+
+
+def test_a_short_vocabulary_is_exactly_what_survives(monkeypatch):
+    """Below the cap there is nothing to rank: the survivors are the list."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(
+        history=["and", "sbatch", "LINE_1", "LINE_2", "sbatch", "micromamba"])
+    assert lines_of(text) == ["sbatch", "LINE_1", "micromamba"]
+
+
+def test_common_english_is_dropped_from_history_but_not_from_learned(monkeypatch):
+    """Parakeet writes "and" correctly unaided, so a slot spent on it is lost —
+    unless the user taught it, which is evidence no shape test can outvote."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    assert lines_of(A.parakeet_hotwords(
+        history=["and", "here", "this", "tokenhmr"])) == ["tokenhmr"]
+    assert lines_of(A.parakeet_hotwords(
+        history=["tokenhmr"], learned=["and", "here"])) \
+        == ["and", "here", "tokenhmr"]
+
+
+def test_a_generated_family_buys_one_slot_not_sixty(monkeypatch):
+    """One `echo LINE_1 … LINE_60` in the scrollback is one word the user
+    typed, not sixty words worth boosting."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(
+        history=["LINE_3", "LINE_1", "LINE_2", "global_step500",
+                 "global_step2000"])
+    assert lines_of(text) == ["LINE_3", "global_step500"]
+
+
+def test_different_stems_are_not_one_family(monkeypatch):
+    """The family key is the stem, so two names that merely both end in a
+    digit stay two names."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(history=["tokenhmr2", "camerahmr2", "v1", "v2"])
+    assert lines_of(text) == ["tokenhmr2", "camerahmr2", "v1", "v2"]
+
+
+def test_a_word_without_digits_is_left_alone(monkeypatch):
+    """Nothing to strip is nothing to collapse: a digitless word passes through
+    as itself, still subject to the English filter like any other."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    text = A.parakeet_hotwords(history=["micromamba", "sbatch", "report"])
+    assert lines_of(text) == ["micromamba", "sbatch"]
 
 
 def test_paths_are_split_on_the_separator_sherpa_treats_as_one(monkeypatch):
@@ -388,8 +449,8 @@ def test_paths_are_split_on_the_separator_sherpa_treats_as_one(monkeypatch):
     it is split here where the budget can see and count the pieces.
     """
     monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
-    text = A.parakeet_hotwords(history=["work/pockettui/app.py"])
-    assert lines_of(text) == ["work", "pockettui", "app.py"]
+    text = A.parakeet_hotwords(history=["tokenhmr/pockettui/app.py"])
+    assert lines_of(text) == ["tokenhmr", "pockettui", "app.py"]
 
 
 def test_words_the_encoder_cannot_segment_are_dropped(monkeypatch):
