@@ -7,10 +7,10 @@ cloudflare_build/
 .cloudflare_token
 node_modules/
 .wrangler/
-landing_assets/
-landing.html
-favicon.ico
-favicon-32.png
+assets/landing_assets/
+assets/landing.html
+assets/favicon.ico
+assets/favicon-32.png
 _redirects
 deploy_cloudflare.sh
 .token
