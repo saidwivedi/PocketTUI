@@ -632,19 +632,14 @@ html.term-open, body.term-open {
 }
 #compose-send:active { transform: scale(0.94); }
 
-/* The recording control. A key-bar chip rather than a Send-style circle: it
-   carries a word, and the mono label is exactly the vocabulary the row of keys
-   below already speaks. Height matches the field's single line so the three
-   controls sit on one row; the pill radius keeps it from reading as a tenth key
-   that wandered up here. */
-#compose-mic {
+/* Clear. Same box as Send exactly — the two are one stacked column and any
+   difference between them would read as a mistake — but it never lights: it
+   undoes, and an undo that draws the eye competes with the thing it sits under. */
+#compose-clear {
   flex: 0 0 auto;
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 500;
   width: var(--compose-btn-w);
   height: var(--compose-btn-h);
-  padding: 0 11px;
+  padding: 0;
   border-radius: 19px;
   background: var(--paper-rec);
   border: 1px solid var(--hair);
@@ -652,38 +647,11 @@ html.term-open, body.term-open {
   cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
   transition: background 0.14s var(--ease-out), border-color 0.14s var(--ease-out),
-              color 0.14s var(--ease-out), opacity 0.14s var(--ease-out);
+              color 0.14s var(--ease-out);
   -webkit-user-select: none; user-select: none;
 }
-#compose-mic.hide { display: none; }
-#compose-mic > span { display: inline-flex; align-items: center; gap: 5px; }
-#compose-mic .idle svg { width: 13px; height: 13px; }
-#compose-mic .stop { display: none; }
-#compose-mic .stop svg { width: 15px; height: 15px; }
-/* Recording, the button IS the stop control — the label goes and a filled square
-   takes its place, so nothing on screen still says "code" while it is listening.
-   Umber fill plus the key bar's breath: the same thing this app means everywhere
-   by a control that is on and stays on until tapped again. */
-#compose-mic.recording,
-#compose-mic.busy {
-  background: var(--umber);
-  border-color: var(--umber);
-  color: var(--paper);
-}
-#compose-mic.recording .idle,
-#compose-mic.busy .idle { display: none; }
-#compose-mic.recording .stop,
-#compose-mic.busy .stop { display: inline-flex; }
-#compose-mic.recording { animation: mic-pulse 1.6s var(--ease-out) infinite; }
-/* Uploading keeps the fill — the take is still the app's to finish — but drops
-   the breath and dims, to say the tap now cancels rather than stops. No spinner:
-   the strip's own "Transcribing…" is where the wait is reported. */
-#compose-mic.busy { opacity: 0.5; }
-/* The fill is the signal; the breath is only decoration on top of it. */
-@media (prefers-reduced-motion: reduce) {
-  #compose-mic.recording { animation: none; }
-}
-#compose-mic:active { transform: scale(0.94); }
+#compose-clear svg { width: 15px; height: 15px; }
+#compose-clear:active { transform: scale(0.94); }
 
 /* Recording status, shown in place of the textarea while the mic key is capturing
    audio. It occupies the field's slot so the strip's height never changes between
@@ -817,13 +785,37 @@ html.term-open, body.term-open {
 }
 /* Recording: the armed-modifier fill, since it is the same idea — a key that is
    on and stays on until tapped again — plus a slow breath so it reads as live
-   rather than merely latched. */
+   rather than merely latched. Both capture engines land here now, so it is the
+   one place on screen that says the microphone is open. */
 .keybar button.listening {
   background: var(--umber);
   border-color: var(--umber);
   color: var(--paper);
   animation: mic-pulse 1.6s var(--ease-out) infinite;
 }
+/* Uploading keeps the fill — the take is still the app's to finish — but drops
+   the breath and dims, to say the tap now cancels rather than stops. No spinner:
+   the strip's own "Transcribing…" is where the wait is reported. */
+.keybar button.busy {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+  opacity: 0.5;
+}
+/* While a local take is running the key IS the stop control, so the mic glyph
+   gives way to the square — nothing on screen should still offer to start what
+   is already started. Both faces ship in the markup and CSS swaps them, so the
+   change costs no DOM work mid-recording. */
+.k-compose > span { display: inline-flex; align-items: center; }
+.k-compose .stop { display: none; }
+/* Outweighs `.keybar button.glyph-key svg` above, which would otherwise size
+   the square at the mic glyph's 15px — a filled shape reads heavier than an
+   outlined one at the same box, so it is drawn smaller to match. */
+.keybar button.k-compose .stop svg { width: 12px; height: 12px; }
+.k-compose.listening .idle,
+.k-compose.busy .idle { display: none; }
+.k-compose.listening .stop,
+.k-compose.busy .stop { display: inline-flex; }
 @keyframes mic-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.62; }
@@ -1041,6 +1033,58 @@ html.term-open, body.term-open {
   accent-color: var(--umber);
   transform: scale(1.1);
 }
+/* Three stacked rows rather than a segmented control: the names are words of
+   unequal length and each carries a second line of its own, which a segment
+   cannot hold. Same recessed well and hairline rim as the fields above, so the
+   group reads as one more thing in the sheet rather than a widget visiting. */
+#voice-label { margin-top: 18px; }
+.sheet .radio-group {
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.sheet .radio-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0 10px;
+  margin: 0;
+  padding: 11px 13px;
+  background: var(--paper-rec);
+  /* Undo .sheet label's field-caption treatment: these are names to read, not
+     column headings. */
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+.sheet .radio-row + .radio-row { border-top: 1px solid var(--hair); }
+.sheet .radio-row input {
+  /* Bypasses .sheet input entirely — the native control is the whole widget. */
+  width: auto; flex: 0 0 auto;
+  grid-row: 1 / span 2;
+  padding: 0;
+  border: none;
+  background: none;
+  accent-color: var(--umber);
+  transform: scale(1.1);
+}
+.sheet .radio-row .name { grid-column: 2; }
+/* The second line only appears where there is something to say — an engine that
+   is not installed, mostly — so an empty one takes no room at all. */
+.sheet .radio-row .note {
+  grid-column: 2;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--whisper);
+}
+.sheet .radio-row .note:empty { display: none; }
+/* Unavailable: still legible, plainly not choosable. The note beside it is the
+   only part that stays at full strength, because it is the instruction. */
+.sheet .radio-row.off { cursor: default; color: var(--whisper); }
+.sheet .radio-row.off input { opacity: 0.4; }
 .sheet .actions {
   display: flex; gap: 10px; justify-content: flex-end;
   margin-top: 18px;
@@ -1351,18 +1395,16 @@ html.term-open, body.term-open {
       <span class="label">Recording…</span>
       <span class="elapsed" aria-hidden="true">0:00</span>
     </div>
-    <!-- Recording lives here rather than on the key bar's mic: that key is the
-         phone's own dictation and stays that way. Labelled rather than iconic,
-         because what it captures is the distinction that matters — prose comes
-         from the keyboard's mic, code comes from this one. Both faces ship in
-         the markup and CSS swaps them, so becoming the stop control costs no
-         DOM work mid-recording. Hidden outright where the capture path is
-         unavailable, so it never offers what it cannot do. -->
+    <!-- Clear and Send. There used to be a third control here — a "code" chip
+         that ran the local recorder while the key bar's mic ran the phone's
+         dictation — and having two microphones on screen meant the user had to
+         know which engine each one was before speaking. One mic key on the bar
+         chooses its engine from Settings now, and the slot it vacated goes to
+         the thing the strip actually lacked: a way to empty the box without
+         selecting its contents by thumb. -->
     <div id="compose-actions">
-      <button type="button" id="compose-mic" class="hide"
-              aria-label="Record code via local transcription">
-        <span class="idle"><svg aria-hidden="true"><use href="#i-mic-code"/></svg>code</span>
-        <span class="stop" aria-hidden="true"><svg><use href="#i-stop"/></svg></span>
+      <button type="button" id="compose-clear" aria-label="Clear composed text">
+        <svg aria-hidden="true"><use href="#i-close"/></svg>
       </button>
       <button type="button" id="compose-send" aria-label="Send"><svg><use href="#i-send"/></svg></button>
     </div>
@@ -1408,9 +1450,29 @@ html.term-open, body.term-open {
       your machine, authenticated by the pairing code the installer printed.
       Nothing is stored off-device.</p>
   </div>
-  <div class="toggle-row">
-    <label for="localvoice-toggle">Local transcription</label>
-    <input id="localvoice-toggle" type="checkbox">
+  <!-- Which engine the key bar's mic key talks to. One choice rather than a
+       switch, because the two local engines are genuinely different answers and
+       the phone's own recogniser is the third — a checkbox could only ever have
+       said "local or not" and left the rest to guess. Rows the backend cannot
+       serve are disabled with the command that fixes them, so the picker never
+       offers what would fail on the first word. -->
+  <label id="voice-label">Dictation</label>
+  <div class="radio-group" id="voice-engine" role="radiogroup" aria-labelledby="voice-label">
+    <label class="radio-row">
+      <input type="radio" name="voice-engine" value="phone">
+      <span class="name">Phone dictation</span>
+      <span class="note">the keyboard's own mic</span>
+    </label>
+    <label class="radio-row" id="voice-row-parakeet">
+      <input type="radio" name="voice-engine" value="parakeet">
+      <span class="name">Parakeet</span>
+      <span class="note"></span>
+    </label>
+    <label class="radio-row" id="voice-row-whisper">
+      <input type="radio" name="voice-engine" value="whisper">
+      <span class="name">Whisper</span>
+      <span class="note"></span>
+    </label>
   </div>
   <!-- Last in the sheet because it is a diagnostic, not part of connecting. -->
   <div class="toggle-row">
@@ -1613,15 +1675,21 @@ const cfg = {
     return v;
   },
   set devname(v) { localStorage.setItem("pockettui_devname", v); },
-  // Default ON when unset: recording is the better path where the backend has
-  // the voice assets, and where it does not the first attempt falls back to
-  // phone dictation on its own — so an unset device loses nothing by trying.
-  // Stored only once it has been turned off, like the theme's "auto".
-  get localVoice() { return localStorage.getItem("pockettui_localvoice") !== "0"; },
-  set localVoice(v) {
-    if (v) localStorage.removeItem("pockettui_localvoice");
-    else localStorage.setItem("pockettui_localvoice", "0");
+  // Which engine the mic key talks to: "phone", "parakeet" or "whisper". Empty
+  // when the user has never chosen, which is not the same as any of the three —
+  // an unset device asks the backend which engine it is actually running and
+  // follows that, so a computer with voice installed needs no visit to Settings
+  // at all. resolveVoiceEngine() is where that resolution lives.
+  get voiceEngine() {
+    const v = localStorage.getItem("pockettui_voice_engine");
+    return v === "phone" || v === "parakeet" || v === "whisper" ? v : "";
   },
+  set voiceEngine(v) { localStorage.setItem("pockettui_voice_engine", v); },
+  // The switch this replaced, read once and never written. A device that had
+  // turned local transcription off was saying "phone dictation", and that answer
+  // survives the upgrade rather than being silently reversed by the new
+  // setting's ask-the-backend default.
+  get legacyLocalVoiceOff() { return localStorage.getItem("pockettui_localvoice") === "0"; },
   get debug() { return localStorage.getItem("pockettui_debug") === "1"; },
   set debug(v) {
     if (v) localStorage.setItem("pockettui_debug", "1");
@@ -1779,7 +1847,11 @@ function openSettings(firstRun) {
   $("backend-port").value = parts.port;
   $("backend-token").value = formatTokenDisplay(cfg.token);
   $("backend-devname").value = cfg.devname;
-  $("localvoice-toggle").checked = cfg.localVoice;
+  syncVoicePicker();
+  // Lazy, like the mic key's own use of it: the sheet is the other place the
+  // answer matters, and asking on open is what makes a fresh setup_voice.sh run
+  // show up without a reload.
+  fetchVoiceStatus(true).then(syncVoicePicker);
   $("dbg-toggle").checked = cfg.debug;
   $("sheet-title").textContent = firstRun ? "Connect your computer" : "Settings";
   $("sheet-note").classList.toggle("hide", !firstRun);
@@ -1857,16 +1929,59 @@ $("btn-settings-save").addEventListener("click", () => {
   // Reload against the new backend so a bad URL surfaces straight away.
   loadSessions(true);
 });
+// Paints the picker from the stored choice and whatever the backend last said.
+// Called twice per open — once from what is already known so the sheet is never
+// blank, once when the status fetch lands.
+function syncVoicePicker() {
+  const rows = {
+    parakeet: $("voice-row-parakeet"),
+    whisper: $("voice-row-whisper"),
+  };
+  // No status is not the same as "not installed": an unreachable computer has
+  // told us nothing. Both read as unavailable either way — there is nothing to
+  // send audio to — but the note says which it is.
+  const reachable = !!voiceStatus && !demoMode;
+  for (const name of ["parakeet", "whisper"]) {
+    const row = rows[name];
+    const input = row.querySelector("input");
+    const ok = reachable && voiceStatus.engines[name];
+    row.classList.toggle("off", !ok);
+    // Disabled rather than merely dimmed, except where it is the current choice:
+    // an engine the user picked and the computer has since lost still has to
+    // show as picked, or the sheet reads as having silently changed the setting
+    // — which is exactly what the session fallback deliberately does not do.
+    input.disabled = !ok && cfg.voiceEngine !== name;
+    row.querySelector(".note").textContent =
+      ok ? "" : reachable ? "not installed — run setup_voice.sh" : "computer unreachable";
+  }
+  // The stored choice when there is one, resolved otherwise: an unset device
+  // shows the answer it is actually using rather than nothing selected at all.
+  const sel = cfg.voiceEngine || resolveVoiceEngine();
+  for (const input of $("voice-engine").querySelectorAll("input")) {
+    input.checked = input.value === sel;
+  }
+}
+
 // Applies on the tap rather than on Save, for the same reason as the debug
 // switch below: it is reached for when the current voice path is getting in the
-// way, and Cancel must not put it back. Switching it off mid-capture stops the
-// recording outright — a microphone still running after the feature was turned
-// off would be the switch not having worked.
-$("localvoice-toggle").addEventListener("change", (e) => {
-  cfg.localVoice = e.target.checked;
-  if (!e.target.checked) cancelRecording();
-  // cancelRecording() already resyncs through recClearUI(); switching it back on
-  // is the case that needs telling.
+// way, and Cancel must not put it back. Changing it mid-capture stops the
+// recording outright — a microphone still running for the engine just switched
+// away from would be the choice not having taken.
+$("voice-engine").addEventListener("change", (e) => {
+  const v = e.target && e.target.value;
+  if (v !== "phone" && v !== "parakeet" && v !== "whisper") return;
+  cfg.voiceEngine = v;
+  // An explicit choice clears the session's fallback: the user is answering the
+  // failure that set it, and the next tap must honour what they picked rather
+  // than the verdict it replaced. Same for the not-installed cache, which the
+  // next tap's probe re-establishes if it was right.
+  voiceForcedPhone = false;
+  recVoiceChecked = false;
+  recVoiceNotSetup = false;
+  stopListening();
+  cancelRecording();
+  // cancelRecording() already resyncs through recClearUI(); a change made with
+  // nothing running is the case that needs telling.
   recSyncMic();
 });
 // Applies on the tap rather than on Save: the reason to reach for it is that
@@ -3858,8 +3973,11 @@ const KEYS = [
   { label: "→",     seq: "\x1b[C", narrow: true, repeat: true, cls: "k-right", only: "expanded" },
   // Focus is the point of this key, not a side effect — it opens the compose
   // strip and puts the caret in it, so it shares the keyboard toggle's exemption
-  // from the focus-preserving preventDefault below.
-  { icon: "i-mic", compose: true, focusing: true, narrow: true, cls: "k-compose", aria: "Show or hide compose bar" },
+  // from the focus-preserving preventDefault below. icon2 is the face it wears
+  // while a local recording runs: this one key drives whichever engine Settings
+  // names, so it has to be able to say "stop" as well as "speak".
+  { icon: "i-mic", icon2: "i-stop", compose: true, focusing: true, narrow: true,
+    cls: "k-compose", aria: "Show or hide compose bar" },
   { icon: "i-close", collapse: true, narrow: true, cls: "k-close", only: "expanded", aria: "Hide arrow keys" },
 ];
 
@@ -3976,6 +4094,37 @@ function composeSend() {
   setCompose(false);
 }
 
+// Empty the box and stay in it. What Send does minus the paste and minus the
+// close: a mis-heard transcript is thrown away here and said again, which is the
+// errand this button exists for, and closing the strip would make that two taps.
+// But an empty box has nothing left to clear — a second tap here (or a tap right
+// after the first one emptied it) means "put the strip away", same as the key
+// bar's own empty-box tap at toggleCompose(), so it hands off to setCompose(false)
+// rather than repeating that close logic.
+function composeClear() {
+  const ta = $("compose-text");
+  if (!ta.value.trim()) { setCompose(false); return; }
+  // Same reasons as composeSend(): a live recogniser is mid-utterance and would
+  // write its interim tail back into the field we just emptied, and a recording
+  // has no text yet to keep.
+  stopListening();
+  if (recording() || recBusy) cancelRecording();
+  // Blur before clearing, for the reason spelled out at length in composeSend():
+  // iOS holds an open composition on a dictated field, and assigning "" to it
+  // does not stick until the blur has ended that composition. Focus is handed
+  // straight back afterwards — the point of clearing is to type or speak again.
+  const refocus = document.activeElement === ta;
+  ta.blur();
+  ta.value = "";
+  recogText = "";
+  // Nothing was sent, so there is no edit to learn from — and what the backend
+  // proposed is now gone from the box, so comparing the next send against it
+  // would invent one. Dropped without posting to /api/learn.
+  learnHeard = null;
+  if (refocus) ta.focus();
+  composeGrow();
+}
+
 // The strip exists to hold a keyboard's dictation; without one it is just a box
 // covering the terminal. So whatever drops the keyboard — the iOS dismiss key, a
 // swipe down, a tap into the terminal — closes the strip too.
@@ -4034,7 +4183,7 @@ function stopListening() {
   if (!recog) return;
   const r = recog;
   recog = null;              // cleared first: onend must not re-enter this
-  $("keybar").querySelector(".k-compose").classList.remove("listening");
+  recSyncMic();
   try { r.stop(); } catch (e) {}
 }
 
@@ -4053,10 +4202,12 @@ function recogFallback(msg) {
 function startListening() {
   if (!SpeechRec || recogBroken) { recogFallback(); return; }
   // The two capture modes are exclusive, and this is the choke point every
-  // caller passes through. Turning to the phone's recogniser abandons the local
-  // take rather than finishing it: the words are about to be said again, and an
-  // upload landing behind them would insert a duplicate mid-sentence. The other
-  // direction keeps its transcript — see toggleCodeMic().
+  // caller passes through. One mic key means the engines no longer contend at
+  // the tap, but a mid-take fallback still lands here — and turning to the
+  // phone's recogniser abandons the local take rather than finishing it: the
+  // words are about to be said again, and an upload landing behind them would
+  // insert a duplicate mid-sentence. The other direction keeps its transcript —
+  // see startLocalRecording().
   if (recording() || recBusy || recStarting) cancelRecording();
 
   let r;
@@ -4120,16 +4271,38 @@ function startListening() {
     return;
   }
   recog = r;
-  $("keybar").querySelector(".k-compose").classList.add("listening");
+  recSyncMic();
 }
 
-// The mic key's whole job: start, stop, or — with no recogniser — the old
-// open-and-focus behaviour. It knows nothing about local recording; that lives
-// on the strip's own mic button.
+// The mic key's whole job, and the one place an engine is chosen. There used to
+// be two microphones on screen — this key for the phone's recogniser, a "code"
+// chip on the strip for the backend's — and the user had to know which was which
+// before speaking. Now the key is the only one, and Settings says what it talks
+// to. In-flight states come first, because while a capture is running the key is
+// a stop button and nothing else.
 function toggleCompose() {
+  if (recBusy) { cancelRecording(); return; }   // a tap during the upload is a cancel
+  if (recording()) { stopRecording(); return; }
+  // Tapped again while the microphone grant is still outstanding. There is no
+  // recorder yet to stop, and asking for a second grant on top of the first is
+  // what hands iOS back a muted track — so this tap stands the take down and
+  // the acquire that lands after it releases what it was given.
+  if (recStarting) { cancelRecording(); return; }
   if (listening()) {
     if (!$("compose-text").value.trim()) setCompose(false);  // nothing captured: put the strip away
     else stopListening();                                    // keep the transcript up for editing/sending
+    return;
+  }
+  const engine = resolveVoiceEngine();
+  if (engine !== "phone") {
+    // The status fetch is lazy and this is the first thing that needs it, so a
+    // tap before it lands resolves without it — the answer only ever vetoes an
+    // engine, and the upload's own 503 catches what it would have caught. Warmed
+    // here for the taps after this one, and for the picker.
+    if (!voiceStatusChecked) fetchVoiceStatus();
+    // Must be reached straight from the tap: iOS grants the microphone only
+    // inside the gesture, so nothing of ours may await before startRecording().
+    startLocalRecording(engine);
     return;
   }
   if (!SpeechRec || recogBroken) { setCompose(!composeOpen); return; }
@@ -4216,6 +4389,18 @@ let recBroken = false;
 // ambiguous leaves it false and the recording goes ahead.
 let recVoiceChecked = false;
 let recVoiceNotSetup = false;
+// What GET /api/voice_status last said: which engines the backend can run and
+// which one it is configured to prefer. null until asked, and back to null on
+// any failure — an unreachable backend proves nothing about what is installed on
+// it, and the Settings picker says so rather than guessing.
+let voiceStatus = null;
+let voiceStatusChecked = false;
+// Set when the chosen local engine has failed for this session — not installed,
+// a 503, a refused microphone. Every subsequent tap goes to phone dictation
+// instead, because a mic key that dead-ends is worse than one that hears prose.
+// Deliberately not written back to the stored setting: run setup_voice.sh,
+// reload, and the choice the user made is still their choice.
+let voiceForcedPhone = false;
 // What the user is told in that case, from both the probe and a real upload that
 // comes back the same way.
 const REC_NO_VOICE_MSG =
@@ -4225,6 +4410,9 @@ const REC_NO_VOICE_MSG =
 // does not report a trustworthy selection. null means there was never a caret to
 // speak of, which resolves to the end of the text.
 let recCaretStart = null, recCaretEnd = null;
+// Which backend engine the take in hand was started for. Fixed at the tap so a
+// setting changed while the user is still speaking cannot redirect the audio.
+let recEngine = "";
 
 // The single code-mode transcript inserted since the last send, as it was
 // inserted. null means none; "" means more than one, which is not a usable
@@ -4280,6 +4468,63 @@ function recAvailable() {
   return !recBroken && !demoMode && !!currentSession &&
     typeof window.MediaRecorder === "function" &&
     !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
+// Which engine this tap goes to. The stored choice when there is one, otherwise
+// whichever engine the backend says it is running — a computer with voice
+// installed should work out of the box, and one without has only the phone to
+// offer anyway. Everything the local path needs and might not have is checked
+// here rather than at three call sites: the demo, a missing MediaRecorder, a
+// latched failure, the session-long fallback.
+function resolveVoiceEngine() {
+  if (voiceForcedPhone) return "phone";
+  let want = cfg.voiceEngine;
+  if (!want && cfg.legacyLocalVoiceOff) want = "phone";
+  if (!want) want = (voiceStatus && voiceStatus.active) || "phone";
+  if (want === "phone") return "phone";
+  if (!recAvailable()) return "phone";
+  // Only a status we actually have may veto: a backend that never answered has
+  // said nothing about what it can run, and the upload's own 503 is the check
+  // that catches it. Failing closed here would silently strand the setting on
+  // every device whose first status fetch happened to miss.
+  if (voiceStatus && !voiceStatus.engines[want]) return "phone";
+  return want;
+}
+
+// Ask the backend which engines it has and which it prefers. Cached for the
+// session like the transcribe probe, and for the same reason: a fresh
+// setup_voice.sh run is picked up by a reload, which is what the user does
+// anyway. Any failure clears the answer rather than recording a negative — an
+// unreachable computer has not told us its voice assets are missing.
+async function fetchVoiceStatus(force) {
+  if (voiceStatusChecked && !force) return voiceStatus;
+  voiceStatusChecked = true;
+  if (demoMode) { voiceStatus = null; return null; }
+  try {
+    const r = await fetch(apiURL("api/voice_status"), {
+      cache: "no-store", headers: authHeaders(),
+    });
+    if (!r.ok) { voiceStatus = null; return null; }
+    const d = await r.json();
+    const e = (d && d.engines) || {};
+    voiceStatus = {
+      engines: { parakeet: !!e.parakeet, whisper: !!e.whisper },
+      active: typeof d.active === "string" ? d.active : "",
+    };
+  } catch (err) {
+    dbg("voice status failed:", err);
+    voiceStatus = null;
+  }
+  return voiceStatus;
+}
+
+// The local engine cannot serve this take. Route the rest of the session to the
+// phone's recogniser and say why once — not recFallback(), which latches
+// recBroken and is about the capture hardware; this is about the backend.
+function voiceFallToPhone(msg) {
+  voiceForcedPhone = true;
+  cancelRecording();
+  if (msg) toast(msg);
 }
 
 function recMime() {
@@ -4464,7 +4709,6 @@ function recStreamUsable() {
 function recClearUI() {
   $("compose").classList.remove("recording");
   recSyncMic();
-  $("keybar").querySelector(".k-compose").classList.remove("listening");
   recSetLabel("Recording…");
   const rec = $("compose-rec");
   const dot = rec.querySelector(".dot");
@@ -4618,7 +4862,6 @@ function startRecording() {
     if (!composeOpen) setCompose(true, true);
     $("compose").classList.add("recording");
     recSyncMic();
-    $("keybar").querySelector(".k-compose").classList.add("listening");
     recSetLabel("Recording…");
     recTick();
     recTimer = setInterval(recTick, 1000);
@@ -4682,13 +4925,7 @@ async function uploadRecording(blob) {
   recAbort = ctl;
   const timer = setTimeout(() => ctl.abort(), REC_TIMEOUT);
   try {
-    const url = apiURL("api/transcribe") +
-      "?session=" + encodeURIComponent(currentSession) +
-      "&dev=" + encodeURIComponent(cfg.devname) +
-      // Which shell build sent this. The server ignores unknown query params;
-      // its access log is the point, so a report of bad audio can be pinned to
-      // a specific deployed page rather than guessed at.
-      "&v=" + encodeURIComponent(REC_BUILD);
+    const url = recTranscribeURL(recEngine);
     const r = await fetch(url, {
       method: "POST",
       headers: authHeaders({ "Content-Type": blob.type || "application/octet-stream" }),
@@ -4698,12 +4935,15 @@ async function uploadRecording(blob) {
     // Cancelled while we waited: the user has moved on, and writing into the box
     // now would land text on a composition they already abandoned.
     if (!recBusy) return;
-    // One non-200 is worth naming: the voice assets are missing, which the user
-    // can fix in a minute. The probe usually catches it first, but the two can
-    // disagree — the probe raced a config change, or answered before this
-    // session's backend was the one being asked — so clear the checked flag and
-    // let the next tap ask again rather than trusting a stale verdict. No
-    // recFallback here: this is not a broken capture path.
+    // One non-200 is worth naming: the chosen engine is not installed, which the
+    // user can fix in a minute. The probe usually catches it first, but the two
+    // can disagree — the probe raced a config change, answered for a different
+    // engine, or answered before this session's backend was the one being asked
+    // — so clear the checked flag and let the next tap ask again rather than
+    // trusting a stale verdict. Not recFallback(): the capture path is fine, and
+    // recBroken is about the microphone. The rest of the session goes to the
+    // phone so the key still hears something, and the stored choice is left
+    // alone — setup_voice.sh and a reload restore it.
     if (r.status === 503) {
       let err = "";
       try { const d = await r.json(); err = d && d.error; } catch (e) { err = ""; }
@@ -4711,6 +4951,8 @@ async function uploadRecording(blob) {
       if (err === "not_setup") {
         recVoiceChecked = false;
         recVoiceNotSetup = true;
+        voiceForcedPhone = true;
+        voiceStatusChecked = false;   // the picker re-asks next time it opens
         recBusy = false;
         recAbort = null;
         recClearUI();
@@ -4720,7 +4962,7 @@ async function uploadRecording(blob) {
     }
     // Every other non-200 is the same answer — 404 from an old backend, 500 from
     // a failed transcription. The user gets dictation, not a diagnosis.
-    if (!r.ok) { recFallback("Voice server unavailable — using phone dictation"); return; }
+    if (!r.ok) { voiceFallToPhone("Voice server unavailable — using phone dictation"); return; }
     const data = await r.json();
     if (!recBusy) return;
     const text = data && typeof data.text === "string" ? data.text.trim() : "";
@@ -4729,7 +4971,7 @@ async function uploadRecording(blob) {
     codeMicFinish(text);
   } catch (e) {
     if (!recBusy) return;      // our own abort unwinding
-    recFallback("Voice server unavailable — using phone dictation");
+    voiceFallToPhone("Voice server unavailable — using phone dictation");
   } finally {
     clearTimeout(timer);
     if (recAbort === ctl) recAbort = null;
@@ -4788,25 +5030,24 @@ function startDictation() {
   startListening();
 }
 
-// The strip's mic reflects the capture state machine and nothing else, so every
-// path that changes it — start, stop, cancel, a failure, the Settings switch —
-// lands here rather than reaching for the classes itself. recAvailable() is the
-// same test the capture path gates on, which is why a broken mic or a demo
-// session takes the button away instead of leaving it to fail on tap.
+// The key bar's mic reflects the capture state machine and nothing else, so
+// every path that changes it — start, stop, cancel, a failure, an engine change
+// in Settings — lands here rather than reaching for the classes itself. The key
+// is never hidden: it is the compose key too, and an engine that cannot record
+// still has the phone's dictation to fall through to.
 function recSyncMic() {
-  const btn = $("compose-mic");
+  const btn = $("keybar").querySelector(".k-compose");
   if (!btn) return;
   const live = recording();
-  btn.classList.toggle("hide", !cfg.localVoice || !recAvailable());
-  btn.classList.toggle("recording", live);
+  btn.classList.toggle("listening", live || listening());
   btn.classList.toggle("busy", recBusy);
-  // The visible label swaps with the state, so the spoken one has to as well —
-  // a button reading "stop" to the eye and "record" to a screen reader is worse
-  // than either alone.
+  // The face swaps with the state, so the spoken label has to as well — a key
+  // reading "stop" to the eye and "compose" to a screen reader is worse than
+  // either alone.
   btn.setAttribute("aria-label",
     live ? "Stop recording and transcribe"
     : recBusy ? "Cancel transcription"
-    : "Record code via local transcription");
+    : "Show or hide compose bar");
 }
 
 // Ask the backend whether it can transcribe at all, before a word is spoken.
@@ -4816,13 +5057,10 @@ function recSyncMic() {
 // Fails open in every other case. A 404 from an old backend, a timeout, a
 // network error, a body that will not parse — none of those prove voice is
 // missing, and none of them may swallow the tap that was meant to start a take.
-async function recProbeVoice() {
+async function recProbeVoice(engine) {
   recVoiceChecked = true;
   try {
-    const url = apiURL("api/transcribe") +
-      "?session=" + encodeURIComponent(currentSession) +
-      "&dev=" + encodeURIComponent(cfg.devname) +
-      "&v=" + encodeURIComponent(REC_BUILD);
+    const url = recTranscribeURL(engine);
     const r = await fetch(url, { method: "POST", headers: authHeaders({}), body: "" });
     if (r.status !== 503) return;
     const data = await r.json();
@@ -4832,15 +5070,29 @@ async function recProbeVoice() {
   }
 }
 
-// The strip mic's whole job, and the only thing that starts a local recording.
-async function toggleCodeMic() {
+// The upload and the probe address the same route with the same context, so the
+// URL is built once. `engine` names which of the backend's engines is wanted;
+// an old backend ignores the parameter and answers with whatever it has.
+function recTranscribeURL(engine) {
+  return apiURL("api/transcribe") +
+    "?session=" + encodeURIComponent(currentSession) +
+    "&dev=" + encodeURIComponent(cfg.devname) +
+    "&engine=" + encodeURIComponent(engine) +
+    // Which shell build sent this. The server ignores unknown query params;
+    // its access log is the point, so a report of bad audio can be pinned to
+    // a specific deployed page rather than guessed at.
+    "&v=" + encodeURIComponent(REC_BUILD);
+}
+
+// Starts a local take, or ends the one running. The mic key routes here when the
+// resolved engine is a backend one; everything about the capture itself is the
+// same machinery the strip's old "code" button drove.
+async function startLocalRecording(engine) {
   if (recBusy) { cancelRecording(); return; }   // a tap during the upload is a cancel
   if (recording()) { stopRecording(); return; }
-  if (!cfg.localVoice || !recAvailable()) return;  // hidden in that case; guard anyway
   // The phone's recogniser and this one must never run at once — two captures of
   // one sentence, arriving at different times, into the same box. Stopping it
-  // keeps what it heard: it was dictating prose, and this tap is the user
-  // breaking off mid-sentence to say a path, not discarding the sentence. The
+  // keeps what it heard: switching engines mid-sentence is not a discard. The
   // reverse direction discards instead — see startListening().
   if (listening()) stopListening();
   const ta = $("compose-text");
@@ -4855,11 +5107,21 @@ async function toggleCodeMic() {
     recCaretStart = recCaretEnd = null;
   }
   // Nothing to record into on a computer that cannot transcribe. Not
-  // recFallback(): that latches recBroken and hides the button for good, and
-  // this verdict is meant to expire — run setup_voice.sh, reload, and the mic
-  // works. The caret above is already captured and stays good for the next tap.
-  if (!recVoiceChecked) await recProbeVoice();
-  if (recVoiceNotSetup) { toast(REC_NO_VOICE_MSG); return; }
+  // recFallback(): that latches recBroken, which is about the microphone, and
+  // this verdict is about the backend — run setup_voice.sh, reload, and the key
+  // records again. The tap still has to produce dictation rather than nothing,
+  // so the session routes to the phone and starts there straight away.
+  if (!recVoiceChecked) await recProbeVoice(engine);
+  if (recVoiceNotSetup) {
+    voiceForcedPhone = true;
+    toast(REC_NO_VOICE_MSG);
+    startDictation();
+    return;
+  }
+  // Which engine this take belongs to, read back by the upload. Held rather than
+  // re-resolved at stop, so changing the setting mid-recording cannot send the
+  // audio somewhere the user was not speaking to.
+  recEngine = engine;
   startRecording();
 }
 
@@ -4875,13 +5137,12 @@ async function toggleCodeMic() {
   btn.addEventListener("pointerdown", e => e.preventDefault());
   btn.addEventListener("mousedown", e => e.preventDefault());
   btn.addEventListener("click", composeSend);
-  // Same trick again for the mic, for the same reason. Not `disabled` while
-  // uploading: the tap has to reach it, because that tap is the cancel.
-  const mic = $("compose-mic");
-  mic.addEventListener("pointerdown", e => e.preventDefault());
-  mic.addEventListener("mousedown", e => e.preventDefault());
-  mic.addEventListener("click", toggleCodeMic);
-  recSyncMic();
+  // Same trick again for Clear, for the same reason: emptying the box must not
+  // also drop the keyboard the user is about to carry on typing with.
+  const clear = $("compose-clear");
+  clear.addEventListener("pointerdown", e => e.preventDefault());
+  clear.addEventListener("mousedown", e => e.preventDefault());
+  clear.addEventListener("click", composeClear);
 })();
 
 // A backgrounded tab keeps the microphone hot otherwise — true of the recogniser
@@ -4960,7 +5221,15 @@ function sendKey(seq) {
 (function buildKeybar() {
   const bar = $("keybar");
   for (const k of KEYS) {
-    const b = el("button", { type: "button" }, k.icon ? svgIcon(k.icon) : k.label);
+    // Two icons means a key that swaps face with its state (the mic becoming a
+    // stop square while a local take runs). Each face gets its own span so CSS
+    // can do the swapping, rather than the state machine rewriting the DOM
+    // mid-recording.
+    const faces = k.icon2
+      ? [el("span", { class: "idle" }, svgIcon(k.icon)),
+         el("span", { class: "stop" }, svgIcon(k.icon2))]
+      : [k.icon ? svgIcon(k.icon) : k.label];
+    const b = el("button", { type: "button" }, ...faces);
     if (k.narrow) b.classList.add("narrow");
     if (k.aria) b.setAttribute("aria-label", k.aria);
     if (k.icon) b.classList.add("glyph-key");

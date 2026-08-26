@@ -832,7 +832,7 @@ def parakeet_available() -> bool:
     return True
 
 
-def voice_engine() -> str:
+def voice_engine(requested: str = "") -> str:
     """Which engine this request will use: "parakeet", "whisper", or "".
 
     "" means neither is installed, which is the only case that answers
@@ -840,11 +840,19 @@ def voice_engine() -> str:
     is not actually installed reports "" rather than silently falling through to
     the other one — a machine pinned to an engine should say so plainly instead
     of quietly running the model its operator ruled out.
+
+    `requested` is the per-request choice a client may ask for, and it obeys the
+    same rule: asking for an engine this install does not have answers "" rather
+    than the other one, because the client is the half that owns the fallback
+    and cannot choose one it is not told about. The env wins over it, so pinning
+    a machine to an engine still overrides every phone talking to it. A value
+    that names neither engine reads as no request at all.
     """
     forced = os.environ.get("POCKETTUI_VOICE_ENGINE", "").strip().lower()
-    if forced == "parakeet":
+    choice = forced if forced in ("parakeet", "whisper") else requested.strip().lower()
+    if choice == "parakeet":
         return "parakeet" if parakeet_available() else ""
-    if forced == "whisper":
+    if choice == "whisper":
         return "whisper" if whisper_paths()[0] is not None else ""
     if parakeet_available():
         return "parakeet"
@@ -1501,6 +1509,23 @@ def decode_audio(raw: bytes, wav: Path, content_type: str = "") -> str:
     return "undecodable_audio"
 
 
+@app.get("/api/voice_status")
+def api_voice_status() -> Response:
+    """Which engines this install has, and which one a request would get.
+
+    Two separate questions, because the client uses them for different things:
+    `engines` says what it may offer the user to pick between, while `active` is
+    what it gets by asking for nothing — "" when neither is installed, and the
+    env-forced engine when the operator has pinned one, so a machine that ignores
+    the picker says so here rather than in a surprising transcript.
+    """
+    return no_store(JSONResponse({
+        "engines": {"parakeet": parakeet_available(),
+                    "whisper": bool(whisper_paths()[0])},
+        "active": voice_engine(),
+    }))
+
+
 @app.post("/api/transcribe")
 async def api_transcribe(request: Request) -> Response:
     """Transcribe recorded audio into text the terminal would accept.
@@ -1514,28 +1539,31 @@ async def api_transcribe(request: Request) -> Response:
     raw = await request.body()
     session = str(request.query_params.get("session", ""))
     dev = str(request.query_params.get("dev", ""))
+    engine = str(request.query_params.get("engine", ""))
     content_type = request.headers.get("content-type", "")
     # Reading the body needs the event loop, but ffmpeg and whisper must not
     # hold it for the seconds they take — every other session on this server
     # would stall behind them.
     return await run_in_threadpool(
         transcribe, raw, session, dev if DEV_RE.match(dev) else "",
-        content_type=content_type)
+        content_type=content_type, engine=engine)
 
 
-def transcribe(raw: bytes, session: str, dev: str, content_type: str = "") -> Response:
+def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
+               engine: str = "") -> Response:
     """The transcription pipeline, off the event loop.
 
     Split from the route so the subprocess work runs in the threadpool the way
     every other handler here does, and so the tests can drive it without HTTP.
     `content_type` is only for the debug log line below (see VOICE_DEBUG) —
     decode_audio never trusts it, since ffmpeg reads the container from the
-    bytes themselves.
+    bytes themselves. `engine` is what the client asked for, which voice_engine()
+    weighs against the env and this install's assets.
     """
     # Assets before body: an install without the voice pieces answers the same
     # way whatever it was sent, which lets the phone probe with an empty body
     # before it records rather than telling the user after the fact.
-    engine = voice_engine()
+    engine = voice_engine(engine)
     if not engine:
         return JSONResponse({"error": "not_setup"}, status_code=503)
     binary, model = whisper_paths() if engine == "whisper" else (None, None)
@@ -1603,7 +1631,11 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "") -> Re
             # Configured ssh hosts ride the same channel, after history: they
             # are the same kind of word (something the user says that is
             # nowhere in this pane) and belong at the same low weight.
-            history = resolver.history_vocabulary() + resolver.ssh_hosts()
+            # Home dotfile names ride it last, for the same reason and one more
+            # of their own: "open bashrc" is a word a zsh user's history has
+            # never contained, so this is the only source that has it at all.
+            history = (resolver.history_vocabulary() + resolver.ssh_hosts()
+                       + resolver.dotfile_names())
             # Words this user has corrected by hand in past transcripts. Read
             # from the same cached-on-(mtime, size) store the resolver uses, so
             # this is a dict lookup once the file has been read.
