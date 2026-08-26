@@ -1046,6 +1046,103 @@ def ssh_hosts() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Home-directory dotfiles
+# ---------------------------------------------------------------------------
+# "open bashrc" is a sentence with no source behind it. The name is not on the
+# screen, not under the cwd, and — for a zsh user who has not touched the file
+# in a year — nowhere in the history tail either, so every engine is left to
+# guess at a word it has never been shown: Parakeet decoded three takes of it
+# as "Jadis Lat C", "J S Archie" and "Bersace". The file itself is the source
+# that has always known the name.
+#
+# Only the config-shaped ones. A home directory holds a hundred and sixty
+# dotfiles and roughly a dozen are things anyone says out loud: the rc files,
+# the confs, the profile. The rest are state — caches, histories, authority
+# files, `.bak` copies, a per-pid `.python_history-02006.tmp` sixty times over —
+# and a vocabulary that spent its budget there would have bought nothing.
+
+DOTFILE_MAX_NAMES = 30
+
+# The tail of the name is what says "a human edits this": `.bashrc`, `.zshrc`,
+# `.vimrc`, `.gitconfig`, `.tmux.conf`, `.profile`, `.zshenv`, `.gitignore`.
+# Matched against the last dotted segment so `.tmux.conf` is read on "conf"
+# rather than on the whole name, which is also what keeps `.tmux.conf.bak.2026`
+# out: its last segment is a date.
+_DOTFILE_CONFIG_SUFFIXES = ("rc", "conf", "config", "profile", "env",
+                            "ignore", "aliases")
+
+# The dotted names $HOME held last time -> the vocabulary they produced. The
+# two sources above stamp on (mtime, size), but a directory cannot: its size is
+# the block size and stays 4096 across an added entry, and its mtime has a
+# resolution two writes in the same instant fall inside — so a stamp of that
+# shape would go stale silently. The listing is itself the exact staleness test
+# and costs one syscall, which leaves the cache doing the part that is actually
+# worth saving: the per-entry stat and the word extraction behind it.
+_dotfile_cache: dict[str, object] = {"stamp": None, "names": []}
+
+
+def _is_dotfile_config(stem: str) -> bool:
+    """Is `stem` (the name past its leading dot) a file a human edits by name?"""
+    tail = stem.rsplit(".", 1)[-1] if "." in stem else stem
+    return tail.lower().endswith(_DOTFILE_CONFIG_SUFFIXES)
+
+
+def dotfile_names() -> list[str]:
+    """Config dotfile names from $HOME, spoken form, alphabetical.
+
+    Spoken form is the name without its leading dot: nobody dictates the dot,
+    and `_path_words` — the same filter the history source runs every token
+    through — strips it along with applying the secret, shell-syntax and
+    short-token guards.
+
+    Alphabetical rather than by mtime: the cap is generous enough at this
+    source's real size (a dozen or so survive the config test) that ordering
+    inside it never decides what is dropped, and a stable answer is worth more
+    than a freshness signal nobody can hear.
+
+    A missing or unreadable home directory is not an error — the caller simply
+    gets nothing.
+    """
+    home = os.path.expanduser("~")
+    try:
+        entries = sorted(e for e in os.listdir(home) if e.startswith("."))
+    except OSError:
+        _dotfile_cache["stamp"] = None
+        _dotfile_cache["names"] = []
+        return []
+
+    stamp = (home, tuple(entries))
+    if _dotfile_cache["stamp"] == stamp:
+        return list(_dotfile_cache["names"])  # type: ignore[arg-type]
+
+    names: list[str] = []
+    for entry in entries:
+        stem = entry[1:]
+        if not _is_dotfile_config(stem):
+            continue
+        # Directories are never dictated by name — `.config`, `.cargo`, `.ssh`
+        # are places, not files anyone asks to open — and stat'ing only the
+        # dozen names that already passed the config test keeps this a listing
+        # rather than a scan.
+        try:
+            if not os.path.isfile(os.path.join(home, entry)):
+                continue
+        except OSError:
+            continue
+        for word in _path_words(stem):
+            if word not in names:
+                names.append(word)
+            if len(names) >= DOTFILE_MAX_NAMES:
+                break
+        if len(names) >= DOTFILE_MAX_NAMES:
+            break
+
+    _dotfile_cache["stamp"] = stamp
+    _dotfile_cache["names"] = names
+    return list(names)
+
+
+# ---------------------------------------------------------------------------
 # Learned corrections
 # ---------------------------------------------------------------------------
 # When the user edits a transcript in the compose box before sending it, the
