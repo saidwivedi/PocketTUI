@@ -129,7 +129,11 @@ function startListening() {
 // to. In-flight states come first, because while a capture is running the key is
 // a stop button and nothing else.
 function toggleCompose() {
-  if (recBusy) { cancelRecording(); return; }   // a tap during the upload is a cancel
+  // A tap during the upload is a cancel — but only once the stop tap that
+  // started that upload has stopped echoing. Inside the grace window the tap is
+  // this key's own ghost click or the second half of a double-tap, and acting on
+  // it would abort audio the server is already transcribing.
+  if (recBusy) { if (!recCancelEcho()) cancelUpload(); return; }
   if (recording()) { stopRecording(); return; }
   // Tapped again while the microphone grant is still outstanding. There is no
   // recorder yet to stop, and asking for a second grant on top of the first is
