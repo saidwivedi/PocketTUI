@@ -40,6 +40,14 @@ const REC_REVIVE_MS = 700;
 // never spoken into a dead microphone. After the recovery attempts have had
 // their turn and still produced nothing.
 const REC_WARN_MS = 1500;
+// How long after the tap that stopped a recording the same key stops meaning
+// "cancel". The mic key is the compose key is the stop key, so the tap that ends
+// a take lands on the button that is about to mean "abandon the upload" — and
+// iOS follows a touchend with a synthesized click of its own, which arrives as a
+// second tap nobody made. Long enough to absorb that ghost and the reflexive
+// double-tap behind it, short enough that a user who genuinely changes their
+// mind about a slow upload is not made to wait.
+const REC_CANCEL_GRACE = 700;
 // Stamped onto the upload URL so a server log says which shell build sent the
 // audio. Declared here rather than read from SW_VERSION, which is defined at the
 // very bottom of this script.
@@ -58,6 +66,10 @@ let recStarted = 0;          // performance.now() at the first chunk of audio
 let recBusy = false;         // an upload is in flight
 let recStarting = false;     // tapped, waiting on the microphone grant
 let recAbort = null;         // its AbortController
+// performance.now() at the tap that stopped the recording. What REC_CANCEL_GRACE
+// is measured from, so the ghost click that follows that tap is ignored rather
+// than read as a cancel. Zero when no upload is in flight.
+let recStoppedAt = 0;
 // Set when the capture is being torn down without an upload, so the recorder's
 // own onstop knows to drop what it collected rather than send it.
 let recCancelled = false;
@@ -144,6 +156,16 @@ let recMonitored = false;
 
 function recording() {
   return recorder !== null;
+}
+
+// Whether a tap arriving now is the stop tap's own echo rather than a new
+// instruction. Both taps land on the same key — the one that just stopped the
+// take — so the upload's first moments cannot tell a deliberate cancel from the
+// synthesized click iOS fires after touchend, and the safe reading of an
+// ambiguous tap is the one that does not throw away audio already on the wire.
+function recCancelEcho() {
+  return recStoppedAt > 0 &&
+    performance.now() - recStoppedAt < REC_CANCEL_GRACE;
 }
 
 // Whether the capture path is worth trying at all. The demo has no backend to
@@ -421,6 +443,7 @@ function cancelRecording() {
   if (recAbort) { recAbort.abort(); recAbort = null; }
   recBusy = false;
   recStarting = false;
+  recStoppedAt = 0;
   recCancelled = true;
   if (recorder) {
     const r = recorder;
@@ -431,6 +454,19 @@ function cancelRecording() {
   }
   recRelease();
   recClearUI();
+}
+
+// The deliberate cancel of an upload already on the wire, as opposed to the
+// teardowns cancelRecording() serves — the strip closing, Send, the tab going
+// away — which are all a consequence of something the user did somewhere else
+// and need no announcement. This one is the whole of the user's instruction, and
+// an upload that vanishes without a word is indistinguishable from one that hung.
+// So the strip is torn down first and the word said after: cancelRecording() ends
+// in recClearUI(), which resets the label, and a "Canceled" written before that
+// would be wiped by it.
+function cancelUpload() {
+  cancelRecording();
+  toast("Canceled");
 }
 
 function recSetLabel(text) {
@@ -522,7 +558,11 @@ function startRecording() {
       // recBusy set, so that is what tells the two apart. The microphone is kept
       // open either way, for the re-record that usually follows.
       recRetire();
-      if (!recBusy) { recClearUI(); return; }
+      // recBusy tells the uploading stop from the cancelling one; recCancelled
+      // catches the cancel that landed in the gap between stop() and this, when
+      // recBusy was already set and there was no recorder left to clear it. A
+      // take the user abandoned is dropped either way, and its blob with it.
+      if (!recBusy || recCancelled) { recClearUI(); return; }
       const blob = new Blob(recChunks, { type: r.mimeType || "audio/webm" });
       recChunks = null;
       // The decisive check, and the only one that catches the failure as it
@@ -589,6 +629,10 @@ function stopRecording() {
   const r = recorder;
   recorder = null;             // onstop must not see a live recorder
   recBusy = true;              // ...but must know this stop is the uploading one
+  // What the grace window is measured from. Stamped here rather than at the
+  // upload, because the tap being absorbed is this one and the echo can arrive
+  // before onstop has even built the blob.
+  recStoppedAt = performance.now();
   recSyncMic();
   clearInterval(recTimer);
   recTimer = null;
@@ -670,6 +714,10 @@ async function uploadRecording(blob) {
   } finally {
     clearTimeout(timer);
     if (recAbort === ctl) recAbort = null;
+    // The upload this stop tap started has settled, so the window it opened is
+    // spent — however it ended. Left standing it would only ever shorten the
+    // grace the next take is owed.
+    recStoppedAt = 0;
   }
 }
 
@@ -783,7 +831,9 @@ function recTranscribeURL(engine) {
 // resolved engine is a backend one; everything about the capture itself is the
 // same machinery the strip's old "code" button drove.
 async function startLocalRecording(engine) {
-  if (recBusy) { cancelRecording(); return; }   // a tap during the upload is a cancel
+  // Same reading as toggleCompose(): a tap during the upload cancels it, unless
+  // it is still the stop tap echoing, in which case it means nothing at all.
+  if (recBusy) { if (!recCancelEcho()) cancelUpload(); return; }
   if (recording()) { stopRecording(); return; }
   // The phone's recogniser and this one must never run at once — two captures of
   // one sentence, arriving at different times, into the same box. Stopping it
