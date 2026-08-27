@@ -279,8 +279,10 @@ function syncVoicePicker() {
 // way, and Cancel must not put it back. Changing it mid-capture stops the
 // recording outright — a microphone still running for the engine just switched
 // away from would be the choice not having taken.
-$("voice-engine").addEventListener("change", (e) => {
-  const v = e.target && e.target.value;
+//
+// Shared by both listeners below so they can never drift: a click and a change
+// on the same tap must resolve to exactly the same state.
+function applyVoicePick(v) {
   if (v !== "phone" && v !== "parakeet" && v !== "whisper") return;
   cfg.voiceEngine = v;
   // An explicit choice clears the session's fallback: the user is answering the
@@ -298,6 +300,22 @@ $("voice-engine").addEventListener("change", (e) => {
   // The picked row is now the stored one, so the auto hint has to come off it.
   syncVoicePicker();
   if (voiceStep) syncVoiceConfirm();
+}
+// click always fires on a tap; change only fires when the tap actually
+// changed which radio is checked. A tap on a radio not already checked
+// therefore fires both, in that order — the flag lets change recognize its
+// own click and skip re-applying what click just applied.
+let voicePickerClickedValue = null;
+$("voice-engine").addEventListener("click", (e) => {
+  const input = e.target && e.target.closest("input");
+  if (!input || !$("voice-engine").contains(input)) return;
+  voicePickerClickedValue = input.value;
+  applyVoicePick(input.value);
+});
+$("voice-engine").addEventListener("change", (e) => {
+  const v = e.target && e.target.value;
+  if (v === voicePickerClickedValue) { voicePickerClickedValue = null; return; }
+  applyVoicePick(v);
 });
 // Applies on the tap rather than on Save: the reason to reach for it is that
 // something is already going wrong, and Cancel must not be able to lose it.
