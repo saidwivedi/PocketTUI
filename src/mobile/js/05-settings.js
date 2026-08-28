@@ -2,14 +2,15 @@
 // Settings
 // ============================================================
 // One scrim serves every sheet, so closing means closing whichever is open.
+const SHEET_IDS = ["sheet-settings", "sheet-new",
+                   "sheet-file-actions", "sheet-files-add"];
 function showSheet(on, id="sheet-settings") {
   // Closing the settings sheet ends the first-run voice step however it was
   // closed — Confirm, Cancel or the scrim. The device is paired by then, so
   // dismissing it is a real answer: keep the resolved engine unstored and let
   // it keep tracking the backend, which is what unset has always meant.
   if (voiceStep && !(on && id === "sheet-settings")) showVoiceStep(false);
-  $("sheet-settings").classList.toggle("show", on && id === "sheet-settings");
-  $("sheet-new").classList.toggle("show", on && id === "sheet-new");
+  for (const s of SHEET_IDS) $(s).classList.toggle("show", on && id === s);
   $("sheet-scrim").classList.toggle("show", on);
 }
 

@@ -1390,4 +1390,173 @@ html.term-open, body.term-open {
   padding: 10px 14px;
 }
 .viewer .viewer-close:hover { color: #f3ede0; background: rgba(243, 237, 224, 0.12); }
+
+/* ============================================================
+   FILE EXPLORER
+   ============================================================ */
+#screen-files {
+  padding-top: var(--safe-top);
+  padding-bottom: calc(40px + var(--safe-bot));
+}
+/* The path bar between back and +. Mono because it is a path, scrolled rather
+   than wrapped so a deep tree never buries the controls beside it. */
+#files-crumbs {
+  flex: 1;
+  min-width: 0;
+  display: flex; align-items: center; gap: 2px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  white-space: nowrap;
+  padding: 0 2px;
+}
+#files-crumbs::-webkit-scrollbar { display: none; }
+.crumb {
+  flex: 0 0 auto;
+  background: transparent; border: none;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--secondary);
+  padding: 8px 3px;
+  cursor: pointer;
+}
+.crumb.current { color: var(--ink); font-weight: 600; }
+.crumb-sep { flex: 0 0 auto; color: var(--whisper); font-size: 12px; }
+
+.files-wrap {
+  padding: 0 16px 40px;
+  animation: fade-in 0.32s var(--ease-out);
+}
+/* Denser than the session cards on purpose: a directory is a list to scan,
+   not a handful of destinations to present. */
+.file-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 6px;
+  border-bottom: 1px solid var(--hair);
+  cursor: pointer;
+  /* A long press here opens the action sheet, so iOS must not answer it with
+     the callout menu or a text selection first. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none; user-select: none;
+}
+.file-row:active { background: var(--umber-tint); }
+.file-ic {
+  flex: 0 0 auto;
+  width: 19px; height: 19px;
+  display: inline-flex;
+  color: var(--tertiary);
+}
+.file-ic svg { width: 100%; height: 100%; }
+.file-ic.dir { color: var(--umber); }
+.file-name {
+  flex: 1; min-width: 0;
+  font-family: var(--mono);
+  font-size: 13.5px;
+  color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.file-meta {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--tertiary);
+}
+#files-empty, #files-error {
+  text-align: center;
+  padding: 64px 20px;
+  color: var(--tertiary);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  display: none;
+}
+
+/* Stacked full-width choices — the action sheets are menus, not forms. */
+.sheet-menu { display: flex; flex-direction: column; gap: 8px; }
+.sheet-menu button {
+  font-family: var(--sans);
+  font-size: 14.5px;
+  font-weight: 500;
+  text-align: left;
+  padding: 13px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--hair);
+  background: var(--paper-rec);
+  color: var(--ink);
+  cursor: pointer;
+}
+.sheet-menu button:active { transform: scale(0.98); background: var(--card-2); }
+.sheet-menu button.danger { color: var(--bad); }
+
+/* ============================================================
+   EDITOR
+   ============================================================ */
+#screen-editor {
+  position: fixed; inset: 0;
+  flex-direction: column;
+  background: var(--paper);
+  padding-top: var(--safe-top);
+  /* --kb-inset is how much of the layout viewport the soft keyboard covers
+     (see 25-keyboard-geometry.js); yielding it keeps the caret's line above
+     the keyboard, and the safe-area gap covers the keyboard-down case. */
+  padding-bottom: max(var(--safe-bot), var(--kb-inset, 0px));
+}
+#screen-editor.active { display: flex; }
+/* The list screens scroll the page under a sticky topbar; this screen is a
+   fixed column, so its bar just sits in the flow. */
+.editor-bar {
+  position: static;
+  flex: 0 0 auto;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--hair);
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.editor-name {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 7px;
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--ink);
+}
+#editor-filename {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The unsaved-changes dot; hidden is its resting state. */
+.editor-dirty {
+  display: none;
+  flex: 0 0 auto;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--umber);
+}
+.editor-dirty.show { display: inline-block; }
+#btn-editor-save {
+  flex: 0 0 auto;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+  transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out),
+              border-color 0.14s var(--ease-out);
+}
+/* Lit exactly while there is something to save — the compose Send's idiom. */
+#btn-editor-save.armed {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+}
+#btn-editor-save:active { transform: scale(0.96); }
+#btn-editor-save[disabled] { opacity: 0.45; }
+#editor-host { flex: 1 1 auto; min-height: 0; }
+#editor-host .cm-editor { height: 100%; }
+#editor-host .cm-editor.cm-focused { outline: none; }
 </style>

@@ -1092,6 +1092,7 @@ const SWIPE_DIST = 30;   // px of upward travel before a press is a swipe
     b.addEventListener("click", () => {
       if (swiped) { swiped = false; return; }   // the swipe already sent its alternate
       if (k.compose) { toggleCompose(); return; }
+      if (k.files) { openFilesAtCwd(); return; }
       if (k.arrows) { setArrows(true); return; }
       if (k.collapse) { setArrows(false); return; }
       if (k.search) { openSearch(); return; }
