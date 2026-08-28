@@ -79,7 +79,7 @@ function syncChrome() {
   $("meta-theme-color").content = bg;
 }
 
-let term = null, fitAddon = null, sock = null;
+let term = null, fitAddon = null, searchAddon = null, sock = null;
 let currentSession = null, retries = 0, retryTimer = null;
 
 // Pinch-to-zoom sets this and it survives the session. Bounds are the same ones
@@ -110,6 +110,7 @@ function ensureTerm() {
   term.loadAddon(fitAddon);
   term.open($("term-host"));
   useWebgl();
+  useSearch();
   term.onData(d => send(d));
   term.registerLinkProvider({ provideLinks: provideImageLinks });
   // A selection can go away without the gesture asking — a reset, or xterm
@@ -128,5 +129,16 @@ function useWebgl() {
     addon.onContextLoss(() => { try { addon.dispose(); } catch (e) {} });
     term.loadAddon(addon);
   } catch (e) {}
+}
+
+// Scrollback search. Same defensive shape as useWebgl() above: missing or
+// failing addon leaves searchAddon null and the search key's handlers no-op,
+// nothing else in the terminal depends on it.
+function useSearch() {
+  if (typeof SearchAddon === "undefined") return;
+  try {
+    searchAddon = new SearchAddon.SearchAddon();
+    term.loadAddon(searchAddon);
+  } catch (e) { searchAddon = null; }
 }
 

@@ -1028,6 +1028,7 @@ function sendKey(seq) {
       if (k.compose) { toggleCompose(); return; }
       if (k.arrows) { setArrows(true); return; }
       if (k.collapse) { setArrows(false); return; }
+      if (k.search) { openSearch(); return; }
       if (k.mod) { setMod(k.mod, !mods[k.mod]); return; }
       sendKey(k.seq);
     });
