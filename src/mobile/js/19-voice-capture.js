@@ -113,6 +113,12 @@ let voiceForcedPhone = false;
 // comes back the same way.
 const REC_NO_VOICE_MSG =
   "Local voice-to-text is not installed — run setup_voice.sh in PocketTUI's folder";
+// What the retry hint says, which depends on how the take came to be sitting
+// there. A failed upload is the user's news to act on; an interrupted recording
+// is news they missed while they were away, and calling that one "failed" would
+// have them looking for a fault that was only a phone call.
+const REC_RETRY_FAILED = "Transcription failed — tap to retry";
+const REC_RETRY_INTERRUPTED = "Recording interrupted — tap to transcribe";
 // Where the transcript goes. Read off the textarea at the tap that starts the
 // take — the field is blurred for the whole recording, and a blurred textarea
 // does not report a trustworthy selection. null means there was never a caret to
@@ -122,11 +128,14 @@ let recCaretStart = null, recCaretEnd = null;
 // setting changed while the user is still speaking cannot redirect the audio.
 let recEngine = "";
 
-// A recorded take whose upload failed in a way that says nothing about the
-// engine — a timeout, a dropped network, one server error. The audio is the
-// expensive part and it is still in hand, so it is kept with everything the
-// insertion needs (which engine it was spoken to, where in the box it was meant
-// to land) and offered back as a one-tap retry rather than thrown away.
+// A recorded take that never reached a transcript: an upload that failed in a
+// way saying nothing about the engine — a timeout, a dropped network, one
+// server error — or a recording the phone interrupted by going away mid-take.
+// The audio is the expensive part and it is still in hand, so it is kept with
+// everything the insertion needs (which engine it was spoken to, where in the
+// box it was meant to land) and offered back as a one-tap retry rather than
+// thrown away. `reason` is the sentence the hint bar shows, because "failed" and
+// "interrupted" are not the same news.
 //
 // One slot only. A second failed take replaces the first: the user has moved on
 // and spoken again, and a queue of stale audio is not something anyone wants to
@@ -134,6 +143,13 @@ let recEngine = "";
 // whenever the session latches to the phone — a pending take for an engine the
 // session has given up on can never be retried.
 let recPending = null;
+// Set on the stop() that a backgrounding fires, so the recorder's own onstop
+// knows to park the take rather than upload it. Distinct from recCancelled,
+// which throws the audio away; this one keeps it. Cleared the moment onstop has
+// read it, and again at the top of every take, because an onstop that never
+// arrives — iOS is under no obligation to run one while the page is hidden —
+// must not leave the next stop reading a stale instruction.
+let recSalvage = false;
 // Whether the take in hand has already spent its one automatic network retry.
 // Per take, not per session: the next recording deserves the same second chance.
 let recNetRetried = false;
@@ -482,6 +498,9 @@ function cancelRecording() {
   recStarting = false;
   recStoppedAt = 0;
   recCancelled = true;
+  // A cancel outranks a salvage: whatever the take was being kept for, it is
+  // being abandoned now, and a flag left standing would park the next one.
+  recSalvage = false;
   if (recorder) {
     const r = recorder;
     // Cleared before stop(): onstop must see no live recorder and take the
@@ -558,6 +577,10 @@ function startRecording() {
   // tap caused comes due. Set synchronously, cleared on both exits.
   recStarting = true;
   recCancelled = false;
+  // A salvage whose onstop never ran — the page went away and came back without
+  // the browser ever firing it — would otherwise park this take the moment it
+  // stops. The take in hand is the only one this flag may ever speak for.
+  recSalvage = false;
   recPeak = 0;
   recRevived = false;
   recWarned = false;
@@ -599,6 +622,15 @@ function startRecording() {
     };
     r.onerror = () => recFallback("Recording failed — using phone dictation");
     r.onstop = () => {
+      // The backgrounding stop, taken before anything else so a take the phone
+      // interrupted is parked rather than read as an abandoned one. Its own
+      // teardown is a full release, not recRetire(): the app is going away, and
+      // nothing is coming back for a quick re-record.
+      if (recSalvage) {
+        recSalvage = false;
+        salvageStopped(r);
+        return;
+      }
       // recorder is nulled by both stop paths; only the uploading one leaves
       // recBusy set, so that is what tells the two apart. The microphone is kept
       // open either way, for the re-record that usually follows.
@@ -837,7 +869,7 @@ async function uploadRecording(blob) {
 // recSyncMic() and the hint it raises there must see a screen that is already
 // quiet — a bar that only appeared on the next state change would leave the
 // failure toast as the sole trace of a take still sitting in hand.
-function recKeepPending(blob, why) {
+function recKeepPending(blob, why, reason) {
   recBusy = false;
   recAbort = null;
   recPending = {
@@ -845,10 +877,11 @@ function recKeepPending(blob, why) {
     engine: recEngine,
     caretStart: recCaretStart,
     caretEnd: recCaretEnd,
+    reason: reason || REC_RETRY_FAILED,
   };
   // recClearUI() ends in recSyncMic(), which is what actually raises the hint.
   recClearUI();
-  toast(why + " — tap Retry to try again");
+  if (why) toast(why + " — tap Retry to try again");
 }
 
 // Forget the parked take. Called on every ending that makes it meaningless: a
@@ -856,6 +889,79 @@ function recKeepPending(blob, why) {
 function recDropPending() {
   recPending = null;
   recSyncHint();
+}
+
+// The app is going away mid-recording — a phone call, a notification tapped, a
+// switch to look something up. That used to throw the audio away, which is the
+// worst reading of the situation available: the user was talking, something
+// interrupted them, and the sentence they had already said was the casualty. So
+// the take is stopped and parked instead, and the hint offers it back on return.
+//
+// Nothing is uploaded. A transcript landing in the box while the user is on a
+// call is a surprise at best, and at worst it lands after they have typed
+// something else; one tap on return is the whole of the transaction.
+//
+// requestData() first: MediaRecorder only guarantees a dataavailable at stop for
+// what it has buffered, and asking for it explicitly is the documented way to be
+// sure the take's audio is in hand before the page loses its turn to run.
+function salvageRecording() {
+  if (!recorder) return false;
+  const r = recorder;
+  recorder = null;             // onstop must not see a live recorder
+  recSalvage = true;
+  clearInterval(recTimer);
+  recTimer = null;
+  // The same last read the stop tap takes, for the same reason: the silence gate
+  // rules on the peak, and a short take can finish inside a single tick.
+  if (recMonitored) {
+    const rms = recRMS();
+    if (rms > recPeak) recPeak = rms;
+  }
+  clearInterval(recLevelTimer);
+  recLevelTimer = null;
+  try {
+    r.requestData();
+  } catch (e) { /* nothing buffered, or already inactive; stop() still fires */ }
+  try {
+    r.stop();
+  } catch (e) {
+    // No onstop is coming, so nothing will park the take and nothing will run
+    // the teardown. Fall back to the release that backgrounding wanted anyway.
+    recSalvage = false;
+    recRelease();
+    recClearUI();
+    return false;
+  }
+  return true;
+}
+
+// The salvaged take, once the recorder has handed its audio over. The same gates
+// a normal stop applies — a recording that carried no signal is not worth
+// keeping, whatever interrupted it — and then the full release, because the app
+// is on its way out and the microphone must not still be open behind it.
+//
+// A dead capture here is dropped silently rather than run through
+// recDeadCapture(): that latches recBroken and opens the phone's dictation, and
+// neither belongs on a page the user is not looking at, decided by a take they
+// never chose to end. The next real take diagnoses itself.
+function salvageStopped(r) {
+  const blob = new Blob(recChunks || [], { type: r.mimeType || "audio/webm" });
+  recChunks = null;
+  const dead = recMonitored ? recPeak <= REC_DEAD_RMS : blob.size < REC_MIN_BLOB;
+  if (!dead) {
+    recPending = {
+      blob: blob,
+      engine: recEngine,
+      caretStart: recCaretStart,
+      caretEnd: recCaretEnd,
+      reason: REC_RETRY_INTERRUPTED,
+    };
+  }
+  // recRelease() rather than recRetire(): backgrounding is the clearest possible
+  // sign that no quick re-record is coming, and a retained track is a red pill
+  // in the status bar for the rest of the session.
+  recRelease();
+  recClearUI();
 }
 
 // Send the parked audio again. The whole take is restored first — the engine it
@@ -901,6 +1007,14 @@ function recSyncHint() {
   const bar = $("voice-retry");
   if (!bar) return;
   const show = !!recPending && !recBusy && !recStarting && !recording();
+  // Written before the visibility check, not after it: an interrupted take can
+  // replace a failed one while the bar is already up, and a bar whose text only
+  // changed when it next opened would offer the wrong news about the audio in
+  // hand. Cheap either way — the label is the same string most times through.
+  if (show) {
+    const go = $("voice-retry-go");
+    if (go && go.textContent !== recPending.reason) go.textContent = recPending.reason;
+  }
   if (bar.classList.contains("show") === show) return;
   bar.classList.toggle("show", show);
   // A flex sibling of the terminal, so raising it takes rows away from the grid
@@ -1101,17 +1215,51 @@ async function startLocalRecording(engine) {
 // and doubly so of a MediaRecorder, which iOS marks with a status-bar pill. This
 // also covers the stream retained between recordings: leaving the app is the
 // clearest possible sign that no quick re-record is coming.
+//
+// The microphone goes in every case; what goes with it is the separate question,
+// and there the answer is as little as possible. A take in progress is salvaged
+// rather than discarded, and an upload already on the wire is left to run: the
+// fetch may well finish while the phone is on a call, and aborting it throws
+// away a transcript the server has already done the work for. Coming back is
+// what tidies up — the hint bar for the salvaged take, the upload's own
+// completion for the one in flight.
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) return;
+  if (!document.hidden) {
+    // Returning. Whatever was parked while the app was away is offered now: the
+    // salvage ran with the page hidden and its recSyncMic() painted a screen
+    // nobody was looking at.
+    recSyncHint();
+    return;
+  }
   stopListening();
+  if (recording()) { salvageRecording(); return; }
+  // An upload in flight has already been through recRetire(), which leaves the
+  // track live for a re-record that is plainly not coming now. Released on its
+  // own rather than through cancelRecording(), which would abort the fetch —
+  // the microphone is what has to go, not the transcript being worked on.
+  if (recBusy) { recRelease(); return; }
   cancelRecording();
 });
 
 // Backgrounding a standalone PWA does not reliably fire visibilitychange on iOS,
 // and a page frozen into the back/forward cache with a live track wakes up
 // holding a microphone it cannot record from. pagehide is the one that fires.
+//
+// Both events land on the same backgrounding, in either order, so this has to be
+// the second half of whatever the first one did rather than a second opinion: a
+// salvaged take and a live upload both still need the microphone let go, and
+// neither wants the abort-and-discard that cancelRecording() would bring. The
+// tracks are all that is taken in that case.
+//
+// A recording still live here is one visibilitychange never spoke for — the
+// standalone PWA where only this event fires — and it is salvaged for the same
+// reason it would have been there. The pending slot is deliberately not consulted:
+// a take parked ten minutes ago says nothing about what this backgrounding is
+// interrupting, and reading it as one would leave a live microphone open.
 window.addEventListener("pagehide", () => {
   stopListening();
+  if (recording()) { salvageRecording(); return; }
+  if (recBusy || recSalvage) { recRelease(); return; }
   cancelRecording();
 });
 
