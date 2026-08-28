@@ -688,11 +688,52 @@ html.term-open, body.term-open {
 }
 
 /* ============================================================
+   SNIPPET ROW — quick-command chips above the key bar
+   ============================================================ */
+/* Same glass as the key bar below so the two read as one dock. Hidden until
+   the Settings toggle turns it on — every row here is a terminal row lost. */
+.snipbar {
+  flex: 0 0 auto;
+  display: none;
+  gap: 5px;
+  padding: 3px 5px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  background: rgba(255, 253, 247, 0.94);
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  border-top: 1px solid var(--hair);
+  z-index: 20;
+}
+:root[data-theme="dark"] .snipbar { background: rgba(31, 28, 22, 0.94); }
+.snipbar.show { display: flex; }
+.snipbar::-webkit-scrollbar { display: none; }
+/* Chips keep their natural width and the row scrolls sideways — a command is a
+   word to read, not a key to stretch. */
+.snipbar button {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-2);
+  background: var(--card-2);
+  border: 1px solid var(--hair-strong);
+  border-radius: 7px;
+  min-height: 26px;
+  padding: 0 10px;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+}
+.snipbar button:active { transform: scale(0.96); background: var(--hair); }
+
+/* ============================================================
    KEY BAR — docked above the soft keyboard
    ============================================================ */
 .keybar {
   flex: 0 0 auto;
-  /* Nine keys have to fit 390px without scrolling: the row shares its slack
+  /* Ten keys have to fit 390px without scrolling: the row shares its slack
      evenly, and width rather than height is what keeps them tappable. */
   display: flex; gap: 3px;
   padding: 2px 3px calc(2px + var(--kb-safe, var(--safe-bot)));
@@ -725,10 +766,30 @@ html.term-open, body.term-open {
   flex: 1.1 1 0;
   cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
+  /* Anchors the swipe-hint corner label. */
+  position: relative;
+  /* Horizontal pans still scroll the bar, but a vertical drag stays with the
+     key's own pointer events — that drag is the swipe-up alternate gesture,
+     and the browser claiming it would cancel the pointer mid-swipe. */
+  touch-action: pan-x;
   transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out),
               border-color 0.14s var(--ease-out);
   -webkit-user-select: none; user-select: none;
 }
+/* Each key's swipe-up alternate, whispered in the corner — an affordance to
+   notice, not a second label to read. */
+.keybar button .swipe-hint {
+  position: absolute;
+  top: 0; right: 3px;
+  font-size: 8px;
+  line-height: 1.4;
+  font-weight: 500;
+  color: var(--whisper);
+  pointer-events: none;
+}
+/* On an armed modifier's umber fill the whisper grey vanishes; borrow the
+   label's paper instead, kept faint. */
+.keybar button.sticky-on .swipe-hint { color: var(--paper); opacity: 0.55; }
 .keybar button:active { transform: scale(0.93); background: var(--hair); }
 /* Held for auto-repeat — :active is unreliable across a long press on iOS. */
 .keybar button.held { background: var(--hair); }
@@ -796,16 +857,17 @@ html.term-open, body.term-open {
 .keybar > .expanded-only { display: none; }
 .keybar.expanded {
   display: grid;
-  /* Ten tracks: four word keys, backspace, enter, the three-wide arrow cluster,
-     and one column shared by close and compose. Word keys keep the collapsed
-     row's larger share; backspace gives up width here — expanded is an arrow-work
-     mode, and enter is the key the thumb reaches for most while working the
-     cluster, so it takes the wider of the two glyph columns, right beside the
-     arrows. Ten 30px floors would overflow a 320px screen by 3px, and the word
-     keys do not need that floor here — spanning both rows already gives them a
-     69px tap target — so the width minimum drops to the glyph keys' 28px across
-     the board. */
-  grid-template-columns: repeat(4, minmax(28px, 1.1fr)) minmax(28px, 0.85fr)
+  /* Eleven tracks: five word keys, backspace, enter, the three-wide arrow
+     cluster, and one column shared by close and compose. Word keys keep the
+     collapsed row's larger share; backspace gives up width here — expanded is
+     an arrow-work mode, and enter is the key the thumb reaches for most while
+     working the cluster, so it takes the wider of the two glyph columns, right
+     beside the arrows. The word keys do not need the 30px floor here —
+     spanning both rows already gives them a 69px tap target — so the width
+     minimum drops to the glyph keys' 28px across the board; eleven of those
+     still overflow a 320px screen, where the bar's own overflow-x scroll picks
+     up the slack. */
+  grid-template-columns: repeat(5, minmax(28px, 1.1fr)) minmax(28px, 0.85fr)
                          minmax(28px, 1fr) repeat(4, minmax(28px, 1.15fr));
   grid-template-rows: auto auto;
   /* Two rows of chips would otherwise stretch to the bar's own height. */
@@ -816,22 +878,23 @@ html.term-open, body.term-open {
 .keybar.expanded > .span-2 { grid-row: span 2; }
 .keybar.expanded > .expanded-only { display: inline-flex; }
 .keybar.expanded > .collapsed-only { display: none; }
-/* Columns 7-9 are the inverted-T: up centred over left/down/right. Backspace and
-   enter are placed explicitly too — column 5 for backspace, column 6 for enter
-   — so enter lands on the wider track right next to the cluster. An explicit
-   column alone leaves the row to auto-placement's flow cursor, which enter (later
-   in source order but an earlier column) would drag past column 5 — so the row
-   is pinned here too, matching .span-2 above instead of relying on it. */
-.keybar.expanded > .k-bs    { grid-column: 5; grid-row: 1 / span 2; }
-.keybar.expanded > .k-enter { grid-column: 6; grid-row: 1 / span 2; }
-.keybar.expanded > .k-up    { grid-column: 8; grid-row: 1; }
-.keybar.expanded > .k-left  { grid-column: 7; grid-row: 2; }
-.keybar.expanded > .k-down  { grid-column: 8; grid-row: 2; }
-.keybar.expanded > .k-right { grid-column: 9; grid-row: 2; }
+/* Columns 8-10 are the inverted-T: up centred over left/down/right. Backspace
+   and enter are placed explicitly too — column 6 for backspace, column 7 for
+   enter — so enter lands on the wider track right next to the cluster. An
+   explicit column alone leaves the row to auto-placement's flow cursor, which
+   enter (later in source order but an earlier column) would drag past column 6
+   — so the row is pinned here too, matching .span-2 above instead of relying
+   on it. */
+.keybar.expanded > .k-bs    { grid-column: 6; grid-row: 1 / span 2; }
+.keybar.expanded > .k-enter { grid-column: 7; grid-row: 1 / span 2; }
+.keybar.expanded > .k-up    { grid-column: 9; grid-row: 1; }
+.keybar.expanded > .k-left  { grid-column: 8; grid-row: 2; }
+.keybar.expanded > .k-down  { grid-column: 9; grid-row: 2; }
+.keybar.expanded > .k-right { grid-column: 10; grid-row: 2; }
 /* Close sits on the top row: it is the control that undoes the expansion, so it
    reads better level with the row that appeared than buried at the bottom. */
-.keybar.expanded > .k-close   { grid-column: 10; grid-row: 1; }
-.keybar.expanded > .k-compose { grid-column: 10; grid-row: 2; }
+.keybar.expanded > .k-close   { grid-column: 11; grid-row: 1; }
+.keybar.expanded > .k-compose { grid-column: 11; grid-row: 2; }
 
 /* ============================================================
    SETTINGS SHEET
@@ -958,7 +1021,7 @@ html.term-open, body.term-open {
 .sheet-faq p:last-child { margin-bottom: 0; }
 .sheet-faq b { font-weight: 600; color: var(--secondary); }
 .sheet-faq a { color: var(--umber); text-decoration: underline; }
-.sheet input {
+.sheet input, .sheet textarea {
   width: 100%;
   font-family: var(--mono);
   font-size: 13px;
@@ -969,7 +1032,13 @@ html.term-open, body.term-open {
   padding: 12px 13px;
   transition: border-color 0.18s var(--ease-out);
 }
-.sheet input:focus { border-color: var(--umber); outline: none; }
+.sheet input:focus, .sheet textarea:focus { border-color: var(--umber); outline: none; }
+/* The one textarea follows the fields' recipe above; it only adds what a
+   multi-line control needs. */
+.sheet textarea { resize: none; line-height: 1.5; display: block; }
+/* Quick-command editor: revealed with its toggle, put away with it. */
+#snip-edit { display: none; margin-top: 12px; }
+#snip-edit.show { display: block; }
 #backend-token { letter-spacing: 0.06em; }
 /* A switch rather than a labelled field: it has no value to type, and the label
    has to sit beside the control instead of above it like the inputs do. */
