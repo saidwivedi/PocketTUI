@@ -472,7 +472,7 @@ elif [[ -e "$INSTALL_DIR" ]]; then
         step_quiet "Updating the install at $INSTALL_DIR (from version $OLD_VERSION)"
         vsay "  The new copy replaces the program files:"
         for f in app.py resolver.py mobile_app.html sw.js pockettui.service \
-                 install.sh setup_voice.sh requirements.txt \
+                 install.sh setup_voice.sh requirements.txt qrcodegen.py \
                  icon-192.png icon-512.png vendor; do
             [[ -e "$INSTALL_DIR/$f" ]] && vsay "    $f"
         done
@@ -495,7 +495,7 @@ elif [[ -e "$INSTALL_DIR" ]]; then
         ROTATE_TOKEN=1
         vsay "  These are overwritten by the new copy:"
         for f in app.py mobile_app.html sw.js pockettui.service install.sh \
-                 icon-192.png icon-512.png vendor; do
+                 qrcodegen.py icon-192.png icon-512.png vendor; do
             [[ -e "$INSTALL_DIR/$f" ]] && vsay "    $f"
         done
         # The venv is rebuilt on top of whatever is there; nothing else is removed.
@@ -525,7 +525,7 @@ if [[ "$LOCAL_CHECKOUT" == "1" ]]; then
     # mobile_app.html, sw.js and the icons are built into $INSTALL_DIR further
     # down, once there is a Python to run build_mobile.py with. app.py was
     # already checked.
-    for f in app.py resolver.py requirements.txt vendor \
+    for f in app.py resolver.py requirements.txt vendor qrcodegen.py \
              pockettui.service install.sh run.sh setup_voice.sh; do
         [[ -e "$SRC_DIR/$f" ]] || continue
         # Installing from inside the install dir would be cp-onto-itself.
@@ -1953,15 +1953,97 @@ if [[ -n "$AGENT_BACKUP" ]]; then
     say "                 launchctl bootstrap gui/\$(id -u) $AGENT_PATH"
 fi
 
+# A QR code of the pairing URL, printed above the Address/Code box so a phone
+# camera can skip typing both. Content matches the branch below exactly: the
+# hosted-app URL with the address folded in when a route is verified, the
+# backend's own address with no "a" when it is the LAN page itself. Built and
+# rendered in Python — qrcodegen.py is vendored, zero deps — never in bash.
+# Every failure here is soft: a QR is a convenience, never something the
+# install can fail over. $VENV_PY exists by this point; the token is read
+# canonically via app.read_token() rather than reformatted from $TOKEN_DISPLAY.
+# Prints the QR and returns 0, or prints nothing (an explanatory dim note if
+# there is a reason) and returns 1 — the caller only prints the security
+# warning and the blank line around it when a QR actually went to the screen.
+print_qr() {
+    local url="$1"
+    [[ -f "$INSTALL_DIR/qrcodegen.py" ]] || return 1
+    # The half-block renderer prints explicit ANSI colours and Unicode block
+    # glyphs, so it only belongs on a terminal that has both switched on. A
+    # dumb/NO_COLOR terminal or a non-UTF-8 locale falls back to qrencode, which
+    # brings its own encoding-aware renderer, and finally to no QR at all.
+    local locale_utf8=0
+    case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *UTF-8*|*utf-8*|*UTF8*|*utf8*) locale_utf8=1 ;; esac
+    if [[ -n "$C_RESET" ]] && [[ "$locale_utf8" == "1" ]]; then
+        say "  Scan to pair:"
+        "$VENV_PY" - "$INSTALL_DIR" "$url" <<'PYEOF' || true
+import sys
+sys.path.insert(0, sys.argv[1])
+import qrcodegen
+
+qr = qrcodegen.QrCode.encode_text(sys.argv[2], qrcodegen.QrCode.Ecc.MEDIUM)
+size = qr.get_size()
+QUIET = 2
+WHITE_BG = "\033[48;5;231m"
+BLACK_FG = "\033[38;5;16m"
+RESET = "\033[0m"
+
+def dark(x, y):
+    if x < 0 or y < 0 or x >= size or y >= size:
+        return False
+    return qr.get_module(x, y)
+
+lo = -QUIET
+hi = size + QUIET
+lines = []
+for y in range(lo, hi, 2):
+    row = [WHITE_BG, BLACK_FG]
+    for x in range(lo, hi):
+        top, bot = dark(x, y), dark(x, y + 1)
+        row.append("█" if top and bot else "▀" if top else "▄" if bot else " ")
+    row.append(RESET)
+    lines.append("".join(row))
+print("\n".join(lines))
+PYEOF
+    elif command -v qrencode >/dev/null 2>&1; then
+        say "  Scan to pair:"
+        qrencode -t ANSIUTF8 "$url" || true
+    else
+        say "  ${C_DIM}(QR skipped — no colour terminal and qrencode not found)$C_RESET"
+        return 1
+    fi
+}
+
 # What to open depends on the route. The hosted app is https, and a browser
 # will not let an https page call a plain-http backend, so a LAN address can
 # never be typed into $BASE_URL/app/ — but the backend serves the same shell
 # itself, so on a LAN the phone opens it directly and only the code is left to
 # type. A verified serve is https end to end, so there the hosted app plus the
 # address works. The URL comes first because it is the first thing to do.
+#
+# The QR payload mirrors that: #pair=<base64url JSON {v,a,t}>, "a" the address
+# exactly as the settings sheet's address field expects (no scheme forced —
+# normalizeBackend adds one), omitted for the LAN page since it is the backend
+# talking to itself; "t" the canonical 10-char token. Building it is the same
+# soft-fail Python-in-heredoc rule as the box below it: anyone who scans the
+# code gets this machine's shell, so the warning is printed right under it.
 RULE="─────────────────────────────────────"
 say ""
 if [[ "$TS_SERVED" == "1" ]]; then
+    QR_URL="$("$VENV_PY" - "$INSTALL_DIR" "$BASE_URL/app/" "$TS_HOST/pockettui" <<'PYEOF' || true
+import base64, json, sys
+sys.path.insert(0, sys.argv[1])
+import app
+
+payload = {"v": 1, "a": sys.argv[3], "t": app.read_token()}
+enc = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).rstrip(b"=")
+print(sys.argv[2] + "#pair=" + enc.decode())
+PYEOF
+    )"
+    if [[ -n "$QR_URL" ]] && print_qr "$QR_URL"; then
+        say "  ${C_DIM}The QR contains the pairing code — anyone who scans it gets this"
+        say "  machine's shell. Don't screenshot or share it.$C_RESET"
+        say ""
+    fi
     say "  On your phone open  $BASE_URL/app/"
     say ""
     say "  $C_RULE$RULE$C_RESET"
@@ -1969,6 +2051,21 @@ if [[ "$TS_SERVED" == "1" ]]; then
     printf '   Code      %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
     say "  $C_RULE$RULE$C_RESET"
 elif [[ -n "$LAN_IP" ]]; then
+    QR_URL="$("$VENV_PY" - "$INSTALL_DIR" "http://$LAN_IP:$PORT/" <<'PYEOF' || true
+import base64, json, sys
+sys.path.insert(0, sys.argv[1])
+import app
+
+payload = {"v": 1, "t": app.read_token()}
+enc = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).rstrip(b"=")
+print(sys.argv[2] + "#pair=" + enc.decode())
+PYEOF
+    )"
+    if [[ -n "$QR_URL" ]] && print_qr "$QR_URL"; then
+        say "  ${C_DIM}The QR contains the pairing code — anyone who scans it gets this"
+        say "  machine's shell. Don't screenshot or share it.$C_RESET"
+        say ""
+    fi
     say "  On your phone open  ${C_CODE}http://$LAN_IP:$PORT/$C_RESET"
     say ""
     say "  $C_RULE$RULE$C_RESET"
@@ -2025,10 +2122,13 @@ fi
 # address and code live in localStorage, so entering them in Safari first and
 # adding the icon afterwards produces an app that asks for setup again. The
 # installer cannot know which phone this is, so everyone gets the sentence.
+# Scanning the QR is no exception — it pairs whichever container is open, so a
+# scan in Safari still leaves the installed app to ask once more after adding.
 if [[ "$SERVER_UP" == "1" ]]; then
     say ""
     say "  ${C_WARN}On iPhone/iPad, Add to Home Screen FIRST, then enter the address"
-    say "  and code inside the installed app.$C_RESET"
+    say "  and code inside the installed app — after adding, it asks for the"
+    say "  code once more, even if you already scanned or typed it in Safari.$C_RESET"
 fi
 
 # A LAN address hands the phone a port that a host firewall can be dropping
