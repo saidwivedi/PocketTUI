@@ -122,6 +122,13 @@
 <div class="screen" id="screen-term">
   <div class="term-safetop"></div>
   <button type="button" id="demo-badge" aria-label="Leave the demo">DEMO</button>
+  <!-- Shown after repeated reconnect failures (see scheduleReconnect); the retry
+       loop keeps running while it is up, and a successful open takes it down. -->
+  <div id="conn-banner" role="status">
+    <span class="msg">Can't reach your computer</span>
+    <button type="button" id="btn-conn-retry">Retry now</button>
+    <button type="button" id="btn-conn-sessions">Sessions</button>
+  </div>
   <!-- xterm appends its own layers here on open(); these two stay alongside and
        are positioned over the grid whenever a selection is up. -->
   <div id="term-host">
