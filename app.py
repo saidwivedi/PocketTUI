@@ -18,8 +18,10 @@ import argparse
 import array
 import asyncio
 import dataclasses
+import errno
 import fcntl
 import getpass
+import hashlib
 import hmac
 import json
 import math
@@ -29,6 +31,7 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -634,6 +637,20 @@ def api_version() -> Response:
 @app.get("/api/sessions")
 def api_sessions() -> Response:
     return no_store(JSONResponse({"sessions": list_sessions()}))
+
+
+@app.get("/api/session_cwd")
+def api_session_cwd(session: str = "", dev: str = "") -> Response:
+    """The working directory of the pane this device is looking at, or "".
+
+    Asked at the moment the file explorer opens, rather than carried on every
+    /api/sessions row: the list refreshes constantly and would pay one more
+    tmux call per session for an answer only this tap uses. resolve_target
+    prefers the device's own grouped view, so the cwd is the pane the user is
+    actually looking at rather than the base session's.
+    """
+    target = resolve_target(session, dev if DEV_RE.match(dev) else "")
+    return no_store(JSONResponse({"cwd": pane_cwd(target) if target else ""}))
 
 
 # A display name only: long enough to be useful in the list row, short enough that
@@ -1844,6 +1861,327 @@ def api_file(path: str = "") -> Response:
     if kind is None or not p.is_file():
         return Response(status_code=404)
     return no_store(FileResponse(p, media_type=kind))
+
+
+# ---------------------------------------------------------------------------
+# File explorer
+# ---------------------------------------------------------------------------
+# Browse, read and edit files from the phone. Same design stance as /api/file:
+# this server already bridges a full shell to the same clients, so a filesystem
+# route crosses no boundary they could not cross by typing `cat` — the checks
+# below exist for honest errors, not access control.
+
+# The editor is for files a phone can sensibly hold and render; past this it is
+# a job for the shell (or for /api/fs/download).
+MAX_TEXT_BYTES = 2 * 1024 * 1024
+# An upload is a file the user picked from the phone, not a stream: capped
+# where a phone's patience runs out rather than where the disk does.
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
+def fs_path(raw: str) -> Path | None:
+    """`raw` as an absolute local path, or None when it cannot be one.
+
+    The same treatment /api/file gives its path: a leading ~ is the user's
+    home, and a path with nothing at it is retried through
+    POCKETTUI_PATH_REWRITES so a remote session's mount names still resolve
+    here. A path that exists nowhere comes back unrewritten — the create
+    routes point at paths that do not exist yet, and they mean them literally.
+    Deliberately no resolve(): a symlinked directory keeps its own name, so
+    the breadcrumb the phone shows matches the path the user walked.
+    """
+    path = str(raw or "")
+    if path.startswith("~"):
+        path = str(Path.home()) + path[1:]
+    if not path.startswith("/"):
+        return None
+    if not os.path.lexists(path):
+        for src, dst in PATH_REWRITES:
+            if path.startswith(src):
+                alt = dst + path[len(src):]
+                if os.path.lexists(alt):
+                    return Path(alt)
+    return Path(path)
+
+
+def fs_error(code: str, status: int, **extra) -> Response:
+    return no_store(JSONResponse({"error": code, **extra}, status_code=status))
+
+
+def fs_hash(data: bytes) -> str:
+    """The write-conflict token: what is on disk, as content rather than time.
+
+    mtime is not the token because its granularity lies on some filesystems —
+    two writes inside one timestamp tick would read as "unchanged". A missing
+    file hashes to "", which is also what a client sends to mean "I am
+    creating this file"; the two are the same fact.
+    """
+    return hashlib.sha256(data).hexdigest()
+
+
+def fs_current_hash(p: Path) -> str:
+    try:
+        return fs_hash(p.read_bytes())
+    except OSError:
+        return ""
+
+
+def atomic_write(p: Path, data: bytes, mode: int | None) -> None:
+    """Write `data` to `p` whole-or-not-at-all.
+
+    tempfile-then-replace in the target's own directory, so a crash mid-write
+    can never leave a half-written file and a reader never sees one. An
+    existing file keeps its mode; a new one gets a plain 0o644 rather than
+    mkstemp's private 0o600 — this is the user's own tree, not a secret like
+    the token file.
+    """
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix="." + p.name + ".")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            os.fchmod(fh.fileno(), stat.S_IMODE(mode) if mode is not None else 0o644)
+            fh.write(data)
+        os.replace(tmp, p)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+@app.get("/api/fs/list")
+def api_fs_list(path: str = "") -> Response:
+    """A directory's entries: dirs first, then everything else, alphabetical.
+
+    Dotfiles included — on this machine they are half of what anyone opens an
+    editor for. No path defaults to $HOME, which is where the session list's
+    folder button starts; `home` rides along so the client can shorten paths
+    under it to ~ without a second request.
+    """
+    p = fs_path(path or "~")
+    if p is None:
+        return fs_error("bad_path", 400)
+    if not p.exists():
+        return fs_error("not_found", 404)
+    if not p.is_dir():
+        return fs_error("not_a_directory", 400)
+    try:
+        names = os.listdir(p)
+    except OSError:
+        return fs_error("not_readable", 403)
+    entries = []
+    for name in names:
+        # Classified through the symlink, so a linked directory is enterable
+        # and a linked file editable. "link" is what remains — a broken link
+        # or a special file — which the client can only offer to download.
+        try:
+            st = os.stat(p / name)
+            kind = "dir" if stat.S_ISDIR(st.st_mode) else (
+                "file" if stat.S_ISREG(st.st_mode) else "link")
+        except OSError:
+            st, kind = None, "link"
+        entries.append({
+            "name": name,
+            "type": kind,
+            "size": st.st_size if st is not None and kind == "file" else 0,
+            "mtime": int(st.st_mtime) if st is not None else 0,
+        })
+    entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower(), e["name"]))
+    return no_store(JSONResponse(
+        {"path": str(p), "home": str(Path.home()), "entries": entries}))
+
+
+@app.get("/api/fs/read")
+def api_fs_read(path: str = "") -> Response:
+    """A text file's content, plus the hash the editor will write back against.
+
+    Binary (a null byte anywhere) is refused outright — there is nothing an
+    editor could show. Text that merely is not clean UTF-8 is decoded with
+    replacement characters instead and flagged `lossy`: the phone can still
+    *read* it, but writing the decoded form back would corrupt the file, so
+    the client opens it read-only.
+    """
+    p = fs_path(path)
+    if p is None:
+        return fs_error("bad_path", 400)
+    if not p.is_file():
+        return fs_error("not_found", 404)
+    try:
+        st = p.stat()
+        if st.st_size > MAX_TEXT_BYTES:
+            return fs_error("too_large", 413, size=st.st_size)
+        data = p.read_bytes()
+    except OSError:
+        return fs_error("not_readable", 403)
+    if b"\x00" in data:
+        return fs_error("binary_file", 415)
+    try:
+        content, lossy = data.decode("utf-8"), False
+    except UnicodeDecodeError:
+        content, lossy = data.decode("utf-8", errors="replace"), True
+    return no_store(JSONResponse({
+        "path": str(p), "content": content, "hash": fs_hash(data),
+        "size": len(data), "mtime": int(st.st_mtime), "lossy": lossy,
+    }))
+
+
+@app.post("/api/fs/write")
+def api_fs_write(body: dict = Body(...)) -> Response:
+    """Write a file atomically, guarded by the hash the editor read it at.
+
+    `hash` "" means "I am creating this file": an existing one answers 409
+    rather than being clobbered, exactly as a stale hash does — both are the
+    same fact, the file on disk is not what the editor thinks it is. The 409
+    carries what is there now (hash "" when the file is gone) and no content;
+    the client refetches, or resends against the reported hash to overwrite.
+    """
+    p = fs_path(str(body.get("path", "")))
+    if p is None:
+        return fs_error("bad_path", 400)
+    content = body.get("content")
+    if not isinstance(content, str):
+        return fs_error("bad_content", 400)
+    base = str(body.get("hash", "") or "")
+
+    try:
+        st = os.stat(p)
+    except OSError:
+        st = None
+    if st is not None and not stat.S_ISREG(st.st_mode):
+        return fs_error("not_a_file", 400)
+    current = fs_current_hash(p) if st is not None else ""
+    if current != base:
+        return fs_error("conflict", 409, hash=current,
+                        mtime=int(st.st_mtime) if st is not None else None)
+    if not p.parent.is_dir():
+        return fs_error("not_found", 404)
+
+    data = content.encode("utf-8")
+    try:
+        atomic_write(p, data, st.st_mode if st is not None else None)
+    except OSError:
+        return fs_error("not_writable", 403)
+    # The new token, so the editor keeps saving without a round-trip re-read.
+    return no_store(JSONResponse({"hash": fs_hash(data),
+                                  "mtime": int(os.stat(p).st_mtime)}))
+
+
+@app.post("/api/fs/mkdir")
+def api_fs_mkdir(body: dict = Body(...)) -> Response:
+    p = fs_path(str(body.get("path", "")))
+    if p is None:
+        return fs_error("bad_path", 400)
+    try:
+        os.mkdir(p)
+    except FileExistsError:
+        return fs_error("exists", 409)
+    except FileNotFoundError:
+        return fs_error("not_found", 404)
+    except OSError:
+        return fs_error("not_writable", 403)
+    return no_store(JSONResponse({"path": str(p)}))
+
+
+@app.post("/api/fs/rename")
+def api_fs_rename(body: dict = Body(...)) -> Response:
+    """Rename (or move) without clobbering: an existing destination is a 409.
+
+    Check-then-rename is not airtight against a concurrent create, but the
+    only other writer on this machine is the user's own shell — the check is
+    for honest answers, not locking.
+    """
+    src = fs_path(str(body.get("src", "")))
+    dst = fs_path(str(body.get("dst", "")))
+    if src is None or dst is None:
+        return fs_error("bad_path", 400)
+    if not os.path.lexists(src):
+        return fs_error("not_found", 404)
+    if os.path.lexists(dst):
+        return fs_error("exists", 409)
+    try:
+        os.rename(src, dst)
+    except OSError:
+        return fs_error("not_writable", 403)
+    return no_store(JSONResponse({"path": str(dst)}))
+
+
+@app.post("/api/fs/delete")
+def api_fs_delete(body: dict = Body(...)) -> Response:
+    """Delete a file; a directory only when it is already empty.
+
+    Deliberately no recursive mode: a tree is never one tap (or one fat-thumbed
+    confirm) from gone, and the shell — where rm -r asks nothing — is a tap
+    away for anyone who means it.
+    """
+    p = fs_path(str(body.get("path", "")))
+    if p is None:
+        return fs_error("bad_path", 400)
+    if not os.path.lexists(p):
+        return fs_error("not_found", 404)
+    try:
+        # A symlink to a directory is a link, and deleting it must remove the
+        # link — never walk into what it points at.
+        if p.is_dir() and not p.is_symlink():
+            os.rmdir(p)
+        else:
+            os.unlink(p)
+    except OSError as err:
+        # POSIX says ENOTEMPTY; some systems report EEXIST for the same fact.
+        if err.errno in (errno.ENOTEMPTY, errno.EEXIST):
+            return fs_error("not_empty", 409)
+        return fs_error("not_writable", 403)
+    return no_store(JSONResponse({"deleted": str(p)}))
+
+
+@app.post("/api/fs/upload")
+async def api_fs_upload(request: Request) -> Response:
+    """Store a raw upload at ?path=. Mirrors /api/transcribe's shape: the body
+    is the file itself, not a multipart form — the phone has exactly one file
+    to send, and this keeps python-multipart out of the dependency list.
+
+    No clobber unless ?overwrite=1, which the client only sends after asking.
+    """
+    raw = await request.body()
+    path = str(request.query_params.get("path", ""))
+    overwrite = request.query_params.get("overwrite", "") == "1"
+    return await run_in_threadpool(fs_store_upload, raw, path, overwrite)
+
+
+def fs_store_upload(raw: bytes, path: str, overwrite: bool) -> Response:
+    p = fs_path(path)
+    if p is None:
+        return fs_error("bad_path", 400)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        return fs_error("too_large", 413)
+    if not p.parent.is_dir():
+        return fs_error("not_found", 404)
+    mode = None
+    if os.path.lexists(p):
+        if not overwrite:
+            return fs_error("exists", 409)
+        if not p.is_file():
+            return fs_error("not_a_file", 400)
+        mode = os.stat(p).st_mode
+    try:
+        atomic_write(p, raw, mode)
+    except OSError:
+        return fs_error("not_writable", 403)
+    return no_store(JSONResponse({"path": str(p), "size": len(raw)}))
+
+
+@app.get("/api/fs/download")
+def api_fs_download(path: str = "") -> Response:
+    """Any file, as an attachment.
+
+    Distinct from /api/file, which stays a media-only inline route for the
+    terminal's tap-to-view: this one is the explorer's get-it-onto-the-phone
+    path, and it types nothing — the phone's own viewer decides.
+    """
+    p = fs_path(path)
+    if p is None or not p.is_file():
+        return fs_error("not_found", 404)
+    return no_store(FileResponse(p, media_type="application/octet-stream",
+                                 filename=p.name))
 
 
 # ---------------------------------------------------------------------------
