@@ -78,6 +78,9 @@ function openSettings(firstRun) {
   // show up without a reload.
   fetchVoiceStatus(true).then(syncVoicePicker);
   $("dbg-toggle").checked = cfg.debug;
+  $("snip-toggle").checked = cfg.snippetsOn;
+  $("snip-text").value = cfg.snippets;
+  $("snip-edit").classList.toggle("show", cfg.snippetsOn);
   $("sheet-title").textContent = firstRun ? "Connect your computer" : "Settings";
   $("sheet-note").classList.toggle("hide", !firstRun);
   // First run has nothing to go back to, so there is no cancelling out of it.
@@ -322,6 +325,19 @@ $("voice-engine").addEventListener("change", (e) => {
 $("dbg-toggle").addEventListener("change", (e) => {
   cfg.debug = e.target.checked;
   setDebug(e.target.checked);
+});
+// Applies on the tap, like the voice picker and debug switch: the row appears
+// and disappears behind the sheet as the switch moves, and Cancel must not
+// take that back.
+$("snip-toggle").addEventListener("change", (e) => {
+  cfg.snippetsOn = e.target.checked;
+  $("snip-edit").classList.toggle("show", e.target.checked);
+  syncSnipbar();
+});
+// Saved as typed — the box is the storage, line for line.
+$("snip-text").addEventListener("input", (e) => {
+  cfg.snippets = e.target.value;
+  syncSnipbar();
 });
 $("backend-token").addEventListener("input", (e) => {
   const input = e.target;

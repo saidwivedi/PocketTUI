@@ -132,6 +132,21 @@ const cfg = {
   // survives the upgrade rather than being silently reversed by the new
   // setting's ask-the-backend default.
   get legacyLocalVoiceOff() { return localStorage.getItem("pockettui_localvoice") === "0"; },
+  // The snippet row's commands, one per line, exactly as typed in Settings.
+  // Never-saved falls back to the starter set; a deliberately emptied box is
+  // kept empty rather than resurrected.
+  get snippets() {
+    const v = localStorage.getItem("pockettui_snippets");
+    return v === null ? "git status\nls -la\nhtop" : v;
+  },
+  set snippets(v) { localStorage.setItem("pockettui_snippets", v); },
+  // Whether the snippet row shows at all. Off by default: a second row costs
+  // terminal height, so it is opt-in from Settings.
+  get snippetsOn() { return localStorage.getItem("pockettui_snippets_on") === "1"; },
+  set snippetsOn(v) {
+    if (v) localStorage.setItem("pockettui_snippets_on", "1");
+    else localStorage.removeItem("pockettui_snippets_on");
+  },
   get debug() { return localStorage.getItem("pockettui_debug") === "1"; },
   set debug(v) {
     if (v) localStorage.setItem("pockettui_debug", "1");
