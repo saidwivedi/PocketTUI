@@ -18,6 +18,11 @@ const KEYS = [
   { label: "⏎",     seq: "\r",    narrow: true, cls: "span-2 k-enter", aria: "Enter" },
   { label: "⌫",     seq: "\x7f",  narrow: true, repeat: true, cls: "span-2 k-bs", aria: "Backspace" },
   { icon: "i-arrows", arrows: true, narrow: true, only: "collapsed", aria: "Show arrow keys" },
+  // The terminal's way into the file explorer, at the pane's own cwd.
+  // Collapsed-row only, so the expanded grid's hand-placed columns stay as
+  // they are — arrow work and file browsing are different errands anyway.
+  { icon: "i-folder", files: true, narrow: true, only: "collapsed",
+    aria: "Browse files in the session's folder" },
   { label: "←",     seq: "\x1b[D", narrow: true, repeat: true, cls: "k-left",  only: "expanded" },
   { label: "↓",     seq: "\x1b[B", narrow: true, repeat: true, cls: "k-down",  only: "expanded" },
   { label: "↑",     seq: "\x1b[A", narrow: true, repeat: true, cls: "k-up",    only: "expanded" },
