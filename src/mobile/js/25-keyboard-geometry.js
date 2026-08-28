@@ -52,6 +52,7 @@ function setKbInset(px) {
 function typingFocus() {
   const a = document.activeElement;
   if (!a) return false;
+  if (a.isContentEditable) return true;  // the editor's CodeMirror surface
   const tag = a.tagName;
   return tag === "TEXTAREA" || (tag === "INPUT" && !/^(button|checkbox|radio|submit)$/i.test(a.type));
 }
