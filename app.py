@@ -230,6 +230,66 @@ class AuthLimiter:
 LIMITER = AuthLimiter()
 
 
+class RateLimiter:
+    """Fixed-window request throttle, per (bucket, source IP).
+
+    AuthLimiter guards the token; this guards everything an *authenticated*
+    caller can do too fast — a stuck client retry loop creating sessions, or a
+    page of image links hammering /api/file. Same construction as its
+    neighbour: a dict, time.monotonic, and pruning on use, no external deps.
+
+    A bucket names one class of endpoint, so heavy legitimate traffic on one
+    (file serving) can never starve another (session mutation) of its own
+    allowance. Windows are fixed rather than sliding: the count starts with a
+    bucket's first request and the whole bucket forgets WINDOW seconds later,
+    which is coarse but cheap and plenty for limits this size.
+    """
+
+    WINDOW = 60.0
+
+    def __init__(self) -> None:
+        # (bucket, ip) -> (count, window start)
+        self.counts: dict[tuple[str, str], tuple[int, float]] = {}
+
+    def allow(self, bucket: str, ip: str, limit: int) -> float:
+        """Seconds this caller must wait, or 0.0 if the request may run now."""
+        now = time.monotonic()
+        for key, (_, started) in list(self.counts.items()):
+            if now - started >= self.WINDOW:
+                del self.counts[key]
+        key = (bucket, ip)
+        count, started = self.counts.get(key, (0, now))
+        if count >= limit:
+            return max(0.0, started + self.WINDOW - now)
+        self.counts[key] = (count + 1, started)
+        return 0.0
+
+
+RATE = RateLimiter()
+
+# Per-minute allowances. Session mutation (create/kill/rename) is something a
+# human does a few times an hour; the file route serves every image link on a
+# busy screen, so it gets room to breathe.
+RATE_SESSION_MUTATE = 20
+RATE_FILE = 120
+
+
+def throttled(bucket: str, limit: int, request: Request) -> Response | None:
+    """The 429 this request has earned, or None if it may proceed.
+
+    Called at the top of a handler, so only requests that already passed the
+    auth middleware are ever counted. The IP comes from the connection itself,
+    for the reason peer_ip() gives.
+    """
+    wait = RATE.allow(bucket, peer_ip(request.scope.get("client")), limit)
+    if wait <= 0:
+        return None
+    retry = max(1, math.ceil(wait))
+    return no_store(JSONResponse(
+        {"error": "rate_limited", "retry_after": retry},
+        status_code=429, headers={"Retry-After": str(retry)}))
+
+
 def peer_ip(scope_client) -> str:
     """The address the connection actually came from.
 
@@ -318,11 +378,18 @@ async def private_network(request: Request, call_next):
 # tmux helpers
 # ---------------------------------------------------------------------------
 
+# The tmux invocation every helper builds on. A list rather than a string so
+# tests can point the whole server at an isolated tmux server
+# (["tmux", "-L", "pockettui-test", "-f", "/dev/null"]) without touching the
+# user's real sessions.
+TMUX_BIN: list[str] = ["tmux"]
+
+
 def tmux(*args: str) -> tuple[int, str]:
     """Run a tmux command, returning (returncode, stdout). Never raises."""
     try:
         p = subprocess.run(
-            ["tmux", *args], capture_output=True, text=True, timeout=5
+            [*TMUX_BIN, *args], capture_output=True, text=True, timeout=5
         )
         return p.returncode, p.stdout
     except (OSError, subprocess.SubprocessError):
@@ -333,43 +400,114 @@ def session_exists(name: str) -> bool:
     return tmux("has-session", "-t", f"={name}")[0] == 0
 
 
-def list_sessions() -> list[dict]:
-    """All non-phone tmux sessions with their active pane's command, newest first."""
+def session_rows() -> list[dict]:
+    """Every tmux session, parsed, each carrying a group-representative flag.
+
+    A session group holds one session the user made plus this app's per-device
+    views of it, and only one member should ever stand for the group in the
+    list or be a valid target for alias/kill/rename. The representative is the
+    *oldest* member — not the one whose name matches the group, because the
+    group keeps its original name forever while `rename-session` changes the
+    session's: a renamed base would otherwise vanish from its own list. The
+    views are always younger (they are created by attaching to something
+    already listed), so oldest-member picks the user's session under any name.
+    Ungrouped sessions represent themselves.
+    """
     rc, out = tmux(
         "list-sessions",
         "-F",
         "#{session_name}\t#{session_created}\t#{session_attached}\t#{session_windows}"
-        "\t#{session_grouped}\t#{session_group}\t#{@alias}",
+        "\t#{session_grouped}\t#{session_group}\t#{session_id}\t#{@alias}",
     )
     if rc != 0:
         return []
 
-    sessions = []
+    rows = []
     for line in out.splitlines():
         # The alias field is still last and empty when unset, so split to a
         # fixed width rather than requiring every field to be present.
         parts = line.split("\t")
-        if len(parts) < 6:
+        if len(parts) < 7:
             continue
-        name, created, attached, windows, grouped, group = parts[:6]
-        alias = parts[6] if len(parts) > 6 else ""
-        # Hide the grouped clones — this app's own views are born grouped onto
-        # their target, which is race-free in a way a marker set after spawn is
-        # not. `new-session -t x` names the group after x, so the original keeps
-        # name == group and stays listed while every clone of it drops out. A
-        # user's own hand-made clone is hidden too, reasonably: it mirrors a
-        # session already on the list.
-        if grouped == "1" and name != group:
-            continue
-        cmd, title = active_pane(name)
-        sessions.append({
+        name, created, attached, windows, grouped, group, sid = parts[:7]
+        alias = parts[7] if len(parts) > 7 else ""
+        rows.append({
             "name": name,
             "created": int(created or 0),
             "attached": int(attached or 0),
             "windows": int(windows or 0),
+            "grouped": grouped == "1",
+            "group": group,
+            "sid": _session_sid(sid),
+            "alias": alias,
+        })
+
+    # Oldest member per group, ordered by session id: tmux hands ids out in
+    # creation order at full resolution, where session_created only has whole
+    # seconds — and a view *is* minted within the same second as its base often
+    # enough that a timestamp would tie exactly when it matters. The trailing
+    # fields only order rows an unparseable id has left tied.
+    oldest: dict[str, tuple[int, int, str]] = {}
+    for row in rows:
+        if not row["grouped"]:
+            continue
+        candidate = (row["sid"], row["created"], row["name"])
+        if row["group"] not in oldest or candidate < oldest[row["group"]]:
+            oldest[row["group"]] = candidate
+    for row in rows:
+        row["representative"] = (not row["grouped"]
+                                 or oldest[row["group"]][2] == row["name"])
+    return rows
+
+
+def _session_sid(raw: str) -> int:
+    """A #{session_id} ("$3") as its creation-ordered number; huge if unreadable,
+    so a malformed id merely loses the representative race instead of crashing
+    the whole list."""
+    try:
+        return int(raw.lstrip("$"))
+    except ValueError:
+        return 1 << 62
+
+
+def find_row(rows: list[dict], name: str) -> dict | None:
+    """The row for `name` out of a session_rows() result, or None."""
+    for row in rows:
+        if row["name"] == name:
+            return row
+    return None
+
+
+def other_group_members(rows: list[dict], row: dict) -> list[str]:
+    """The names of every other session in `row`'s group — this app's device
+    views of it, or the user's own hand-made clones. Empty for an ungrouped
+    session."""
+    if not row["grouped"]:
+        return []
+    return [r["name"] for r in rows
+            if r["grouped"] and r["group"] == row["group"]
+            and r["name"] != row["name"]]
+
+
+def list_sessions() -> list[dict]:
+    """All non-phone tmux sessions with their active pane's command, newest first."""
+    sessions = []
+    for row in session_rows():
+        # Hide the grouped non-representatives — this app's own views are born
+        # grouped onto their target, which is race-free in a way a marker set
+        # after spawn is not. A user's own hand-made clone is hidden too,
+        # reasonably: it mirrors a session already on the list.
+        if not row["representative"]:
+            continue
+        cmd, title = active_pane(row["name"])
+        sessions.append({
+            "name": row["name"],
+            "created": row["created"],
+            "attached": row["attached"],
+            "windows": row["windows"],
             "command": cmd,
             "title": title,
-            "alias": alias,
+            "alias": row["alias"],
         })
 
     sessions.sort(key=lambda s: s["created"], reverse=True)
@@ -411,6 +549,63 @@ def capture_pane(name: str, lines: int = 60) -> list[str]:
     if rc != 0:
         return []
     return [line.rstrip() for line in out.splitlines()][-lines:]
+
+
+# How much scrollback a reconnect replays. 500 lines is a few screens of
+# context — enough to read back through what happened while the phone was away,
+# small enough to send in one frame on a cellular link.
+REPLAY_LINES = 500
+
+# Hard ceiling on one replay frame. 500 lines only exceed this when something
+# printed pathologically long lines; the oldest are dropped rather than letting
+# one reconnect stall the socket behind megabytes of history.
+REPLAY_MAX_BYTES = 2 * 1024 * 1024
+
+
+def capture_history(name: str, lines: int = REPLAY_LINES) -> str:
+    """The tail of the active pane's *history* — the text above the visible
+    screen — or "" when there is nothing worth replaying.
+
+    Feeds the reconnect replay: the attach repaint restores the visible screen
+    itself, so `-E -1` stops one line short of it and nothing is painted twice.
+    `-e` keeps the SGR colors; `-J` joins tmux's soft-wrapped lines back
+    together so xterm rewraps them at the phone's own width.
+
+    A pane sitting in the alternate screen (htop, full-screen TUIs) answers ""
+    outright: its history belongs to the primary screen the user is not looking
+    at, and the attach repaint restores the TUI exactly as before.
+    """
+    # The active pane is filtered here rather than with `list-panes -f`, the
+    # way session_group avoids `list-sessions -f`: tmux 3.0a has no -f on the
+    # list commands at all, and passing it fails the whole command.
+    rc, out = tmux("list-panes", "-t", f"={name}",
+                   "-F", "#{pane_active}\t#{pane_id}\t#{alternate_on}")
+    if rc != 0:
+        return ""
+    pane = ""
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0] == "1":
+            pane = parts[1].strip()
+            if len(parts) > 2 and parts[2].strip() == "1":
+                return ""
+            break
+    if not pane:
+        return ""
+    rc, out = tmux("capture-pane", "-p", "-e", "-J", "-t", pane,
+                   "-S", f"-{max(0, lines)}", "-E", "-1")
+    if rc != 0:
+        return ""
+    text = out.rstrip("\n")
+    if len(text.encode("utf-8")) > REPLAY_MAX_BYTES:
+        kept = text.split("\n")
+        size = sum(len(line.encode("utf-8")) + 1 for line in kept)
+        drop = 0
+        while drop < len(kept) and size > REPLAY_MAX_BYTES:
+            size -= len(kept[drop].encode("utf-8")) + 1
+            drop += 1
+        text = "\n".join(kept[drop:])
+    return text
 
 
 def resolve_target(session: str, dev: str) -> str:
@@ -503,8 +698,8 @@ def attach_argv(target: str, view: str) -> list[str]:
     client of it) so the phone's window selection survives a dropout.
     """
     if session_exists(view):
-        return ["tmux", "attach", "-d", "-t", f"={view}"]
-    return ["tmux", "new-session", "-s", view, "-t", f"={target}"]
+        return [*TMUX_BIN, "attach", "-d", "-t", f"={view}"]
+    return [*TMUX_BIN, "new-session", "-s", view, "-t", f"={target}"]
 
 
 def enable_mouse(view: str) -> None:
@@ -682,10 +877,10 @@ def api_alias(body: dict = Body(...)) -> Response:
     the session under its real name.
     """
     name = str(body.get("session", ""))
-    # A grouped clone is one of this app's views (or the user's own mirror of a
-    # listed session), never something the list offers to rename.
-    grouped_as = session_group(name)
-    if not session_exists(name) or (grouped_as and grouped_as != name):
+    # A grouped non-representative is one of this app's views (or the user's
+    # own mirror of a listed session), never something the list offers to name.
+    row = find_row(session_rows(), name)
+    if row is None or not row["representative"]:
         return JSONResponse({"error": "no such session"}, status_code=404)
 
     alias = clean_alias(body.get("alias", ""))
@@ -697,6 +892,71 @@ def api_alias(body: dict = Body(...)) -> Response:
     if rc != 0:
         return JSONResponse({"error": "could not set alias"}, status_code=500)
     return no_store(JSONResponse({"session": name, "alias": alias}))
+
+
+@app.post("/api/session/kill")
+def api_session_kill(request: Request, body: dict = Body(...)) -> Response:
+    """Kill a session — and with it every device view grouped onto it.
+
+    Killing only the base would leave the grouped views holding the same
+    windows alive, so the whole group goes: views first, the base last, each by
+    exact name. Only the group's representative is a valid target, for the same
+    reason it is the only member the list shows.
+    """
+    refusal = throttled("session_mutate", RATE_SESSION_MUTATE, request)
+    if refusal is not None:
+        return refusal
+
+    name = str(body.get("session", ""))
+    rows = session_rows()
+    row = find_row(rows, name)
+    if row is None or not row["representative"]:
+        return JSONResponse({"error": "no such session"}, status_code=404)
+
+    for member in [*other_group_members(rows, row), name]:
+        rc, _ = tmux("kill-session", "-t", f"={member}")
+        if rc != 0:
+            return JSONResponse(
+                {"error": f"tmux could not kill '{member}'."}, status_code=500)
+    return no_store(JSONResponse({"killed": name}))
+
+
+@app.post("/api/session/rename")
+def api_session_rename(request: Request, body: dict = Body(...)) -> Response:
+    """Give a session a new real tmux name.
+
+    Distinct from /api/alias by design: the alias is the display name this app
+    shows, the rename is the name the user's own tooling addresses. `@alias` is
+    a session option and survives the rename untouched.
+
+    The device views grouped onto the session are killed first rather than
+    carried across — they are throwaway caches named after the old name, and
+    every phone reconnecting mints a fresh view against the new one.
+    """
+    refusal = throttled("session_mutate", RATE_SESSION_MUTATE, request)
+    if refusal is not None:
+        return refusal
+
+    old = str(body.get("session", ""))
+    rows = session_rows()
+    row = find_row(rows, old)
+    if row is None or not row["representative"]:
+        return JSONResponse({"error": "no such session"}, status_code=404)
+
+    new, error = validate_session_name(body.get("name", ""))
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+
+    for member in other_group_members(rows, row):
+        rc, _ = tmux("kill-session", "-t", f"={member}")
+        if rc != 0:
+            return JSONResponse(
+                {"error": f"tmux could not kill '{member}'."}, status_code=500)
+    rc, _ = tmux("rename-session", "-t", f"={old}", new)
+    if rc != 0:
+        return JSONResponse(
+            {"error": f"tmux could not rename '{old}'."}, status_code=500)
+    return no_store(JSONResponse({"session": new}))
 
 
 # ---------------------------------------------------------------------------
@@ -1745,12 +2005,16 @@ def api_learn(body: dict = Body(...)) -> Response:
 
 
 @app.post("/api/session")
-def api_new_session(body: dict = Body(...)) -> Response:
+def api_new_session(request: Request, body: dict = Body(...)) -> Response:
     """Create a detached tmux session the phone can then attach to.
 
     Detached because this server has no tty to attach from; the phone picks the
     session up over the usual WebSocket route once it appears in the list.
     """
+    refusal = throttled("session_mutate", RATE_SESSION_MUTATE, request)
+    if refusal is not None:
+        return refusal
+
     name, error = validate_session_name(body.get("name", ""))
     if error:
         return JSONResponse({"error": error}, status_code=400)
@@ -1815,7 +2079,7 @@ MEDIA_TYPES = {
 
 
 @app.get("/api/file")
-def api_file(path: str = "") -> Response:
+def api_file(request: Request, path: str = "") -> Response:
     """Serve an image or video by absolute path, for tap-to-view in the terminal.
 
     No restriction on where the file lives beyond the extension allowlist: this
@@ -1826,6 +2090,10 @@ def api_file(path: str = "") -> Response:
     check failed — or about what exists. Range requests (which iOS video needs)
     are handled by starlette's FileResponse itself.
     """
+    refusal = throttled("file", RATE_FILE, request)
+    if refusal is not None:
+        return refusal
+
     # Tools print paths with a leading ~ as often as expanded ones.
     if path.startswith("~"):
         path = str(Path.home()) + path[1:]
@@ -1963,18 +2231,28 @@ class Attachment:
     the outside is not enough — closing an fd out from under an add_reader does
     not reliably fire the callback, so the old handler would block forever on
     its queue and leave the browser holding a socket that never closes.
+
+    `notify()` is how anything else in this server speaks to the attached
+    client: a str lands on the same out queue the PTY bytes ride and pump_out
+    sends it as a *text* frame — the server→client control channel, which the
+    client reads as JSON where PTY bytes stay binary.
     """
 
-    __slots__ = ("pid", "fd", "done", "retired")
+    __slots__ = ("pid", "fd", "out", "done", "retired")
 
-    def __init__(self, pid: int, fd: int) -> None:
+    def __init__(self, pid: int, fd: int, out: asyncio.Queue) -> None:
         self.pid = pid
         self.fd = fd
+        self.out = out
         self.done = asyncio.Event()
         self.retired = asyncio.Event()
 
     def retire(self) -> None:
         self.retired.set()
+
+    def notify(self, text: str) -> None:
+        """Queue one JSON control message for this connection's client."""
+        self.out.put_nowait(text)
 
 
 def attach_lock(name: str) -> asyncio.Lock:
@@ -2041,6 +2319,20 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
     view = view_name(session_name, dev)
     log(f"conn {cid} view={view}")
 
+    # Replay the tail of the pane's scrollback before the PTY exists, so the
+    # frame is on the wire ahead of any attach output and the client can paint
+    # history first, repaint on top. The *view's* pane is captured when there is
+    # one — its own current window is what this device was looking at — falling
+    # back to the base session for a first open. Empty (fresh session, alt
+    # screen, capture failure) means no frame at all: the client then resets on
+    # the first binary frame instead, exactly as it does against an old server.
+    target = resolve_target(session_name, dev)
+    if target:
+        history = await asyncio.to_thread(capture_history, target)
+        if history:
+            await ws.send_text(json.dumps(
+                {"type": "replay", "data": history.replace("\n", "\r\n")}))
+
     # Retire the previous attachment and spawn ours as one atomic step, so two
     # connections can never have a live PTY for the same view at once.
     async with attach_lock(view):
@@ -2056,14 +2348,14 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                 log(f"conn {cid} previous attachment slow to exit; continuing")
         pid, fd = spawn_pty(attach_argv(session_name, view), cols, rows)
         os.set_blocking(fd, False)
-        me = Attachment(pid, fd)
+        # PTY reads land in this queue via add_reader; None marks the PTY
+        # closing. str items are JSON control messages (Attachment.notify).
+        out: asyncio.Queue = asyncio.Queue()
+        me = Attachment(pid, fd, out)
         ATTACHED[view] = me
 
     # Off-thread: enable_mouse polls for the just-spawned session.
     asyncio.create_task(asyncio.to_thread(enable_mouse, view))
-
-    # PTY reads land in this queue via add_reader; None marks the PTY closing.
-    out: asyncio.Queue = asyncio.Queue()
 
     def on_readable() -> None:
         try:
@@ -2086,7 +2378,12 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
             data = await out.get()
             if data is None:
                 break
-            await ws.send_bytes(data)
+            # Binary frames are raw PTY bytes; text frames are the JSON control
+            # channel (notify). The client tells them apart by frame type.
+            if isinstance(data, str):
+                await ws.send_text(data)
+            else:
+                await ws.send_bytes(data)
 
     async def pump_in() -> None:
         while True:
