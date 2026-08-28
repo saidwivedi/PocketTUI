@@ -10,6 +10,7 @@ function showSheet(on, id="sheet-settings") {
   if (voiceStep && !(on && id === "sheet-settings")) showVoiceStep(false);
   $("sheet-settings").classList.toggle("show", on && id === "sheet-settings");
   $("sheet-new").classList.toggle("show", on && id === "sheet-new");
+  $("sheet-session").classList.toggle("show", on && id === "sheet-session");
   $("sheet-scrim").classList.toggle("show", on);
 }
 
