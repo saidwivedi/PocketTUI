@@ -924,8 +924,8 @@ function keyboardUp() {
 
 // One-shot modifiers: a tap arms the modifier (lit), the next key consumes it and
 // it releases itself. Tapping an armed modifier again disarms it without sending
-// anything. Both compose, so ctrl+shift+key is two taps then the key.
-const mods = { ctrl: false, shift: false };
+// anything. All three compose, so ctrl+shift+key is two taps then the key.
+const mods = { ctrl: false, shift: false, alt: false };
 const modButtons = {};
 
 function setMod(name, on) {
@@ -936,6 +936,7 @@ function setMod(name, on) {
 function releaseMods() {
   setMod("ctrl", false);
   setMod("shift", false);
+  setMod("alt", false);
 }
 
 // Auto-repeat while an arrow is held, the way a real keyboard does: a pause to
@@ -946,22 +947,29 @@ const REPEAT_RATE = 110;    // ms between repeats at first
 const REPEAT_FAST = 45;     // ms between repeats once accelerated
 const REPEAT_RAMP = 1500;   // ms of holding before reaching REPEAT_FAST
 
-// A key's escape sequence, with any armed one-shot modifier applied. Arrows only
-// carry ctrl/shift meaningfully as a CSI parameter, which tmux and readline both
-// understand: ESC [ 1 ; <mod> <final>.
+// A key's escape sequence, with any armed one-shot modifier applied. Arrows and
+// Home/End carry all three meaningfully as a CSI parameter, which tmux and
+// readline both understand: ESC [ 1 ; <mod> <final>. Anything else takes an
+// armed alt as an ESC prefix — the meta convention, so alt+⌫ deletes a word —
+// while ctrl and shift have nothing portable to say there and pass it through.
 function seqWithMods(seq) {
-  const m = (mods.ctrl ? 4 : 0) + (mods.shift ? 1 : 0);
+  const m = (mods.ctrl ? 4 : 0) + (mods.alt ? 2 : 0) + (mods.shift ? 1 : 0);
   if (!m) return seq;
-  const csi = seq.match(/^\x1b\[([A-D])$/);
-  if (!csi) return seq;
-  return "\x1b[1;" + (m + 1) + csi[1];
+  const csi = seq.match(/^\x1b\[([A-DFH])$/);
+  if (csi) return "\x1b[1;" + (m + 1) + csi[1];
+  return mods.alt ? "\x1b" + seq : seq;
 }
 
 // Send a key-bar key, consuming any armed one-shot modifiers.
 function sendKey(seq) {
   send(seqWithMods(seq));
-  if (mods.ctrl || mods.shift) releaseMods();
+  if (mods.ctrl || mods.shift || mods.alt) releaseMods();
 }
+
+// A swipe up on a key sends its alternate instead (Termux-style). The travel
+// has to be deliberate — nearly a bar-height straight up, more up than across —
+// so the wobble inside a sloppy tap can never turn into one.
+const SWIPE_DIST = 30;   // px of upward travel before a press is a swipe
 
 (function buildKeybar() {
   const bar = $("keybar");
@@ -981,14 +989,29 @@ function sendKey(seq) {
     if (k.cls) b.classList.add(...k.cls.split(" "));
     if (k.only) b.classList.add(k.only + "-only");
     if (k.mod) modButtons[k.mod] = b;
+    // The alternate's corner hint. Decoration for the eye — a screen reader
+    // gets the tap meaning from the button itself.
+    if (k.swipe) b.appendChild(el("span", { class: "swipe-hint", "aria-hidden": "true" }, k.swipe.hint));
     // Every key but the focusing ones must leave focus exactly where it is:
     // stealing it would drop the soft keyboard, and handing it back would raise
     // one the user had just dismissed. pointerdown fires before focus moves.
     if (!k.focusing) b.addEventListener("pointerdown", e => e.preventDefault());
     b.addEventListener("mousedown", e => e.preventDefault());
 
+    // Swipe tracking, shared with the tap and repeat handlers below. Armed on
+    // every press, it watches the moves — the touch's implicit pointer capture
+    // keeps them coming to this button — and trips once the travel is
+    // unmistakably upward.
+    let swipeY = null, swipeX = 0, swiped = false;
+    const armSwipe = (e) => { swipeY = e.clientY; swipeX = e.clientX; swiped = false; };
+    const crossedUp = (e) => {
+      if (!k.swipe || swipeY === null) return false;
+      const dy = swipeY - e.clientY;
+      return dy >= SWIPE_DIST && dy > Math.abs(e.clientX - swipeX);
+    };
+
     if (k.repeat) {
-      let timer = null, startedAt = 0;
+      let timer = null, startedAt = 0, sent = false;
 
       const stop = () => {
         clearTimeout(timer);
@@ -996,7 +1019,7 @@ function sendKey(seq) {
         b.classList.remove("held");
       };
       const tick = () => {
-        // The first send already happened on pointerdown; every tick here is a
+        // The first send already happened by now; every tick here is a
         // repeat, so the modifiers are long since released.
         send(k.seq);
         // Ramp measured from the first repeat, so the rate starts at
@@ -1005,26 +1028,69 @@ function sendKey(seq) {
         const t = Math.min(1, Math.max(0, held) / REPEAT_RAMP);
         timer = setTimeout(tick, REPEAT_RATE + (REPEAT_FAST - REPEAT_RATE) * t);
       };
+      // A key with an alternate cannot send on pointerdown — bytes cannot be
+      // unsent once the press turns out to be a swipe — so its tap send waits
+      // for the gesture to declare itself: at the repeat delay for a hold
+      // (this, then tick() exactly where it always was, so a hold repeats at
+      // the same beat), at pointerup for a plain tap.
+      const commit = () => {
+        sent = true;
+        sendKey(k.seq);
+        tick();
+      };
 
       b.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         stop();
+        armSwipe(e);
+        sent = false;
         startedAt = Date.now();
-        sendKey(k.seq);              // the tap itself, modifiers applied
         b.classList.add("held");
-        timer = setTimeout(tick, REPEAT_DELAY);
+        if (k.swipe) {
+          timer = setTimeout(commit, REPEAT_DELAY);
+        } else {
+          sent = true;
+          sendKey(k.seq);            // the tap itself, modifiers applied
+          timer = setTimeout(tick, REPEAT_DELAY);
+        }
       });
-      for (const ev of ["pointerup", "pointercancel", "pointerleave"]) {
-        b.addEventListener(ev, stop);
+      // Once the hold has committed the press belongs to the repeat — moving
+      // up mid-delete is drift, not a request for the alternate.
+      b.addEventListener("pointermove", (e) => {
+        if (sent || swiped) return;
+        if (crossedUp(e)) { swiped = true; stop(); }
+      });
+      b.addEventListener("pointerup", () => {
+        const held = sent;
+        stop();
+        if (swiped) sendKey(k.swipe.seq);
+        else if (!held && swipeY !== null) sendKey(k.seq);   // the tap, deferred from pointerdown
+        swipeY = null;
+        swiped = false;
+      });
+      for (const ev of ["pointercancel", "pointerleave"]) {
+        b.addEventListener(ev, () => { stop(); swipeY = null; swiped = false; });
       }
-      // pointerdown already sent the key; the click that follows must not repeat
-      // it, whether or not the press turned into a hold.
+      // The press already sent whatever it meant; the click that follows must
+      // not repeat it, whether it turned into a tap, a hold or a swipe.
       b.addEventListener("click", e => e.preventDefault());
       bar.appendChild(b);
       continue;
     }
 
+    if (k.swipe) {
+      b.addEventListener("pointerdown", armSwipe);
+      b.addEventListener("pointermove", (e) => { if (!swiped && crossedUp(e)) swiped = true; });
+      b.addEventListener("pointerup", () => {
+        if (swiped) sendKey(k.swipe.seq);
+        // swiped stays up so the click that may still arrive stands down; the
+        // next press re-arms either way.
+        swipeY = null;
+      });
+      b.addEventListener("pointercancel", () => { swipeY = null; swiped = false; });
+    }
     b.addEventListener("click", () => {
+      if (swiped) { swiped = false; return; }   // the swipe already sent its alternate
       if (k.compose) { toggleCompose(); return; }
       if (k.arrows) { setArrows(true); return; }
       if (k.collapse) { setArrows(false); return; }
@@ -1056,17 +1122,20 @@ function pasteFromClipboard() {
 
 document.addEventListener("keydown", (e) => {
   if (!currentSession) return;
-  if (!mods.ctrl && !mods.shift) return;
+  if (!mods.ctrl && !mods.shift && !mods.alt) return;
   if (e.key.length !== 1) return;   // let real editing keys through untouched
   e.preventDefault();
   e.stopPropagation();
 
-  const ctrl = mods.ctrl, shift = mods.shift;
+  const ctrl = mods.ctrl, shift = mods.shift, alt = mods.alt;
   const upper = e.key.toUpperCase();
+  // Meta is an ESC prefix on whatever the other modifiers make of the key —
+  // ctrl+alt+X is ESC then ctrl+X, exactly as a real terminal spells it.
+  const esc = alt ? "\x1b" : "";
 
   // Past the early returns, so this key is definitely ours. Which branch takes it
   // is the whole question when a key bar combination comes out wrong.
-  const latched = (ctrl ? "ctrl" : "") + (ctrl && shift ? "+" : "") + (shift ? "shift" : "");
+  const latched = [ctrl && "ctrl", shift && "shift", alt && "alt"].filter(Boolean).join("+");
 
   if (ctrl && shift && upper === "V") {
     dbg("key:", e.key, "mods=" + latched, "-> paste");
@@ -1076,10 +1145,13 @@ document.addEventListener("keydown", (e) => {
     // terminal carries no shift bit here, so ctrl+shift+X is just ctrl+X.
     const c = upper.charCodeAt(0);
     dbg("key:", e.key, "mods=" + latched, "-> ctrl-seq");
-    send((c >= 64 && c <= 95) ? String.fromCharCode(c & 0x1f) : e.key);
-  } else {
+    send(esc + ((c >= 64 && c <= 95) ? String.fromCharCode(c & 0x1f) : e.key));
+  } else if (shift) {
     dbg("key:", e.key, "mods=" + latched, "-> shift-upper");
-    send(upper);
+    send(esc + upper);
+  } else {
+    dbg("key:", e.key, "mods=" + latched, "-> alt-esc");
+    send(esc + e.key);
   }
   releaseMods();
 }, true);
