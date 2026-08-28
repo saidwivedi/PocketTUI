@@ -483,6 +483,64 @@ html.term-open, body.term-open {
 #demo-badge:active { transform: scale(0.94); }
 
 /* ============================================================
+   SEARCH BAR — scrollback find, pinned to the top of the terminal
+   ============================================================ */
+/* The key bar and compose strip already dock the bottom edge, so search takes
+   the only edge left instead of covering either — same docked material as
+   both (blur backdrop, hairline seam), just anchored to the opposite side and
+   floating over the grid rather than pushing it, since it never has to share
+   its row with anything the way the bottom strips share the keyboard. */
+#search-bar {
+  display: none;
+  position: absolute;
+  left: 0; right: 0;
+  top: var(--safe-top);
+  z-index: 25;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(255, 253, 247, 0.94);
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  border-bottom: 1px solid var(--hair);
+}
+:root[data-theme="dark"] #search-bar { background: rgba(31, 28, 22, 0.94); }
+#search-bar.open { display: flex; }
+.search-icon {
+  flex: 0 0 auto;
+  width: 15px; height: 15px;
+  color: var(--tertiary);
+  margin-left: 4px;
+}
+#search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding: 7px 10px;
+  transition: border-color 0.18s var(--ease-out);
+}
+#search-input:focus { border-color: var(--umber); outline: none; }
+#search-bar button {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--secondary);
+  padding: 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: color 0.18s var(--ease-out), background 0.18s var(--ease-out);
+}
+#search-bar button svg { width: 16px; height: 16px; }
+#search-bar button:hover { color: var(--ink); background: var(--umber-tint); }
+#search-bar button:active { transform: scale(0.94); }
+
+/* ============================================================
    COMPOSE STRIP — dictation staging, above the key bar
    ============================================================ */
 /* Dictating straight into xterm's hidden textarea duplicates the text: xterm's

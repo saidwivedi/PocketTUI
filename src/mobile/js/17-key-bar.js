@@ -18,6 +18,13 @@ const KEYS = [
   { label: "⏎",     seq: "\r",    narrow: true, cls: "span-2 k-enter", aria: "Enter" },
   { label: "⌫",     seq: "\x7f",  narrow: true, repeat: true, cls: "span-2 k-bs", aria: "Backspace" },
   { icon: "i-arrows", arrows: true, narrow: true, only: "collapsed", aria: "Show arrow keys" },
+  // Collapsed-only, like the arrows toggle above: the expanded row is a full
+  // 10-column grid with every cell already spoken for (see .keybar.expanded
+  // below), and search is a scrollback errand rather than something the
+  // arrow-editing workflow needs beside it. focusing for the same reason the
+  // compose key is: opening search means putting the caret in its field.
+  { icon: "i-search", search: true, focusing: true, narrow: true, only: "collapsed",
+    aria: "Find in scrollback" },
   { label: "←",     seq: "\x1b[D", narrow: true, repeat: true, cls: "k-left",  only: "expanded" },
   { label: "↓",     seq: "\x1b[B", narrow: true, repeat: true, cls: "k-down",  only: "expanded" },
   { label: "↑",     seq: "\x1b[A", narrow: true, repeat: true, cls: "k-up",    only: "expanded" },

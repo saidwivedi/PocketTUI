@@ -81,7 +81,8 @@ JS_FRAGMENTS = (
     "23-long-press-select.js",
     "24-pinch-zoom.js",
     "25-keyboard-geometry.js",
-    "26-boot.js",
+    "26-scrollback-search.js",
+    "27-boot.js",
 )
 
 
