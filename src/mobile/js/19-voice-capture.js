@@ -13,6 +13,13 @@
 // each falls back to the phone's own dictation, which is what this app did
 // before and always works.
 const REC_TIMEOUT = 30000;   // ms before an upload is abandoned
+// Must match MAX_AUDIO_SECONDS in app.py: the server's ffmpeg decode silently
+// drops anything past that cap, so the client stops the take itself rather
+// than let the user keep talking into audio that will never be transcribed.
+const REC_MAX_SECONDS = 90;
+// How long before the cap the elapsed label switches to a countdown, so the
+// stop is never a surprise.
+const REC_WARN_SECONDS = 10;
 // iOS gives audio/mp4 (AAC) and nothing else; Chrome and Firefox give webm/opus.
 // Preference order rather than a single guess, because MediaRecorder throws on a
 // type it cannot produce and the default is unnamed in the response headers.
@@ -475,8 +482,12 @@ function recSetLabel(text) {
 
 function recTick() {
   const s = Math.floor((performance.now() - recStarted) / 1000);
+  if (s >= REC_MAX_SECONDS) { stopRecording(); return; }
+  const remaining = REC_MAX_SECONDS - s;
   $("compose-rec").querySelector(".elapsed").textContent =
-    Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+    remaining <= REC_WARN_SECONDS
+      ? "stops in " + remaining + "s"
+      : Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
 }
 
 // Something in the capture path failed. Say so briefly, then behave exactly as
@@ -707,7 +718,7 @@ async function uploadRecording(blob) {
     const text = data && typeof data.text === "string" ? data.text.trim() : "";
     recBusy = false;
     recAbort = null;
-    codeMicFinish(text);
+    codeMicFinish(text, !!(data && data.truncated));
   } catch (e) {
     if (!recBusy) return;      // our own abort unwinding
     voiceFallToPhone("Voice server unavailable — using phone dictation");
@@ -731,7 +742,7 @@ async function uploadRecording(blob) {
 // recorded at the tap — the field has been blurred and hidden behind the
 // indicator ever since, so it cannot have moved, and reading it back off a
 // blurred textarea is not reliable across engines.
-function codeMicFinish(text) {
+function codeMicFinish(text, truncated) {
   recClearUI();
   if (!text) { toast("Nothing heard"); return; }
   const ta = $("compose-text"), v = ta.value;
@@ -759,6 +770,10 @@ function codeMicFinish(text) {
   const caret = start + lead.length + text.length;
   try { ta.setSelectionRange(caret, caret); } catch (e) {}
   composeGrow();
+  // The server cuts the decode at MAX_AUDIO_SECONDS and drops the rest without
+  // saying so in the transcript itself — the only way the user learns their
+  // recording was cut short is this toast.
+  if (truncated) toast("Recording was cut at 90 seconds");
 }
 
 // The pre-audio behaviour, kept whole as the fallback: the browser's own

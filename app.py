@@ -1697,10 +1697,18 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
                 duration_s = getattr(check, "duration_s", 0.0)
                 peak_rms = getattr(check, "peak_rms", 0.0)
                 max_frame_rms = getattr(check, "max_frame_rms", 0.0)
+                # ffmpeg's `-t MAX_AUDIO_SECONDS` decode cap silently drops
+                # anything past it; the client needs to know its upload was
+                # cut short even when what survived reads as silence.
+                truncated = duration_s >= MAX_AUDIO_SECONDS - 0.05
                 log(f"transcribe content-type={content_type!r} bytes={len(raw)} "
                     f"duration={duration_s:.2f}s peak={peak_rms:.4f} "
-                    f"max_frame_rms={max_frame_rms:.4f} silent=yes ms=0 raw=''")
-                return no_store(JSONResponse({"text": "", "raw": "", "ms": 0}))
+                    f"max_frame_rms={max_frame_rms:.4f} silent=yes "
+                    f"truncated={truncated} ms=0 raw=''")
+                payload = {"text": "", "raw": "", "ms": 0}
+                if truncated:
+                    payload["truncated"] = True
+                return no_store(JSONResponse(payload))
 
             # Gathered before the transcript so the prompt can steer the decode,
             # and reused after it for the register and the vocabulary index.
@@ -1764,21 +1772,27 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
             decode_ms = int((time.monotonic() - decode_started) * 1000)
             ms = int((time.monotonic() - started) * 1000)
 
+        truncated = check.duration_s >= MAX_AUDIO_SECONDS - 0.05
         log(f"transcribe content-type={content_type!r} bytes={len(raw)} "
             f"duration={check.duration_s:.2f}s peak={check.peak_rms:.4f} "
             f"max_frame_rms={check.max_frame_rms:.4f} silent=no "
-            f"engine={engine} hotwords={hotword_count} "
+            f"truncated={truncated} engine={engine} hotwords={hotword_count} "
             f"decode_ms={decode_ms} ms={ms} raw={text[:80]!r}")
 
         if not text:
-            return no_store(JSONResponse({"text": "", "raw": "", "ms": ms}))
+            payload = {"text": "", "raw": "", "ms": ms}
+            if truncated:
+                payload["truncated"] = True
+            return no_store(JSONResponse(payload))
 
         result = resolver.resolve(text, screen=screen, cwd=cwd,
                                   tmux_names=tmux_names(),
                                   budget=TRANSCRIBE_BUDGET_S, asr=True,
                                   extra_vocab=history)
-        return no_store(JSONResponse(
-            {"text": result["text"], "raw": text, "ms": ms}))
+        payload = {"text": result["text"], "raw": text, "ms": ms}
+        if truncated:
+            payload["truncated"] = True
+        return no_store(JSONResponse(payload))
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "transcribe_timeout"}, status_code=500)
     except Exception:  # noqa: BLE001 — the phone gets a shape, never a traceback

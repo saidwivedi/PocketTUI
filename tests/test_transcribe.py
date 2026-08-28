@@ -1133,6 +1133,30 @@ def test_silence_skips_whisper_entirely(installed, monkeypatch, no_tmux):
     assert body(response) == {"text": "", "raw": "", "ms": 0}
 
 
+def test_a_clip_that_hit_the_decode_cap_is_flagged_truncated(installed, monkeypatch,
+                                                              at_a_shell):
+    """ffmpeg's `-t MAX_AUDIO_SECONDS` silently drops anything past the cap —
+    the phone can only know its recording was cut short if the reply says so.
+    """
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "is_silent",
+                        lambda wav: A.SilenceCheck(False, duration_s=A.MAX_AUDIO_SECONDS))
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
+    response = A.transcribe(b"audio bytes", "work", "phone")
+    assert body(response)["truncated"] is True
+
+
+def test_a_short_clip_is_not_flagged_truncated(installed, monkeypatch, at_a_shell):
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "is_silent",
+                        lambda wav: A.SilenceCheck(False, duration_s=3.0))
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
+    response = A.transcribe(b"audio bytes", "work", "phone")
+    assert "truncated" not in body(response)
+
+
 # ---------------------------------------------------------------------------
 # decode_audio: fragmented-mp4 (iOS) regression
 # ---------------------------------------------------------------------------
