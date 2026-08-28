@@ -55,6 +55,11 @@ const REC_WARN_MS = 1500;
 // double-tap behind it, short enough that a user who genuinely changes their
 // mind about a slow upload is not made to wait.
 const REC_CANCEL_GRACE = 700;
+// How long a failed upload waits before its one automatic retry. Only the
+// network failure gets that retry — a phone that lost the tailnet for a second
+// while walking between rooms is back a moment later, and asking the user to tap
+// for something that fixes itself is worse than the second's delay.
+const REC_RETRY_DELAY = 1500;
 // Stamped onto the upload URL so a server log says which shell build sent the
 // audio. Declared here rather than read from SW_VERSION, which is defined at the
 // very bottom of this script.
@@ -116,6 +121,28 @@ let recCaretStart = null, recCaretEnd = null;
 // Which backend engine the take in hand was started for. Fixed at the tap so a
 // setting changed while the user is still speaking cannot redirect the audio.
 let recEngine = "";
+
+// A recorded take whose upload failed in a way that says nothing about the
+// engine — a timeout, a dropped network, one server error. The audio is the
+// expensive part and it is still in hand, so it is kept with everything the
+// insertion needs (which engine it was spoken to, where in the box it was meant
+// to land) and offered back as a one-tap retry rather than thrown away.
+//
+// One slot only. A second failed take replaces the first: the user has moved on
+// and spoken again, and a queue of stale audio is not something anyone wants to
+// arbitrate. Cleared on a successful insert, on an explicit dismiss, and
+// whenever the session latches to the phone — a pending take for an engine the
+// session has given up on can never be retried.
+let recPending = null;
+// Whether the take in hand has already spent its one automatic network retry.
+// Per take, not per session: the next recording deserves the same second chance.
+let recNetRetried = false;
+// Consecutive 5xx answers from the transcribe route. One is a transcription that
+// fell over — a bad decode, a model that faulted on this particular audio — and
+// the next take usually works. Two in a row is the backend, so the session
+// latches to the phone at that point rather than eating every take. Any success
+// resets it.
+let recServerFails = 0;
 
 // The single code-mode transcript inserted since the last send, as it was
 // inserted. null means none; "" means more than one, which is not a usable
@@ -247,6 +274,9 @@ async function fetchVoiceStatus(force) {
 // recBroken and is about the capture hardware; this is about the backend.
 function voiceFallToPhone(msg) {
   voiceForcedPhone = true;
+  // Whatever audio was being held for a retry is unretryable now: the retry
+  // would go to the same engine this session has just given up on.
+  recDropPending();
   cancelRecording();
   if (msg) toast(msg);
 }
@@ -531,6 +561,10 @@ function startRecording() {
   recPeak = 0;
   recRevived = false;
   recWarned = false;
+  recNetRetried = false;
+  // A take is starting, so the hint has to come down even though its slot lives
+  // on: recStarting is a state recSyncMic() is never told about.
+  recSyncHint();
   // Before anything can await: this is inside the tap, and both creating and
   // resuming an AudioContext need that gesture. It is also the fix itself as
   // often as it is the measurement — an iOS audio session woken here hands over
@@ -670,10 +704,23 @@ function stopRecording() {
 
 // The captured audio, as raw body with the context the server needs in the query
 // string. Raw rather than multipart so the backend needs no form parser.
+//
+// How a failure ends decides what happens to the audio, because the failures are
+// not the same failure. A 404 or a not_setup 503 is the engine saying it is not
+// there, which the next tap would hit just as hard — those latch the session to
+// the phone, as they always have. Everything else is circumstantial: a slow
+// model, a phone that walked out of tailnet range, one transcription that fell
+// over. Those keep the blob, because re-recording a sentence the microphone
+// already captured perfectly is the one thing the user should never be asked to
+// do, and offer it back through the retry hint.
 async function uploadRecording(blob) {
   const ctl = new AbortController();
   recAbort = ctl;
   const timer = setTimeout(() => ctl.abort(), REC_TIMEOUT);
+  // Whether this attempt handed the take on to a second one rather than ending
+  // it. Read by the teardown below, which must not tidy away state the attempt
+  // it scheduled still needs.
+  let retrying = false;
   try {
     const url = recTranscribeURL(recEngine);
     const r = await fetch(url, {
@@ -705,32 +752,173 @@ async function uploadRecording(blob) {
         voiceStatusChecked = false;   // the picker re-asks next time it opens
         recBusy = false;
         recAbort = null;
+        // Nothing kept: a retry would go to the engine that just said it does
+        // not exist.
+        recDropPending();
         recClearUI();
         toast(REC_NO_VOICE_MSG);
         return;
       }
     }
-    // Every other non-200 is the same answer — 404 from an old backend, 500 from
-    // a failed transcription. The user gets dictation, not a diagnosis.
-    if (!r.ok) { voiceFallToPhone("Voice server unavailable — using phone dictation"); return; }
+    // An old backend with no transcribe route at all. Every later take would get
+    // the same 404, so the session goes to the phone exactly as not_setup does.
+    if (r.status === 404) {
+      voiceFallToPhone("Voice server unavailable — using phone dictation");
+      return;
+    }
+    if (!r.ok) {
+      // A server that answered, badly. The first one is treated as this take's
+      // bad luck — the audio is kept and offered back — and only a second in a
+      // row is read as the backend itself being unwell.
+      recServerFails++;
+      if (recServerFails >= 2) {
+        voiceFallToPhone("Voice server unavailable — using phone dictation");
+      } else {
+        recKeepPending(blob, "Transcription failed");
+      }
+      return;
+    }
     const data = await r.json();
     if (!recBusy) return;
     const text = data && typeof data.text === "string" ? data.text.trim() : "";
     recBusy = false;
     recAbort = null;
+    // An answer, which is what the counter was counting the absence of.
+    recServerFails = 0;
+    recDropPending();
     codeMicFinish(text, !!(data && data.truncated));
   } catch (e) {
     if (!recBusy) return;      // our own abort unwinding
-    voiceFallToPhone("Voice server unavailable — using phone dictation");
+    // The 30s timer fired. The audio is fine and the server may simply be slow
+    // on a long take, so this neither latches nor retries by itself — a second
+    // automatic 30s wait is a minute of nothing. The user decides.
+    if (e && e.name === "AbortError") {
+      recKeepPending(blob, "Transcription timed out");
+      return;
+    }
+    // fetch() rejecting for any other reason is the network: no response ever
+    // arrived, so this says nothing about the engine. Worth exactly one silent
+    // retry — a phone changing cells or waking its radio is back within the
+    // second — and after that it is the user's call.
+    if (!recNetRetried) {
+      recNetRetried = true;
+      retrying = true;
+      setTimeout(() => {
+        // Still the same take, still wanted: a cancel, a new recording or a
+        // teardown in the meantime all clear recBusy, and the retry must not
+        // resurrect audio the user has already walked away from.
+        if (!recBusy) return;
+        uploadRecording(blob);
+      }, REC_RETRY_DELAY);
+      return;
+    }
+    recKeepPending(blob, "Voice server unreachable");
   } finally {
     clearTimeout(timer);
     if (recAbort === ctl) recAbort = null;
     // The upload this stop tap started has settled, so the window it opened is
     // spent — however it ended. Left standing it would only ever shorten the
-    // grace the next take is owed.
-    recStoppedAt = 0;
+    // grace the next take is owed. The automatic network retry is the one
+    // ending that is not an ending: a no-network fetch rejects in a millisecond
+    // or two, well inside the grace, and clearing the window there would hand
+    // the stop tap's own ghost click a live cancel to fire.
+    if (!retrying) recStoppedAt = 0;
   }
 }
+
+// Park a take that failed for a reason the engine is not to blame for, and put
+// the hint up offering it back. Everything the insertion would have used is
+// stored with the blob: the engine, so a setting changed in the meantime cannot
+// redirect audio the user already spoke to Parakeet, and the caret, so the retry
+// lands where the take was meant to land rather than at the end of whatever has
+// been typed since.
+//
+// recBusy is cleared before the teardown, because recClearUI() ends in
+// recSyncMic() and the hint it raises there must see a screen that is already
+// quiet — a bar that only appeared on the next state change would leave the
+// failure toast as the sole trace of a take still sitting in hand.
+function recKeepPending(blob, why) {
+  recBusy = false;
+  recAbort = null;
+  recPending = {
+    blob: blob,
+    engine: recEngine,
+    caretStart: recCaretStart,
+    caretEnd: recCaretEnd,
+  };
+  // recClearUI() ends in recSyncMic(), which is what actually raises the hint.
+  recClearUI();
+  toast(why + " — tap Retry to try again");
+}
+
+// Forget the parked take. Called on every ending that makes it meaningless: a
+// transcript landed, the user dismissed it, the session gave up on the engine.
+function recDropPending() {
+  recPending = null;
+  recSyncHint();
+}
+
+// Send the parked audio again. The whole take is restored first — the engine it
+// was spoken to, the caret it was aimed at — so this is the original upload
+// running a second time rather than a new one that happens to carry old audio.
+function retryPendingTake() {
+  if (!recPending || recBusy || recording()) return;
+  const p = recPending;
+  recPending = null;
+  recEngine = p.engine;
+  recCaretStart = p.caretStart;
+  recCaretEnd = p.caretEnd;
+  // A fresh take's worth of allowances: this attempt gets its own network retry.
+  // recServerFails is deliberately not reset — a retry that comes back 5xx again
+  // is the second consecutive one, which is exactly what should latch.
+  recNetRetried = false;
+  // Set before the UI, so the recSyncMic() below takes the hint down with it and
+  // the mic key reads as the cancel it now is.
+  recBusy = true;
+  // The same busy indicator a stop tap raises, in the same order: strip up but
+  // quiet so the terminal stays visible, the label saying what is happening, and
+  // the live-capture ornaments hidden because nothing is being captured.
+  if (!composeOpen) setCompose(true, true);
+  $("compose").classList.add("recording");
+  recSyncMic();
+  recSetLabel("Transcribing…");
+  const rec = $("compose-rec");
+  rec.querySelector(".dot").style.visibility = "hidden";
+  const bar = rec.querySelector(".level");
+  if (bar) bar.style.visibility = "hidden";
+  // No take is running, so the counter left over from the one that failed would
+  // be a stopped clock sitting beside a live label.
+  rec.querySelector(".elapsed").textContent = "";
+  uploadRecording(p.blob);
+}
+
+// The hint is offered only when there is nothing else going on. While a take is
+// recording or an upload is in flight the strip is already saying what is
+// happening, and a second bar underneath it offering to retry a different take
+// would be one thing too many to read at a glance. The slot survives either way,
+// so this puts the hint back the moment the screen is quiet again.
+function recSyncHint() {
+  const bar = $("voice-retry");
+  if (!bar) return;
+  const show = !!recPending && !recBusy && !recStarting && !recording();
+  if (bar.classList.contains("show") === show) return;
+  bar.classList.toggle("show", show);
+  // A flex sibling of the terminal, so raising it takes rows away from the grid
+  // the same way the compose strip does.
+  refit(0);
+}
+
+(function bindVoiceRetry() {
+  const bar = $("voice-retry");
+  if (!bar) return;
+  // Same treatment as every key-bar control: the tap must not pull focus out of
+  // the compose field, which would drop the keyboard the user is typing under.
+  for (const ev of ["pointerdown", "mousedown"]) {
+    bar.addEventListener(ev, e => e.preventDefault());
+  }
+  $("voice-retry-go").addEventListener("click", () => retryPendingTake());
+  $("voice-retry-dismiss").addEventListener("click", () => recDropPending());
+})();
 
 // The transcript arrives as a proposal, not a command: it goes into the box for
 // the user to read, fix and send, exactly like something thumb-typed.
@@ -806,6 +994,10 @@ function recSyncMic() {
     live ? "Stop recording and transcribe"
     : recBusy ? "Cancel transcription"
     : "Show or hide compose bar");
+  // Every path that moves the capture state machine already lands here, which
+  // makes it the one place the retry hint has to be told the screen got busy or
+  // quiet again — rather than each of those paths remembering to say so.
+  recSyncHint();
 }
 
 // Ask the backend whether it can transcribe at all, before a word is spoken.
