@@ -482,6 +482,47 @@ html.term-open, body.term-open {
 #demo-badge.show { display: block; }
 #demo-badge:active { transform: scale(0.94); }
 
+/* Backend-unreachable banner — the persistent cousin of the "Reconnecting…"
+   toast, floated over the grid's top. Same ink-on-paper chip as the toast and
+   the selection pill, but it stays up until the socket comes back. */
+#conn-banner {
+  position: absolute;
+  top: calc(var(--safe-top) + 8px);
+  left: 10px; right: 10px;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 16px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
+}
+#conn-banner.show { display: flex; }
+#conn-banner .msg { flex: 1 1 auto; min-width: 0; }
+#conn-banner button {
+  flex: 0 0 auto;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--paper);
+  background: color-mix(in srgb, var(--paper) 14%, transparent);
+  border: none;
+  border-radius: 999px;
+  min-height: 30px;
+  padding: 0 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-user-select: none; user-select: none;
+}
+#conn-banner button:active { background: color-mix(in srgb, var(--paper) 26%, transparent); }
+
 /* ============================================================
    COMPOSE STRIP — dictation staging, above the key bar
    ============================================================ */
