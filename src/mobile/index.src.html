@@ -200,6 +200,9 @@
       <button type="button" id="compose-send" aria-label="Send"><svg><use href="#i-send"/></svg></button>
     </div>
   </div>
+  <!-- Optional quick-command chips, built from Settings; hidden until the
+       toggle there turns them on. -->
+  <div class="snipbar" id="snipbar"></div>
   <div class="keybar" id="keybar"></div>
 </div>
 
@@ -272,6 +275,19 @@
        this button rather than the Save above, which has already done its job. -->
   <div class="actions" id="voice-confirm-row">
     <button type="button" id="btn-voice-confirm">Confirm</button>
+  </div>
+  <!-- The optional quick-command row above the key bar. The switch is the
+       feature; the box appears with it, one command per line, and every edit
+       applies as it is typed — there is no save step for it to miss. -->
+  <div class="toggle-row">
+    <label for="snip-toggle">Quick commands</label>
+    <input id="snip-toggle" type="checkbox">
+  </div>
+  <div id="snip-edit">
+    <label for="snip-text" class="opt">Commands <span>one per line</span></label>
+    <textarea id="snip-text" rows="4" autocapitalize="off" autocorrect="off"
+              spellcheck="false" autocomplete="off"
+              placeholder="git status"></textarea>
   </div>
   <!-- Last in the sheet because it is a diagnostic, not part of connecting. -->
   <div class="toggle-row">

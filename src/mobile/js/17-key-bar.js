@@ -6,29 +6,44 @@
 // the expanded state, `only` which state a key appears in — the DOM is built once
 // and never rebuilt, so armed modifiers and in-flight auto-repeat survive a
 // toggle. Order here is the collapsed order and the grid's auto-placement order.
+// `swipe` is a key's swipe-up alternate, Termux-style: `seq` is what an upward
+// swipe sends instead of the tap, `hint` the whisper in the key's corner that
+// says so. Toggles (arrows, mic, close) carry none — they have no seq to trade.
 const KEYS = [
-  { label: "esc",   seq: "\x1b",  cls: "span-2" },
-  { label: "tab",   seq: "\t",    cls: "span-2" },
-  { label: "ctrl",  mod: "ctrl",  cls: "span-2" },
-  { label: "shift", mod: "shift", cls: "span-2" },
+  { label: "esc",   seq: "\x1b",  cls: "span-2", swipe: { seq: "`", hint: "`" } },
+  { label: "tab",   seq: "\t",    cls: "span-2", swipe: { seq: "|", hint: "|" } },
+  { label: "ctrl",  mod: "ctrl",  cls: "span-2", swipe: { seq: "~", hint: "~" } },
+  { label: "shift", mod: "shift", cls: "span-2", swipe: { seq: "_", hint: "_" } },
+  // Meta, for the line editors: alt+b/f/. and friends arrive as ESC-prefixed
+  // characters, composed in seqWithMods and the typed-character hook exactly
+  // like ctrl and shift are.
+  { label: "alt",   mod: "alt",   cls: "span-2", swipe: { seq: "/", hint: "/" } },
   // A terminal's Enter is a carriage return; \n would send a bare line feed that
   // readline and tmux both read as ctrl+J instead. No repeat — a held Enter
   // firing a shell command over and over is never what a thumb meant. narrow,
   // so the glyph keys — enter, backspace, arrows, mic — all share one width.
-  { label: "⏎",     seq: "\r",    narrow: true, cls: "span-2 k-enter", aria: "Enter" },
-  { label: "⌫",     seq: "\x7f",  narrow: true, repeat: true, cls: "span-2 k-bs", aria: "Backspace" },
+  { label: "⏎",     seq: "\r",    narrow: true, cls: "span-2 k-enter", aria: "Enter",
+    swipe: { seq: "-", hint: "-" } },
+  { label: "⌫",     seq: "\x7f",  narrow: true, repeat: true, cls: "span-2 k-bs", aria: "Backspace",
+    swipe: { seq: "\x1b[3~", hint: "del" } },
   { icon: "i-arrows", arrows: true, narrow: true, only: "collapsed", aria: "Show arrow keys" },
   // Collapsed-only, like the arrows toggle above: the expanded row is a full
-  // 10-column grid with every cell already spoken for (see .keybar.expanded
-  // below), and search is a scrollback errand rather than something the
-  // arrow-editing workflow needs beside it. focusing for the same reason the
-  // compose key is: opening search means putting the caret in its field.
+  // grid with every cell already spoken for (see .keybar.expanded below), and
+  // search is a scrollback errand rather than something the arrow-editing
+  // workflow needs beside it. focusing for the same reason the compose key is:
+  // opening search means putting the caret in its field.
   { icon: "i-search", search: true, focusing: true, narrow: true, only: "collapsed",
     aria: "Find in scrollback" },
-  { label: "←",     seq: "\x1b[D", narrow: true, repeat: true, cls: "k-left",  only: "expanded" },
-  { label: "↓",     seq: "\x1b[B", narrow: true, repeat: true, cls: "k-down",  only: "expanded" },
-  { label: "↑",     seq: "\x1b[A", narrow: true, repeat: true, cls: "k-up",    only: "expanded" },
-  { label: "→",     seq: "\x1b[C", narrow: true, repeat: true, cls: "k-right", only: "expanded" },
+  // The arrows' alternates are the nav keys that live beside them on a real
+  // keyboard: Home/End across, PgUp/PgDn along.
+  { label: "←",     seq: "\x1b[D", narrow: true, repeat: true, cls: "k-left",  only: "expanded",
+    swipe: { seq: "\x1b[H",  hint: "⇤" } },
+  { label: "↓",     seq: "\x1b[B", narrow: true, repeat: true, cls: "k-down",  only: "expanded",
+    swipe: { seq: "\x1b[6~", hint: "⇟" } },
+  { label: "↑",     seq: "\x1b[A", narrow: true, repeat: true, cls: "k-up",    only: "expanded",
+    swipe: { seq: "\x1b[5~", hint: "⇞" } },
+  { label: "→",     seq: "\x1b[C", narrow: true, repeat: true, cls: "k-right", only: "expanded",
+    swipe: { seq: "\x1b[F",  hint: "⇥" } },
   // Focus is the point of this key, not a side effect — it opens the compose
   // strip and puts the caret in it, so it shares the keyboard toggle's exemption
   // from the focus-preserving preventDefault below. icon2 is the face it wears
@@ -207,4 +222,59 @@ function composeBlurred() {
     if (composeOpen && document.activeElement !== $("compose-text")) setCompose(false);
   }, 0);
 }
+
+// ============================================================
+// Snippet row — user-defined quick commands above the key bar
+// ============================================================
+// Off by default and opt-in from Settings, because every row here is a terminal
+// row lost. A tap types the snippet without running it — pasted, so bracketed-
+// paste framing applies where the running app asked for it and nothing executes
+// on arrival; the ⏎ key is what submits. A long press types it and presses
+// Enter in one gesture, for the commands trusted enough to fire blind.
+const SNIP_HOLD = 500;   // ms before a press means "and run it"
+
+function runSnippet(text, run) {
+  if (!term) return;
+  term.paste(text);
+  // Enter goes after the paste, outside any bracketed-paste framing — the same
+  // \r the key bar's own ⏎ sends.
+  if (run) send("\r");
+}
+
+// Rebuilds the row from cfg wholesale. Cheap enough to be the only write path —
+// the toggle, every edit in Settings and boot all land here, so the row can
+// never drift from what is stored.
+function syncSnipbar() {
+  const bar = $("snipbar");
+  bar.textContent = "";
+  for (const text of cfg.snippets.split("\n").map(s => s.trim()).filter(Boolean)) {
+    const b = el("button", { type: "button" }, text);
+    // Focus stays exactly where it is, same as the key bar's keys: stealing it
+    // would drop the soft keyboard mid-typing.
+    b.addEventListener("pointerdown", e => e.preventDefault());
+    b.addEventListener("mousedown", e => e.preventDefault());
+    let timer = null, ran = false;
+    b.addEventListener("pointerdown", () => {
+      clearTimeout(timer);
+      ran = false;
+      timer = setTimeout(() => { ran = true; runSnippet(text, true); }, SNIP_HOLD);
+    });
+    // Lifting, losing the touch to the row's own horizontal scroll, or sliding
+    // off the chip all stand the long press down.
+    for (const ev of ["pointerup", "pointercancel", "pointerleave"]) {
+      b.addEventListener(ev, () => clearTimeout(timer));
+    }
+    b.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (ran) { ran = false; return; }   // the long press already typed and ran it
+      runSnippet(text, false);
+    });
+    bar.appendChild(b);
+  }
+  bar.classList.toggle("show", cfg.snippetsOn);
+  // The row is a flex sibling of #term-host: showing or hiding it changes the
+  // terminal's rows, which xterm only learns from a fit.
+  refit(0);
+}
+syncSnipbar();
 
