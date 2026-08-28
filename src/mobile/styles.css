@@ -687,6 +687,59 @@ html.term-open, body.term-open {
   font-variant-numeric: tabular-nums;
 }
 
+/* Retry hint for a take whose upload failed — a slim strip between the terminal
+   and the compose bar, shown only while there is audio in hand and nothing else
+   happening. Same shape as the add-to-home-screen hint (tinted well, hairline,
+   text and a dismiss) but docked to the strip below it rather than floating in a
+   list, so it reads as part of the compose furniture. */
+#voice-retry {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(255, 253, 247, 0.94);
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  /* Whichever docked surface is topmost owns the line against the terminal, and
+     with the hint up that is this one. The compose strip keeps its own, so the
+     two read as separated rows when both are showing. */
+  border-top: 1px solid var(--hair);
+  z-index: 20;
+}
+:root[data-theme="dark"] #voice-retry { background: rgba(31, 28, 22, 0.94); }
+#voice-retry.show { display: flex; }
+/* The offer itself is the whole width of the bar: the instruction is "tap to
+   retry", and a target the size of the sentence is what that promises. */
+#voice-retry-go {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  background: var(--umber-tint);
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  padding: 8px 12px;
+  cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+}
+#voice-retry-go:active { transform: scale(0.99); }
+/* Quieter than the offer, and never lit: discarding a recording is the one
+   action here that cannot be undone, so it does not invite the thumb. */
+#voice-retry-dismiss {
+  flex: 0 0 auto;
+  background: transparent; border: none;
+  color: var(--secondary);
+  font-size: 15px;
+  line-height: 1;
+  padding: 10px;
+  cursor: pointer;
+}
+#voice-retry-dismiss:hover { color: var(--ink); }
+
 /* ============================================================
    KEY BAR — docked above the soft keyboard
    ============================================================ */
