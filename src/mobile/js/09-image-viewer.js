@@ -203,6 +203,7 @@ function openTerminal(name) {
   if (sock) { sock.onclose = null; try { sock.close(); } catch (e) {} sock = null; }
   currentSession = name;
   retries = 0;
+  hideConnBanner();  // a banner left up by the previous session is stale here
   $("screen-list").classList.remove("active");
   $("screen-term").classList.add("active");
   syncChrome();
@@ -257,7 +258,11 @@ function closeTerminal(skipReload) {
   setCompose(false);
   // A rejected pairing code reloads into the same 401; the caller shows the
   // setup sheet itself, so skip the doomed round-trip.
-  if (!skipReload) loadSessions();
+  if (skipReload) return;
+  // A shell update that arrived mid-session reloads now, back on the list —
+  // the reload refetches everything, so the list request would be wasted.
+  if (applyPendingSwReload()) return;
+  loadSessions();
 }
 
 // Single-flight: the server's attach uses `tmux attach -d`, which detaches
@@ -287,6 +292,7 @@ function connect() {
     dbg("ws open", "gen=" + gen);
     if (gen !== sockGen) { try { ws.close(); } catch (e) {} return; }
     retries = 0;
+    hideConnBanner();
     // Size first, so tmux paints straight into the phone's geometry.
     sendResize();
     term.focus();
@@ -311,15 +317,41 @@ function connect() {
       rejectToken();
       return;
     }
+    // Any other application close code is the server refusing this session for
+    // good — 4404 means the tmux session no longer exists. Reconnecting would
+    // retry forever against an answer that will not change, so leave for the
+    // list the same way the back gesture does.
+    if (ev.code >= 4000 && ev.code < 5000) {
+      toast(ev.code === 4404 ? "Session no longer exists" : "Session closed by the server");
+      closeTerminal();
+      return;
+    }
     scheduleReconnect();
   };
 }
+
+// Persistent cousin of the "Reconnecting…" toast, for when the backend looks
+// genuinely unreachable rather than momentarily away. The retry loop keeps
+// running underneath it; it comes down on the first successful open.
+function showConnBanner() { $("conn-banner").classList.add("show"); }
+function hideConnBanner() { $("conn-banner").classList.remove("show"); }
+
+$("btn-conn-retry").addEventListener("click", () => {
+  // Impatience resets the backoff, so the follow-up attempts come fast again.
+  retries = 0;
+  clearTimeout(retryTimer);
+  term.reset();  // fresh attach repaints the whole screen from tmux
+  connect();
+});
+$("btn-conn-sessions").addEventListener("click", () => closeTerminal());
 
 function scheduleReconnect() {
   retries += 1;
   // 0.5s → 5s, capped; only nag with a toast once it's clearly not transient.
   const delay = Math.min(500 * Math.pow(1.7, retries - 1), 5000);
   if (retries === 3) toast("Reconnecting…");
+  // Six straight failures is no longer a blip — put up the banner.
+  if (retries >= 6) showConnBanner();
   clearTimeout(retryTimer);
   retryTimer = setTimeout(() => {
     if (!currentSession) return;
