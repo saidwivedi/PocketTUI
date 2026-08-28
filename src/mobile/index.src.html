@@ -128,6 +128,17 @@
     <div class="sel-handle" id="sel-handle-start" role="slider" aria-label="Selection start"></div>
     <div class="sel-handle" id="sel-handle-end" role="slider" aria-label="Selection end"></div>
   </div>
+  <!-- A recorded take whose upload failed for a reason that was not the engine's
+       fault is kept, and this is where it is offered back. Above the compose
+       strip rather than inside it: the audio outlives the strip closing, and a
+       user who put the keyboard away still has to be able to see there is a
+       sentence waiting. Modelled on the add-to-home-screen hint — a slim strip
+       with one action and a dismiss — because it is the same kind of thing: a
+       standing offer, not an interruption. -->
+  <div id="voice-retry" role="status" aria-live="polite">
+    <button type="button" id="voice-retry-go">Transcription failed — tap to retry</button>
+    <button type="button" id="voice-retry-dismiss" aria-label="Discard the recording">✕</button>
+  </div>
   <div id="compose">
     <!-- Deliberately an exact mirror of the attribute set xterm puts on its own
          hidden textarea: autocorrect off, autocapitalize off, spellcheck false.
