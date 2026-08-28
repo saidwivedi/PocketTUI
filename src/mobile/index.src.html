@@ -83,6 +83,16 @@
     <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 5v14M5 12h14"/>
     </symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="10.5" cy="10.5" r="6.5"/>
+      <path d="M20 20l-4.8-4.8"/>
+    </symbol>
+    <symbol id="i-chev-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 15l7-7 7 7"/>
+    </symbol>
+    <symbol id="i-chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 9l7 7 7-7"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -122,6 +132,20 @@
 <div class="screen" id="screen-term">
   <div class="term-safetop"></div>
   <button type="button" id="demo-badge" aria-label="Leave the demo">DEMO</button>
+  <!-- Pinned to the top of the terminal screen, below the safe-area strip. Opened
+       by the key bar's magnifier key; Enter in the field repeats the last find,
+       the arrows step through matches, and × (or Esc) closes and clears
+       highlights. Hidden by default — display toggled by JS, never covers the
+       key bar since it docks at the opposite edge. -->
+  <div id="search-bar" role="search">
+    <svg class="search-icon" aria-hidden="true"><use href="#i-search"/></svg>
+    <input type="text" id="search-input" inputmode="search" enterkeyhint="search"
+           autocapitalize="off" autocorrect="off" spellcheck="false"
+           placeholder="Find in scrollback" aria-label="Find in scrollback">
+    <button type="button" id="search-prev" aria-label="Previous match"><svg><use href="#i-chev-up"/></svg></button>
+    <button type="button" id="search-next" aria-label="Next match"><svg><use href="#i-chev-down"/></svg></button>
+    <button type="button" id="search-close" aria-label="Close search"><svg><use href="#i-close"/></svg></button>
+  </div>
   <!-- xterm appends its own layers here on open(); these two stay alongside and
        are positioned over the grid whenever a selection is up. -->
   <div id="term-host">
@@ -290,6 +314,7 @@
 <script src="vendor/xterm.js?v=__CACHE_VERSION__"></script>
 <script src="vendor/addon-fit.js?v=__CACHE_VERSION__"></script>
 <script src="vendor/addon-webgl.js?v=__CACHE_VERSION__"></script>
+<script src="vendor/addon-search.js?v=__CACHE_VERSION__"></script>
 <script>
 @include js
 </script>
