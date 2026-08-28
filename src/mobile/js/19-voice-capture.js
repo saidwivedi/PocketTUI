@@ -1026,6 +1026,7 @@ function sendKey(seq) {
 
     b.addEventListener("click", () => {
       if (k.compose) { toggleCompose(); return; }
+      if (k.files) { openFilesAtCwd(); return; }
       if (k.arrows) { setArrows(true); return; }
       if (k.collapse) { setArrows(false); return; }
       if (k.mod) { setMod(k.mod, !mods[k.mod]); return; }
