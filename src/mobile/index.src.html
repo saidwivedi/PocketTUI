@@ -383,6 +383,28 @@
 <!-- The upload sheet's file picker; never rendered, only clicked. -->
 <input type="file" id="files-upload-input" style="display:none">
 
+<!-- ============================================================
+     SESSION (alias / rename / kill)
+     ============================================================ -->
+<!-- Opened by a row's pencil button. Two names on purpose: the display name is
+     what this app shows (the @alias option, follows the session everywhere),
+     the tmux name is the real one the user's own tooling attaches to. The kill
+     row sits apart below the actions, so a thumb aiming at Save can't reach it. -->
+<div class="sheet" id="sheet-session">
+  <h2 id="session-title">Session</h2>
+  <label for="session-alias" class="opt">Display name <span>this app</span></label>
+  <input id="session-alias" type="text" autocapitalize="off" autocorrect="off"
+         spellcheck="false" placeholder="training run">
+  <label for="session-name">tmux name</label>
+  <input id="session-name" type="text" autocapitalize="off" autocorrect="off"
+         spellcheck="false" placeholder="work">
+  <div class="actions">
+    <button type="button" id="btn-session-cancel">Cancel</button>
+    <button type="button" class="primary" id="btn-session-save">Save</button>
+  </div>
+  <button type="button" id="btn-session-kill">Kill session</button>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- Offered after a long press. Copy and Paste both have to run inside the tap

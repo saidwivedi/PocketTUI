@@ -57,8 +57,8 @@ function renderSessions(sessions) {
 
     const edit = el("button", {
       class: "icon-btn btn-alias", type: "button",
-      "aria-label": "Rename " + s.name + " for this app",
-      onclick: (e) => { e.stopPropagation(); promptAlias(s); },
+      "aria-label": "Rename or kill " + s.name,
+      onclick: (e) => { e.stopPropagation(); openSessionSheet(s); },
     }, svgIcon("i-pencil"));
 
     const card = el("div", { class: "item", onclick: () => openTerminal(s.name) },
@@ -75,23 +75,77 @@ function renderSessions(sessions) {
   list.appendChild(demoCard());
 }
 
-// The alias is a display name held on the tmux session itself, so it follows the
-// session to every device and the session keeps the name the user's tooling knows.
-async function promptAlias(s) {
-  const next = prompt("Display name for " + s.name + "\n(leave empty to clear)", s.alias || "");
-  if (next === null) return;   // cancelled
+// The session sheet edits both names at once and carries the kill row. The
+// alias is a display name held on the tmux session itself (it follows the
+// session to every device); the tmux name is the real one the user's own
+// tooling addresses — renaming changes it everywhere, and the alias survives.
+let sheetSession = null;
+
+function openSessionSheet(s) {
+  sheetSession = s;
+  $("session-title").textContent = s.name;
+  $("session-alias").value = s.alias || "";
+  $("session-name").value = s.name;
+  showSheet(true, "sheet-session");
+}
+
+async function saveSessionSheet() {
+  const s = sheetSession;
+  if (!s) return;
+  const alias = $("session-alias").value.trim();
+  const name = $("session-name").value.trim();
+  // Rename first: if the alias also changed it must be set against the name
+  // the session is about to have, not the one it is leaving behind.
+  let target = s.name;
   try {
-    const r = await fetch(apiURL("api/alias"), {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ session: s.name, alias: next }),
-    });
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (name && name !== s.name) {
+      const r = await fetch(apiURL("api/session/rename"), {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ session: s.name, name: name }),
+      });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) { toast(data && data.error ? data.error : "Couldn't rename the session"); return; }
+      target = data.session;
+    }
+    if (alias !== (s.alias || "")) {
+      const r = await fetch(apiURL("api/alias"), {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ session: target, alias: alias }),
+      });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) { toast(data && data.error ? data.error : "Couldn't set the name"); return; }
+    }
+    showSheet(false);
     loadSessions();
   } catch (e) {
-    toast("Couldn't set the name");
+    toast("Couldn't save");
   }
 }
+
+async function killSheetSession() {
+  const s = sheetSession;
+  if (!s) return;
+  if (!confirm("Kill '" + s.name + "'? Programs running in it are terminated.")) return;
+  try {
+    const r = await fetch(apiURL("api/session/kill"), {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ session: s.name }),
+    });
+    const data = await r.json().catch(() => null);
+    if (!r.ok) { toast(data && data.error ? data.error : "Couldn't kill the session"); return; }
+    showSheet(false);
+    loadSessions();
+  } catch (e) {
+    toast("Couldn't kill the session");
+  }
+}
+
+$("btn-session-cancel").addEventListener("click", () => showSheet(false));
+$("btn-session-save").addEventListener("click", saveSessionSheet);
+$("btn-session-kill").addEventListener("click", killSheetSession);
 
 // The folder is sticky because the next session is usually started in the same
 // project as the last one.

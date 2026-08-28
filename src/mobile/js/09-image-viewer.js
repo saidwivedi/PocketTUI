@@ -287,6 +287,11 @@ function connect() {
   const ws = new WebSocket(wsURL("ws/attach/" + encodeURIComponent(currentSession)));
   ws.binaryType = "arraybuffer";
   sock = ws;
+  // Whether this connection has painted its first screenful. The old screen is
+  // kept up during the connect (no blind reset — see scheduleReconnect), so the
+  // first frame of the new connection is what wipes it: a replay control frame
+  // when the server sends one, otherwise the first binary attach output.
+  let painted = false;
 
   ws.onopen = () => {
     dbg("ws open", "gen=" + gen);
@@ -299,8 +304,40 @@ function connect() {
   };
   ws.onmessage = (ev) => {
     if (gen !== sockGen) return;
-    if (typeof ev.data === "string") term.write(ev.data);
-    else term.write(new Uint8Array(ev.data));
+    if (typeof ev.data === "string") {
+      // Server→client text frames are JSON control messages; binary frames
+      // stay raw PTY bytes. Anything unparseable falls through to the
+      // terminal, which is what every text frame used to do.
+      if (ev.data.startsWith("{")) {
+        let ctl = null;
+        try { ctl = JSON.parse(ev.data); } catch (e) {}
+        if (ctl && ctl.type === "replay") {
+          // Scrollback from before the disconnect (and what arrived during
+          // it). Paint it from the top, then park the cursor on the bottom row
+          // and push the replayed tail up out of the viewport — tmux's repaint
+          // addresses the screen absolutely, so it must land on blank rows
+          // rather than over the history tail.
+          term.reset();
+          let data = ctl.data || "";
+          if (!data.endsWith("\r\n")) data += "\r\n";
+          term.write(data);
+          const n = Math.min(data.split("\n").length, term.rows);
+          term.write("\x1b[" + term.rows + ";1H" + "\r\n".repeat(n));
+          painted = true;
+          return;
+        }
+        // A control frame this build does not know — a newer server's. Writing
+        // raw JSON into the grid helps nobody; drop it.
+        if (ctl) return;
+      }
+      term.write(ev.data);
+      return;
+    }
+    // First attach output with no replay before it (fresh session, alt-screen
+    // TUI, old server): the reset that used to happen before the connect
+    // happens here instead, so the stale screen survives the retry wait.
+    if (!painted) { term.reset(); painted = true; }
+    term.write(new Uint8Array(ev.data));
   };
   ws.onerror = () => { dbg("ws error", "gen=" + gen); };
   ws.onclose = (ev) => {
@@ -340,7 +377,6 @@ $("btn-conn-retry").addEventListener("click", () => {
   // Impatience resets the backoff, so the follow-up attempts come fast again.
   retries = 0;
   clearTimeout(retryTimer);
-  term.reset();  // fresh attach repaints the whole screen from tmux
   connect();
 });
 $("btn-conn-sessions").addEventListener("click", () => closeTerminal());
@@ -353,9 +389,10 @@ function scheduleReconnect() {
   // Six straight failures is no longer a blip — put up the banner.
   if (retries >= 6) showConnBanner();
   clearTimeout(retryTimer);
+  // No term.reset() here: the new connection's first frame (replay or attach
+  // repaint) does the wiping, so the screen stays readable through the wait.
   retryTimer = setTimeout(() => {
     if (!currentSession) return;
-    term.reset();  // fresh attach repaints the whole screen from tmux
     connect();
   }, delay);
 }
@@ -379,7 +416,7 @@ document.addEventListener("visibilitychange", () => {
   if (demoMode) { refit(); return; }
   if (socketLive()) { refit(); return; }
   retries = 0;
-  term.reset();
+  // No reset — the reconnect's first frame replaces the screen; see connect().
   connect();
 });
 
