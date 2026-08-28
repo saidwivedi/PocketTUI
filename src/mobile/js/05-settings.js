@@ -2,7 +2,7 @@
 // Settings
 // ============================================================
 // One scrim serves every sheet, so closing means closing whichever is open.
-const SHEET_IDS = ["sheet-settings", "sheet-new",
+const SHEET_IDS = ["sheet-settings", "sheet-new", "sheet-session",
                    "sheet-file-actions", "sheet-files-add"];
 function showSheet(on, id="sheet-settings") {
   // Closing the settings sheet ends the first-run voice step however it was
