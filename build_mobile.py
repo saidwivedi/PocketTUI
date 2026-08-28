@@ -82,6 +82,10 @@ JS_FRAGMENTS = (
     "24-pinch-zoom.js",
     "25-keyboard-geometry.js",
     "26-scrollback-search.js",
+    # Numbered past boot but concatenated before it: boot is the program's
+    # last word, and these views are wired by then like everything else.
+    "28-file-explorer.js",
+    "29-editor.js",
     "27-boot.js",
 )
 

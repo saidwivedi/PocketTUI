@@ -93,6 +93,16 @@
     <symbol id="i-chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M5 9l7 7 7-7"/>
     </symbol>
+    <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M15 5l-7 7 7 7"/>
+    </symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3.5 7a2 2 0 0 1 2-2h3.8l2 2.3h7.2a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>
+    </symbol>
+    <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6.5 3.5h7l4 4.5v12.5h-11z"/>
+      <path d="M13.5 3.5V8h4"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -108,6 +118,7 @@
       </a>
     </div>
     <div class="right">
+      <button class="icon-btn" id="btn-files" aria-label="Browse files"><svg><use href="#i-folder"/></svg></button>
       <button class="icon-btn" id="btn-reload" aria-label="Reload sessions"><svg><use href="#i-reload"/></svg></button>
       <button class="icon-btn" id="btn-theme" aria-label="Toggle theme"><svg><use href="#i-theme"/></svg></button>
       <button class="icon-btn" id="btn-settings" aria-label="Settings"><svg><use href="#i-gear"/></svg></button>
@@ -204,6 +215,40 @@
        toggle there turns them on. -->
   <div class="snipbar" id="snipbar"></div>
   <div class="keybar" id="keybar"></div>
+</div>
+
+<!-- ============================================================
+     FILE EXPLORER
+     ============================================================ -->
+<div class="screen" id="screen-files">
+  <div class="topbar">
+    <button class="icon-btn" id="btn-files-back" aria-label="Back"><svg><use href="#i-back"/></svg></button>
+    <!-- Tappable path segments. Scrolls sideways rather than wrapping, pinned
+         to the tail so the current folder is always the segment in view. -->
+    <div id="files-crumbs"></div>
+    <button class="icon-btn" id="btn-files-add" aria-label="New file, folder or upload"><svg><use href="#i-plus"/></svg></button>
+  </div>
+  <div class="files-wrap">
+    <div id="files-list"></div>
+    <div id="files-empty">Empty folder</div>
+    <div id="files-error">Couldn't read this folder.</div>
+  </div>
+</div>
+
+<!-- ============================================================
+     EDITOR
+     ============================================================ -->
+<div class="screen" id="screen-editor">
+  <div class="topbar editor-bar">
+    <button class="icon-btn" id="btn-editor-back" aria-label="Close the editor"><svg><use href="#i-back"/></svg></button>
+    <div class="editor-name">
+      <span id="editor-filename"></span><span class="editor-dirty" id="editor-dirty" aria-hidden="true"></span>
+    </div>
+    <button type="button" id="btn-editor-save">Save</button>
+  </div>
+  <!-- CodeMirror mounts here on the first open; the vendor bundle is injected
+       then too, never at boot — the terminal's payload stays lean. -->
+  <div id="editor-host"></div>
 </div>
 
 <!-- ============================================================
@@ -312,6 +357,31 @@
     <button type="button" class="primary" id="btn-new-create">Create</button>
   </div>
 </div>
+
+<!-- ============================================================
+     FILE ACTION SHEETS
+     ============================================================ -->
+<!-- Long-press on an explorer row. Download hides itself for folders. -->
+<div class="sheet" id="sheet-file-actions">
+  <h2 id="file-actions-title"></h2>
+  <div class="sheet-menu">
+    <button type="button" id="btn-file-rename">Rename</button>
+    <button type="button" id="btn-file-download">Download</button>
+    <button type="button" class="danger" id="btn-file-delete">Delete</button>
+  </div>
+</div>
+
+<!-- The explorer's + button. -->
+<div class="sheet" id="sheet-files-add">
+  <h2>Add here</h2>
+  <div class="sheet-menu">
+    <button type="button" id="btn-files-newfile">New file</button>
+    <button type="button" id="btn-files-newfolder">New folder</button>
+    <button type="button" id="btn-files-upload">Upload a file</button>
+  </div>
+</div>
+<!-- The upload sheet's file picker; never rendered, only clicked. -->
+<input type="file" id="files-upload-input" style="display:none">
 
 <div class="toast" id="toast"></div>
 
