@@ -1167,6 +1167,26 @@ html.term-open, body.term-open {
   color: var(--secondary);
 }
 #btn-settings-forget.show { display: block; }
+/* The session sheet's destructive row. Below the actions and set off by a
+   hairline, so a thumb aiming at Save can't graze it; umber rather than a
+   literal red for the same reason as the recording dot — it is the app's one
+   accent and it clears contrast in both themes. */
+#btn-session-kill {
+  display: block;
+  width: 100%;
+  margin-top: 18px;
+  padding: 13px 0 4px;
+  border: none;
+  border-top: 1px solid var(--hair);
+  border-radius: 0;
+  background: transparent;
+  color: var(--umber);
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+#btn-session-kill:active { opacity: 0.6; }
 .sheet .actions button.primary {
   background: var(--umber);
   border-color: var(--umber);
