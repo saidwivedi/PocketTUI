@@ -110,6 +110,21 @@ def sherpa_importable(monkeypatch):
     monkeypatch.setitem(sys.modules, "sherpa_onnx", types.ModuleType("sherpa_onnx"))
 
 
+@pytest.fixture(autouse=True)
+def fresh_parakeet_state(monkeypatch):
+    """The engine's process-lifetime globals, reset around every test.
+
+    The dead flag is deliberately permanent in the server — a wedged decode
+    retires Parakeet until a restart — so a test that trips it would otherwise
+    take every later test's Parakeet down with it. The recognizer and its worker
+    are reset for the same reason a real restart resets them: they are keyed to
+    a model directory that each test invents afresh in tmp_path.
+    """
+    monkeypatch.setattr(A, "_parakeet_recognizer", None)
+    monkeypatch.setattr(A, "_parakeet_pool", None)
+    monkeypatch.setattr(A, "_parakeet_dead", False)
+
+
 # ---------------------------------------------------------------------------
 # Asset discovery
 # ---------------------------------------------------------------------------
@@ -840,6 +855,150 @@ def test_a_parakeet_crash_answers_a_shape_not_a_traceback(parakeet_installed,
     response = A.transcribe(b"audio bytes", "work", "phone")
     assert response.status_code == 500
     assert body(response) == {"error": "transcribe_failed"}
+
+
+def parakeet_wav(path):
+    """A one-second mono 16-bit wav — what decode_audio would have written."""
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(array.array("h", [1000] * 16000).tobytes())
+
+
+@pytest.fixture
+def wedged_recognizer(monkeypatch):
+    """A recognizer whose decode never returns, as a stuck native call would.
+
+    Returns the event that releases it. The worker thread is left blocked on
+    purpose — that is the condition being tested — so the event is set at the
+    end to let the thread exit rather than outlive the test.
+    """
+    import threading
+    import types
+    release = threading.Event()
+
+    class Stream:
+        def accept_waveform(self, rate, samples):
+            release.wait(10)
+
+        result = types.SimpleNamespace(text="")
+
+    fake = types.ModuleType("sherpa_onnx")
+    fake.OfflineRecognizer = types.SimpleNamespace(
+        from_transducer=lambda **kw: types.SimpleNamespace(
+            create_stream=lambda hotwords=None: Stream(),
+            decode_stream=lambda stream: None))
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", fake)
+    monkeypatch.setattr(A, "PARAKEET_TIMEOUT_S", 0.2)
+    yield release
+    release.set()
+
+
+def test_a_wedged_decode_times_out_and_retires_the_engine(parakeet_installed,
+                                                          wedged_recognizer,
+                                                          tmp_path):
+    """A native decode that never returns must not hold the phone past its own
+    30 s abort, and the worker it holds cannot be freed: the engine is retired."""
+    parakeet_wav(tmp_path / "audio.wav")
+    with pytest.raises(subprocess.TimeoutExpired):
+        A.run_parakeet(parakeet_installed, tmp_path / "audio.wav")
+    assert A._parakeet_dead
+
+
+def test_the_route_answers_transcribe_timeout_for_a_wedged_decode(
+        parakeet_installed, wedged_recognizer, monkeypatch, no_tmux):
+    """The same shape whisper's timeout answers with — the phone knows only one."""
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio",
+                        lambda raw, wav, content_type="": parakeet_wav(wav) or "")
+    response = A.transcribe(b"audio bytes", "work", "phone")
+    assert response.status_code == 500
+    assert body(response) == {"error": "transcribe_timeout"}
+    assert A._parakeet_dead
+
+
+def test_a_timed_out_hotword_decode_is_not_retried(parakeet_installed,
+                                                   wedged_recognizer,
+                                                   monkeypatch, no_tmux):
+    """The plain-decode retry is for hotwords the decoder rejected. Taking a
+    deadline down that path would queue a second wait behind the stuck worker."""
+    calls = []
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio",
+                        lambda raw, wav, content_type="": parakeet_wav(wav) or "")
+    monkeypatch.setattr(R, "history_vocabulary", lambda: ["micromamba"])
+    monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "dotfile_names", lambda: [])
+    monkeypatch.setattr(R, "learned_words", lambda: [])
+
+    real = A.run_parakeet
+
+    def counted(model_dir, wav, hotwords=None):
+        calls.append(hotwords)
+        return real(model_dir, wav, hotwords=hotwords)
+
+    monkeypatch.setattr(A, "run_parakeet", counted)
+    response = A.transcribe(b"audio bytes", "work", "phone")
+    assert body(response) == {"error": "transcribe_timeout"}
+    assert calls == ["micromamba :0.5"]
+
+
+def test_a_retired_engine_falls_back_to_whisper(installed, parakeet_installed,
+                                                sherpa_importable, monkeypatch,
+                                                at_a_shell):
+    """Both installed and Parakeet wedged: the next request still gets a
+    transcript, because the retired engine reads as one that is not there."""
+    monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
+    monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
+
+    def explode(*a, **k):
+        raise AssertionError("a retired engine must not be asked to decode")
+
+    monkeypatch.setattr(A, "run_parakeet", explode)
+    monkeypatch.setattr(A, "_parakeet_dead", True)
+    assert body(A.transcribe(b"audio bytes", "work", "phone"))["raw"] == "git status"
+
+
+def test_asking_for_a_retired_engine_is_not_setup(installed, parakeet_installed,
+                                                  sherpa_importable, monkeypatch):
+    """The client that names an engine owns the fallback, wedged or uninstalled."""
+    monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
+    monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "_parakeet_dead", True)
+    response = A.transcribe(b"audio bytes", "work", "phone", engine="parakeet")
+    assert response.status_code == 503
+    assert body(response) == {"error": "not_setup"}
+
+
+def test_two_decodes_run_back_to_back_through_the_one_worker(parakeet_installed,
+                                                             monkeypatch,
+                                                             tmp_path):
+    """The single worker is the lock; a decode must release it when it returns."""
+    import types
+
+    class Stream:
+        def __init__(self):
+            self.result = types.SimpleNamespace(text="git status")
+
+        def accept_waveform(self, rate, samples):
+            pass
+
+    fake = types.ModuleType("sherpa_onnx")
+    fake.OfflineRecognizer = types.SimpleNamespace(
+        from_transducer=lambda **kw: types.SimpleNamespace(
+            create_stream=lambda hotwords=None: Stream(),
+            decode_stream=lambda stream: None))
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", fake)
+
+    parakeet_wav(tmp_path / "audio.wav")
+    assert A.run_parakeet(parakeet_installed, tmp_path / "audio.wav") == "git status"
+    assert A.run_parakeet(parakeet_installed, tmp_path / "audio.wav") == "git status"
+    assert not A._parakeet_dead
 
 
 def test_the_asr_rules_run_on_the_transcript(installed, monkeypatch,
