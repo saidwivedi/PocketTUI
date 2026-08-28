@@ -22,6 +22,28 @@ if (new URLSearchParams(location.search).get("demo") === "1") {
   try { sessionStorage.setItem(DEMO_INTENT, "1"); } catch (e) {}
   history.replaceState(null, "", location.pathname + location.hash);
 }
+// A QR scan lands here as #pair=<payload> — the installer prints a QR whose
+// URL carries the address and pairing code so scanning is the whole setup.
+// The fragment is stripped before it is even parsed: it must never survive
+// into history, a screenshot of the URL bar, or the pushState chain
+// openTerminal() starts, since it is exactly what a shoulder-surfer would want.
+if (location.hash.indexOf("#pair=") === 0) {
+  const raw = location.hash.slice("#pair=".length);
+  history.replaceState(null, "", location.pathname + location.search);
+  try {
+    const p = JSON.parse(atob(raw.replace(/-/g, "+").replace(/_/g, "/")));
+    const tok = normalizeToken(p.t);
+    if (isValidToken(tok)) {
+      cfg.token = tok;
+      if (p.a) cfg.backend = normalizeBackend(p.a, "");
+      toast("Paired");
+    } else {
+      toast("Pairing link invalid");
+    }
+  } catch (e) {
+    toast("Pairing link invalid");
+  }
+}
 let wantDemo = false;
 try { wantDemo = sessionStorage.getItem(DEMO_INTENT) === "1"; } catch (e) {}
 if (wantDemo) {
