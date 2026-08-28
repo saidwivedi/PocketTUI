@@ -36,6 +36,25 @@ if (wantDemo) {
 initA2hsHint();
 
 const SW_VERSION = "__CACHE_VERSION__";
+
+// A new service worker that activates while a terminal is attached must not
+// reload the page out from under the session — the reload is parked here and
+// happens once the user is back on the list. In-memory on purpose: if the tab
+// dies first, the next launch re-fetches the shell and needs no reload at all.
+let swReloadPending = false;
+function swReloadNow() {
+  sessionStorage.setItem("sw_reloaded_" + SW_VERSION, "1");
+  location.reload();
+}
+// Called by closeTerminal() on the way back to the list; returns whether the
+// deferred reload fired, so the caller can skip work the reload will redo.
+function applyPendingSwReload() {
+  if (!swReloadPending) return false;
+  swReloadPending = false;
+  swReloadNow();
+  return true;
+}
+
 if ("serviceWorker" in navigator && location.protocol === "https:") {
   navigator.serviceWorker.register("sw.js?v=" + SW_VERSION).then(reg => {
     reg.addEventListener("updatefound", () => {
@@ -43,10 +62,11 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
       if (!nw) return;
       nw.addEventListener("statechange", () => {
         if (nw.state === "activated" && navigator.serviceWorker.controller) {
-          // New SW took over — reload once so the fresh shell renders.
+          // New SW took over — reload once so the fresh shell renders, but
+          // never mid-session (see swReloadPending above).
           if (!sessionStorage.getItem("sw_reloaded_" + SW_VERSION)) {
-            sessionStorage.setItem("sw_reloaded_" + SW_VERSION, "1");
-            location.reload();
+            if (currentSession) swReloadPending = true;
+            else swReloadNow();
           }
         }
       });
@@ -56,7 +76,11 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
     // index.html, so it can run a shell that is builds out of date with no way to
     // find out. Asking on every resume is what closes that door.
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) reg.update().catch(()=>{});
+      if (document.hidden) return;
+      // A reload deferred mid-session can fire now if the session was gone by
+      // the time the app came back to the foreground.
+      if (swReloadPending && !currentSession) { applyPendingSwReload(); return; }
+      reg.update().catch(()=>{});
     });
   }).catch(()=>{});
 }
