@@ -615,6 +615,63 @@ def test_webpush_transient_failure_keeps_the_subscription(push_paths, monkeypatc
     assert A.load_push_subs() == [entry]
 
 
+def att(dev="phone", session="work", visible=True, age=0.0):
+    """An attachment as the visibility gate sees it: `age` seconds since the
+    socket last showed traffic."""
+    a = A.Attachment(0, 0, asyncio.Queue(), session, dev)
+    a.visible = visible
+    a.last_seen = time.monotonic() - age
+    return a
+
+
+def test_webpush_held_for_the_visible_devices_sub_only(push_paths, monkeypatch):
+    calls = []
+    monkeypatch.setattr(A, "_webpush_module", lambda: fake_module(
+        webpush=lambda sub, data, **kw: calls.append(sub)))
+    monkeypatch.setattr(A, "vapid_keys",
+                        lambda: {"private_key": "PRIV", "public_key": "PUB"})
+    phone = {"endpoint": "https://push.example/phone",
+             "subscription": {"endpoint": "https://push.example/phone"},
+             "dev": "phone"}
+    tablet = {"endpoint": "https://push.example/tablet",
+              "subscription": {"endpoint": "https://push.example/tablet"},
+              "dev": "tablet"}
+    A.save_push_subs([phone, tablet])
+    monkeypatch.setattr(A, "ATTACHED", {"phone-work": att("phone")})
+
+    A.send_webpush_all(PAYLOAD)
+
+    # The visible phone's send is held; the tablet, not in the app, gets it.
+    assert [s["endpoint"] for s in calls] == [tablet["endpoint"]]
+    # Held is not pruned: the phone's subscription survives untouched.
+    assert [s["endpoint"] for s in A.load_push_subs()] == [
+        phone["endpoint"], tablet["endpoint"]]
+
+
+@pytest.mark.parametrize("shape", ["no-client", "hidden", "stale"])
+def test_webpush_sends_unless_a_live_visible_client_holds_it(
+        push_paths, monkeypatch, shape):
+    attached = {
+        # The visible client disconnected — its state died with the socket.
+        "no-client": {},
+        # Attached but backgrounded: attachment alone never suppresses.
+        "hidden": {"phone-work": att("phone", visible=False)},
+        # visible=true from a socket silent past the bound is not believed.
+        "stale": {"phone-work": att("phone", age=A.VISIBLE_STALE_S + 5)},
+    }[shape]
+    calls = []
+    monkeypatch.setattr(A, "_webpush_module", lambda: fake_module(
+        webpush=lambda sub, data, **kw: calls.append(sub)))
+    monkeypatch.setattr(A, "vapid_keys",
+                        lambda: {"private_key": "PRIV", "public_key": "PUB"})
+    A.save_push_subs([{"endpoint": "https://push.example/phone",
+                       "subscription": {"endpoint": "https://push.example/phone"},
+                       "dev": "phone"}])
+    monkeypatch.setattr(A, "ATTACHED", attached)
+    A.send_webpush_all(PAYLOAD)
+    assert len(calls) == 1
+
+
 def test_ntfy_posts_title_headers_and_body(monkeypatch):
     seen = {}
 
@@ -650,6 +707,17 @@ def test_ntfy_does_nothing_without_the_env(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     monkeypatch.delenv("POCKETTUI_NTFY_URL", raising=False)
+    A.send_ntfy(PAYLOAD)
+
+
+def test_ntfy_held_while_any_client_is_visible(monkeypatch):
+    # ntfy is one topic with no device identity, so the hold is global.
+    def urlopen(*a, **k):
+        raise AssertionError("a visible client must hold the ntfy send")
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("POCKETTUI_NTFY_URL", "https://ntfy.example/t")
+    monkeypatch.setattr(A, "ATTACHED", {"phone-work": att("phone")})
     A.send_ntfy(PAYLOAD)
 
 
