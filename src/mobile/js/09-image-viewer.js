@@ -253,6 +253,7 @@ function openTerminal(name) {
   if (wasOpen && isWideLayout()) history.replaceState({ term: name }, "", location.href);
   else history.pushState({ term: name }, "", location.href);
   markSelectedSession();
+  clearUnread(name);   // opening is what marks a session read
   requestAnimationFrame(() => {
     if (demoMode) {
       // Fit before the banner is written: demoStart() wraps its prose to

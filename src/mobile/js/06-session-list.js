@@ -35,6 +35,62 @@ function setBellState(btn, mode, name) {
     "Notifications off for " + name);
 }
 
+// ---- unread marks -----------------------------------------------------------
+// A session whose watcher flipped to "waiting" while it was not the one on
+// screen is marked unread until it is opened. Detection is the transition, not
+// the state: successive /api/sessions payloads are diffed here, because this
+// is the only place another session's state ever reaches this client — the
+// terminal's own control frames are always the open session's (seen by
+// definition), and a Web Push never hands the page a payload, only the
+// notification tap that opens the session anyway. Marks persist so a reload
+// keeps them; the in-memory baseline does not, so the first list after a
+// reload can never re-mark what is merely still waiting.
+const UNREAD_KEY = "pockettui_unread";
+function unreadMap() {
+  try {
+    const m = JSON.parse(localStorage.getItem(UNREAD_KEY));
+    if (m && typeof m === "object") return m;
+  } catch (e) {}
+  return {};
+}
+function saveUnread(m) {
+  try { localStorage.setItem(UNREAD_KEY, JSON.stringify(m)); } catch (e) {}
+}
+// Opening the session is what marks it read — openTerminal calls this. The
+// row's class comes off in place too, so the clear never waits on a reload.
+function clearUnread(name) {
+  const m = unreadMap();
+  if (name in m) { delete m[name]; saveUnread(m); }
+  const row = $("list").querySelector('.item[data-name="' + CSS.escape(name) + '"]');
+  if (row) row.classList.remove("unread");
+}
+// Watcher states as of the previous payload; null until one has arrived.
+let lastStates = null;
+// Diffs a fresh payload against the baseline: prunes marks for sessions that
+// no longer exist, marks new arrivals into "waiting" — never the session on
+// screen, whose state changes are seen as they happen — and returns the map
+// for renderSessions to paint from.
+function noteUnread(sessions) {
+  const m = unreadMap();
+  let changed = false;
+  const names = new Set(sessions.map(s => s.name));
+  for (const n of Object.keys(m)) {
+    if (!names.has(n)) { delete m[n]; changed = true; }
+  }
+  if (lastStates) {
+    for (const s of sessions) {
+      if (s.state === "waiting" && lastStates.get(s.name) !== "waiting"
+          && s.name !== currentSession && !(s.name in m)) {
+        m[s.name] = Date.now();
+        changed = true;
+      }
+    }
+  }
+  lastStates = new Map(sessions.map(s => [s.name, s.state || ""]));
+  if (changed) saveUnread(m);
+  return m;
+}
+
 // quiet suppresses the failure toast: the wide layout's periodic refresh
 // reloads a list nobody asked about, and a backend that has gone away already
 // reports through the terminal's own banner rather than a toast per tick.
@@ -81,6 +137,7 @@ function demoCard() {
 
 function renderSessions(sessions) {
   const list = $("list");
+  const unread = noteUnread(sessions);
   list.innerHTML = "";
   $("list-empty").style.display = sessions.length ? "none" : "block";
   for (const s of sessions) {
@@ -126,7 +183,8 @@ function renderSessions(sessions) {
     // without a rebuild (markSelectedSession below); .selected only renders
     // there — the phone never shows the list and a terminal together.
     const card = el("div", {
-      class: "item" + (s.name === currentSession ? " selected" : ""),
+      class: "item" + (s.name === currentSession ? " selected" : "")
+                    + (unread[s.name] ? " unread" : ""),
       "data-name": s.name,
       onclick: () => openTerminal(s.name),
     },
