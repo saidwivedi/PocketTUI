@@ -44,6 +44,17 @@ if (location.hash.indexOf("#pair=") === 0) {
     toast("Pairing link invalid");
   }
 }
+// A tapped notification with no app window open lands here as
+// #session=<name> (an already-open window gets a postMessage instead — see
+// 30-notify.js). Stripped with the same replaceState-first discipline as
+// #pair= above: the fragment must not survive into history or the pushState
+// chain openTerminal() starts.
+let deepLinkSession = "";
+if (location.hash.indexOf("#session=") === 0) {
+  const rawSession = location.hash.slice("#session=".length);
+  history.replaceState(null, "", location.pathname + location.search);
+  try { deepLinkSession = decodeURIComponent(rawSession); } catch (e) {}
+}
 let wantDemo = false;
 try { wantDemo = sessionStorage.getItem(DEMO_INTENT) === "1"; } catch (e) {}
 if (wantDemo) {
@@ -52,6 +63,11 @@ if (wantDemo) {
   // A public build with nothing configured has no backend to query — ask first,
   // then the save handler loads the list.
   openSettings(true);
+} else if (deepLinkSession) {
+  // The deep link opens behind the loaded list, so the back gesture out of
+  // the terminal lands on a list that is already there.
+  const target = deepLinkSession;
+  loadSessions().then(() => openSessionByName(target));
 } else {
   loadSessions();
 }
