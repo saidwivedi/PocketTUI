@@ -192,6 +192,7 @@ function splitTyped(v) {
 
 function openPathEdit() {
   $("files-path-wrap").classList.add("editing");
+  $("files-suggest-scrim").classList.add("show");
   const input = $("files-path-input");
   input.value = filesPath;
   input.focus();
@@ -204,6 +205,7 @@ function openPathEdit() {
 
 function closePathEdit() {
   $("files-path-wrap").classList.remove("editing");
+  $("files-suggest-scrim").classList.remove("show");
   $("files-path-input").blur();
   hideSuggestions();
   clearTimeout(suggestTimer);
@@ -216,12 +218,22 @@ function hideSuggestions() {
   $("files-suggest").innerHTML = "";
 }
 
-function suggestRow(entry) {
-  return el("button", { type: "button", class: "suggest-row" },
-    el("span", { class: "file-ic " + entry.type },
-       svgIcon(entry.type === "dir" ? "i-folder" : "i-file")),
-    el("span", { class: "name" }, entry.name),
+// Deliberately unlike fileRow() in the list below: same icon, same colors,
+// same row shape made this dropdown read as a clone of the file list rather
+// than a floating panel of its own (reported after the first elevation
+// pass). No icon at all here — the typed prefix in bold plus a trailing "/"
+// on directories (kept in --umber, the app's one accent, rather than a
+// second accent color) carry the same information a folder/file glyph would,
+// through typography instead of a repeated icon.
+function suggestRow(entry, segPart) {
+  const name = entry.name;
+  const nameEl = el("span", { class: "name" },
+    el("strong", {}, name.slice(0, segPart.length)),
+    name.slice(segPart.length),
   );
+  const kids = [nameEl];
+  if (entry.type === "dir") kids.push(el("span", { class: "suggest-slash" }, "/"));
+  return el("button", { type: "button", class: "suggest-row" }, ...kids);
 }
 
 function renderSuggestions(dirPart, segPart, entries) {
@@ -233,7 +245,7 @@ function renderSuggestions(dirPart, segPart, entries) {
       segPart ? "No matches" : "Empty folder"));
   } else {
     for (const e of matches) {
-      const row = suggestRow(e);
+      const row = suggestRow(e, segPart);
       row.addEventListener("click", () => pickSuggestion(dirPart, e));
       box.appendChild(row);
     }
@@ -325,6 +337,9 @@ $("btn-files-edit-path").addEventListener("click", () => {
   if ($("files-path-wrap").classList.contains("editing")) closePathEdit();
   else openPathEdit();
 });
+// Same as Escape: close without navigating, whether the tap landed on the
+// dimmed file list or on empty space below a short one.
+$("files-suggest-scrim").addEventListener("click", () => closePathEdit());
 $("files-path-input").addEventListener("input", (e) => fetchSuggestions(e.target.value));
 $("files-path-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); submitPathEdit(); }

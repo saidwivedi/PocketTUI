@@ -1549,25 +1549,51 @@ html.term-open, body.term-open {
   box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
   z-index: 60;
 }
+/* Same recipe as .sheet-scrim (ink at low opacity, fixed, faded in/out) but
+   lighter — 0.34 there is tuned for dimming a whole screen behind a sheet
+   that covers half of it; this only needs to separate one small dropdown
+   from the plain rows still visible around it. Sits under .topbar's z-index
+   (50) so the field and its buttons stay fully interactive and undimmed;
+   above the plain file-list content (no z-index of its own) so the dimming
+   actually reads. */
+#files-suggest-scrim {
+  position: fixed; inset: 0;
+  background: rgba(20, 16, 10, 0.16);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s var(--ease-out);
+  z-index: 45;
+}
+#files-suggest-scrim.show { opacity: 1; pointer-events: auto; }
 #files-suggest.show { display: block; }
+/* Compact and icon-free on purpose — see suggestRow() in 28-file-explorer.js.
+   Shorter than a .file-row (8px vs 12px vertical padding, no icon column) so
+   the two are a different shape at a glance, not just a different color. */
 .suggest-row {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 4px;
   width: 100%;
-  padding: 11px 13px;
+  padding: 8px 13px;
   border: none; border-bottom: 1px solid var(--hair);
   background: transparent;
   font-family: var(--mono);
   font-size: 13px;
-  color: var(--ink);
+  color: var(--secondary);
   text-align: left;
   cursor: pointer;
 }
 .suggest-row:last-child { border-bottom: none; }
 .suggest-row:active { background: var(--umber-tint); }
-.suggest-row .file-ic { flex: 0 0 auto; width: 16px; height: 16px; display: inline-flex; color: var(--tertiary); }
-.suggest-row .file-ic.dir { color: var(--umber); }
-.suggest-row .file-ic svg { width: 100%; height: 100%; }
 .suggest-row span.name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The part already typed, so the eye lands on what's new rather than
+   re-reading the whole name. Weight plus the row's own --ink (the rest of
+   the name sits at the dimmer --secondary above) — both already app tokens,
+   no new color introduced for this. */
+.suggest-row span.name strong { font-weight: 700; color: var(--ink); }
+/* Directories' one differentiator from files: a trailing slash in the app's
+   one accent color, standing in for the folder icon .file-row uses — a shell
+   completion's own way of saying "this one has more inside it," not a second
+   icon that would just repeat the color problem the icons had. */
+.suggest-slash { flex: 0 0 auto; color: var(--umber); font-weight: 700; }
 /* Same italic-serif idiom as #files-empty/#files-error, for the same reason:
    a state, not an entry to tap. */
 .suggest-note {
