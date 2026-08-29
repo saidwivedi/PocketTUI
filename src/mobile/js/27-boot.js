@@ -64,12 +64,15 @@ if (wantDemo) {
   // then the save handler loads the list.
   openSettings(true);
 } else if (deepLinkSession) {
-  // The deep link opens behind the loaded list, so the back gesture out of
-  // the terminal lands on a list that is already there.
+  // openSessionByName loads the list before opening, so the back gesture out
+  // of the terminal lands on a list that is already there. The same tap also
+  // parked a copy of the name — take it so it cannot re-fire on resume.
   const target = deepLinkSession;
-  loadSessions().then(() => openSessionByName(target));
+  takePendingSession().then(() => openSessionByName(target));
 } else {
-  loadSessions();
+  // An iOS launch from a notification tap can land here on the bare
+  // start_url with no fragment at all; the parked copy is the deep link then.
+  loadSessions().then(consumePendingSession);
 }
 initA2hsHint();
 

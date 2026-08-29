@@ -47,6 +47,9 @@ async function loadSessions(spin=false) {
     const data = await r.json();
     renderSessions(data.sessions || []);
     $("list-error").style.display = "none";
+    // The fetched list rides back to callers with a session to verify
+    // (openSessionByName); everyone else ignores it.
+    return data.sessions || [];
   } catch (e) {
     $("list").innerHTML = "";
     if (needsSetup()) $("list").appendChild(demoCard());
