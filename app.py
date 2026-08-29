@@ -2608,12 +2608,18 @@ class Attachment:
     client: a str lands on the same out queue the PTY bytes ride and pump_out
     sends it as a *text* frame — the server→client control channel, which the
     client reads as JSON where PTY bytes stay binary.
+
+    `visible`/`last_seen` feed the push gate (visible_devs): the client
+    reports its document visibility over the control channel, and every
+    received frame stamps last_seen so a dead connection's stale "visible"
+    stops counting.
     """
 
-    __slots__ = ("pid", "fd", "out", "done", "retired", "session")
+    __slots__ = ("pid", "fd", "out", "done", "retired", "session", "dev",
+                 "visible", "last_seen")
 
     def __init__(self, pid: int, fd: int, out: asyncio.Queue,
-                 session: str = "") -> None:
+                 session: str = "", dev: str = "") -> None:
         self.pid = pid
         self.fd = fd
         self.out = out
@@ -2622,6 +2628,13 @@ class Attachment:
         # The session this view is watching, so the pane watcher can find
         # every attached view of a session without decoding view names.
         self.session = session
+        # This view's device name — the same identity push subscriptions are
+        # stored under, which is what makes the push gate per-device.
+        self.dev = dev
+        # Hidden until the client explicitly says otherwise: a client that
+        # never reports (an older frontend) must never suppress a push.
+        self.visible = False
+        self.last_seen = time.monotonic()
 
     def retire(self) -> None:
         self.retired.set()
@@ -2727,7 +2740,7 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         # PTY reads land in this queue via add_reader; None marks the PTY
         # closing. str items are JSON control messages (Attachment.notify).
         out: asyncio.Queue = asyncio.Queue()
-        me = Attachment(pid, fd, out, session_name)
+        me = Attachment(pid, fd, out, session_name, dev)
         ATTACHED[view] = me
 
     # Off-thread: enable_mouse polls for the just-spawned session.
@@ -2766,13 +2779,15 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
             msg = await ws.receive()
             if msg.get("type") == "websocket.disconnect":
                 break
+            me.last_seen = time.monotonic()
             if (data := msg.get("bytes")) is not None:
                 os.write(fd, data)
                 continue
             text = msg.get("text")
             if text is None:
                 continue
-            # Text frames are either a resize control message or raw keystrokes.
+            # Text frames are either a control message (resize, visibility)
+            # or raw keystrokes.
             if text.startswith("{"):
                 try:
                     ctl = json.loads(text)
@@ -2780,6 +2795,9 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                     ctl = None
                 if ctl and ctl.get("type") == "resize":
                     set_winsize(fd, ctl.get("cols", 80), ctl.get("rows", 24))
+                    continue
+                if ctl and ctl.get("type") == "visibility":
+                    me.visible = bool(ctl.get("visible"))
                     continue
             os.write(fd, text.encode("utf-8"))
 
@@ -3264,6 +3282,27 @@ def save_push_subs(subs: list[dict]) -> None:
         json.dump(subs, fh)
 
 
+# A push is redundant while the user is looking at the app — the in-app
+# chips and badges are the signal there. Only an explicit visible=true from
+# the client suppresses; the default is hidden, and the state dies with the
+# socket. A socket silent longer than this bound is not believed either: a
+# dead-but-undetected TCP connection must not swallow notifications forever.
+# In practice suppression lifts near-instantly anyway — the client sends
+# hidden on lock/app-switch, and iOS kills the socket seconds later.
+VISIBLE_STALE_S = 90.0
+
+
+def visible_devs() -> set[str]:
+    """Device names whose attached client is on screen right now.
+
+    Read from the watcher's worker thread, written on the event loop — the
+    same GIL-protected-dict discipline WATCHER lives under.
+    """
+    mono = time.monotonic()
+    return {att.dev for att in list(ATTACHED.values())
+            if att.visible and mono - att.last_seen <= VISIBLE_STALE_S}
+
+
 def send_webpush_all(payload: dict) -> None:
     """One notification to every stored subscription; 404/410 prunes."""
     mod = _webpush_module()
@@ -3278,8 +3317,16 @@ def send_webpush_all(payload: dict) -> None:
         log(f"webpush: no vapid keys ({e!r})")
         return
     data = json.dumps(payload)
+    visible = visible_devs()
     kept, pruned = [], False
     for entry in subs:
+        # This device is in the app right now: hold its send, keep the sub.
+        # Subscriptions carry the same dev name the attachment does, which is
+        # what makes the hold per-device rather than global.
+        if str(entry.get("dev", "")) in visible:
+            kept.append(entry)
+            log(f"webpush hold dev={entry.get('dev', '')!r} (client visible)")
+            continue
         endpoint = str(entry.get("endpoint", ""))
         origin = "{0.scheme}://{0.netloc}".format(urllib.parse.urlsplit(endpoint))
         try:
@@ -3327,6 +3374,11 @@ def send_ntfy(payload: dict) -> None:
     """
     url = os.environ.get("POCKETTUI_NTFY_URL", "")
     if not url:
+        return
+    # ntfy is one topic with no device identity, so any on-screen client
+    # holds it back.
+    if visible_devs():
+        log("ntfy hold (client visible)")
         return
     title = str(payload.get("title", "PocketTUI"))
     body = str(payload.get("body", "") or payload.get("kind", ""))
