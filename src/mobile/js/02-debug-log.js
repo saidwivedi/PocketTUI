@@ -152,6 +152,27 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_debug", "1");
     else localStorage.removeItem("pockettui_debug");
   },
+  // Whether the magnifier key and the scrollback search UI it opens appear at
+  // all. Off by default: it is a key-bar slot most sessions never reach for.
+  get scrollbackSearchOn() { return localStorage.getItem("pockettui_search_on") === "1"; },
+  set scrollbackSearchOn(v) {
+    if (v) localStorage.setItem("pockettui_search_on", "1");
+    else localStorage.removeItem("pockettui_search_on");
+  },
+  // Whether the alt modifier key appears in the key bar. Off by default, like
+  // the search key: another slot most sessions never reach for.
+  get altKeyOn() { return localStorage.getItem("pockettui_alt_on") === "1"; },
+  set altKeyOn(v) {
+    if (v) localStorage.setItem("pockettui_alt_on", "1");
+    else localStorage.removeItem("pockettui_alt_on");
+  },
+  // The editor's line-wrap toggle. Off by default: long lines scroll sideways,
+  // same as before this existed.
+  get editorWrapOn() { return localStorage.getItem("pockettui_editor_wrap") === "1"; },
+  set editorWrapOn(v) {
+    if (v) localStorage.setItem("pockettui_editor_wrap", "1");
+    else localStorage.removeItem("pockettui_editor_wrap");
+  },
 };
 
 // The name becomes a tmux session name, so it is held to what tmux and the

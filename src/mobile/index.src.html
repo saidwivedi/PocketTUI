@@ -253,6 +253,11 @@
     <div class="editor-name">
       <span id="editor-filename"></span><span class="editor-dirty" id="editor-dirty" aria-hidden="true"></span>
     </div>
+    <!-- Off by default: long lines scroll sideways, same as today, until this
+         is switched on. Lives beside Save rather than in Settings — it is a
+         per-file reading preference, not a connection setting. -->
+    <button type="button" id="btn-editor-wrap" class="editor-wrap-toggle"
+            aria-label="Wrap long lines" aria-pressed="false">Wrap</button>
     <button type="button" id="btn-editor-save">Save</button>
   </div>
   <!-- CodeMirror mounts here on the first open; the vendor bundle is injected
@@ -342,6 +347,16 @@
     <textarea id="snip-text" rows="4" autocapitalize="off" autocorrect="off"
               spellcheck="false" autocomplete="off"
               placeholder="git status"></textarea>
+  </div>
+  <!-- Key-bar slots most sessions never reach for, so both stay out of the bar
+       until asked for. -->
+  <div class="toggle-row">
+    <label for="search-toggle">Scrollback search</label>
+    <input id="search-toggle" type="checkbox">
+  </div>
+  <div class="toggle-row">
+    <label for="alt-toggle">Alt key</label>
+    <input id="alt-toggle" type="checkbox">
   </div>
   <!-- Last in the sheet because it is a diagnostic, not part of connecting. -->
   <div class="toggle-row">
