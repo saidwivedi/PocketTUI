@@ -1,17 +1,20 @@
 // ============================================================
 // Session list
 // ============================================================
-// A row's trash button asks with the same confirm() dialog the session
-// sheet's kill row uses — one idiom for "sure?" wherever a kill can start.
+// Both kill entry points — a row's trash button and the session sheet's kill
+// row — ask the same question through the same themed dialog.
+function confirmKill(name) {
+  return appConfirm("Kill '" + name + "'? Programs running in it are terminated.",
+                    { confirmLabel: "Kill" });
+}
+
 function trashBtn(s) {
   return el("button", {
     class: "icon-btn btn-trash", type: "button",
     "aria-label": "Kill session " + s.name,
-    onclick: (e) => {
+    onclick: async (e) => {
       e.stopPropagation();
-      if (confirm("Kill '" + s.name + "'? Programs running in it are terminated.")) {
-        killSession(s.name);
-      }
+      if (await confirmKill(s.name)) killSession(s.name);
     },
   }, svgIcon("i-trash"));
 }
@@ -179,8 +182,8 @@ async function saveSessionSheet() {
 }
 
 // The actual kill, shared by the sheet's own button and each row's trash
-// button. Confirmation is each caller's own concern (both put up the same
-// confirm() dialog) — by the time this runs the user has already said yes.
+// button. Confirmation is each caller's own concern (both ask through
+// confirmKill()) — by the time this runs the user has already said yes.
 // Returns whether it succeeded, so a caller with its own UI to close (the
 // sheet) only closes it once the kill actually lands.
 async function killSession(name) {
@@ -203,7 +206,7 @@ async function killSession(name) {
 async function killSheetSession() {
   const s = sheetSession;
   if (!s) return;
-  if (!confirm("Kill '" + s.name + "'? Programs running in it are terminated.")) return;
+  if (!(await confirmKill(s.name))) return;
   if (await killSession(s.name)) showSheet(false);
 }
 

@@ -30,4 +30,32 @@ function toast(msg, ms=1800) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toast._t); toast._t = setTimeout(()=>t.classList.remove("show"), ms);
 }
+// A themed stand-in for confirm(): the native dialog wears the OS's look, not
+// the app's. One question at a time — the pending resolver doubles as the
+// "dialog is open" flag. Scrim tap and Escape both answer no.
+let confirmResolve = null;
+function appConfirm(message, opts={}) {
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+    $("confirm-msg").textContent = message;
+    $("btn-confirm-ok").textContent = opts.confirmLabel || "OK";
+    $("confirm-scrim").classList.add("show");
+    $("btn-confirm-cancel").focus();
+  });
+}
+function settleConfirm(answer) {
+  if (!confirmResolve) return;
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  $("confirm-scrim").classList.remove("show");
+  resolve(answer);
+}
+$("btn-confirm-ok").addEventListener("click", () => settleConfirm(true));
+$("btn-confirm-cancel").addEventListener("click", () => settleConfirm(false));
+$("confirm-scrim").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) settleConfirm(false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && confirmResolve) { e.preventDefault(); settleConfirm(false); }
+});
 
