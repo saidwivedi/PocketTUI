@@ -971,20 +971,25 @@ function sendKey(seq) {
 // so the wobble inside a sloppy tap can never turn into one.
 const SWIPE_DIST = 30;   // px of upward travel before a press is a swipe
 
-// Rebuilds the bar wholesale from KEYS, skipping the search and alt keys when
-// their Settings toggle is off. Callable again from Settings — the sheet's
-// scrim sits above the key bar and blocks its taps, so there is never a
-// gesture in flight on it for a rebuild to interrupt.
+// Rebuilds the bar wholesale from KEYS, skipping the search key when its
+// Settings toggle is off. Callable again from Settings — the sheet's scrim
+// sits above the key bar and blocks its taps, so there is never a gesture in
+// flight on it for a rebuild to interrupt.
+//
+// Alt is never skipped here — see the .k-alt/.no-alt comment in styles.css
+// for why it has to stay in the DOM and be hidden by CSS instead: the
+// expanded grid's later columns are pinned by absolute number, and a button
+// missing from the DOM leaves its column an empty gap rather than closing up.
 function buildKeybar() {
   const bar = $("keybar");
   bar.textContent = "";
+  bar.classList.toggle("no-alt", !cfg.altKeyOn);
   // modButtons is about to be rebuilt from scratch, and turning Alt off can
   // drop its button while it is still armed — nothing would be left to tap to
   // release it, so every one-shot modifier is cleared rather than left stuck.
   releaseMods();
   for (const k of KEYS) {
     if (k.search && !cfg.scrollbackSearchOn) continue;
-    if (k.mod === "alt" && !cfg.altKeyOn) continue;
     // Two icons means a key that swaps face with its state (the mic becoming a
     // stop square while a local take runs). Each face gets its own span so CSS
     // can do the swapping, rather than the state machine rewriting the DOM
