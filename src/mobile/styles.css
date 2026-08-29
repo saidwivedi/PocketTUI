@@ -309,11 +309,8 @@ body {
 .item .btn-bell.quiet, .item:hover .btn-bell.quiet { color: var(--umber); }
 /* Same quiet manner and same 4px/16px box as the pencil and bell beside it —
    trash never gets a smaller tap target just for being the newest icon in a
-   row that is already carrying four. Its one moment of color is --bad (the
-   file explorer's own delete-confirm token), armed by a first tap and worn
-   only until the second tap or TRASH_ARM_MS lets it go — see trashBtn() in
-   06-session-list.js for why a pulse plus a color change, not a browser
-   confirm(), is what asks "sure?" here. */
+   row that is already carrying four. The "sure?" is trashBtn()'s confirm()
+   dialog, so the icon itself never changes state. */
 .item .btn-trash {
   padding: 4px;
   margin-top: -1px;
@@ -321,17 +318,6 @@ body {
 }
 .item .btn-trash svg { width: 16px; height: 16px; }
 .item:hover .btn-trash { color: var(--secondary); }
-.item .btn-trash.armed {
-  color: var(--bad);
-  animation: trash-armed-pulse 1.1s var(--ease-in-out) infinite;
-}
-@keyframes trash-armed-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .item .btn-trash.armed { animation: none; }
-}
 
 .item .item-meta {
   margin-left: 20px;
