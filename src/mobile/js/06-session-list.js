@@ -129,7 +129,6 @@ function demoCard() {
   return el("div", { class: "item demo", onclick: () => openDemo() },
     el("div", { class: "item-head" },
       el("div", { class: "title" }, "Try demo"),
-      el("div", { class: "chev" }, svgIcon("i-fwd")),
     ),
     el("div", { class: "item-meta" }, el("span", {}, "offline · nothing here is real")),
   );
@@ -194,7 +193,6 @@ function renderSessions(sessions) {
         bell,
         edit,
         trashBtn(s),
-        el("div", { class: "chev" }, svgIcon("i-fwd")),
       ),
       meta,
     );

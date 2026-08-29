@@ -289,13 +289,7 @@ body {
   margin-top: 2px;
   overflow-wrap: anywhere;
 }
-.item .chev {
-  color: var(--whisper);
-  flex: 0 0 auto;
-  margin-top: 3px;
-}
-.item .chev svg { width: 18px; height: 18px; }
-/* Sits in the head row next to the chevron; quiet until the row is touched, so
+/* Sits at the end of the head row; quiet until the row is touched, so
    it never competes with the session name. */
 .item .btn-alias {
   padding: 4px;
@@ -327,6 +321,20 @@ body {
 }
 .item .btn-trash svg { width: 16px; height: 16px; }
 .item:hover .btn-trash { color: var(--secondary); }
+
+/* A 16px glyph in 4px of padding is a 24px tap target, and a few px of miss
+   lands on .item — which opens the session. An invisible overlay grows the
+   hit area without moving a pixel of the layout: half the head's 12px gap on
+   each side, so neighbours tile instead of stealing from each other, and up
+   into the card's top padding, stopping just short of the meta line below.
+   The overlay makes the button itself the event target, so each handler's
+   stopPropagation() is what keeps the row's onclick from firing. */
+.item .btn-bell, .item .btn-alias, .item .btn-trash { position: relative; }
+.item .btn-bell::after, .item .btn-alias::after, .item .btn-trash::after {
+  content: "";
+  position: absolute;
+  top: -8px; right: -6px; bottom: -5px; left: -6px;
+}
 
 .item .item-meta {
   margin-left: 20px;
@@ -2020,10 +2028,9 @@ html.term-open, body.term-open {
   /* Compact two-line rows: the title on top (ellipsized), the phone's meta
      line beneath it distilled — the running command and the watcher's
      verdict keep their colors, while the window count, age and separators
-     fold away so the line stays one dense read even at 240px. The chevron
-     goes too — the selected fill and the pointer already say "openable"
-     here — and one row means one name: the alias keeps the row and the
-     tmux name stays in the session sheet. */
+     fold away so the line stays one dense read even at 240px. And one row
+     means one name: the alias keeps the row and the tmux name stays in the
+     session sheet. */
   #screen-list .item {
     padding: 8px 10px;
     margin-bottom: 6px;
@@ -2039,7 +2046,6 @@ html.term-open, body.term-open {
     text-overflow: ellipsis;
   }
   #screen-list .item .title .realname { display: none; }
-  #screen-list .item .chev { display: none; }
   #screen-list .item .item-meta {
     /* Under the title's own left edge: the 7px dot plus the head's 7px gap. */
     margin-left: 14px;
@@ -2059,6 +2065,13 @@ html.term-open, body.term-open {
   #screen-list .item .btn-trash { padding: 3px; margin-top: 0; }
   #screen-list .item .btn-bell svg, #screen-list .item .btn-alias svg,
   #screen-list .item .btn-trash svg { width: 14px; height: 14px; }
+  /* Half the rail's 7px gap each side; vertically the dense row has far less
+     to give than the phone's card — 8px of padding above, and the meta line
+     sitting one pixel under the head. */
+  #screen-list .item .btn-bell::after, #screen-list .item .btn-alias::after,
+  #screen-list .item .btn-trash::after {
+    top: -5px; right: -3px; bottom: -1px; left: -3px;
+  }
 
   /* The seam between rail and main pane, and the resize handle in one: a
      recessed gutter in the app's own well idiom — sunken surface between two
