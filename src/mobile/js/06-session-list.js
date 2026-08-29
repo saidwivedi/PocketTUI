@@ -123,14 +123,11 @@ function renderSessions(sessions) {
     setBellState(bell, s.notify, s.name);
 
     // data-name lets the wide layout's rail mark the open session's row
-    // without a rebuild (markSelectedSession below); data-state feeds the
-    // rail's compact state badge, whose meta line is folded away there.
-    // Both are inert on the phone — it never shows the list and a terminal
-    // together, and its rows keep the full meta line.
+    // without a rebuild (markSelectedSession below); .selected only renders
+    // there — the phone never shows the list and a terminal together.
     const card = el("div", {
       class: "item" + (s.name === currentSession ? " selected" : ""),
       "data-name": s.name,
-      "data-state": s.state || "",
       onclick: () => openTerminal(s.name),
     },
       el("div", { class: "item-head" },
