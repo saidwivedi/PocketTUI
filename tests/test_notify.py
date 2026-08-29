@@ -91,17 +91,42 @@ SUB = {"endpoint": "https://push.example/reg/1",
      ("menu", ["1", "2", "3", "4"], "1. a")),
     # A lone numbered line is prose, not a menu.
     (["1. first do this", "then run make"], "", ("quiet", [], "")),
-    # The claude-style input box, spotted on the cursor's own line.
+    # Claude Code's permission dialog, captured borders and all: it takes
+    # digits, not y/n, and the question above the options is what is worth
+    # reading on a phone. Both shapes are present, and the menu has to win.
+    (["⏺ Bash(rm -rf build)",
+      "╭────────────────────────────────────────────╮",
+      "│ Bash command                               │",
+      "│                                            │",
+      "│ rm -rf build                               │",
+      "│ Do you want to proceed?                    │",
+      "│ ❯ 1. Yes                                   │",
+      "│   2. Yes, and don't ask again              │",
+      "│   3. No, and tell Claude what to do        │",
+      "╰────────────────────────────────────────────╯"],
+     "│ ❯ 1. Yes                                   │",
+     ("menu", ["1", "2", "3"], "Do you want to proceed?")),
+    # An empty claude-style input box with nothing above it worth quoting.
     (["╭───────╮", "│ > ", "╰───────╯"], "│ > ",
-     ("waiting", [], "│ >")),
-    # Claude Code's ❯ composer, exactly as captured — NBSP after the glyph.
-    (["❯\xa0kill 1442784"], "❯\xa0kill 1442784",
-     ("waiting", [], "❯\xa0kill 1442784")),
+     ("ready", [], "ready for your next message")),
+    # A composer with a draft in it — NBSP after the glyph, exactly as
+    # captured. Someone is mid-sentence at that keyboard: not news.
+    (["❯\xa0kill 1442784"], "❯\xa0kill 1442784", ("drafting", [], "")),
     # The same composer with a plain space.
-    (["❯ resume the build"], "❯ resume the build",
-     ("waiting", [], "❯ resume the build")),
+    (["❯ resume the build"], "❯ resume the build", ("drafting", [], "")),
     # An empty composer — capture_pane rstrips the line down to the bare glyph.
-    (["❯"], "❯", ("waiting", [], "❯")),
+    (["❯"], "❯", ("ready", [], "ready for your next message")),
+    # An empty composer under a finished turn: the body is the last thing the
+    # agent said, found by skipping the box, the composer and the hint line —
+    # none of which the five-line tail could see past.
+    (["⏺ Rewrote the parser; all 89 tests pass.",
+      "",
+      "╭────────────────────────────────────────────╮",
+      "│ >                                          │",
+      "╰────────────────────────────────────────────╯",
+      "  ? for shortcuts                    ⏵⏵ accept edits on"],
+     "│ >                                          │",
+     ("ready", [], "⏺ Rewrote the parser; all 89 tests pass.")),
     # A ❯-marked menu line under the cursor is still a menu, not "waiting".
     (["  1. Yes", "❯ 2. No"], "❯ 2. No",
      ("menu", ["1", "2"], "❯ 2. No")),
@@ -161,6 +186,22 @@ def classify_other_yn(name):
 
 def classify_quiet(name):
     return "quiet", [], ""
+
+
+def classify_menu(name):
+    return "menu", ["1", "2", "3"], "Do you want to proceed?"
+
+
+def classify_ready(name):
+    return "ready", [], "⏺ Rewrote the parser; all 89 tests pass."
+
+
+def classify_ready_again(name):
+    return "ready", [], "⏺ And the docs, too."
+
+
+def classify_drafting(name):
+    return "drafting", [], ""
 
 
 def classify_boom(name):
@@ -248,9 +289,11 @@ def test_sleep_then_echo_done_fires_one_finished():
     classify = classify_quiet
     A.watch_update(rows, [pane("work", 1000, cmd="zsh")], 1001, 1.0, classify_boom)
     A.watch_update(rows, [pane("work", 1000, cmd="sleep")], 1003, 3.0, classify_boom)
-    # Idle transition during the sleep: gated, silent, episode kept open.
+    # Idle transition during the sleep: a program holds the pane, so it is
+    # read — and says nothing, because a sleeping pane has no shape. Silent,
+    # and the episode is kept open.
     assert A.watch_update(rows, [pane("work", 1000, cmd="sleep")], 1008, 8.0,
-                          classify_boom) == []
+                          classify_quiet) == []
     assert A.WATCHER["work"].busy_started != 0.0
     # done prints, the shell is back.
     A.watch_update(rows, [pane("work", 1030, cmd="zsh")], 1031, 31.0, classify_boom)
@@ -396,6 +439,88 @@ def test_a_suppressed_repeat_does_not_spend_the_gap():
     # The suppressed transition was at mono 129; this one is 10 s behind it.
     assert ("push", "waiting") in kinds(spin(rows, "work", 1140, 110.0,
                                              classify_other_yn))
+
+
+def long_spin(rows, name, t, mono, classify, cmd="claude", length=40):
+    """A busy→idle episode of `length` seconds — long enough to walk away from.
+
+    spin()'s 20 s episode clears MIN_BUSY_S but not READY_MIN_BUSY_S, which is
+    the difference between "it asked something" and "it is done".
+    """
+    A.watch_update(rows, [pane(name, t, cmd=cmd)], t + 1, mono, classify_boom)
+    A.watch_update(rows, [pane(name, t + length, cmd=cmd)], t + length,
+                   mono + length - 1, classify_boom)
+    return A.watch_update(rows, [pane(name, t + length, cmd=cmd)],
+                          t + length + 10, mono + length + 9, classify)
+
+
+def test_typing_in_the_composer_never_pushes():
+    # The live bug: the composer read as "waiting", so every redraw pause
+    # while the user typed closed an episode whose body was the half-typed
+    # line — different text every time, so the repeat guard never caught it.
+    rows = [row("work", notify="on")]
+    for i in range(3):
+        events = spin(rows, "work", 1000 + 200 * i, 200.0 * i,
+                      classify_drafting, cmd="claude")
+        # The badge says the session wants its human; the chip bar is told to
+        # go away; nothing reaches the phone.
+        assert kinds(events) == [("ws", "prompt")]
+        assert events[0]["payload"] == {"type": "prompt", "options": [],
+                                        "line": ""}
+        assert A.WATCHER["work"].state == "waiting"
+
+
+def test_an_empty_composer_after_a_long_turn_pushes_once():
+    rows = [row("work", notify="on")]
+    events = long_spin(rows, "work", 1000, 0.0, classify_ready)
+    push = [e for e in events if e["kind"] == "push"]
+    assert len(push) == 1
+    assert push[0]["payload"]["kind"] == "ready"
+    assert push[0]["payload"]["body"] == \
+        "⏺ Rewrote the parser; all 89 tests pass."
+    assert A.WATCHER["work"].state == "waiting"
+    # Nothing to answer, so the chip bar is taken down rather than filled.
+    ws = [e for e in events if e["kind"] == "ws"]
+    assert ws[0]["payload"] == {"type": "prompt", "options": [], "line": ""}
+    # A redraw closes another episode over the same transcript: not news, and
+    # far enough past NOTIFY_GAP_S that only the signature can be silencing it.
+    assert kinds(long_spin(rows, "work", 1200, 200.0, classify_ready)) == \
+        [("ws", "prompt")]
+    # The agent said something new: that is a different "done".
+    assert ("push", "ready") in kinds(long_spin(rows, "work", 1400, 400.0,
+                                                classify_ready_again))
+
+
+def test_a_short_ready_episode_sets_the_state_but_stays_silent():
+    # `claude` starting up: a couple of seconds of banner, then an empty
+    # composer. A shape, but nothing anyone walked away from.
+    rows = [row("work", notify="on")]
+    events = spin(rows, "work", 1000, 0.0, classify_ready, cmd="claude")
+    assert kinds(events) == [("ws", "prompt")]
+    assert A.WATCHER["work"].state == "waiting"
+
+
+def test_a_dialog_three_seconds_into_a_tool_call_still_pushes():
+    # Under the old MIN_BUSY_S-only gate this pane was never even read: the
+    # permission dialog most worth pushing is the one that appears at once.
+    rows = [row("work", notify="on")]
+    t = 1000
+    A.watch_update(rows, [pane("work", t, cmd="claude")], t + 1, 0.0,
+                   classify_boom)
+    A.watch_update(rows, [pane("work", t + 3, cmd="claude")], t + 4, 4.0,
+                   classify_boom)
+    events = A.watch_update(rows, [pane("work", t + 3, cmd="claude")], t + 10,
+                            10.0, classify_menu)
+    assert kinds(events) == [("ws", "prompt"), ("push", "waiting")]
+    assert events[0]["payload"] == {"type": "prompt",
+                                    "options": ["1", "2", "3"],
+                                    "line": "Do you want to proceed?"}
+    assert events[1]["payload"]["body"] == "Do you want to proceed?"
+    # The dialog is still up and nothing has been written to the pane since,
+    # so it is not read again — the capture is once per episode.
+    assert A.watch_update(rows, [pane("work", t + 3, cmd="claude")], t + 12,
+                          12.0, classify_boom) == []
+    assert A.WATCHER["work"].state == "waiting"
 
 
 def test_non_representatives_and_vanished_sessions_are_dropped():
