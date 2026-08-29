@@ -18,3 +18,9 @@ uvicorn[standard]>=0.23
 # the server to start: an install without the ONNX model, or without this wheel
 # at all, falls back to the whisper.cpp build setup_voice.sh makes.
 sherpa-onnx>=1.13.6
+
+# Web Push for the "agent needs input" notifications (pulls in py-vapid and
+# cryptography). Optional at runtime: app.py imports it lazily and answers
+# push:false / 503 push_unavailable without it — the server must still boot
+# and the ntfy transport still works on an install that skipped this wheel.
+pywebpush>=2.0

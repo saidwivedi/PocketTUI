@@ -1,4 +1,5 @@
 .ftp_credentials
+.venv/
 mobile_build/
 __pycache__/
 *.log
@@ -14,6 +15,10 @@ assets/favicon-32.png
 _redirects
 deploy_cloudflare.sh
 .token
+# Notification state: the VAPID keypair minted on first need, and the phones'
+# push subscriptions. Both are this install's secrets, like the token.
+.vapid.json
+.push_subs.json
 deploy_test.sh
 # Built by setup_voice.sh: a ~150 MB model and a compiled binary.
 voice/
