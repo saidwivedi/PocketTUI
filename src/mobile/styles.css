@@ -1534,10 +1534,19 @@ html.term-open, body.term-open {
   max-height: 45vh;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  background: var(--paper-rec);
-  border: 1px solid var(--hair);
+  /* --card and this shadow strength are .sheet's own elevated-surface recipe
+     (see .sheet above) — the same floating-panel language, so this dropdown
+     reads as a layer over the file list rather than blending into it. Never
+     --paper-rec: that token means recessed (sunken), the opposite of what a
+     floating dropdown needs, and it sits only a couple percent off --paper in
+     both themes — too close to the plain rows underneath to read as separate.
+     --hair-strong rather than .sheet's plain --hair: a small panel floating
+     directly over content needs a more definite edge than a sheet that also
+     has the whole screen dimming behind it. */
+  background: var(--card);
+  border: 1px solid var(--hair-strong);
   border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.14);
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
   z-index: 60;
 }
 #files-suggest.show { display: block; }
