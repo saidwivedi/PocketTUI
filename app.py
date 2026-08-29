@@ -17,6 +17,7 @@ once; the views hide themselves from the session list by being grouped clones.
 import argparse
 import array
 import asyncio
+import base64
 import dataclasses
 import errno
 import fcntl
@@ -38,7 +39,10 @@ import sys
 import tempfile
 import termios
 import time
+import urllib.parse
+import urllib.request
 import wave
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -67,7 +71,27 @@ CACHE_VERSION = time.strftime("%Y%m%d-%H%M%S")
 # so a client that sends nothing still gets the single-view behaviour below.
 DEV_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,15}$")
 
-app = FastAPI(title="PocketTUI")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Run the pane watcher for the server's lifetime.
+
+    The watcher (see "Pane watcher & notifications" below) is the one piece of
+    this server that acts without a request to answer, so it lives as a task
+    the lifespan owns: started once the app is up, cancelled — and awaited, so
+    a mid-tick capture finishes cleanly — on the way down.
+    """
+    task = asyncio.create_task(watcher_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(title="PocketTUI", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
 # Pairing token
@@ -420,20 +444,21 @@ def session_rows() -> list[dict]:
         "list-sessions",
         "-F",
         "#{session_name}\t#{session_created}\t#{session_attached}\t#{session_windows}"
-        "\t#{session_grouped}\t#{session_group}\t#{session_id}\t#{@alias}",
+        "\t#{session_grouped}\t#{session_group}\t#{session_id}\t#{@alias}\t#{@notify}",
     )
     if rc != 0:
         return []
 
     rows = []
     for line in out.splitlines():
-        # The alias field is still last and empty when unset, so split to a
-        # fixed width rather than requiring every field to be present.
+        # The alias and notify fields are last and empty when unset, so split
+        # to a fixed width rather than requiring every field to be present.
         parts = line.split("\t")
         if len(parts) < 7:
             continue
         name, created, attached, windows, grouped, group, sid = parts[:7]
         alias = parts[7] if len(parts) > 7 else ""
+        notify = parts[8] if len(parts) > 8 else ""
         rows.append({
             "name": name,
             "created": int(created or 0),
@@ -443,6 +468,7 @@ def session_rows() -> list[dict]:
             "group": group,
             "sid": _session_sid(sid),
             "alias": alias,
+            "notify": notify != "",
         })
 
     # Oldest member per group, ordered by session id: tmux hands ids out in
@@ -503,6 +529,11 @@ def list_sessions() -> list[dict]:
         if not row["representative"]:
             continue
         cmd, title = active_pane(row["name"])
+        # The watcher's view of this session rides along regardless of the
+        # @notify opt-in: the badge is in-app signal, and the phone's WS dies
+        # seconds after backgrounding, so the list is where "still waiting on
+        # you" survives. A session the watcher has not seen yet reads idle.
+        w = WATCHER.get(row["name"])
         sessions.append({
             "name": row["name"],
             "created": row["created"],
@@ -511,6 +542,9 @@ def list_sessions() -> list[dict]:
             "command": cmd,
             "title": title,
             "alias": row["alias"],
+            "notify": row["notify"],
+            "state": w.state if w else "idle",
+            "last_activity": w.last_activity if w else 0,
         })
 
     sessions.sort(key=lambda s: s["created"], reverse=True)
@@ -2576,14 +2610,18 @@ class Attachment:
     client reads as JSON where PTY bytes stay binary.
     """
 
-    __slots__ = ("pid", "fd", "out", "done", "retired")
+    __slots__ = ("pid", "fd", "out", "done", "retired", "session")
 
-    def __init__(self, pid: int, fd: int, out: asyncio.Queue) -> None:
+    def __init__(self, pid: int, fd: int, out: asyncio.Queue,
+                 session: str = "") -> None:
         self.pid = pid
         self.fd = fd
         self.out = out
         self.done = asyncio.Event()
         self.retired = asyncio.Event()
+        # The session this view is watching, so the pane watcher can find
+        # every attached view of a session without decoding view names.
+        self.session = session
 
     def retire(self) -> None:
         self.retired.set()
@@ -2689,7 +2727,7 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         # PTY reads land in this queue via add_reader; None marks the PTY
         # closing. str items are JSON control messages (Attachment.notify).
         out: asyncio.Queue = asyncio.Queue()
-        me = Attachment(pid, fd, out)
+        me = Attachment(pid, fd, out, session_name)
         ATTACHED[view] = me
 
     # Off-thread: enable_mouse polls for the just-spawned session.
@@ -2775,6 +2813,631 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
             await ws.close()
         except RuntimeError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Pane watcher & notifications
+# ---------------------------------------------------------------------------
+# The phone's WebSocket dies within seconds of the app backgrounding, so
+# "your agent is waiting on you" can only be detected here, server-side. One
+# asyncio task polls tmux and runs a small state machine per session; when a
+# watched session goes quiet after real work, the visible pane is read once
+# and classified, and the verdict goes out as a Web Push / ntfy notification
+# (per-session opt-in via the @notify session option, mirroring @alias) and as
+# prompt chips over the WS control channel to whoever is still attached.
+
+# Tick period. Two tmux subprocesses per tick regardless of session count —
+# list-sessions (via session_rows) and one list-panes -a — so the cost is
+# constant; capture-pane runs only on busy→idle transitions, never per tick.
+POLL_S = 2.0
+
+# A session is BUSY while its last output is younger than this. 6 s rides out
+# a compiler pausing between files without reading it as "done".
+IDLE_S = float(os.environ.get("POCKETTUI_NOTIFY_IDLE_S", "6.0"))
+
+# Only a busy episode at least this long earns a classification: typing a
+# quick command and reading its output is not an event anyone needs pushed.
+MIN_BUSY_S = 10.0
+
+# Per-session floor between notifications, so a flapping session cannot turn
+# a phone into a metronome.
+NOTIFY_GAP_S = 30.0
+
+# What counts as "nothing running": the pane has fallen back to a shell.
+SHELL_COMMANDS = {"bash", "zsh", "sh", "fish", "dash", "ash", "ksh", "tcsh",
+                  "csh"}
+
+
+@dataclasses.dataclass
+class WatchState:
+    """One session's slice of the watcher's memory."""
+
+    last_activity: int = 0        # newest #{window_activity} seen (epoch s)
+    busy_started: float = 0.0     # epoch when the open episode began; 0 = none
+    episode_cmd: str = ""         # last non-shell pane command seen in it
+    cmd: str = ""                 # active pane's command, last tick
+    bell: bool = False            # last #{window_bell_flag}, for edge detection
+    fired: bool = False           # this idle episode already notified
+    notified_at: float | None = None   # monotonic stamp of the last dispatch
+    state: str = "idle"           # "active" | "waiting" | "idle" (the badge)
+    prompt: dict | None = None    # the chips frame currently showing, if any
+
+
+# Keyed by representative session name. Written by the watcher's worker
+# thread, read by /api/sessions — single-field reads of a GIL-protected dict,
+# so a race costs at most one tick of staleness.
+WATCHER: dict[str, WatchState] = {}
+
+
+PROMPT_YN_RE = re.compile(r"\[y/n\]|\(y/n\)|\byes/no\b", re.IGNORECASE)
+PROMPT_ASK_RE = re.compile(
+    r"do you want|would you like|proceed\?|continue\?|are you sure",
+    re.IGNORECASE)
+PROMPT_MENU_RE = re.compile(r"^\s*(❯\s*)?(\d+)[.)]\s")
+PROMPT_BOX_RE = re.compile(r"^\s*│?\s*>\s")
+
+
+def detect_prompt(lines: list[str],
+                  cursor_line: str = "") -> tuple[str, list[str], str]:
+    """What the pane's tail looks like it is asking. Pure — table-tested.
+
+    Returns (kind, options, line): kind "prompt" (a y/n question, options
+    ["y","n"]), "menu" (a numbered chooser, options its digits), "waiting" (an
+    input box or trailing question with nothing tappable, options []), or
+    "quiet" (no shape at all). `line` is the matched text, which becomes the
+    notification body. Only the last 5 non-empty lines are read — a prompt is
+    at the bottom of a pane or it is history — with the cursor's own line
+    weighted first, because that is where an interactive program parks it.
+    """
+    scan = [line for line in lines if line.strip()][-5:]
+    ordered = [line for line in reversed(scan) if line != cursor_line]
+    if cursor_line.strip():
+        ordered.insert(0, cursor_line)
+
+    for regex in (PROMPT_YN_RE, PROMPT_ASK_RE):
+        for line in ordered:
+            if regex.search(line):
+                return "prompt", ["y", "n"], line.strip()
+
+    # A numbered menu is only a menu when at least two choices sit together —
+    # a lone "1." is prose. ❯ marks the pre-selected line, which is the one
+    # worth quoting at the user.
+    run: list[tuple[str, bool, str]] = []
+    menu: list[tuple[str, bool, str]] | None = None
+    for line in [*scan, ""]:
+        m = PROMPT_MENU_RE.match(line)
+        if m:
+            run.append((m.group(2), bool(m.group(1)), line))
+            continue
+        if len(run) >= 2 and menu is None:
+            menu = run
+        run = []
+    if menu:
+        options = [digit for digit, _, _ in menu][:4]
+        marked = next((line for _, sel, line in menu if sel), menu[0][2])
+        return "menu", options, marked.strip()
+
+    if cursor_line.strip() and (PROMPT_BOX_RE.match(cursor_line)
+                                or cursor_line.rstrip().endswith("?")):
+        return "waiting", [], cursor_line.strip()
+    return "quiet", [], ""
+
+
+def classify_session(name: str) -> tuple[str, list[str], str]:
+    """Read the session's visible pane once and run detect_prompt over it.
+
+    Called only on a busy→idle transition, so its two tmux calls (cursor
+    position, then the capture) are paid per episode, not per tick.
+    """
+    lines = capture_pane(name, 30)
+    cursor_line = ""
+    rc, out = tmux("list-panes", "-t", f"={name}",
+                   "-F", "#{pane_active}\t#{cursor_y}\t#{pane_height}")
+    if rc == 0:
+        for row in out.splitlines():
+            parts = row.split("\t")
+            if len(parts) >= 3 and parts[0] == "1":
+                try:
+                    y, height = int(parts[1]), int(parts[2])
+                except ValueError:
+                    break
+                # The capture's last line is the visible bottom row, so the
+                # cursor's line sits (height - 1 - y) lines above it.
+                idx = len(lines) - (height - y)
+                if 0 <= idx < len(lines):
+                    cursor_line = lines[idx]
+                break
+    return detect_prompt(lines, cursor_line)
+
+
+def watch_panes() -> list[dict]:
+    """Every window's active pane across all sessions, parsed.
+
+    One subprocess for the whole server. The pane_active filter is a format
+    field tested here rather than `list-panes -f`, which tmux 3.0a does not
+    have — same workaround capture_history uses.
+    """
+    rc, out = tmux(
+        "list-panes", "-a", "-F",
+        "#{pane_active}\t#{window_active}\t#{session_name}"
+        "\t#{window_activity}\t#{window_bell_flag}\t#{alternate_on}"
+        "\t#{pane_current_command}",
+    )
+    if rc != 0:
+        return []
+    panes = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 7 or parts[0] != "1":
+            continue
+        try:
+            activity = int(parts[3] or 0)
+        except ValueError:
+            activity = 0
+        panes.append({
+            "session": parts[2],
+            "activity": activity,
+            "bell": parts[4] == "1",
+            "alt": parts[5] == "1",
+            "cmd": parts[6],
+            "window_active": parts[1] == "1",
+        })
+    return panes
+
+
+def _watch_notify(row: dict, w: WatchState, mono: float,
+                  kind: str, body: str) -> list[dict]:
+    """The push event this moment has earned, or [] — the @notify opt-in and
+    the per-session gap are enforced here, in one place."""
+    if not row["notify"]:
+        return []
+    if w.notified_at is not None and mono - w.notified_at < NOTIFY_GAP_S:
+        return []
+    w.notified_at = mono
+    return [{"kind": "push", "session": row["name"], "payload": {
+        "title": row["alias"] or row["name"],
+        "body": body,
+        "tag": "ptui-" + row["name"],
+        "session": row["name"],
+        "kind": kind,
+    }}]
+
+
+def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
+                 classify=None) -> list[dict]:
+    """Advance every session's state machine one tick.
+
+    `rows` is session_rows(), `panes` watch_panes(); `now` is epoch seconds
+    (the clock #{window_activity} is on) and `mono` a monotonic clock for
+    notification spacing — both parameters so tests can drive the machine
+    without patching time. Returns the tick's events: {"kind": "ws", ...} for
+    prompt-chip control frames and {"kind": "push", ...} for notifications.
+
+    The rules, as decided: BUSY while output is younger than IDLE_S; a
+    busy→idle transition after an episode of at least MIN_BUSY_S reads the
+    pane once and classifies it; one notification per idle episode, re-armed
+    when activity advances, never closer than NOTIFY_GAP_S per session; a
+    bell edge fires immediately regardless of idle state; nothing is
+    suppressed for being attached — @notify (default off) is the volume
+    control. One refinement the sleep-then-done case forces: an idle
+    transition below the MIN_BUSY_S gate closes the episode only when the
+    pane is back at a shell. A non-shell command that is producing no output
+    (`sleep 30`) keeps its episode open, so the episode spans the quiet run
+    and the eventual "finished" clears the gate.
+    """
+    if classify is None:
+        classify = classify_session
+    events: list[dict] = []
+
+    # Group members share their windows, so the same activity shows under
+    # every member's name; only the representative's rows are read. Activity
+    # is the max across the session's windows; the command is the active
+    # window's, since that pane is what a classification would capture.
+    per: dict[str, dict] = {}
+    for pane in panes:
+        agg = per.setdefault(pane["session"],
+                             {"activity": 0, "bell": False, "cmd": ""})
+        agg["activity"] = max(agg["activity"], pane["activity"])
+        agg["bell"] = agg["bell"] or pane["bell"]
+        if pane["window_active"]:
+            agg["cmd"] = pane["cmd"]
+
+    seen = set()
+    for row in rows:
+        if not row["representative"]:
+            continue
+        name = row["name"]
+        agg = per.get(name)
+        if agg is None:
+            continue
+        seen.add(name)
+        busy = (now - agg["activity"]) < IDLE_S
+
+        w = WATCHER.get(name)
+        if w is None:
+            # First sight is baseline only: whatever happened before this
+            # server was watching is not something to notify about.
+            w = WATCHER[name] = WatchState(
+                last_activity=agg["activity"], cmd=agg["cmd"],
+                bell=agg["bell"], state="active" if busy else "idle")
+            if busy:
+                w.busy_started = agg["activity"]
+                if agg["cmd"] and agg["cmd"] not in SHELL_COMMANDS:
+                    w.episode_cmd = agg["cmd"]
+            continue
+
+        # A bell is the program explicitly asking for attention — it fires on
+        # the rising edge, whatever the idle state says.
+        if agg["bell"] and not w.bell:
+            events.extend(_watch_notify(row, w, mono, "bell", "rang the bell"))
+        w.bell = agg["bell"]
+
+        if agg["activity"] > w.last_activity:
+            # Output resumed: re-arm, open an episode if none is running, and
+            # take down any chips the previous prompt put up.
+            w.fired = False
+            if not w.busy_started:
+                w.busy_started = agg["activity"]
+                w.episode_cmd = ""
+            if w.prompt is not None:
+                events.append({"kind": "ws", "session": name, "payload":
+                               {"type": "prompt", "options": [], "line": ""}})
+                w.prompt = None
+            w.last_activity = agg["activity"]
+
+        if w.busy_started and agg["cmd"] and agg["cmd"] not in SHELL_COMMANDS:
+            w.episode_cmd = agg["cmd"]
+        w.cmd = agg["cmd"]
+
+        if busy:
+            w.state = "active"
+        elif w.busy_started:
+            # The busy→idle transition — the one moment the pane is read.
+            episode = w.last_activity - w.busy_started
+            if episode >= MIN_BUSY_S:
+                kind, options, line = classify(name)
+                if kind in ("prompt", "menu", "waiting"):
+                    w.state = "waiting"
+                    w.prompt = {"type": "prompt", "options": options,
+                                "line": line}
+                    events.append({"kind": "ws", "session": name,
+                                   "payload": dict(w.prompt)})
+                    if not w.fired:
+                        events.extend(_watch_notify(
+                            row, w, mono, "waiting",
+                            line or "waiting for input"))
+                else:
+                    w.state = "idle"
+                    if not w.fired:
+                        if w.episode_cmd and agg["cmd"] in SHELL_COMMANDS:
+                            events.extend(_watch_notify(
+                                row, w, mono, "finished",
+                                f"{w.episode_cmd} finished"))
+                        elif agg["cmd"] and agg["cmd"] not in SHELL_COMMANDS:
+                            events.extend(_watch_notify(
+                                row, w, mono, "quiet",
+                                "went quiet — may need input"))
+                        # Plain shell output that merely stopped: nothing.
+                w.fired = True
+                w.busy_started = 0.0
+                w.episode_cmd = ""
+            elif agg["cmd"] in SHELL_COMMANDS:
+                # Too brief to mean anything and nothing left running.
+                w.state = "idle"
+                w.busy_started = 0.0
+                w.episode_cmd = ""
+            else:
+                # Quiet, but a program still holds the pane (`sleep 30`): the
+                # episode stays open — see the docstring.
+                w.state = "idle"
+        elif w.prompt is None:
+            w.state = "idle"
+
+    # Sessions that vanished take their state with them.
+    for name in list(WATCHER):
+        if name not in seen:
+            del WATCHER[name]
+    return events
+
+
+def watch_tick_sync() -> list[dict]:
+    """One whole tick, run off-loop: poll, update, dispatch the transports.
+
+    Push and ntfy are blocking HTTP and this already runs in a worker thread,
+    so they are sent here; the WS chip frames are returned instead, because
+    an Attachment's queue belongs to the event loop.
+    """
+    events = watch_update(session_rows(), watch_panes(),
+                          time.time(), time.monotonic())
+    ws_events = []
+    for event in events:
+        if event["kind"] == "push":
+            dispatch_notification(event["payload"])
+        else:
+            ws_events.append(event)
+    return ws_events
+
+
+def notify_session_views(session: str, text: str) -> None:
+    """Queue one control frame for every view attached to `session`."""
+    for att in list(ATTACHED.values()):
+        if att.session == session:
+            att.notify(text)
+
+
+async def watcher_loop() -> None:
+    while True:
+        try:
+            for event in await asyncio.to_thread(watch_tick_sync):
+                notify_session_views(event["session"],
+                                     json.dumps(event["payload"]))
+        except Exception as e:  # noqa: BLE001 — the watcher outlives any tick
+            log(f"watcher error: {e!r}")
+        await asyncio.sleep(POLL_S)
+
+
+# ---------------------------------------------------------------------------
+# Notification transports
+# ---------------------------------------------------------------------------
+# Web Push through pywebpush, which is deliberately optional: the server must
+# boot and serve without it (the import is lazy, status answers push:false,
+# subscribe answers 503). ntfy is the zero-dependency alternative — one env
+# var, plain urllib. Neither transport may ever take a request or the watcher
+# down with it: every failure is logged and swallowed.
+
+# VAPID keypair (0600, like the token) and the push subscriptions. Both are
+# state this install mints, never something to commit.
+VAPID_PATH = HERE / ".vapid.json"
+PUSH_SUBS_PATH = HERE / ".push_subs.json"
+
+# One row per paired browser is plenty; 20 leaves room for re-pairs before
+# the oldest is evicted.
+PUSH_SUBS_MAX = 20
+RATE_PUSH = 10
+
+
+def _webpush_module():
+    """pywebpush, or None where it is not installed. The single seam every
+    push path goes through, so tests (and a bare install) degrade in one
+    place."""
+    try:
+        import pywebpush
+        return pywebpush
+    except Exception:  # noqa: BLE001 — a broken wheel reads as "not installed"
+        return None
+
+
+def push_available() -> bool:
+    return _webpush_module() is not None
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def vapid_keys() -> dict:
+    """The VAPID keypair, minted on first need and kept at VAPID_PATH.
+
+    Raw urlsafe-base64: the public half is exactly what pushManager.subscribe
+    wants as applicationServerKey, and pywebpush's Vapid.from_string accepts
+    the private half as-is. Only reached behind push_available(), so the
+    cryptography import (a pywebpush dependency) cannot be the thing that
+    breaks a bare install.
+    """
+    try:
+        data = json.loads(VAPID_PATH.read_text(encoding="utf-8"))
+        if data.get("private_key") and data.get("public_key"):
+            return data
+    except (OSError, ValueError):
+        pass
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    key = ec.generate_private_key(ec.SECP256R1())
+    data = {
+        "private_key": _b64url(
+            key.private_numbers().private_value.to_bytes(32, "big")),
+        "public_key": _b64url(key.public_key().public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint)),
+    }
+    # Mode set before the secret lands, same as write_token.
+    fd = os.open(VAPID_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    os.chmod(VAPID_PATH, 0o600)
+    return data
+
+
+def load_push_subs() -> list[dict]:
+    try:
+        data = json.loads(PUSH_SUBS_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def save_push_subs(subs: list[dict]) -> None:
+    # 0600 like the token: an endpoint URL is a capability to send this
+    # phone notifications.
+    fd = os.open(PUSH_SUBS_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(subs, fh)
+
+
+def send_webpush_all(payload: dict) -> None:
+    """One notification to every stored subscription; 404/410 prunes."""
+    mod = _webpush_module()
+    if mod is None:
+        return
+    subs = load_push_subs()
+    if not subs:
+        return
+    try:
+        private_key = vapid_keys()["private_key"]
+    except Exception as e:  # noqa: BLE001
+        log(f"webpush: no vapid keys ({e!r})")
+        return
+    data = json.dumps(payload)
+    kept, pruned = [], False
+    for entry in subs:
+        endpoint = str(entry.get("endpoint", ""))
+        origin = "{0.scheme}://{0.netloc}".format(urllib.parse.urlsplit(endpoint))
+        try:
+            mod.webpush(
+                entry.get("subscription") or {}, data,
+                vapid_private_key=private_key,
+                vapid_claims={"sub": "mailto:pockettui@localhost",
+                              "aud": origin},
+                ttl=3600)
+            kept.append(entry)
+        except Exception as e:  # noqa: BLE001 — one dead sub must not stop the rest
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status in (404, 410):
+                # The browser dropped this subscription for good.
+                pruned = True
+                log(f"webpush prune status={status} endpoint={endpoint[:60]}")
+            else:
+                kept.append(entry)
+                log(f"webpush fail: {e!r}")
+    if pruned:
+        save_push_subs(kept)
+
+
+def _ntfy_header(text: str) -> str:
+    """A header value urllib will accept: RFC 2047 when it is not latin-1."""
+    try:
+        text.encode("latin-1")
+        return text
+    except UnicodeEncodeError:
+        return "=?UTF-8?B?" + base64.b64encode(text.encode()).decode() + "?="
+
+
+def send_ntfy(payload: dict) -> None:
+    """POST the notification to the configured ntfy topic, if there is one.
+
+    Server-side env config, no UI: POCKETTUI_NTFY_URL is the full topic URL
+    (any ntfy server). POCKETTUI_APP_URL, when set, makes tapping the ntfy
+    notification open the app on that session, the same landing the Web Push
+    tap gets.
+    """
+    url = os.environ.get("POCKETTUI_NTFY_URL", "")
+    if not url:
+        return
+    title = str(payload.get("title", "PocketTUI"))
+    body = str(payload.get("body", "") or payload.get("kind", ""))
+    headers = {"Title": _ntfy_header(title), "Tags": "bell"}
+    app_url = os.environ.get("POCKETTUI_APP_URL", "")
+    if app_url:
+        headers["Click"] = (app_url + "#session="
+                            + urllib.parse.quote(str(payload.get("session", ""))))
+    req = urllib.request.Request(
+        url, data=f"{title}: {body}".encode("utf-8"),
+        headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except Exception as e:  # noqa: BLE001 — a transport, never an error source
+        log(f"ntfy fail: {e!r}")
+
+
+def dispatch_notification(payload: dict) -> None:
+    """Send one notification through every configured transport."""
+    try:
+        send_webpush_all(payload)
+    except Exception as e:  # noqa: BLE001
+        log(f"webpush dispatch error: {e!r}")
+    try:
+        send_ntfy(payload)
+    except Exception as e:  # noqa: BLE001
+        log(f"ntfy dispatch error: {e!r}")
+
+
+@app.get("/api/push/status")
+def api_push_status() -> Response:
+    """What this install can push with — the client's whole setup question.
+
+    `push` false (pywebpush not installed) is a normal answer, not an error:
+    the bell toggle still works, the ntfy transport still fires, and the
+    client simply skips the subscribe step.
+    """
+    ok = push_available()
+    key = ""
+    if ok:
+        try:
+            key = vapid_keys()["public_key"]
+        except Exception as e:  # noqa: BLE001 — unwritable state dir reads as no push
+            log(f"vapid keys unavailable: {e!r}")
+            ok = False
+    return no_store(JSONResponse({
+        "push": ok,
+        "vapid_key": key,
+        "subscribed": len(load_push_subs()),
+        "ntfy": bool(os.environ.get("POCKETTUI_NTFY_URL", "")),
+    }))
+
+
+@app.post("/api/push/subscribe")
+def api_push_subscribe(request: Request, body: dict = Body(...)) -> Response:
+    """Store (or refresh) one browser's push subscription, keyed by endpoint."""
+    refusal = throttled("push", RATE_PUSH, request)
+    if refusal is not None:
+        return refusal
+    if not push_available():
+        return JSONResponse({"error": "push_unavailable"}, status_code=503)
+
+    sub = body.get("subscription")
+    if not isinstance(sub, dict):
+        return JSONResponse({"error": "bad_subscription"}, status_code=400)
+    endpoint = str(sub.get("endpoint", ""))
+    keys = sub.get("keys")
+    if (not endpoint.startswith("https://") or not isinstance(keys, dict)
+            or not keys.get("p256dh") or not keys.get("auth")):
+        return JSONResponse({"error": "bad_subscription"}, status_code=400)
+    dev = str(body.get("dev", ""))
+    dev = dev if DEV_RE.match(dev) else ""
+
+    subs = [s for s in load_push_subs() if s.get("endpoint") != endpoint]
+    subs.append({"endpoint": endpoint, "subscription": sub, "dev": dev,
+                 "added": int(time.time())})
+    # Oldest out past the cap — a phone re-pairing must never be refused for
+    # the subscriptions its predecessors leaked.
+    save_push_subs(subs[-PUSH_SUBS_MAX:])
+    return no_store(JSONResponse({"ok": True}))
+
+
+@app.post("/api/push/unsubscribe")
+def api_push_unsubscribe(body: dict = Body(...)) -> Response:
+    """Drop one subscription. Idempotent — a gone endpoint is a success."""
+    endpoint = str(body.get("endpoint", ""))
+    subs = load_push_subs()
+    kept = [s for s in subs if s.get("endpoint") != endpoint]
+    if len(kept) != len(subs):
+        save_push_subs(kept)
+    return no_store(JSONResponse({"ok": True}))
+
+
+@app.post("/api/notify")
+def api_notify(body: dict = Body(...)) -> Response:
+    """Set (or clear) a session's notification opt-in.
+
+    Stored as the session's own `@notify` option, exactly as @alias is: it
+    lives and dies with the session, every device sees the same answer, and
+    only the group's representative is a valid target.
+    """
+    name = str(body.get("session", ""))
+    row = find_row(session_rows(), name)
+    if row is None or not row["representative"]:
+        return JSONResponse({"error": "no such session"}, status_code=404)
+
+    on = bool(body.get("on"))
+    # No "=" exact-match prefix: set-option rejects it, as noted in enable_mouse.
+    if on:
+        rc, _ = tmux("set-option", "-t", name, "@notify", "on")
+    else:
+        rc, _ = tmux("set-option", "-u", "-t", name, "@notify")
+    if rc != 0:
+        return JSONResponse({"error": "could not set notify"}, status_code=500)
+    return no_store(JSONResponse({"session": name, "notify": on}))
 
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
