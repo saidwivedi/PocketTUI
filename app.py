@@ -1168,20 +1168,81 @@ def _hotwords_text(words: list[str]) -> str:
     return "\n".join(f"{word} :{score}" for word in words)
 
 
-def run_parakeet(model_dir: Path, wav: Path, hotwords: str | None = None) -> str:
-    """The transcript of `wav`, or "" if Parakeet produced nothing usable.
+def _parakeet_word_confidences(tokens: list[str],
+                               ys_log_probs: list[float]) -> dict[str, float]:
+    """How sure the decoder was of each word, keyed by the word lowercased.
+
+    Parakeet scores BPE pieces, not words: `tokens` is the piece list and
+    `ys_log_probs` its per-piece log-probs, one for one. A leading space marks
+    the piece that starts a word, so the pieces between two of those markers —
+    plus any punctuation, which attaches to the piece before it — are one word.
+
+    A word's probability is the *minimum* of its pieces', not their product or
+    their mean: one doubted piece is what makes a word suspect, and averaging
+    would let the confident pieces of a long word hide it. A word said twice
+    keeps the lower of the two, for the same reason.
+
+    Keys are lowercased and stripped the way the resolver compares its tokens,
+    so a caller can look up the word it is holding without normalising twice.
+    """
+    if len(tokens) != len(ys_log_probs) or not tokens:
+        return {}
+    confidences: dict[str, float] = {}
+    word, worst = "", 0.0
+    for index, (piece, log_prob) in enumerate(zip(tokens, ys_log_probs)):
+        if index == 0 or piece.startswith(" "):
+            if word:
+                _keep_lower_confidence(confidences, word, worst)
+            word, worst = piece.strip(), log_prob
+        else:
+            word += piece
+            worst = min(worst, log_prob)
+    if word:
+        _keep_lower_confidence(confidences, word, worst)
+    return confidences
+
+
+def _keep_lower_confidence(confidences: dict[str, float], word: str,
+                           log_prob: float) -> None:
+    key = word.lower().strip(",.!?;:")
+    if not key:
+        return
+    probability = math.exp(log_prob)
+    confidences[key] = min(confidences.get(key, probability), probability)
+
+
+def _doubted_summary(confidence: dict[str, float] | None, keep: int = 3) -> str:
+    """The few words the decoder was least sure of, for the request log.
+
+    The whole dict would drown the line, and the confident words are not what
+    anyone reads a log for: the least-sure words are the ones that explain a
+    transcript that came out wrong.
+    """
+    if not confidence:
+        return "-"
+    worst = sorted(confidence.items(), key=lambda item: item[1])[:keep]
+    return ",".join(f"{word}:{prob:.2f}" for word, prob in worst)
+
+
+def run_parakeet(model_dir: Path, wav: Path,
+                 hotwords: str | None = None) -> tuple[str, dict[str, float] | None]:
+    """The transcript of `wav` and its per-word confidences, or ("", None).
 
     `hotwords` is per-request vocabulary biasing — the channel that does for
     Parakeet what --prompt does for whisper. See parakeet_hotwords() for the
     string's shape; the recognizer is built with the bpe vocabulary that
     consumes it.
 
+    The confidences are an improvement on the transcript, never a precondition
+    for one: a result that carries no per-piece log-probs, or one whose pieces
+    and log-probs do not line up, yields None rather than failing the decode.
+
     Raises subprocess.TimeoutExpired past PARAKEET_TIMEOUT_S, which is whisper's
     shape for the same failure and reaches the phone as transcribe_timeout.
     """
     with wave.open(str(wav)) as w:
         if w.getnchannels() != 1 or w.getsampwidth() != 2:
-            return ""
+            return "", None
         rate = w.getframerate()
         frames = w.readframes(w.getnframes())
     # int16 PCM to the float32 in [-1, 1) sherpa-onnx wants. array rather than
@@ -1191,18 +1252,27 @@ def run_parakeet(model_dir: Path, wav: Path, hotwords: str | None = None) -> str
     pcm.frombytes(frames)
     samples = [s / 32768.0 for s in pcm]
     if not samples:
-        return ""
+        return "", None
 
     # The build too, not only the decode: the first request after a restart
     # builds the recognizer, and two of them arriving together must not race to
-    # build it twice.
-    def decode() -> str:
+    # build it twice. The result is read here as well, on the same worker: the
+    # native result object belongs to the recognizer this thread owns, and
+    # touching its fields from the caller's thread would put a second thread
+    # back on the object the single worker exists to keep to itself.
+    def decode() -> tuple[str, dict[str, float] | None]:
         recognizer = parakeet_recognizer(model_dir)
         stream = recognizer.create_stream(hotwords=hotwords) if hotwords \
             else recognizer.create_stream()
         stream.accept_waveform(rate, samples)
         recognizer.decode_stream(stream)
-        return " ".join(stream.result.text.split())
+        result = stream.result
+        try:
+            confidence = _parakeet_word_confidences(list(result.tokens),
+                                                    list(result.ys_log_probs))
+        except Exception:  # noqa: BLE001 — a transcript without them is fine
+            confidence = None
+        return " ".join(result.text.split()), confidence or None
 
     global _parakeet_pool, _parakeet_dead
     future = parakeet_pool().submit(decode)
@@ -1742,6 +1812,7 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
 
             decode_started = time.monotonic()
             hotword_count = 0
+            confidence = None
             if engine == "parakeet":
                 # No prompt: Parakeet takes none. The same vocabulary rides
                 # hotwords instead, which is this engine's equivalent channel.
@@ -1754,8 +1825,8 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
                     hotwords = ""
                 hotword_count = len(hotwords.splitlines()) if hotwords else 0
                 try:
-                    text = run_parakeet(parakeet_model_dir(), wav,
-                                        hotwords=hotwords or None)
+                    text, confidence = run_parakeet(parakeet_model_dir(), wav,
+                                                    hotwords=hotwords or None)
                 except subprocess.TimeoutExpired:
                     # A deadline is not a hotword problem, and retrying without
                     # them would queue a second 20 s wait behind the worker that
@@ -1764,7 +1835,7 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
                     raise
                 except Exception:  # noqa: BLE001
                     hotword_count = 0
-                    text = run_parakeet(parakeet_model_dir(), wav)
+                    text, confidence = run_parakeet(parakeet_model_dir(), wav)
             else:
                 text = run_whisper(binary, model, wav,
                                    transcribe_prompt(screen, cwd, history,
@@ -1777,7 +1848,8 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
             f"duration={check.duration_s:.2f}s peak={check.peak_rms:.4f} "
             f"max_frame_rms={check.max_frame_rms:.4f} silent=no "
             f"truncated={truncated} engine={engine} hotwords={hotword_count} "
-            f"decode_ms={decode_ms} ms={ms} raw={text[:80]!r}")
+            f"decode_ms={decode_ms} ms={ms} "
+            f"doubted={_doubted_summary(confidence)} raw={text[:80]!r}")
 
         if not text:
             payload = {"text": "", "raw": "", "ms": ms}
