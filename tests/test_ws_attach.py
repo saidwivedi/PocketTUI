@@ -256,6 +256,32 @@ def test_second_connect_to_the_same_view_retires_the_first(client, bridge):
             collect_bytes(second, b"still-alive")
 
 
+def test_visibility_frame_flips_the_gate_and_dies_with_the_socket(client, bridge):
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        # Hidden by default: attaching alone never suppresses a push.
+        assert A.visible_devs() == set()
+        ws.send_text(json.dumps({"type": "visibility", "visible": True}))
+        assert wait_for(lambda: A.visible_devs() == {"phone"})
+        ws.send_text(json.dumps({"type": "visibility", "visible": False}))
+        assert wait_for(lambda: A.visible_devs() == set())
+        ws.send_text(json.dumps({"type": "visibility", "visible": True}))
+        assert wait_for(lambda: A.visible_devs() == {"phone"})
+        # The frame is consumed as control, never typed: /bin/cat would echo
+        # it straight back if it reached the PTY.
+        ws.send_bytes(b"marker\n")
+        acc = collect_bytes(ws, b"marker")
+        assert b"visibility" not in acc
+        # And every received frame refreshes the staleness stamp.
+        att = A.ATTACHED["phone-work"]
+        before = att.last_seen
+        ws.send_bytes(b"tick\n")
+        assert wait_for(lambda: att.last_seen > before)
+    # The socket is gone; so is the suppression.
+    assert wait_for(lambda: A.visible_devs() == set())
+
+
 def test_notify_rides_the_out_queue_as_text(client, bridge):
     # The control channel P3 builds on: a str handed to Attachment.notify comes
     # out of the same socket as a text frame, interleaved with the PTY bytes.
