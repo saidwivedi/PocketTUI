@@ -3,13 +3,15 @@
 // ============================================================
 // A phone-first view over /api/fs/*: reached from the session list's folder
 // button (opens at $HOME) and from the terminal key bar's folder key (opens at
-// the pane's cwd). One history entry per visit — directory taps navigate in
-// place and the crumbs walk back up, so back (and the edge swipe) closes the
-// whole view rather than replaying every cd.
+// the pane's cwd). One history entry per visit, plus one more per folder
+// navigated into from there — crumbs, dir taps and the address bar all push,
+// so back walks folder history one step at a time; only back at the entry
+// folder closes the whole view.
 
 let filesPath = "";        // the directory currently listed
 let filesHome = "";        // $HOME as the backend reports it, for ~ crumbs
 let filesOrigin = null;    // the screen to restore on close
+let filesEntryPath = null; // the folder the explorer was opened at — back here closes it
 let filesSelected = null;  // the entry the action sheet is about
 // A finished long-press ends in a click the browser synthesizes on the same
 // row; stamping the moment lets that click be ignored (the viewer's
@@ -46,9 +48,19 @@ function openExplorer(path) {
     $(filesOrigin).classList.remove("active");
     $("screen-files").classList.add("active");
     syncChrome();
+    filesEntryPath = null;   // set once loadDir below resolves the real path
     history.pushState({ files: true }, "", location.href);
   }
   loadDir(path);
+}
+
+// The state object for the history entry matching wherever navigation
+// currently sits: bare at the entry folder (so a pop past it closes the
+// explorer, same as the very first push in openExplorer), path-carrying one
+// level in, so a rewritten entry (the address field's pushState-back trick
+// below) still pops the right way afterwards.
+function filesEntryState() {
+  return filesPath === filesEntryPath ? { files: true } : { files: true, path: filesPath };
 }
 
 function closeExplorer() {
@@ -58,12 +70,13 @@ function closeExplorer() {
   // either gets a say.
   if ($("files-path-wrap").classList.contains("editing")) {
     closePathEdit();
-    history.pushState({ files: true }, "", location.href);
+    history.pushState(filesEntryState(), "", location.href);
     return;
   }
   $("screen-files").classList.remove("active");
   const back = filesOrigin || "screen-list";
   filesOrigin = null;
+  filesEntryPath = null;
   $(back).classList.add("active");
   syncChrome();
   // The terminal kept its socket while we were away; it only needs its size
@@ -119,6 +132,10 @@ async function fsList(path) {
 function applyListing(data) {
   filesPath = data.path;
   filesHome = data.home || "";
+  // The first listing after openExplorer's push is the entry folder — back
+  // here is what closes the explorer, however the path the caller asked for
+  // (~, a cwd, a rewritten mount) actually resolved.
+  if (filesEntryPath === null) filesEntryPath = data.path;
   renderCrumbs(data.path);
   renderEntries(data.entries || []);
   $("files-error").style.display = "none";
@@ -133,8 +150,21 @@ function showListError(e) {
 async function loadDir(path) {
   try {
     applyListing(await fsList(path));
+    return true;
   } catch (e) {
     showListError(e);
+    return false;
+  }
+}
+
+// loadDir plus a history entry — for an actual navigation (crumb, dir tap,
+// address bar) as opposed to a same-folder reload after rename/delete/mkdir/
+// upload, which call loadDir(filesPath) directly and must not grow the stack.
+// A failed load leaves filesPath unchanged, so nothing is pushed for it —
+// the error just replaces the current folder's view in place.
+async function navigateDir(path) {
+  if (await loadDir(path)) {
+    history.pushState({ files: true, path: filesPath }, "", location.href);
   }
 }
 
@@ -142,7 +172,7 @@ function crumbBtn(label, target, current) {
   return el("button", {
     type: "button",
     class: "crumb" + (current ? " current" : ""),
-    onclick: () => { if (!current) loadDir(target); },
+    onclick: () => { if (!current) navigateDir(target); },
   }, label);
 }
 
@@ -314,6 +344,7 @@ async function submitPathEdit() {
     const data = await fsList(typed);
     closePathEdit();
     applyListing(data);
+    history.pushState({ files: true, path: filesPath }, "", location.href);
     return;
   } catch (e) {
     if (e.code !== "not_a_directory") {
@@ -413,7 +444,7 @@ function wireRow(row, entry) {
 
 function openEntry(e, dir=filesPath) {
   const full = joinPath(dir, e.name);
-  if (e.type === "dir") { loadDir(full); return; }
+  if (e.type === "dir") { navigateDir(full); return; }
   // A broken link or a special file: nothing to enter or edit, so the sheet
   // (whose Download is the only sensible offer) is the whole answer.
   if (e.type === "link") { openFileActions(e); return; }
@@ -580,9 +611,20 @@ $("btn-files-back").addEventListener("click", () => history.back());
 // Explorer and editor sit on the history stack the way the terminal does, so
 // back unwinds them one screen at a time. The terminal's own popstate handler
 // ignores these pops — #screen-term is not active while either screen is up.
-window.addEventListener("popstate", () => {
+window.addEventListener("popstate", (ev) => {
   if ($("screen-editor").classList.contains("active")) { editorPopped(); return; }
-  if ($("screen-files").classList.contains("active")) closeExplorer();
+  if (!$("screen-files").classList.contains("active")) return;
+  // A path-carrying state is a folder visited from here — land on it in
+  // place (closeExplorer's address-field check still wins if that's open,
+  // same as any other back). No further push: the pop already put history
+  // where this folder belongs.
+  const path = ev.state && ev.state.path;
+  if (path !== undefined && !$("files-path-wrap").classList.contains("editing")) {
+    if (filesListCache.has(path)) applyListing(filesListCache.get(path));
+    else loadDir(path);
+    return;
+  }
+  closeExplorer();
 });
 
 // The terminal's left-edge back gesture (20-edge-swipe.js), re-armed for the
