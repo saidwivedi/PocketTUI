@@ -2865,9 +2865,19 @@ POLL_S = 2.0
 # a compiler pausing between files without reading it as "done".
 IDLE_S = float(os.environ.get("POCKETTUI_NOTIFY_IDLE_S", "6.0"))
 
-# Only a busy episode at least this long earns a classification: typing a
-# quick command and reading its output is not an event anyone needs pushed.
+# Only a busy episode at least this long earns a classification when the pane
+# is back at a shell: typing a quick command and reading its output is not an
+# event anyone needs pushed. A program still holding the pane is read however
+# short the episode was — see watch_update.
 MIN_BUSY_S = 10.0
+
+# "Done" is only worth a push when the turn ran long enough that you walked
+# away from it, so an idle composer needs far more work behind it than a
+# question does. This is also what keeps an agent's own startup silent:
+# `claude` painting its banner is a two-second episode ending at an empty
+# composer, which is a shape but not news.
+READY_MIN_BUSY_S = float(
+    os.environ.get("POCKETTUI_NOTIFY_READY_BUSY_S", "30.0"))
 
 # Per-session floor between notifications, so a flapping session cannot turn
 # a phone into a metronome.
@@ -2887,7 +2897,7 @@ class WatchState:
     episode_cmd: str = ""         # last non-shell pane command seen in it
     cmd: str = ""                 # active pane's command, last tick
     bell: bool = False            # last #{window_bell_flag}, for edge detection
-    fired: bool = False           # this idle episode already notified
+    fired: bool = False           # this idle episode was already read
     fired_sig: str = ""           # signature of the last idle push actually sent
     notified_at: float | None = None   # monotonic stamp of the last dispatch
     state: str = "idle"           # "active" | "waiting" | "idle" (the badge)
@@ -2919,10 +2929,61 @@ PROMPT_YN_RE = re.compile(r"\[y/n\]|\(y/n\)|\byes/no\b", re.IGNORECASE)
 PROMPT_ASK_RE = re.compile(
     r"do you want|would you like|proceed\?|continue\?|are you sure",
     re.IGNORECASE)
-PROMPT_MENU_RE = re.compile(r"^\s*(❯\s*)?(\d+)[.)]\s")
+# The border tolerance is not decoration: Claude Code draws its permission
+# dialog inside a rounded box, so a real menu line arrives as `│ ❯ 1. Yes` and
+# a menu regex anchored at the digit would never see one.
+PROMPT_MENU_RE = re.compile(r"^\s*│?\s*(❯\s*)?(\d+)[.)]\s")
 # Claude Code's composer renders ❯ (often followed by a NBSP, or nothing at
 # all once capture_pane rstrips an empty composer), so both glyphs count.
 PROMPT_BOX_RE = re.compile(r"^\s*│?\s*[>❯](\s|$)")
+# The glyphs a TUI paints its frames with. A line made only of these is
+# furniture: it carries no text, whatever its width.
+BOX_CHARS = "─│╭╮╰╯└┘┌┐├┤"
+
+
+def strip_chrome(line: str) -> str:
+    """`line` with its box borders and padding taken off.
+
+    A boxed question captures as `│ Do you want to proceed?           │`, and
+    nobody wants to read the borders on a lock screen. NBSP folds to a plain
+    space first, because that is what Claude Code pads with.
+    """
+    return line.replace("\xa0", " ").strip().strip(BOX_CHARS).strip()
+
+
+def composer_text(line: str) -> str | None:
+    """What a composer line holds after its marker, or None if it is not one.
+
+    "" means the box is empty and the program is waiting on its human; any
+    other text is a half-typed message, which is a human at the keyboard —
+    the one situation that must never turn into a notification.
+    """
+    m = PROMPT_BOX_RE.match(line)
+    if m is None:
+        return None
+    return strip_chrome(line[m.end():])
+
+
+def last_substantive(lines: list[str]) -> str:
+    """The last line of the capture that actually says something, or "".
+
+    Read over the whole capture rather than the 5-line tail, because an
+    agent's composer box and its shortcut hint fill that tail on their own and
+    the line worth quoting — the last thing the agent said — sits above them.
+    Box chrome, the composer itself and the TUI's own footer hints are skipped.
+    What survives is both the notification body and the thing that makes a
+    "ready" signature move when the agent has genuinely said something new.
+    """
+    for line in reversed(lines):
+        text = strip_chrome(line)
+        if not text or PROMPT_BOX_RE.match(line):
+            continue
+        # `? for shortcuts`, `⏵⏵ accept edits on`: pane furniture that repaints
+        # by itself and would otherwise be quoted at the user as news.
+        if text.startswith("?") or text.startswith("⏵"):
+            continue
+        return text[:120]
+    return ""
 
 
 def detect_prompt(lines: list[str],
@@ -2930,26 +2991,40 @@ def detect_prompt(lines: list[str],
     """What the pane's tail looks like it is asking. Pure — table-tested.
 
     Returns (kind, options, line): kind "prompt" (a y/n question, options
-    ["y","n"]), "menu" (a numbered chooser, options its digits), "waiting" (an
-    input box or trailing question with nothing tappable, options []), or
-    "quiet" (no shape at all). `line` is the matched text, which becomes the
-    notification body. Only the last 5 non-empty lines are read — a prompt is
-    at the bottom of a pane or it is history — with the cursor's own line
-    weighted first, because that is where an interactive program parks it.
+    ["y","n"]), "menu" (a numbered chooser, options its digits), "waiting" (a
+    trailing question with nothing tappable, options []), "ready" (an empty
+    composer: the program has stopped talking and is waiting on its human,
+    with `line` the last thing it said), "drafting" (a composer with a
+    half-typed message in it) or "quiet" (no shape at all). `line` is the text
+    that becomes the notification body. Only the last 5 non-empty lines are
+    read — a prompt is at the bottom of a pane or it is history — with the
+    cursor's own line weighted first, because that is where an interactive
+    program parks it. "ready" is the exception: what an agent last said scrolls
+    well above the composer it is sitting in, so that verdict reads the whole
+    capture.
+
+    The scan order is load-bearing. A menu is looked for before question
+    phrasing because Claude Code's permission dialog is both at once ("Do you
+    want to proceed?" over `❯ 1. Yes` / `2.` / `3.`), and a dialog that only
+    accepts digits must not put y/n under the user's thumb. The composer comes
+    after both, because a question is what the pane is asking and a composer is
+    merely where the answer would be typed.
     """
     scan = [line for line in lines if line.strip()][-5:]
+    composer = composer_text(cursor_line) if cursor_line.strip() else None
     ordered = [line for line in reversed(scan) if line != cursor_line]
-    if cursor_line.strip():
+    # A composer holding a draft is the user's own half-typed sentence, so it
+    # is not evidence that anything is being asked: it stays out of the scans,
+    # or someone typing "do you want me to rebase" would prompt themselves.
+    if cursor_line.strip() and not composer:
         ordered.insert(0, cursor_line)
 
-    for regex in (PROMPT_YN_RE, PROMPT_ASK_RE):
-        for line in ordered:
-            if regex.search(line):
-                return "prompt", ["y", "n"], line.strip()
+    for line in ordered:
+        if PROMPT_YN_RE.search(line):
+            return "prompt", ["y", "n"], line.strip()
 
     # A numbered menu is only a menu when at least two choices sit together —
-    # a lone "1." is prose. ❯ marks the pre-selected line, which is the one
-    # worth quoting at the user.
+    # a lone "1." is prose.
     run: list[tuple[str, bool, str]] = []
     menu: list[tuple[str, bool, str]] | None = None
     for line in [*scan, ""]:
@@ -2962,11 +3037,29 @@ def detect_prompt(lines: list[str],
         run = []
     if menu:
         options = [digit for digit, _, _ in menu][:4]
+        # ❯ marks the pre-selected line, but "❯ 1. Yes" on its own is a useless
+        # thing to read on a phone: the question the options belong to is the
+        # body worth sending, and the marked line only stands in when the
+        # chooser asks nothing in so many words.
         marked = next((line for _, sel, line in menu if sel), menu[0][2])
-        return "menu", options, marked.strip()
+        question = next((line for line in scan
+                         if not PROMPT_MENU_RE.match(line)
+                         and (PROMPT_YN_RE.search(line)
+                              or PROMPT_ASK_RE.search(line)
+                              or strip_chrome(line).endswith("?"))), marked)
+        return "menu", options, strip_chrome(question)
 
-    if cursor_line.strip() and (PROMPT_BOX_RE.match(cursor_line)
-                                or cursor_line.rstrip().endswith("?")):
+    for line in ordered:
+        if PROMPT_ASK_RE.search(line):
+            return "prompt", ["y", "n"], line.strip()
+
+    if composer is not None:
+        if composer:
+            return "drafting", [], ""
+        return ("ready", [],
+                last_substantive(lines) or "ready for your next message")
+
+    if cursor_line.strip() and cursor_line.rstrip().endswith("?"):
         return "waiting", [], cursor_line.strip()
     return "quiet", [], ""
 
@@ -3084,12 +3177,15 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
     prompt-chip control frames and {"kind": "push", ...} for notifications.
 
     The rules, as decided: BUSY while output is younger than IDLE_S; a
-    busy→idle transition after an episode of at least MIN_BUSY_S reads the
-    pane once and classifies it; one notification per idle episode, re-armed
-    when activity advances, never closer than NOTIFY_GAP_S per session; a
-    bell edge fires immediately regardless of idle state; nothing is
-    suppressed for being attached — @notify (default off) is the volume
-    control. One refinement the sleep-then-done case forces: an idle
+    busy→idle transition reads the pane once and classifies it, either after
+    an episode of at least MIN_BUSY_S or, whatever its length, while a program
+    still holds the pane; one notification per idle episode, re-armed when
+    activity advances, never closer than NOTIFY_GAP_S per session; an empty
+    composer ("ready") additionally wants READY_MIN_BUSY_S of work behind it,
+    and a composer being typed into never notifies at all; a bell edge fires
+    immediately regardless of idle state; nothing is suppressed for being
+    attached — @notify (default off) is the volume control. One refinement
+    the sleep-then-done case forces: an idle
     transition below the MIN_BUSY_S gate closes the episode only when the
     pane is back at a shell. A non-shell command that is producing no output
     (`sleep 30`) keeps its episode open, so the episode spans the quiet run
@@ -3161,25 +3257,52 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
 
         if busy:
             w.state = "active"
-        elif w.busy_started:
-            # The busy→idle transition — the one moment the pane is read.
+        elif w.busy_started and not w.fired:
+            # The busy→idle transition — the one moment the pane is read. Once
+            # per episode: a pane nobody has written to since cannot have
+            # started saying something else, and the read costs two tmux calls.
             episode = w.last_activity - w.busy_started
-            if episode >= MIN_BUSY_S:
+            # A program still holding the pane is read however short the
+            # episode was, because a permission dialog three seconds into a
+            # tool call is exactly the thing worth pushing. A pane back at a
+            # shell keeps the old cheap rule, so no `ls` costs a capture-pane.
+            if episode >= MIN_BUSY_S or (agg["cmd"]
+                                         and agg["cmd"] not in SHELL_COMMANDS):
                 kind, options, line = classify(name)
-                if kind in ("prompt", "menu", "waiting"):
+                if kind in ("prompt", "menu", "waiting", "ready", "drafting"):
                     w.state = "waiting"
-                    w.prompt = {"type": "prompt", "options": options,
-                                "line": line}
+                    # Only a real question has anything to tap. "ready" and
+                    # "drafting" publish the empty frame instead, which
+                    # showPromptChips reads as "take the bar down" — but
+                    # w.prompt still has to hold it, or the `w.prompt is None`
+                    # branch below would drop the badge back to idle on the
+                    # very next tick.
+                    asks = kind in ("prompt", "menu", "waiting")
+                    w.prompt = {"type": "prompt",
+                                "options": options if asks else [],
+                                "line": line if asks else ""}
                     events.append({"kind": "ws", "session": name,
                                    "payload": dict(w.prompt)})
-                    if not w.fired:
+                    if asks:
                         body = line or "waiting for input"
                         events.extend(_watch_notify(
                             row, w, mono, "waiting", body,
-                            sig=f"waiting\x00{body}"))
+                            sig=f"{kind}\x00{line}"))
+                    elif kind == "ready" and episode >= READY_MIN_BUSY_S:
+                        # The composer is empty, so nothing the user types can
+                        # move this signature — only the agent producing new
+                        # output can, which is also what re-arms "done" for
+                        # someone who answered at the physical keyboard.
+                        events.extend(_watch_notify(
+                            row, w, mono, "ready", line,
+                            sig=f"ready\x00{line}"))
+                    # "drafting" is a human mid-sentence: badge and chips only.
                 else:
                     w.state = "idle"
-                    if not w.fired:
+                    # A finished run is not a question, so these two keep the
+                    # original episode floor: reading the pane earlier must not
+                    # make "finished" and "went quiet" any chattier.
+                    if episode >= MIN_BUSY_S:
                         if w.episode_cmd and agg["cmd"] in SHELL_COMMANDS:
                             body = f"{w.episode_cmd} finished"
                             events.extend(_watch_notify(
@@ -3192,8 +3315,14 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
                                 sig="quiet\x00went quiet — may need input"))
                         # Plain shell output that merely stopped: nothing.
                 w.fired = True
-                w.busy_started = 0.0
-                w.episode_cmd = ""
+                # Reading the pane is not the same as closing the episode: a
+                # short episode with a program still in the pane keeps its
+                # start, so the `sleep 30` refinement below survives being
+                # classified — the next burst of output re-arms w.fired and the
+                # eventual "finished" still spans the whole run.
+                if episode >= MIN_BUSY_S or agg["cmd"] in SHELL_COMMANDS:
+                    w.busy_started = 0.0
+                    w.episode_cmd = ""
             elif agg["cmd"] in SHELL_COMMANDS:
                 # Too brief to mean anything and nothing left running.
                 w.state = "idle"
