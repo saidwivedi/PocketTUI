@@ -2792,6 +2792,7 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
             me.last_seen = time.monotonic()
             if (data := msg.get("bytes")) is not None:
                 os.write(fd, data)
+                watch_saw_input(session_name)
                 continue
             text = msg.get("text")
             if text is None:
@@ -2810,6 +2811,7 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                     me.visible = bool(ctl.get("visible"))
                     continue
             os.write(fd, text.encode("utf-8"))
+            watch_saw_input(session_name)
 
     tasks = [asyncio.create_task(pump_out()), asyncio.create_task(pump_in()),
              asyncio.create_task(me.retired.wait())]
@@ -2886,6 +2888,7 @@ class WatchState:
     cmd: str = ""                 # active pane's command, last tick
     bell: bool = False            # last #{window_bell_flag}, for edge detection
     fired: bool = False           # this idle episode already notified
+    fired_sig: str = ""           # signature of the last idle push actually sent
     notified_at: float | None = None   # monotonic stamp of the last dispatch
     state: str = "idle"           # "active" | "waiting" | "idle" (the badge)
     prompt: dict | None = None    # the chips frame currently showing, if any
@@ -2897,12 +2900,29 @@ class WatchState:
 WATCHER: dict[str, WatchState] = {}
 
 
+def watch_saw_input(session: str) -> None:
+    """Forget what this session last notified about, because the user answered.
+
+    Called when a keystroke from a phone reaches the pane through this server.
+    A prompt that has been typed at is a different situation from the one that
+    was pushed, so the next idle episode is news again even when it classifies
+    to the same line. Input from the physical keyboard deliberately does not
+    reset anything: someone sitting at the machine does not need a push, and a
+    repeat episode staying silent for them is the right trade.
+    """
+    w = WATCHER.get(session)
+    if w is not None:
+        w.fired_sig = ""
+
+
 PROMPT_YN_RE = re.compile(r"\[y/n\]|\(y/n\)|\byes/no\b", re.IGNORECASE)
 PROMPT_ASK_RE = re.compile(
     r"do you want|would you like|proceed\?|continue\?|are you sure",
     re.IGNORECASE)
 PROMPT_MENU_RE = re.compile(r"^\s*(❯\s*)?(\d+)[.)]\s")
-PROMPT_BOX_RE = re.compile(r"^\s*│?\s*>\s")
+# Claude Code's composer renders ❯ (often followed by a NBSP, or nothing at
+# all once capture_pane rstrips an empty composer), so both glyphs count.
+PROMPT_BOX_RE = re.compile(r"^\s*│?\s*[>❯](\s|$)")
 
 
 def detect_prompt(lines: list[str],
@@ -3014,14 +3034,31 @@ def watch_panes() -> list[dict]:
 
 
 def _watch_notify(row: dict, w: WatchState, mono: float,
-                  kind: str, body: str) -> list[dict]:
-    """The push event this moment has earned, or [] — the @notify opt-in and
-    the per-session gap are enforced here, in one place."""
+                  kind: str, body: str, sig: str = "") -> list[dict]:
+    """The push event this moment has earned, or [] — the @notify opt-in, the
+    per-session gap and the repeat-signature guard are enforced here, in one
+    place.
+
+    `sig` identifies what this notification would say. An idle episode that
+    would say exactly what the last one said is not news — an agent's TUI
+    redraws its footer every second or two, so a redraw pause reads as a whole
+    busy→idle episode and the same "waiting" would otherwise go out forever.
+    A skipped send is not a send: it must not consume the gap either, or the
+    one notification that does have something new to say lands inside the gap
+    of a repeat that was never delivered. Passing no signature (the bell) opts
+    out of the guard entirely — a program ringing twice means it twice.
+    """
     if row["notify"] == "off":
+        return []
+    if sig and sig == w.fired_sig:
+        log(f"watch skip session={row['name']} kind={kind} (same as last)")
         return []
     if w.notified_at is not None and mono - w.notified_at < NOTIFY_GAP_S:
         return []
     w.notified_at = mono
+    if sig:
+        w.fired_sig = sig
+    log(f"watch notify session={row['name']} kind={kind} body={body[:60]!r}")
     payload = {
         "title": row["alias"] or row["name"],
         "body": body,
@@ -3136,20 +3173,23 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
                     events.append({"kind": "ws", "session": name,
                                    "payload": dict(w.prompt)})
                     if not w.fired:
+                        body = line or "waiting for input"
                         events.extend(_watch_notify(
-                            row, w, mono, "waiting",
-                            line or "waiting for input"))
+                            row, w, mono, "waiting", body,
+                            sig=f"waiting\x00{body}"))
                 else:
                     w.state = "idle"
                     if not w.fired:
                         if w.episode_cmd and agg["cmd"] in SHELL_COMMANDS:
+                            body = f"{w.episode_cmd} finished"
                             events.extend(_watch_notify(
-                                row, w, mono, "finished",
-                                f"{w.episode_cmd} finished"))
+                                row, w, mono, "finished", body,
+                                sig=f"finished\x00{body}"))
                         elif agg["cmd"] and agg["cmd"] not in SHELL_COMMANDS:
                             events.extend(_watch_notify(
                                 row, w, mono, "quiet",
-                                "went quiet — may need input"))
+                                "went quiet — may need input",
+                                sig="quiet\x00went quiet — may need input"))
                         # Plain shell output that merely stopped: nothing.
                 w.fired = True
                 w.busy_started = 0.0
@@ -3452,7 +3492,12 @@ def api_push_status() -> Response:
 
 @app.post("/api/push/subscribe")
 def api_push_subscribe(request: Request, body: dict = Body(...)) -> Response:
-    """Store (or refresh) one browser's push subscription, keyed by endpoint."""
+    """Store (or refresh) one browser's push subscription.
+
+    Keyed by endpoint, and by dev tag when one is given — a phone
+    re-registering under a new endpoint must not leave its old subscription
+    behind to double-fire every notification.
+    """
     refusal = throttled("push", RATE_PUSH, request)
     if refusal is not None:
         return refusal
@@ -3470,7 +3515,9 @@ def api_push_subscribe(request: Request, body: dict = Body(...)) -> Response:
     dev = str(body.get("dev", ""))
     dev = dev if DEV_RE.match(dev) else ""
 
-    subs = [s for s in load_push_subs() if s.get("endpoint") != endpoint]
+    subs = [s for s in load_push_subs()
+            if s.get("endpoint") != endpoint
+            and not (dev and s.get("dev") == dev)]
     subs.append({"endpoint": endpoint, "subscription": sub, "dev": dev,
                  "added": int(time.time())})
     # Oldest out past the cap — a phone re-pairing must never be refused for
