@@ -144,10 +144,12 @@ function showPromptChips(ctl) {
 // is missing. A list that would not load proves nothing, so that case falls
 // through to the terminal's own connect errors.
 async function openSessionByName(name) {
+  dbg("deeplink: open", name || "(empty)");
   if (!name || demoMode || needsSetup()) return;
   if (currentSession === name && $("screen-term").classList.contains("active")) return;
   const sessions = await loadSessions();
   if (sessions && !sessions.some((s) => s.name === name)) {
+    dbg("deeplink: session gone:", name);
     toast("Session '" + name + "' is gone");
     return;
   }
@@ -163,21 +165,30 @@ async function openSessionByName(name) {
 // written by the tap itself, so anything older is debris from a launch that
 // died mid-flight, not an instruction to teleport a later visit.
 const DEEPLINK_FRESH_MS = 2 * 60 * 1000;
-async function takePendingSession() {
+// `src` names the consumer for the debug log only — every hop of the chain
+// logs itself so a tap that lands on the list is diagnosable from the phone.
+async function takePendingSession(src) {
   try {
     const c = await caches.open("pockettui-deeplink");
     const hit = await c.match("./pending-session");
-    if (!hit) return "";
+    if (!hit) { dbg("deeplink take(" + src + "): miss"); return ""; }
     await c.delete("./pending-session");
     const d = await hit.json();
-    if (!d.session || Date.now() - (d.at || 0) > DEEPLINK_FRESH_MS) return "";
+    const age = Date.now() - (d.at || 0);
+    if (!d.session || age > DEEPLINK_FRESH_MS) {
+      dbg("deeplink take(" + src + "): stale age=" + Math.round(age / 1000) + "s");
+      return "";
+    }
+    dbg("deeplink take(" + src + "): " + d.session + " age=" + Math.round(age / 1000) +
+        "s via=" + (d.via || "?") + " sw=" + (d.sw || "?"));
     return String(d.session);
   } catch (e) {
+    dbg("deeplink take(" + src + "):", e);
     return "";
   }
 }
-async function consumePendingSession() {
-  const name = await takePendingSession();
+async function consumePendingSession(src) {
+  const name = await takePendingSession(src);
   if (name) openSessionByName(name);
 }
 
@@ -190,7 +201,8 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("message", (e) => {
     const d = e.data || {};
     if (d.type === "open-session" && d.session) {
-      takePendingSession().then((name) => openSessionByName(name || String(d.session)));
+      dbg("deeplink: sw message", d.session);
+      takePendingSession("message").then((name) => openSessionByName(name || String(d.session)));
     }
   });
 }
@@ -199,8 +211,24 @@ if ("serviceWorker" in navigator) {
 // where the postMessage above goes missing — on the way back to the
 // foreground, the parked entry is the truth.
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) consumePendingSession();
+  if (!document.hidden) consumePendingSession("resume");
 });
+
+// One startup dump of the service worker's notification-click event ring
+// (sw.js appends its hops there — the page's debug log cannot see them live).
+// Read-only on purpose: it is a ring the SW prunes itself, and clearing it
+// here would erase history the next launch's dump still wants.
+if (cfg.debug && "caches" in window) {
+  caches.open("pockettui-deeplink")
+    .then((c) => c.match("./sw-events"))
+    .then((hit) => hit ? hit.json() : [])
+    .then((list) => {
+      for (const ev of list.slice(-20)) {
+        dbg("sw-ring", relTime((ev.at || 0) / 1000), "v=" + (ev.v || "?"), ev.msg || "");
+      }
+    })
+    .catch(() => {});
+}
 
 // Warm the status cache so the first bell tap needs no round-trip before the
 // permission ask. Fire-and-forget; the toggle re-fetches if this missed.
