@@ -185,6 +185,17 @@
     <div class="sel-handle" id="sel-handle-start" role="slider" aria-label="Selection start"></div>
     <div class="sel-handle" id="sel-handle-end" role="slider" aria-label="Selection end"></div>
   </div>
+  <!-- A recorded take whose upload failed for a reason that was not the engine's
+       fault is kept, and this is where it is offered back. Above the compose
+       strip rather than inside it: the audio outlives the strip closing, and a
+       user who put the keyboard away still has to be able to see there is a
+       sentence waiting. Modelled on the add-to-home-screen hint — a slim strip
+       with one action and a dismiss — because it is the same kind of thing: a
+       standing offer, not an interruption. -->
+  <div id="voice-retry" role="status" aria-live="polite">
+    <button type="button" id="voice-retry-go">Transcription failed — tap to retry</button>
+    <button type="button" id="voice-retry-dismiss" aria-label="Discard the recording">✕</button>
+  </div>
   <div id="compose">
     <!-- Deliberately an exact mirror of the attribute set xterm puts on its own
          hidden textarea: autocorrect off, autocapitalize off, spellcheck false.
@@ -389,6 +400,17 @@
        this button rather than the Save above, which has already done its job. -->
   <div class="actions" id="voice-confirm-row">
     <button type="button" id="btn-voice-confirm">Confirm</button>
+  </div>
+  <!-- What the corrections table has learned from edited transcripts. Hidden
+       until it has something to show: a fetch that fails or a demo/unpaired
+       session has nothing true to say about a store on a machine it cannot
+       reach. Lazily fetched when the sheet opens, same as voice status above,
+       so a store nobody has looked at yet costs nothing on every other visit. -->
+  <div id="learned-section">
+    <label id="learned-label">Learned corrections</label>
+    <div class="list-rows" id="learned-rows"></div>
+    <p id="learned-empty">Nothing learned yet.</p>
+    <button type="button" id="btn-learned-clear">Clear all</button>
   </div>
   <!-- The optional quick-command row above the key bar. The switch is the
        feature; the box appears with it, one command per line, and every edit

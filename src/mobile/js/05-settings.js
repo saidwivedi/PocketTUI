@@ -83,6 +83,7 @@ function openSettings(firstRun) {
   // answer matters, and asking on open is what makes a fresh setup_voice.sh run
   // show up without a reload.
   fetchVoiceStatus(true).then(syncVoicePicker);
+  refreshLearned();
   $("dbg-toggle").checked = cfg.debug;
   $("search-toggle").checked = cfg.scrollbackSearchOn;
   $("alt-toggle").checked = cfg.altKeyOn;
@@ -276,12 +277,24 @@ function syncVoicePicker() {
   // tracks the backend.
   const auto = !cfg.voiceEngine;
   const sel = cfg.voiceEngine || settledVoiceEngine();
+  // Which row, if any, the session has given up on. The engine is still the
+  // user's choice and still shows as picked — the fallback deliberately does not
+  // write itself back — so without a word here the sheet agrees with a setting
+  // the session is quietly ignoring. Named on its own row rather than announced
+  // at the top, because the row is where the retry is: picking it again is what
+  // clears the latch, which is why the note says to tap rather than to reload.
+  const latched = voiceLatchVisible() ? configuredVoiceEngine() : "";
   for (const input of $("voice-engine").querySelectorAll("input")) {
     const on = input.value === sel;
     input.checked = on;
     const note = input.parentNode.querySelector(".note");
     const hint = input.value === "phone" ? "the keyboard's own mic" : note.textContent;
     note.textContent = on && auto ? (hint ? hint + " · auto" : "auto") : hint;
+    // Outranks the hint it replaces: "not installed" and the rest describe the
+    // engine at rest, and this one describes what is happening to it right now.
+    const failed = input.value === latched;
+    if (failed) note.textContent = "failed this session — using phone dictation; tap to retry";
+    input.parentNode.classList.toggle("failed", failed);
   }
 }
 
@@ -358,6 +371,71 @@ $("snip-toggle").addEventListener("change", (e) => {
 $("snip-text").addEventListener("input", (e) => {
   cfg.snippets = e.target.value;
   syncSnipbar();
+});
+// Fetches and paints the learned-corrections list. Hidden outright rather than
+// shown empty on a demo/unpaired session or a failed fetch, since none of those
+// says anything true about a store on a real machine — an empty list there
+// would read as "nothing learned" when the honest answer is "couldn't ask."
+async function refreshLearned() {
+  const section = $("learned-section");
+  if (demoMode || needsSetup()) { section.classList.remove("show"); return; }
+  let entries;
+  try {
+    const r = await fetch(apiURL("api/learned"), { cache: "no-store", headers: authHeaders() });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    entries = (await r.json()).entries || [];
+  } catch (e) {
+    section.classList.remove("show");
+    return;
+  }
+  section.classList.add("show");
+  renderLearned(entries);
+}
+
+function renderLearned(entries) {
+  const rows = $("learned-rows");
+  rows.innerHTML = "";
+  $("learned-empty").classList.toggle("show", entries.length === 0);
+  $("btn-learned-clear").classList.toggle("show", entries.length > 0);
+  for (const e of entries) {
+    const row = document.createElement("div");
+    row.className = "list-row" + (e.promoted ? "" : " dim");
+    const text = document.createElement("span");
+    text.className = "list-row-text";
+    text.textContent = e.wrong + " → " + e.right + " ×" + e.count;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "list-row-del";
+    del.setAttribute("aria-label", "Remove");
+    del.textContent = "✕";
+    del.addEventListener("click", () => deleteLearned(e.wrong, e.right));
+    row.appendChild(text);
+    row.appendChild(del);
+    rows.appendChild(row);
+  }
+}
+
+async function deleteLearned(wrong, right) {
+  try {
+    await fetch(apiURL("api/learned_delete"), {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ wrong: wrong, right: right }),
+    });
+  } catch (e) { /* the row is refetched either way; a stale one just persists */ }
+  refreshLearned();
+}
+
+$("btn-learned-clear").addEventListener("click", async () => {
+  if (!confirm("Clear every learned correction?")) return;
+  try {
+    await fetch(apiURL("api/learned_delete"), {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ all: true }),
+    });
+  } catch (e) { /* the row is refetched either way; a stale one just persists */ }
+  refreshLearned();
 });
 $("backend-token").addEventListener("input", (e) => {
   const input = e.target;
