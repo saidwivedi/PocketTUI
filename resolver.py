@@ -1591,6 +1591,36 @@ THRESHOLDS = {"shell": 0.80, "claude": 0.85, "editor": 0.85}
 # exact or separator-only difference, never a phonetic guess.
 PROTECTED_MIN = 0.95
 
+# What the recognizer's own per-word confidence is allowed to move. Parakeet
+# reports a probability per word; ordinary speech comes back at 0.93 and up,
+# while a word it garbled lands near 0.3. Those two populations barely overlap,
+# so the bands below are wide and the adjustments small — the confidence is a
+# tiebreaker on an already-tuned floor, not a second scoring system.
+ASR_CONF_LOW = 0.60   # below this the decoder doubted what it wrote
+ASR_CONF_HIGH = 0.95  # at or above this it is as sure as it ever gets
+# How far a doubted window's ordinary floor drops. Deliberately smaller than
+# the gap between score_entry's rungs, so a doubted window reaches further into
+# the fuzzy band without reaching a whole tier it could not reach before.
+CONF_RELAX = 0.05
+# The protected floor for a doubted window. The decoder itself was unsure of
+# the common English word it emitted, which is precisely the garble-heard-as-a-
+# common-word case that PROTECTED_MIN otherwise refuses to touch.
+#
+# Read this before changing it: score_entry's ladder has no rung between 0.90
+# and 0.95. It returns 1.0, 0.95, 0.85, or similarity * 0.9 — and that last
+# product cannot reach 0.90, since a similarity of 1.0 means the norms are
+# equal, which is the 0.95 rung. So every value in (0.85, 0.95] admits exactly
+# the same matches as PROTECTED_MIN does, and this floor only becomes
+# observable at 0.85 or below, where it opens the phonetic rung. At 0.88 the
+# relaxation is deliberately inert: the plumbing is live and the decision to
+# actually let a doubted common word be replaced by a phonetic guess — the one
+# irreversible loosening in this file — is left as a one-constant change.
+PROTECTED_CONF_RELAXED = 0.88
+# Escape hatch: setting CONF_RELAX = 0 and PROTECTED_CONF_RELAXED = PROTECTED_MIN
+# restores confidence-blind behavior exactly for doubted windows, and passing no
+# confidence at all restores it for every window. Worth keeping in reach — the
+# audio benchmark these floors were tuned against no longer exists to re-tune on.
+
 
 # ---------------------------------------------------------------------------
 # Spoken-syntax rules
@@ -2492,8 +2522,27 @@ def _looks_technical(words: list[str]) -> bool:
     return False
 
 
+def _window_confidence(words: list[str], confidence) -> float | None:
+    """How sure the recognizer was of this window, or None if it cannot say.
+
+    The minimum over the window's words, because one doubted word is what makes
+    a window suspect — the same reason a word takes the minimum over its pieces.
+
+    Only words actually present in the dict count. By the time a window reaches
+    the matcher the rule passes may have rewritten its tokens ("dot py" is now
+    ".py", a slash has glued two words into a path), and those rewritten forms
+    were never spoken as such. A window with nothing to look up returns None and
+    is treated as neutral rather than guessed at in either direction.
+    """
+    if not confidence:
+        return None
+    scores = [confidence[key] for key in
+              (w.lower().strip(",.!?;:") for w in words) if key in confidence]
+    return min(scores) if scores else None
+
+
 def match_window(window: str, words: list[str], index: Index, register: str,
-                 threshold: float, at_command: bool = True
+                 threshold: float, at_command: bool = True, confidence=None
                  ) -> tuple[str, float, list[str], str]:
     """Best replacement for this window: (surface, score, alternates, source).
 
@@ -2514,7 +2563,29 @@ def match_window(window: str, words: list[str], index: Index, register: str,
         protected = all(w.lower().strip(",.!?;:") in COMMON_WORDS for w in words)
     else:
         protected = not _looks_technical(words)
-    floor = max(threshold, PROTECTED_MIN if protected else 0.0)
+    # The recognizer's own confidence in these words, where it reported any,
+    # moves the floor a little. It is evidence about the transcript that nothing
+    # else in this function has: a word the decoder was unsure of is a worse
+    # reading of the audio than the score alone suggests, and one it was certain
+    # of is a better one. Both adjustments stay inside the protected/unprotected
+    # structure above rather than replacing it.
+    protected_min = PROTECTED_MIN
+    heard = _window_confidence(words, confidence)
+    if heard is not None and heard < ASR_CONF_LOW:
+        # Doubted. Reach a little further down the fuzzy band, and — the change
+        # that matters — stop treating the common English word as the thing to
+        # protect. The decoder is telling us it is unsure the word is even what
+        # was said, so a near-miss identifier is a live reading of the audio.
+        threshold -= CONF_RELAX
+        protected_min = PROTECTED_CONF_RELAXED
+    elif heard is not None and heard >= ASR_CONF_HIGH:
+        # Confidently decoded. Tighten the protected class only: a common word
+        # the decoder is sure it heard should survive untouched. The unprotected
+        # floor is deliberately left alone — "pie test" and "camera h m r" come
+        # back at full confidence because they *were* said clearly, and raising
+        # their bar would stop exactly the corrections this resolver exists for.
+        protected_min = 1.0
+    floor = max(threshold, protected_min if protected else 0.0)
     norm = normalize(window)
 
     scored: list[tuple[float, int, int, Entry]] = []
@@ -2609,7 +2680,7 @@ def match_window(window: str, words: list[str], index: Index, register: str,
 
 
 def _merge_path_tail(tokens: list[str], i: int, index: Index, register: str,
-                     threshold: float) -> tuple[str, int] | None:
+                     threshold: float, confidence=None) -> tuple[str, int] | None:
     """Rejoin a compound name the rules split across a path separator.
 
     "pretrained underscore models slash camera hmr" leaves the joiner pass as
@@ -2640,7 +2711,8 @@ def _merge_path_tail(tokens: list[str], i: int, index: Index, register: str,
         if not last or not _is_wordish(last):
             continue
         surface, score, _, _ = match_window(" ".join(words), words, index,
-                                            register, threshold, False)
+                                            register, threshold, False,
+                                            confidence)
         # An exact spelling merge only: score_entry's top rung, reached because
         # the letters line up, not because the sound was close.
         if surface and score >= 0.95 and normalize(" ".join(words)) == normalize(surface):
@@ -2649,12 +2721,16 @@ def _merge_path_tail(tokens: list[str], i: int, index: Index, register: str,
 
 
 def resolve_tokens(text: str, index: Index, register: str,
-                   deadline: float = 0.0) -> tuple[str, list[dict]]:
+                   deadline: float = 0.0, confidence=None
+                   ) -> tuple[str, list[dict]]:
     """Replace runs of 1..5 words with the identifiers they were meant to be.
 
     Longest window first, left to right: "camera h m r dot py" must be tried as
     a whole before its first word is matched against something shorter. A window
     that is already an index entry is left alone — it is not a mistake to fix.
+
+    `confidence` maps a spoken word to how sure the recognizer was of it, and
+    only nudges the floors — see match_window. Without it nothing changes.
     """
     tokens = text.split()
     if not tokens:
@@ -2695,7 +2771,8 @@ def resolve_tokens(text: str, index: Index, register: str,
             # name a plausible reading of an English-sounding word.
             at_command = i == 0 or (bool(out) and out[-1] in ("|", ";", "&&", "||"))
             surface, score, alternates, source = match_window(
-                window, words, index, register, threshold, at_command)
+                window, words, index, register, threshold, at_command,
+                confidence)
             if not surface or surface.lower() == window.lower():
                 continue
             if best is None or score > best[2]:
@@ -2706,7 +2783,8 @@ def resolve_tokens(text: str, index: Index, register: str,
                 break
 
         if best is None:
-            merged = _merge_path_tail(tokens, i, index, register, threshold)
+            merged = _merge_path_tail(tokens, i, index, register, threshold,
+                                      confidence)
             if merged is not None:
                 surface, size = merged
                 start = sum(len(t) + 1 for t in out)
@@ -2758,7 +2836,7 @@ def _shift_spans(spans: list[dict], text: str) -> list[dict]:
 
 def resolve(text: str, screen=None, cwd: str = "", tmux_names=None,
             budget: float = TIME_BUDGET_S, asr: bool = False,
-            extra_vocab=None, learned_path=None) -> dict:
+            extra_vocab=None, learned_path=None, confidence=None) -> dict:
     """Correct one dictated line. Never raises; on any trouble, echoes the input.
 
     The phases run rules → matching, each over the output of the last, so span
@@ -2779,6 +2857,12 @@ def resolve(text: str, screen=None, cwd: str = "", tmux_names=None,
     Words the user has taught by editing past transcripts join `extra_vocab` on
     the same terms. `learned_path` overrides the store they come from, for
     tests; the default is the one store this machine keeps.
+
+    `confidence` is the recognizer's per-word confidence for this transcript,
+    keyed by the spoken word lowercased. Only some engines report it, so it is
+    optional everywhere and moves nothing on its own: without it — or for a
+    window whose words it has nothing to say about — every floor is what it was
+    before the recognizer's opinion was available at all.
     """
     raw = str(text or "")
     fallback = {"text": raw, "register": "claude", "spans": []}
@@ -2821,7 +2905,8 @@ def resolve(text: str, screen=None, cwd: str = "", tmux_names=None,
         vocab = list(extra_vocab or []) + learned_words(learned_path)
         index = build_index(screen=screen, cwd=cwd, tmux_names=tmux_names,
                             deadline=deadline, extra_vocab=vocab)
-        final, token_spans = resolve_tokens(current, index, register, deadline)
+        final, token_spans = resolve_tokens(current, index, register, deadline,
+                                            confidence)
 
         if final != current:
             spans = _merge_spans(spans, token_spans, current, final)
