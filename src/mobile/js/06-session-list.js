@@ -15,7 +15,7 @@ async function loadSessions(spin=false) {
     $("list-error").style.display = "none";
   } catch (e) {
     $("list").innerHTML = "";
-    $("list").appendChild(demoCard());
+    if (needsSetup()) $("list").appendChild(demoCard());
     $("list-empty").style.display = "none";
     $("list-error").style.display = "block";
     toast("Couldn't load sessions");
@@ -24,8 +24,11 @@ async function loadSessions(spin=false) {
   }
 }
 
-// Always last in the list: an offline terminal to look around in, whether or not
-// a real backend answered.
+// Always last in the list while unpaired: an offline terminal to look around
+// in before there is a real backend to reach. Once paired it has a machine of
+// its own to show instead, so the demo row drops out — needsSetup() is the
+// same paired/configured check the rest of the app uses, so this tracks a
+// Forget exactly like every other paired-only surface does.
 function demoCard() {
   return el("div", { class: "item demo", onclick: () => openDemo() },
     el("div", { class: "item-head" },
@@ -91,7 +94,7 @@ function renderSessions(sessions) {
     );
     list.appendChild(card);
   }
-  list.appendChild(demoCard());
+  if (needsSetup()) list.appendChild(demoCard());
 }
 
 // The session sheet edits both names at once and carries the kill row. The
