@@ -37,18 +37,19 @@ document.documentElement.style.setProperty("--sidebar-w", railW + "px");
 // edge follows the variable too. Pointer events cover mouse and touch alike.
 (function railResize() {
   const handle = $("rail-resize");
-  let dragging = false;
+  let dragging = false, dragOff = 0;
   handle.addEventListener("pointerdown", (e) => {
     dragging = true;
+    // Wherever on the gutter the grab landed, the width must not jump to the
+    // pointer — the drag moves the width by the pointer's travel instead.
+    dragOff = railW - e.clientX;
     handle.classList.add("dragging");
     handle.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
   handle.addEventListener("pointermove", (e) => {
     if (!dragging) return;
-    // The rail starts at the viewport's left edge, so the pointer's x IS the
-    // requested width.
-    railW = Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(e.clientX)));
+    railW = Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(e.clientX + dragOff)));
     document.documentElement.style.setProperty("--sidebar-w", railW + "px");
     refit();
   });

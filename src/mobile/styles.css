@@ -271,6 +271,14 @@ body {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* Unread: the watcher flipped this session to "needs input" while another —
+   or none — was on screen (see noteUnread in 06-session-list.js). The title
+   takes the accent and a little weight until the session is opened; the
+   app's one accent reads on both themes, and the treatment lives on the
+   title so it works unchanged on the phone's cards and the wide rail's
+   dense rows alike. */
+.item.unread .title { color: var(--umber); font-weight: 600; }
+
 /* The real session name, demoted under an alias: same mono voice as the metadata
    row, so the alias is the only thing reading as a title. */
 .item .realname {
@@ -1827,13 +1835,14 @@ html.term-open, body.term-open {
    rail. The query string is mirrored in 31-wide-layout.js (isWideLayout);
    change both together. */
 @media (min-width: 768px) and (min-height: 500px) {
-  :root { --sidebar-w: 320px; }
+  :root { --sidebar-w: 320px; --rail-gutter: 7px; }
 
   /* Visible regardless of .active — the screen classes keep governing only
      the main pane, and the ID selector outweighs .screen's display:none.
      Its own paper and grain rather than showing the body through: while a
      terminal is open, syncChrome paints html/body in the terminal's
-     background, which must not bleed into the rail. */
+     background, which must not bleed into the rail. No border of its own:
+     the gutter (#rail-resize below) is the seam. */
   #screen-list {
     display: block;
     position: fixed;
@@ -1841,17 +1850,16 @@ html.term-open, body.term-open {
     width: var(--sidebar-w);
     overflow-y: auto;
     overscroll-behavior: contain;
-    border-right: 1px solid var(--hair);
     background-color: var(--paper);
     background-image: var(--grain);
     background-size: 200px 200px;
   }
 
-  /* Main-pane screens start where the rail ends: the fixed screens move
-     their left edge, the explorer — a page-scrolling screen — shifts by
-     margin instead. */
-  #screen-term, #screen-editor { left: var(--sidebar-w); }
-  #screen-files { margin-left: var(--sidebar-w); }
+  /* Main-pane screens start past the rail and its gutter: the fixed screens
+     move their left edge, the explorer — a page-scrolling screen — shifts
+     by margin instead. */
+  #screen-term, #screen-editor { left: calc(var(--sidebar-w) + var(--rail-gutter)); }
+  #screen-files { margin-left: calc(var(--sidebar-w) + var(--rail-gutter)); }
 
   /* The rail's row for the session open in the main pane, in the accent the
      app already speaks. The phone never shows the list and a terminal
@@ -1918,21 +1926,51 @@ html.term-open, body.term-open {
   #screen-list .item .btn-bell svg, #screen-list .item .btn-alias svg,
   #screen-list .item .btn-trash svg { width: 14px; height: 14px; }
 
-  /* The rail's resize handle: a strip straddling the border, invisible at
-     rest — the border itself is the affordance — tinted while hovered or
-     dragged. Live geometry is 31-wide-layout.js's railResize(). */
+  /* The seam between rail and main pane, and the resize handle in one: a
+     recessed gutter in the app's own well idiom — sunken surface between two
+     hairlines with a whisper of inset depth — so the pane reads as sitting
+     beside the rail's paper rather than cut from it by a bare line. Live
+     geometry is 31-wide-layout.js's railResize(). */
   #rail-resize {
     display: block;
     position: fixed;
     top: 0; bottom: 0;
-    left: calc(var(--sidebar-w) - 5px);
-    width: 10px;
+    left: var(--sidebar-w);
+    width: var(--rail-gutter);
     cursor: col-resize;
     touch-action: none;
     z-index: 60;
     -webkit-user-select: none; user-select: none;
+    background: var(--paper-rec);
+    border-left: 1px solid var(--hair);
+    border-right: 1px solid var(--hair);
+    box-shadow: inset 1px 0 2px rgba(20, 16, 10, 0.05),
+                inset -1px 0 2px rgba(20, 16, 10, 0.05);
+    transition: background 0.18s var(--ease-out);
+  }
+  /* A widened, invisible hit strip — the gutter is a seam to see, not quite
+     a target to grab. Pseudo-elements hit-test as their element, so this
+     stretches the drag zone without touching the drawn seam. */
+  #rail-resize::before {
+    content: "";
+    position: absolute;
+    top: 0; bottom: 0;
+    left: -5px; right: -5px;
+  }
+  /* The grip mark: a centered pill, the one visible hint that the seam
+     drags. It takes the accent with the gutter's tint below. */
+  #rail-resize::after {
+    content: "";
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 3px; height: 36px;
+    margin: -18px 0 0 -1.5px;
+    border-radius: 2px;
+    background: var(--hair-strong);
+    transition: background 0.18s var(--ease-out);
   }
   #rail-resize:hover, #rail-resize.dragging { background: var(--umber-soft); }
+  #rail-resize:hover::after, #rail-resize.dragging::after { background: var(--umber); }
 
   /* With no main screen up the pane would be bare paper; this quiet hint
      (see the #wide-empty markup) fills it, and goes away the moment any
@@ -1940,7 +1978,8 @@ html.term-open, body.term-open {
   #wide-empty {
     display: flex;
     position: fixed;
-    top: 0; right: 0; bottom: 0; left: var(--sidebar-w);
+    top: 0; right: 0; bottom: 0;
+    left: calc(var(--sidebar-w) + var(--rail-gutter));
     flex-direction: column;
     align-items: center; justify-content: center;
     gap: 10px;
