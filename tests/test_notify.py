@@ -94,6 +94,17 @@ SUB = {"endpoint": "https://push.example/reg/1",
     # The claude-style input box, spotted on the cursor's own line.
     (["╭───────╮", "│ > ", "╰───────╯"], "│ > ",
      ("waiting", [], "│ >")),
+    # Claude Code's ❯ composer, exactly as captured — NBSP after the glyph.
+    (["❯\xa0kill 1442784"], "❯\xa0kill 1442784",
+     ("waiting", [], "❯\xa0kill 1442784")),
+    # The same composer with a plain space.
+    (["❯ resume the build"], "❯ resume the build",
+     ("waiting", [], "❯ resume the build")),
+    # An empty composer — capture_pane rstrips the line down to the bare glyph.
+    (["❯"], "❯", ("waiting", [], "❯")),
+    # A ❯-marked menu line under the cursor is still a menu, not "waiting".
+    (["  1. Yes", "❯ 2. No"], "❯ 2. No",
+     ("menu", ["1", "2"], "❯ 2. No")),
     # A trailing question with nothing tappable is still "waiting".
     (["please tell me", "What is your name? "], "What is your name? ",
      ("waiting", [], "What is your name?")),
@@ -142,6 +153,10 @@ def pane(name, activity, cmd="zsh", bell=False, alt=False, active=True):
 
 def classify_yn(name):
     return "prompt", ["y", "n"], "Continue? [y/n]"
+
+
+def classify_other_yn(name):
+    return "prompt", ["y", "n"], "Overwrite it? [y/n]"
 
 
 def classify_quiet(name):
@@ -201,11 +216,13 @@ def test_activity_resume_clears_the_chips_and_rearms():
     assert events == [{"kind": "ws", "session": "work", "payload":
                        {"type": "prompt", "options": [], "line": ""}}]
     assert A.WATCHER["work"].state == "active"
-    # A second full episode fires again (the gap has passed by then).
+    # A second full episode fires again (the gap has passed by then). It has to
+    # be a different question: resumed output re-arms the episode, but only
+    # input through this server clears the repeat guard.
     A.watch_update(rows, [pane("work", t + 60, cmd="node")], t + 60, 60.0,
                    classify_boom)
     events = A.watch_update(rows, [pane("work", t + 60, cmd="node")], t + 70,
-                            70.0, classify_yn)
+                            70.0, classify_other_yn)
     assert ("push", "waiting") in kinds(events)
 
 
@@ -321,6 +338,64 @@ def test_bell_edge_fires_immediately_even_while_busy():
     # Held high, it does not fire again.
     assert A.watch_update(rows, [pane("work", t + 4, bell=True)], t + 4, 4.0,
                           classify_boom) == []
+
+
+def spin(rows, name, t, mono, classify, cmd="node"):
+    """One whole busy→idle episode: a burst of output, then quiet.
+
+    The redraw pattern that makes the repeat guard necessary — an idle agent
+    that repaints its footer looks exactly like this, over and over.
+    """
+    A.watch_update(rows, [pane(name, t, cmd=cmd)], t + 1, mono, classify_boom)
+    A.watch_update(rows, [pane(name, t + 20, cmd=cmd)], t + 20, mono + 19,
+                   classify_boom)
+    return A.watch_update(rows, [pane(name, t + 20, cmd=cmd)], t + 30,
+                          mono + 29, classify)
+
+
+def test_repeat_episode_with_the_same_verdict_notifies_once():
+    # The spinner bug: an idle TUI's redraws close one busy episode after
+    # another, each classifying to the same question. Only the first is news.
+    rows = [row("work", notify="on")]
+    assert ("push", "waiting") in kinds(spin(rows, "work", 1000, 0.0,
+                                             classify_yn))
+    # Well past the 30 s gap, so only the signature can be what silences it.
+    events = spin(rows, "work", 1100, 100.0, classify_yn)
+    assert kinds(events) == [("ws", "prompt")]
+    assert A.WATCHER["work"].state == "waiting"
+
+
+def test_input_from_the_phone_makes_the_same_verdict_news_again():
+    rows = [row("work", notify="on")]
+    assert ("push", "waiting") in kinds(spin(rows, "work", 1000, 0.0,
+                                             classify_yn))
+    # The user answered the prompt from their phone.
+    A.watch_saw_input("work")
+    assert ("push", "waiting") in kinds(spin(rows, "work", 1100, 100.0,
+                                             classify_yn))
+
+
+def test_repeat_episode_with_a_different_verdict_notifies_again():
+    rows = [row("work", notify="on")]
+    assert ("push", "waiting") in kinds(spin(rows, "work", 1000, 0.0,
+                                             classify_yn))
+    events = spin(rows, "work", 1100, 100.0, classify_other_yn)
+    push = [e for e in events if e["kind"] == "push"]
+    assert len(push) == 1
+    assert push[0]["payload"]["body"] == "Overwrite it? [y/n]"
+
+
+def test_a_suppressed_repeat_does_not_spend_the_gap():
+    # A skipped send is not a send: the different question landing 10 s later
+    # must not be swallowed by a gap the repeat never earned.
+    rows = [row("work", notify="on")]
+    assert ("push", "waiting") in kinds(spin(rows, "work", 1000, 0.0,
+                                             classify_yn))
+    assert kinds(spin(rows, "work", 1100, 100.0, classify_yn)) == \
+        [("ws", "prompt")]
+    # The suppressed transition was at mono 129; this one is 10 s behind it.
+    assert ("push", "waiting") in kinds(spin(rows, "work", 1140, 110.0,
+                                             classify_other_yn))
 
 
 def test_non_representatives_and_vanished_sessions_are_dropped():
@@ -443,6 +518,27 @@ def test_subscribe_unsubscribe_round_trip(client, push_paths, monkeypatch):
     # Unsubscribing again is still a success.
     assert client.post("/api/push/unsubscribe",
                        json={"endpoint": SUB["endpoint"]}).status_code == 200
+
+
+def test_subscribe_same_dev_replaces_across_endpoints(client, push_paths,
+                                                      monkeypatch):
+    monkeypatch.setattr(A, "_webpush_module", fake_module)
+    client.post("/api/push/subscribe", json={"subscription": SUB, "dev": "phone"})
+    sub2 = {"endpoint": "https://push.example/reg/2",
+            "keys": {"p256dh": "P", "auth": "A"}}
+    client.post("/api/push/subscribe", json={"subscription": sub2, "dev": "phone"})
+    # The device's old endpoint is gone — it would double-fire otherwise.
+    assert [s["endpoint"] for s in A.load_push_subs()] == [sub2["endpoint"]]
+
+
+def test_subscribe_empty_dev_entries_do_not_evict_each_other(client, push_paths,
+                                                             monkeypatch):
+    monkeypatch.setattr(A, "_webpush_module", fake_module)
+    client.post("/api/push/subscribe", json={"subscription": SUB})
+    sub2 = {"endpoint": "https://push.example/reg/2",
+            "keys": {"p256dh": "P", "auth": "A"}}
+    client.post("/api/push/subscribe", json={"subscription": sub2})
+    assert len(A.load_push_subs()) == 2
 
 
 def test_subscribe_answers_503_without_pywebpush(client, push_paths, monkeypatch):
