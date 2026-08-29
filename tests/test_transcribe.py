@@ -1831,6 +1831,82 @@ def test_an_unreadable_store_leaves_the_prompt_alone(tmp_path, monkeypatch):
         A.transcribe_prompt([], "")
 
 
+def test_api_learned_lists_newest_use_first(tmp_path, monkeypatch):
+    """Every entry is exposed, promoted or not, ordered by when it last fired."""
+    store = tmp_path / "learned.json"
+    monkeypatch.setattr(R, "LEARNED_PATH", store)
+    monkeypatch.setattr(R, "_learned_cache", {"stamp": None, "entries": []})
+
+    R.learn_corrections("cd stved", "cd sdwivedi", now=1.0)
+    R.learn_corrections("open stved", "open sdwivedi", now=2.0)   # promoted
+    R.learn_corrections("run camerahmr", "run tokenhmr", now=3.0)  # unpromoted
+
+    entries = body(A.api_learned())["entries"]
+    assert [(e["wrong"], e["right"]) for e in entries] == \
+        [("camerahmr", "tokenhmr"), ("stved", "sdwivedi")]
+    assert entries[0]["promoted"] is False
+    assert entries[0]["count"] == 1
+    assert entries[0]["utterances"] == 1
+    assert entries[0]["last_ts"] == 3.0
+    assert entries[1]["promoted"] is True
+    assert entries[1]["count"] == 2
+    assert entries[1]["utterances"] == 2
+
+
+def test_api_learned_empty_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "LEARNED_PATH", tmp_path / "learned.json")
+    monkeypatch.setattr(R, "_learned_cache", {"stamp": None, "entries": []})
+    assert body(A.api_learned()) == {"entries": []}
+
+
+def test_api_learned_delete_removes_exactly_one_entry(tmp_path, monkeypatch):
+    """Deleting a pair also stops it firing on the very next resolve."""
+    store = tmp_path / "learned.json"
+    monkeypatch.setattr(R, "LEARNED_PATH", store)
+    monkeypatch.setattr(R, "_learned_cache", {"stamp": None, "entries": []})
+
+    R.learn_corrections("cd stved", "cd sdwivedi", now=1.0)
+    R.learn_corrections("open stved", "open sdwivedi", now=2.0)
+    R.learn_corrections("run camerahmr", "run tokenhmr", now=3.0)
+
+    assert body(A.api_learned_delete({"wrong": "stved", "right": "sdwivedi"})) == \
+        {"deleted": 1}
+    remaining = {(e["wrong"], e["right"]) for e in body(A.api_learned())["entries"]}
+    assert remaining == {("camerahmr", "tokenhmr")}
+    assert R.apply_learned_rules("cd stved") == "cd stved"
+
+
+def test_api_learned_delete_is_case_insensitive(tmp_path, monkeypatch):
+    store = tmp_path / "learned.json"
+    monkeypatch.setattr(R, "LEARNED_PATH", store)
+    monkeypatch.setattr(R, "_learned_cache", {"stamp": None, "entries": []})
+    R.learn_corrections("cd stved", "cd sdwivedi", now=1.0)
+    R.learn_corrections("open stved", "open sdwivedi", now=2.0)
+    assert body(A.api_learned_delete({"wrong": "STVED", "right": "Sdwivedi"})) == \
+        {"deleted": 1}
+    assert body(A.api_learned()) == {"entries": []}
+
+
+def test_api_learned_delete_nonexistent_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "LEARNED_PATH", tmp_path / "learned.json")
+    monkeypatch.setattr(R, "_learned_cache", {"stamp": None, "entries": []})
+    assert body(A.api_learned_delete({"wrong": "nope", "right": "nada"})) == \
+        {"deleted": 0}
+
+
+def test_api_learned_delete_all(tmp_path, monkeypatch):
+    store = tmp_path / "learned.json"
+    monkeypatch.setattr(R, "LEARNED_PATH", store)
+    monkeypatch.setattr(R, "_learned_cache", {"stamp": None, "entries": []})
+    R.learn_corrections("cd stved", "cd sdwivedi", now=1.0)
+    R.learn_corrections("open stved", "open sdwivedi", now=2.0)
+    R.learn_corrections("run camerahmr", "run tokenhmr", now=3.0)
+
+    assert body(A.api_learned_delete({"all": True})) == {"deleted": 2}
+    assert body(A.api_learned()) == {"entries": []}
+    assert body(A.api_learned_delete({"all": True})) == {"deleted": 0}
+
+
 # ---------------------------------------------------------------------------
 # Build version
 # ---------------------------------------------------------------------------
