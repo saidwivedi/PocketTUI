@@ -589,9 +589,13 @@ def test_webpush_called_per_sub_and_410_prunes(push_paths, monkeypatch):
     assert json.loads(data) == PAYLOAD
     assert kw["vapid_private_key"] == "PRIV"
     assert kw["ttl"] == 3600
-    # aud is the endpoint's own origin, per subscription.
-    assert kw["vapid_claims"] == {"sub": "mailto:pockettui@localhost",
-                                  "aud": "https://push.example"}
+    # aud is the endpoint's own origin, per subscription. Apple rejects a
+    # mailto: sub on a non-public domain (403 BadJwtToken) and any exp
+    # 24 h or more out, so the claims pin an https sub and a 12 h exp.
+    claims = kw["vapid_claims"]
+    assert claims["sub"] == "https://pockettui.com"
+    assert claims["aud"] == "https://push.example"
+    assert 0 < claims["exp"] - int(time.time()) < 24 * 3600
     assert calls[1][2]["vapid_claims"]["aud"] == "https://other.example"
     # The 410 pruned only the dead one.
     assert [s["endpoint"] for s in A.load_push_subs()] == [live["endpoint"]]
