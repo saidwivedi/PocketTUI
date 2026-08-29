@@ -670,6 +670,64 @@ def test_the_parakeet_route_answers_the_same_shape(parakeet_installed,
     assert payload["text"] == "pytest tests/test_app.py"
 
 
+def test_a_surviving_doubted_word_is_flagged(parakeet_installed, sherpa_importable,
+                                             monkeypatch, at_a_shell):
+    """A low-confidence word that reaches the final text ends up in `unsure`."""
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(
+        A, "run_parakeet",
+        lambda d, w, hotwords=None: ("hello world", {"hello": 0.3, "world": 0.95}))
+
+    payload = body(A.transcribe(b"audio bytes", "work", "phone"))
+    assert "unsure" in payload
+    assert payload["unsure"] == ["hello"]
+
+
+def test_no_unsure_key_when_everything_is_confident(parakeet_installed,
+                                                     sherpa_importable, monkeypatch,
+                                                     at_a_shell):
+    """All confidences comfortably above ASR_CONF_LOW: no `unsure` key at all."""
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(
+        A, "run_parakeet",
+        lambda d, w, hotwords=None: ("hello world", {"hello": 0.95, "world": 0.95}))
+
+    payload = body(A.transcribe(b"audio bytes", "work", "phone"))
+    assert "unsure" not in payload
+
+
+def test_no_unsure_key_on_the_whisper_path(installed, monkeypatch, at_a_shell):
+    """Whisper never reports confidence, so `unsure` cannot be computed there."""
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "hello world")
+
+    payload = body(A.transcribe(b"audio bytes", "work", "phone"))
+    assert "unsure" not in payload
+
+
+def test_a_doubted_word_the_resolver_rewrote_is_not_flagged(parakeet_installed,
+                                                             sherpa_importable,
+                                                             monkeypatch, at_a_shell):
+    """Doubt the resolver already erased must not resurface in `unsure`."""
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(
+        A, "run_parakeet",
+        lambda d, w, hotwords=None: (
+            "pie test tests slash test underscore app dot py hello",
+            {"pie": 0.3, "test": 0.3, "hello": 0.3}))
+
+    payload = body(A.transcribe(b"audio bytes", "work", "phone"))
+    assert payload["text"] == "pytest tests/test_app.py hello"
+    assert "unsure" in payload and payload["unsure"]
+    assert "pie" not in payload["unsure"]
+    for word in payload["unsure"]:
+        assert word.lower().strip(",.!?;:") not in ("pie", "test")
+
+
 def test_the_engine_parameter_picks_the_engine(installed, parakeet_installed,
                                                sherpa_importable, monkeypatch,
                                                at_a_shell):
@@ -1122,13 +1180,14 @@ def test_a_result_without_log_probs_still_transcribes(parakeet_installed,
 def test_the_confidences_stay_out_of_the_response(parakeet_installed,
                                                   sherpa_importable,
                                                   monkeypatch, at_a_shell):
-    """The phone's payload has one shape, and a decode detail is not part of it."""
+    """The raw per-word probabilities are a decode detail, never handed over
+    whole — only a surviving low-confidence word's surface form, via `unsure`."""
     monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_parakeet",
                         lambda d, w, hotwords=None: ("git status", {"git": 0.3}))
     payload = body(A.transcribe(b"audio bytes", "work", "phone"))
-    assert set(payload) == {"text", "raw", "ms"}
+    assert set(payload) == {"text", "raw", "ms", "unsure"}
 
 
 def test_the_log_line_names_the_doubted_words(parakeet_installed,
