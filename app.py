@@ -18,6 +18,7 @@ import argparse
 import array
 import asyncio
 import base64
+import concurrent.futures
 import dataclasses
 import errno
 import fcntl
@@ -1131,6 +1132,13 @@ PARAKEET_DECODING = "modified_beam_search"
 # many-core server does not hand one utterance every core it owns.
 PARAKEET_THREADS = min(4, os.cpu_count() or 4)
 
+# The deadline whisper's subprocess timeout is for this engine, and it has to
+# clear two hurdles: stay under the phone's 30 s fetch abort, so the server is
+# the half that decides a decode has failed, and leave room for a request that
+# spent part of its budget queued behind another decode (a typical one is
+# ~0.3 s, so the queue is not what spends this).
+PARAKEET_TIMEOUT_S = 20
+
 
 def parakeet_model_dir() -> Path | None:
     """The Parakeet model directory, or None if this install has no usable one.
@@ -1175,8 +1183,13 @@ def parakeet_available() -> bool:
     The import is the expensive half of the answer (sherpa-onnx pulls in its
     native library), so it is attempted only once a model directory has been
     found; an install with no model never pays for it.
+
+    A decode that ran past its deadline retires the engine (see run_parakeet),
+    and this is where that shows: an install whose Parakeet is wedged reads as
+    not installed, so voice_engine() falls back to whisper for a request that
+    named no engine and answers not_setup for one that insisted on this one.
     """
-    if parakeet_model_dir() is None:
+    if _parakeet_dead or parakeet_model_dir() is None:
         return False
     try:
         import sherpa_onnx  # noqa: F401
@@ -1265,6 +1278,31 @@ def parakeet_bpe_vocab(model_dir: Path) -> Path:
 # the process. Keyed by model directory so an override taking effect mid-process
 # (as the tests do) rebuilds rather than serving the previous model.
 _parakeet_recognizer: tuple[str, object] | None = None
+
+# Every touch of that resident recognizer goes through this one worker, which is
+# the serialization: sherpa-onnx's OfflineRecognizer is a native object with no
+# lock of its own, and the route runs in FastAPI's threadpool, so two phones
+# recording at once would otherwise decode through the same object from two
+# threads. A single worker makes the second request queue behind the first
+# instead — ~0.3 s for a typical decode, which no one notices — and costs the
+# uncontended case one submit round-trip.
+_parakeet_pool: concurrent.futures.ThreadPoolExecutor | None = None
+
+# Set when a decode outlives PARAKEET_TIMEOUT_S. There is no killing the native
+# thread that is still inside onnxruntime, so the worker it holds is gone for
+# the life of the process and every later decode would queue behind it forever.
+# The flag retires the engine instead: parakeet_available() reads it, and the
+# process has to be restarted to get Parakeet back.
+_parakeet_dead = False
+
+
+def parakeet_pool() -> concurrent.futures.ThreadPoolExecutor:
+    """The single worker every recognizer call runs on, started on first use."""
+    global _parakeet_pool
+    if _parakeet_pool is None:
+        _parakeet_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="parakeet")
+    return _parakeet_pool
 
 
 def parakeet_recognizer(model_dir: Path):
@@ -1451,18 +1489,81 @@ def _hotwords_text(words: list[str]) -> str:
     return "\n".join(f"{word} :{score}" for word in words)
 
 
-def run_parakeet(model_dir: Path, wav: Path, hotwords: str | None = None) -> str:
-    """The transcript of `wav`, or "" if Parakeet produced nothing usable.
+def _parakeet_word_confidences(tokens: list[str],
+                               ys_log_probs: list[float]) -> dict[str, float]:
+    """How sure the decoder was of each word, keyed by the word lowercased.
+
+    Parakeet scores BPE pieces, not words: `tokens` is the piece list and
+    `ys_log_probs` its per-piece log-probs, one for one. A leading space marks
+    the piece that starts a word, so the pieces between two of those markers —
+    plus any punctuation, which attaches to the piece before it — are one word.
+
+    A word's probability is the *minimum* of its pieces', not their product or
+    their mean: one doubted piece is what makes a word suspect, and averaging
+    would let the confident pieces of a long word hide it. A word said twice
+    keeps the lower of the two, for the same reason.
+
+    Keys are lowercased and stripped the way the resolver compares its tokens,
+    so a caller can look up the word it is holding without normalising twice.
+    """
+    if len(tokens) != len(ys_log_probs) or not tokens:
+        return {}
+    confidences: dict[str, float] = {}
+    word, worst = "", 0.0
+    for index, (piece, log_prob) in enumerate(zip(tokens, ys_log_probs)):
+        if index == 0 or piece.startswith(" "):
+            if word:
+                _keep_lower_confidence(confidences, word, worst)
+            word, worst = piece.strip(), log_prob
+        else:
+            word += piece
+            worst = min(worst, log_prob)
+    if word:
+        _keep_lower_confidence(confidences, word, worst)
+    return confidences
+
+
+def _keep_lower_confidence(confidences: dict[str, float], word: str,
+                           log_prob: float) -> None:
+    key = word.lower().strip(",.!?;:")
+    if not key:
+        return
+    probability = math.exp(log_prob)
+    confidences[key] = min(confidences.get(key, probability), probability)
+
+
+def _doubted_summary(confidence: dict[str, float] | None, keep: int = 3) -> str:
+    """The few words the decoder was least sure of, for the request log.
+
+    The whole dict would drown the line, and the confident words are not what
+    anyone reads a log for: the least-sure words are the ones that explain a
+    transcript that came out wrong.
+    """
+    if not confidence:
+        return "-"
+    worst = sorted(confidence.items(), key=lambda item: item[1])[:keep]
+    return ",".join(f"{word}:{prob:.2f}" for word, prob in worst)
+
+
+def run_parakeet(model_dir: Path, wav: Path,
+                 hotwords: str | None = None) -> tuple[str, dict[str, float] | None]:
+    """The transcript of `wav` and its per-word confidences, or ("", None).
 
     `hotwords` is per-request vocabulary biasing — the channel that does for
     Parakeet what --prompt does for whisper. See parakeet_hotwords() for the
     string's shape; the recognizer is built with the bpe vocabulary that
     consumes it.
+
+    The confidences are an improvement on the transcript, never a precondition
+    for one: a result that carries no per-piece log-probs, or one whose pieces
+    and log-probs do not line up, yields None rather than failing the decode.
+
+    Raises subprocess.TimeoutExpired past PARAKEET_TIMEOUT_S, which is whisper's
+    shape for the same failure and reaches the phone as transcribe_timeout.
     """
-    recognizer = parakeet_recognizer(model_dir)
     with wave.open(str(wav)) as w:
         if w.getnchannels() != 1 or w.getsampwidth() != 2:
-            return ""
+            return "", None
         rate = w.getframerate()
         frames = w.readframes(w.getnframes())
     # int16 PCM to the float32 in [-1, 1) sherpa-onnx wants. array rather than
@@ -1472,13 +1573,41 @@ def run_parakeet(model_dir: Path, wav: Path, hotwords: str | None = None) -> str
     pcm.frombytes(frames)
     samples = [s / 32768.0 for s in pcm]
     if not samples:
-        return ""
+        return "", None
 
-    stream = recognizer.create_stream(hotwords=hotwords) if hotwords \
-        else recognizer.create_stream()
-    stream.accept_waveform(rate, samples)
-    recognizer.decode_stream(stream)
-    return " ".join(stream.result.text.split())
+    # The build too, not only the decode: the first request after a restart
+    # builds the recognizer, and two of them arriving together must not race to
+    # build it twice. The result is read here as well, on the same worker: the
+    # native result object belongs to the recognizer this thread owns, and
+    # touching its fields from the caller's thread would put a second thread
+    # back on the object the single worker exists to keep to itself.
+    def decode() -> tuple[str, dict[str, float] | None]:
+        recognizer = parakeet_recognizer(model_dir)
+        stream = recognizer.create_stream(hotwords=hotwords) if hotwords \
+            else recognizer.create_stream()
+        stream.accept_waveform(rate, samples)
+        recognizer.decode_stream(stream)
+        result = stream.result
+        try:
+            confidence = _parakeet_word_confidences(list(result.tokens),
+                                                    list(result.ys_log_probs))
+        except Exception:  # noqa: BLE001 — a transcript without them is fine
+            confidence = None
+        return " ".join(result.text.split()), confidence or None
+
+    global _parakeet_pool, _parakeet_dead
+    future = parakeet_pool().submit(decode)
+    try:
+        return future.result(timeout=PARAKEET_TIMEOUT_S)
+    except concurrent.futures.TimeoutError:
+        # The worker is still inside the native decode and cannot be
+        # interrupted, so the executor is abandoned rather than shut down —
+        # shutdown() would block on the very thread that is stuck. Dropping the
+        # reference leaves it to leak quietly for the life of the process,
+        # which is the shorter of the two now that the engine is retired.
+        _parakeet_dead = True
+        _parakeet_pool = None
+        raise subprocess.TimeoutExpired("parakeet decode", PARAKEET_TIMEOUT_S)
 
 
 def _is_common_english(word: str) -> bool:
@@ -1959,10 +2088,18 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
                 duration_s = getattr(check, "duration_s", 0.0)
                 peak_rms = getattr(check, "peak_rms", 0.0)
                 max_frame_rms = getattr(check, "max_frame_rms", 0.0)
+                # ffmpeg's `-t MAX_AUDIO_SECONDS` decode cap silently drops
+                # anything past it; the client needs to know its upload was
+                # cut short even when what survived reads as silence.
+                truncated = duration_s >= MAX_AUDIO_SECONDS - 0.05
                 log(f"transcribe content-type={content_type!r} bytes={len(raw)} "
                     f"duration={duration_s:.2f}s peak={peak_rms:.4f} "
-                    f"max_frame_rms={max_frame_rms:.4f} silent=yes ms=0 raw=''")
-                return no_store(JSONResponse({"text": "", "raw": "", "ms": 0}))
+                    f"max_frame_rms={max_frame_rms:.4f} silent=yes "
+                    f"truncated={truncated} ms=0 raw=''")
+                payload = {"text": "", "raw": "", "ms": 0}
+                if truncated:
+                    payload["truncated"] = True
+                return no_store(JSONResponse(payload))
 
             # Gathered before the transcript so the prompt can steer the decode,
             # and reused after it for the register and the vocabulary index.
@@ -1996,6 +2133,7 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
 
             decode_started = time.monotonic()
             hotword_count = 0
+            confidence = None
             if engine == "parakeet":
                 # No prompt: Parakeet takes none. The same vocabulary rides
                 # hotwords instead, which is this engine's equivalent channel.
@@ -2008,11 +2146,17 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
                     hotwords = ""
                 hotword_count = len(hotwords.splitlines()) if hotwords else 0
                 try:
-                    text = run_parakeet(parakeet_model_dir(), wav,
-                                        hotwords=hotwords or None)
+                    text, confidence = run_parakeet(parakeet_model_dir(), wav,
+                                                    hotwords=hotwords or None)
+                except subprocess.TimeoutExpired:
+                    # A deadline is not a hotword problem, and retrying without
+                    # them would queue a second 20 s wait behind the worker that
+                    # is already stuck — the phone would wait 40 s for the
+                    # answer the first failure already knew.
+                    raise
                 except Exception:  # noqa: BLE001
                     hotword_count = 0
-                    text = run_parakeet(parakeet_model_dir(), wav)
+                    text, confidence = run_parakeet(parakeet_model_dir(), wav)
             else:
                 text = run_whisper(binary, model, wav,
                                    transcribe_prompt(screen, cwd, history,
@@ -2020,21 +2164,48 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
             decode_ms = int((time.monotonic() - decode_started) * 1000)
             ms = int((time.monotonic() - started) * 1000)
 
+        truncated = check.duration_s >= MAX_AUDIO_SECONDS - 0.05
         log(f"transcribe content-type={content_type!r} bytes={len(raw)} "
             f"duration={check.duration_s:.2f}s peak={check.peak_rms:.4f} "
             f"max_frame_rms={check.max_frame_rms:.4f} silent=no "
-            f"engine={engine} hotwords={hotword_count} "
-            f"decode_ms={decode_ms} ms={ms} raw={text[:80]!r}")
+            f"truncated={truncated} engine={engine} hotwords={hotword_count} "
+            f"decode_ms={decode_ms} ms={ms} "
+            f"doubted={_doubted_summary(confidence)} raw={text[:80]!r}")
 
         if not text:
-            return no_store(JSONResponse({"text": "", "raw": "", "ms": ms}))
+            payload = {"text": "", "raw": "", "ms": ms}
+            if truncated:
+                payload["truncated"] = True
+            return no_store(JSONResponse(payload))
 
         result = resolver.resolve(text, screen=screen, cwd=cwd,
                                   tmux_names=tmux_names(),
                                   budget=TRANSCRIBE_BUDGET_S, asr=True,
-                                  extra_vocab=history)
-        return no_store(JSONResponse(
-            {"text": result["text"], "raw": text, "ms": ms}))
+                                  extra_vocab=history, confidence=confidence)
+        # Doubt is only worth flagging to the user for a word that actually
+        # reached them: the resolver already rewrites plenty of what the
+        # decoder got wrong, and re-litigating its low-confidence guesses
+        # after they've been corrected would just teach the user to distrust
+        # words that are no longer there. So this walks result["text"], the
+        # final surface the phone shows, not the raw ASR output the decoder
+        # produced before resolver.resolve() had a chance to fix it.
+        unsure: list[str] = []
+        if confidence:
+            seen: set[str] = set()
+            for word in result["text"].split():
+                key = word.lower().strip(",.!?;:")
+                if (key and key not in seen and key in confidence
+                        and confidence[key] < resolver.ASR_CONF_LOW):
+                    seen.add(key)
+                    unsure.append(word)
+        if unsure:
+            log(f"transcribe unsure={','.join(unsure)}")
+        payload = {"text": result["text"], "raw": text, "ms": ms}
+        if truncated:
+            payload["truncated"] = True
+        if unsure:
+            payload["unsure"] = unsure
+        return no_store(JSONResponse(payload))
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "transcribe_timeout"}, status_code=500)
     except Exception:  # noqa: BLE001 — the phone gets a shape, never a traceback
@@ -2063,6 +2234,38 @@ def api_learn(body: dict = Body(...)) -> Response:
         except Exception:  # noqa: BLE001 — never let a lesson break a send
             learned = 0
     return no_store(JSONResponse({"learned": learned}))
+
+
+@app.get("/api/learned")
+def api_learned() -> Response:
+    """Every correction the store holds, so the user can see what was learned.
+
+    Newest-use first, unpromoted entries included: a pair the user has only
+    corrected once is exactly the one they most want to catch before it fires
+    twice and starts rewriting transcripts on its own.
+    """
+    entries = sorted(resolver.load_learned(), key=lambda e: e["last_ts"], reverse=True)
+    out = [{
+        "wrong": e["wrong"],
+        "right": e["right"],
+        "count": e["count"],
+        "utterances": e["utterances"],
+        "last_ts": e["last_ts"],
+        "promoted": e["utterances"] >= resolver.LEARNED_PROMOTE_AT,
+    } for e in entries]
+    return no_store(JSONResponse({"entries": out}))
+
+
+@app.post("/api/learned_delete")
+def api_learned_delete(body: dict = Body(...)) -> Response:
+    """Remove one learned pair, or all of them with `{"all": true}`."""
+    if body.get("all"):
+        deleted = resolver.clear_learned()
+    else:
+        wrong = str(body.get("wrong", "") or "")
+        right = str(body.get("right", "") or "")
+        deleted = resolver.delete_correction(wrong, right) if wrong and right else 0
+    return no_store(JSONResponse({"deleted": deleted}))
 
 
 @app.post("/api/session")

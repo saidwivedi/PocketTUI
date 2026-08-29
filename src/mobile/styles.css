@@ -822,6 +822,59 @@ html.term-open, body.term-open {
   font-variant-numeric: tabular-nums;
 }
 
+/* Retry hint for a take whose upload failed — a slim strip between the terminal
+   and the compose bar, shown only while there is audio in hand and nothing else
+   happening. Same shape as the add-to-home-screen hint (tinted well, hairline,
+   text and a dismiss) but docked to the strip below it rather than floating in a
+   list, so it reads as part of the compose furniture. */
+#voice-retry {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(255, 253, 247, 0.94);
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  /* Whichever docked surface is topmost owns the line against the terminal, and
+     with the hint up that is this one. The compose strip keeps its own, so the
+     two read as separated rows when both are showing. */
+  border-top: 1px solid var(--hair);
+  z-index: 20;
+}
+:root[data-theme="dark"] #voice-retry { background: rgba(31, 28, 22, 0.94); }
+#voice-retry.show { display: flex; }
+/* The offer itself is the whole width of the bar: the instruction is "tap to
+   retry", and a target the size of the sentence is what that promises. */
+#voice-retry-go {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  background: var(--umber-tint);
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  padding: 8px 12px;
+  cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+}
+#voice-retry-go:active { transform: scale(0.99); }
+/* Quieter than the offer, and never lit: discarding a recording is the one
+   action here that cannot be undone, so it does not invite the thumb. */
+#voice-retry-dismiss {
+  flex: 0 0 auto;
+  background: transparent; border: none;
+  color: var(--secondary);
+  font-size: 15px;
+  line-height: 1;
+  padding: 10px;
+  cursor: pointer;
+}
+#voice-retry-dismiss:hover { color: var(--ink); }
+
 /* ============================================================
    SNIPPET ROW — quick-command chips above the key bar
    ============================================================ */
@@ -993,6 +1046,28 @@ html.term-open, body.term-open {
 .k-compose.busy .idle { display: none; }
 .k-compose.listening .stop,
 .k-compose.busy .stop { display: inline-flex; }
+/* The local engine failed and the session is on the phone's recogniser instead.
+   A dot in the corner rather than a changed glyph: the key still records and
+   still stops, so its face must keep saying so — this is a footnote about where
+   the audio goes, and the answer is in Settings. Warm amber, not the umber the
+   active states use, so it reads as a caveat beside them rather than another
+   one of them. */
+.k-compose { position: relative; }
+.k-compose.forced-phone::after {
+  content: "";
+  position: absolute;
+  top: 3px; right: 3px;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--warn);
+  /* The listening and busy states fill the key with a colour the dot is close
+     to, and a footnote that disappears exactly while the user is watching the
+     key is no footnote. The ring is the key's own background, so the dot stays
+     separated from whatever is behind it. */
+  box-shadow: 0 0 0 1.5px var(--card-2);
+}
+.k-compose.listening.forced-phone::after,
+.k-compose.busy.forced-phone::after { box-shadow: 0 0 0 1.5px var(--paper); }
 @keyframes mic-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.62; }
@@ -1318,10 +1393,69 @@ html.term-open, body.term-open {
   color: var(--whisper);
 }
 .sheet .radio-row .note:empty { display: none; }
+/* Failed this session. The row is still choosable — tapping it is the retry —
+   so nothing here dims it; the note alone carries the news, at the same weight
+   as the row's name because it is the reason the user came looking. */
+.sheet .radio-row.failed .note { color: var(--warn); }
 /* Unavailable: still legible, plainly not choosable. The note beside it is the
    only part that stays at full strength, because it is the instruction. */
 .sheet .radio-row.off { cursor: default; color: var(--whisper); }
 .sheet .radio-row.off input { opacity: 0.4; }
+/* Hidden by default: demo mode, an unpaired device and a failed fetch all have
+   nothing true to show here, same reasoning as .sheet-install above. */
+#learned-section { display: none; margin-top: 18px; }
+#learned-section.show { display: block; }
+.list-rows { display: flex; flex-direction: column; }
+.list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--hair);
+  font-size: 13px;
+  color: var(--ink);
+}
+.list-row:last-child { border-bottom: none; }
+/* Unpromoted: seen once, not yet trusted to rewrite anything. Dimmed rather
+   than hidden, because it is exactly the entry a bad guess needs catching on
+   before a second utterance promotes it. */
+.list-row.dim { color: var(--whisper); }
+.list-row-text { overflow-wrap: anywhere; }
+.list-row-del {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--tertiary);
+  cursor: pointer;
+}
+.list-row-del:active { transform: scale(0.9); }
+#learned-empty {
+  display: none;
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--whisper);
+}
+#learned-empty.show { display: block; }
+#btn-learned-clear {
+  display: none;
+  margin-top: 10px;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+#btn-learned-clear.show { display: inline-block; }
+#btn-learned-clear:active { transform: scale(0.96); }
 .sheet .actions {
   display: flex; gap: 10px; justify-content: flex-end;
   margin-top: 18px;
