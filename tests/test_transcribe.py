@@ -658,7 +658,7 @@ def test_the_parakeet_route_answers_the_same_shape(parakeet_installed,
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(
         A, "run_parakeet",
-        lambda d, w, hotwords=None: "pie test tests slash test underscore app dot py")
+        lambda d, w, hotwords=None: ("pie test tests slash test underscore app dot py", None))
 
     def explode(*a, **k):
         raise AssertionError("whisper must not run when Parakeet is selected")
@@ -680,7 +680,7 @@ def test_the_engine_parameter_picks_the_engine(installed, parakeet_installed,
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
     monkeypatch.setattr(A, "run_parakeet",
-                        lambda d, w, hotwords=None: "git diff")
+                        lambda d, w, hotwords=None: ("git diff", None))
 
     assert body(A.transcribe(b"audio bytes", "work", "phone",
                              engine="whisper"))["raw"] == "git status"
@@ -741,7 +741,7 @@ def test_parakeet_is_asked_for_hotwords_not_a_prompt(parakeet_installed,
 
     def spy(model_dir, wav, hotwords=None):
         seen["hotwords"] = hotwords
-        return "git status"
+        return "git status", None
 
     monkeypatch.setattr(A, "run_parakeet", spy)
     A.transcribe(b"audio bytes", "work", "phone")
@@ -764,7 +764,7 @@ def test_no_vocabulary_means_no_hotwords_argument(parakeet_installed,
 
     def spy(model_dir, wav, hotwords=None):
         seen["hotwords"] = hotwords
-        return "git status"
+        return "git status", None
 
     monkeypatch.setattr(A, "run_parakeet", spy)
     A.transcribe(b"audio bytes", "work", "phone")
@@ -783,7 +783,7 @@ def test_a_broken_vocabulary_still_gets_a_transcript(parakeet_installed,
 
     monkeypatch.setattr(A, "parakeet_hotwords", explode)
     monkeypatch.setattr(A, "run_parakeet",
-                        lambda d, w, hotwords=None: "git status")
+                        lambda d, w, hotwords=None: ("git status", None))
     assert body(A.transcribe(b"audio bytes", "work", "phone"))["raw"] == "git status"
 
 
@@ -802,7 +802,7 @@ def test_hotwords_the_decoder_rejects_fall_back_to_a_plain_decode(
         calls.append(hotwords)
         if hotwords:
             raise RuntimeError("hotwords failed to encode")
-        return "git status"
+        return "git status", None
 
     monkeypatch.setattr(A, "run_parakeet", picky)
     assert body(A.transcribe(b"audio bytes", "work", "phone"))["raw"] == "git status"
@@ -816,7 +816,8 @@ def test_the_log_line_names_the_engine(parakeet_installed, sherpa_importable,
     monkeypatch.setattr(A, "log", lines.append)
     monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
-    monkeypatch.setattr(A, "run_parakeet", lambda d, w, hotwords=None: "git status")
+    monkeypatch.setattr(A, "run_parakeet",
+                        lambda d, w, hotwords=None: ("git status", None))
     monkeypatch.setattr(R, "history_vocabulary", lambda: ["micromamba", "sbatch"])
     monkeypatch.setattr(R, "ssh_hosts", lambda: [])
     monkeypatch.setattr(R, "dotfile_names", lambda: [])
@@ -996,9 +997,166 @@ def test_two_decodes_run_back_to_back_through_the_one_worker(parakeet_installed,
     monkeypatch.setitem(sys.modules, "sherpa_onnx", fake)
 
     parakeet_wav(tmp_path / "audio.wav")
-    assert A.run_parakeet(parakeet_installed, tmp_path / "audio.wav") == "git status"
-    assert A.run_parakeet(parakeet_installed, tmp_path / "audio.wav") == "git status"
+    for _ in range(2):
+        assert A.run_parakeet(parakeet_installed,
+                              tmp_path / "audio.wav") == ("git status", None)
     assert not A._parakeet_dead
+
+
+# ---------------------------------------------------------------------------
+# Per-word confidence — the decoder's own doubt, read off the pieces
+# ---------------------------------------------------------------------------
+# The shapes below are the real ones: a live decode of parakeet-tdt-0.6b-v2 in
+# modified_beam_search returns BPE pieces where a leading space starts a word,
+# punctuation rides the piece before it, and ys_log_probs runs one for one with
+# the pieces. `result.words` is empty for this model, so the pieces are all
+# there is to work from.
+
+CONFIDENCE_CASES = [
+    (
+        "a single-piece word is its own log-prob",
+        [" how"], [-0.01],
+        {"how": pytest.approx(math.exp(-0.01))},
+    ),
+    (
+        "a multi-piece word takes its worst piece, not its average",
+        [" camera", "h", "mr"], [-0.02, -1.186, -0.03],
+        {"camerahmr": pytest.approx(math.exp(-1.186))},
+    ),
+    (
+        "the leading space is the only word boundary",
+        [" git", " stat", "us"], [-0.01, -0.2, -0.05],
+        {"git": pytest.approx(math.exp(-0.01)),
+         "status": pytest.approx(math.exp(-0.2))},
+    ),
+    (
+        "punctuation attaches to the word before it and is stripped from the key",
+        [" how", " are", " you", "?"], [-0.01, -0.02, -0.03, -0.9],
+        {"how": pytest.approx(math.exp(-0.01)),
+         "are": pytest.approx(math.exp(-0.02)),
+         "you": pytest.approx(math.exp(-0.9))},
+    ),
+    (
+        "the first piece starts a word even without a leading space",
+        ["git", " diff"], [-0.4, -0.02],
+        {"git": pytest.approx(math.exp(-0.4)),
+         "diff": pytest.approx(math.exp(-0.02))},
+    ),
+    (
+        "a word said twice keeps the lower confidence",
+        [" run", " it", " run"], [-0.01, -0.02, -1.5],
+        {"run": pytest.approx(math.exp(-1.5)),
+         "it": pytest.approx(math.exp(-0.02))},
+    ),
+    (
+        "the key is lowercased the way the resolver compares tokens",
+        [" Token", "HMR", "."], [-0.05, -0.3, -0.01],
+        {"tokenhmr": pytest.approx(math.exp(-0.3))},
+    ),
+    (
+        "pieces and log-probs that do not line up are not guessed at",
+        [" git", " status"], [-0.01],
+        {},
+    ),
+    ("nothing decoded is nothing to be sure of", [], [], {}),
+]
+
+
+@pytest.mark.parametrize("name,tokens,log_probs,expected", CONFIDENCE_CASES,
+                         ids=[c[0] for c in CONFIDENCE_CASES])
+def test_word_confidences_are_read_off_the_pieces(name, tokens, log_probs,
+                                                  expected):
+    assert A._parakeet_word_confidences(tokens, log_probs) == expected
+
+
+def fake_sherpa(monkeypatch, result):
+    """A recognizer whose decode yields `result`, in place of the real one."""
+    import types
+
+    class Stream:
+        def __init__(self):
+            self.result = result
+
+        def accept_waveform(self, rate, samples):
+            pass
+
+    fake = types.ModuleType("sherpa_onnx")
+    fake.OfflineRecognizer = types.SimpleNamespace(
+        from_transducer=lambda **kw: types.SimpleNamespace(
+            create_stream=lambda hotwords=None: Stream(),
+            decode_stream=lambda stream: None))
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", fake)
+
+
+def test_a_decode_carries_its_confidences_back(parakeet_installed, monkeypatch,
+                                               tmp_path):
+    """The pieces are read on the worker that owns the recognizer, and what
+    comes back is the transcript plus what the decoder made of each word."""
+    import types
+    fake_sherpa(monkeypatch, types.SimpleNamespace(
+        text="run camerahmr",
+        tokens=[" run", " camera", "h", "mr"],
+        ys_log_probs=[-0.01, -0.02, -1.186, -0.03]))
+
+    parakeet_wav(tmp_path / "audio.wav")
+    text, confidence = A.run_parakeet(parakeet_installed, tmp_path / "audio.wav")
+    assert text == "run camerahmr"
+    assert confidence == {"run": pytest.approx(math.exp(-0.01)),
+                          "camerahmr": pytest.approx(math.exp(-1.186))}
+
+
+def test_a_result_without_log_probs_still_transcribes(parakeet_installed,
+                                                      monkeypatch, tmp_path):
+    """Confidence is an improvement on the transcript, never a precondition:
+    a result that carries no per-piece scores costs the confidences, not the
+    dictation."""
+    import types
+    fake_sherpa(monkeypatch, types.SimpleNamespace(text="git status",
+                                                   tokens=[" git", " status"]))
+
+    parakeet_wav(tmp_path / "audio.wav")
+    assert A.run_parakeet(parakeet_installed,
+                          tmp_path / "audio.wav") == ("git status", None)
+
+
+def test_the_confidences_stay_out_of_the_response(parakeet_installed,
+                                                  sherpa_importable,
+                                                  monkeypatch, at_a_shell):
+    """The phone's payload has one shape, and a decode detail is not part of it."""
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_parakeet",
+                        lambda d, w, hotwords=None: ("git status", {"git": 0.3}))
+    payload = body(A.transcribe(b"audio bytes", "work", "phone"))
+    assert set(payload) == {"text", "raw", "ms"}
+
+
+def test_the_log_line_names_the_doubted_words(parakeet_installed,
+                                              sherpa_importable, monkeypatch,
+                                              at_a_shell):
+    """A transcript that came out wrong is explained by the words the decoder
+    was least sure of, so those are what the line carries."""
+    lines = []
+    monkeypatch.setattr(A, "log", lines.append)
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_parakeet",
+                        lambda d, w, hotwords=None: ("run camerahmr", {
+                            "run": 0.99, "camerahmr": 0.31}))
+    A.transcribe(b"audio bytes", "work", "phone")
+    assert any("doubted=camerahmr:0.31,run:0.99" in line
+               for line in lines), lines
+
+
+def test_the_whisper_path_has_no_confidences(installed, monkeypatch, at_a_shell):
+    """whisper offers none, and the line says so rather than going missing."""
+    lines = []
+    monkeypatch.setattr(A, "log", lines.append)
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
+    A.transcribe(b"audio bytes", "work", "phone")
+    assert any("doubted=-" in line for line in lines), lines
 
 
 def test_the_asr_rules_run_on_the_transcript(installed, monkeypatch,
@@ -1713,7 +1871,7 @@ def test_dotfile_names_reach_the_parakeet_hotwords(parakeet_installed,
 
     def spy(model_dir, wav, hotwords=None):
         seen["hotwords"] = hotwords
-        return "git status"
+        return "git status", None
 
     monkeypatch.setattr(A, "run_parakeet", spy)
     A.transcribe(b"audio bytes", "work", "phone")
