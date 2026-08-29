@@ -836,7 +836,7 @@ async function uploadRecording(blob) {
     // An answer, which is what the counter was counting the absence of.
     recServerFails = 0;
     recDropPending();
-    codeMicFinish(text, !!(data && data.truncated));
+    codeMicFinish(text, !!(data && data.truncated), (data && data.unsure) || []);
   } catch (e) {
     if (!recBusy) return;      // our own abort unwinding
     // The 30s timer fired. The audio is fine and the server may simply be slow
@@ -1062,7 +1062,7 @@ function recSyncHint() {
 // recorded at the tap — the field has been blurred and hidden behind the
 // indicator ever since, so it cannot have moved, and reading it back off a
 // blurred textarea is not reliable across engines.
-function codeMicFinish(text, truncated) {
+function codeMicFinish(text, truncated, unsure = []) {
   recClearUI();
   if (!text) { toast("Nothing heard"); return; }
   const ta = $("compose-text"), v = ta.value;
@@ -1093,7 +1093,14 @@ function codeMicFinish(text, truncated) {
   // The server cuts the decode at MAX_AUDIO_SECONDS and drops the rest without
   // saying so in the transcript itself — the only way the user learns their
   // recording was cut short is this toast.
-  if (truncated) toast("Recording was cut at 90 seconds");
+  if (truncated) {
+    toast("Recording was cut at 90 seconds");
+  } else if (unsure && unsure.length) {
+    // toast() keeps one shared element, so a second call overwrites the first —
+    // the truncation warning matters more than a hedge on individual words, and
+    // this only runs when truncation didn't already claim the toast.
+    toast("Unsure about: " + unsure.join(", "), 2500);
+  }
 }
 
 // The pre-audio behaviour, kept whole as the fallback: the browser's own
