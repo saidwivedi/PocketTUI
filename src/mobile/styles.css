@@ -921,8 +921,6 @@ html.term-open, body.term-open {
   flex: 1.1 1 0;
   cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
-  /* Anchors the swipe-hint corner label. */
-  position: relative;
   /* Horizontal pans still scroll the bar, but a vertical drag stays with the
      key's own pointer events — that drag is the swipe-up alternate gesture,
      and the browser claiming it would cancel the pointer mid-swipe. */
@@ -931,20 +929,6 @@ html.term-open, body.term-open {
               border-color 0.14s var(--ease-out);
   -webkit-user-select: none; user-select: none;
 }
-/* Each key's swipe-up alternate, whispered in the corner — an affordance to
-   notice, not a second label to read. */
-.keybar button .swipe-hint {
-  position: absolute;
-  top: 0; right: 3px;
-  font-size: 8px;
-  line-height: 1.4;
-  font-weight: 500;
-  color: var(--whisper);
-  pointer-events: none;
-}
-/* On an armed modifier's umber fill the whisper grey vanishes; borrow the
-   label's paper instead, kept faint. */
-.keybar button.sticky-on .swipe-hint { color: var(--paper); opacity: 0.55; }
 .keybar button:active { transform: scale(0.93); background: var(--hair); }
 /* Held for auto-repeat — :active is unreliable across a long press on iOS. */
 .keybar button.held { background: var(--hair); }
