@@ -139,21 +139,68 @@ function showPromptChips(ctl) {
 // ------------------------------------------------------------
 // Notification deep links
 // ------------------------------------------------------------
-function openSessionByName(name) {
+// The session may be gone by the time the tap lands — refresh the list first
+// (which the landing wants anyway) and stay on it with a toast when the name
+// is missing. A list that would not load proves nothing, so that case falls
+// through to the terminal's own connect errors.
+async function openSessionByName(name) {
   if (!name || demoMode || needsSetup()) return;
   if (currentSession === name && $("screen-term").classList.contains("active")) return;
+  const sessions = await loadSessions();
+  if (sessions && !sessions.some((s) => s.name === name)) {
+    toast("Session '" + name + "' is gone");
+    return;
+  }
   openTerminal(name);
+}
+
+// The parked deep link: notificationclick writes the tapped session into
+// DEEPLINK_CACHE before it postMessages or opens a window, because iOS drops
+// a message aimed at a frozen standalone page and can launch a closed PWA on
+// its bare start_url with the #session= fragment gone. Reading takes the
+// entry, so whichever consumer gets there first — the message handler, boot,
+// or the resume listener below — fires it once. Freshness-gated: the entry is
+// written by the tap itself, so anything older is debris from a launch that
+// died mid-flight, not an instruction to teleport a later visit.
+const DEEPLINK_FRESH_MS = 2 * 60 * 1000;
+async function takePendingSession() {
+  try {
+    const c = await caches.open("pockettui-deeplink");
+    const hit = await c.match("./pending-session");
+    if (!hit) return "";
+    await c.delete("./pending-session");
+    const d = await hit.json();
+    if (!d.session || Date.now() - (d.at || 0) > DEEPLINK_FRESH_MS) return "";
+    return String(d.session);
+  } catch (e) {
+    return "";
+  }
+}
+async function consumePendingSession() {
+  const name = await takePendingSession();
+  if (name) openSessionByName(name);
 }
 
 // A tapped notification reaching an already-open window arrives as a message
 // from the service worker (a fresh window gets the #session= fragment
-// instead, which boot parses).
+// instead, which boot parses). The parked copy is taken first so it cannot
+// re-fire on the next resume; the message's own name covers the case where
+// another consumer already took it.
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("message", (e) => {
     const d = e.data || {};
-    if (d.type === "open-session" && d.session) openSessionByName(String(d.session));
+    if (d.type === "open-session" && d.session) {
+      takePendingSession().then((name) => openSessionByName(name || String(d.session)));
+    }
   });
 }
+
+// iOS resuming the frozen app after a notification tap is exactly the state
+// where the postMessage above goes missing — on the way back to the
+// foreground, the parked entry is the truth.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) consumePendingSession();
+});
 
 // Warm the status cache so the first bell tap needs no round-trip before the
 // permission ask. Fire-and-forget; the toggle re-fetches if this missed.

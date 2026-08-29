@@ -3,6 +3,11 @@
 // the stale shell on the phone's next visit.
 const CACHE_VERSION = "__CACHE_VERSION__";
 const CACHE_NAME = `pockettui-${CACHE_VERSION}`;
+// A tapped notification's target session, parked where the page can read it
+// back — shared with 30-notify.js, which consumes it. Not a shell cache: it
+// must survive the activate sweep below.
+const DEEPLINK_CACHE = "pockettui-deeplink";
+const DEEPLINK_KEY = "./pending-session";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -11,7 +16,8 @@ self.addEventListener("install", () => {
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+      Promise.all(keys.filter(k => k !== CACHE_NAME && k !== DEEPLINK_CACHE)
+        .map(k => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
 });
@@ -36,12 +42,22 @@ self.addEventListener("push", (e) => {
 
 // Focus an existing window if there is one — told which session to open via
 // postMessage — else open a fresh one with the session in the fragment, which
-// boot parses and strips.
+// boot parses and strips. The target is parked in DEEPLINK_CACHE first either
+// way: iOS drops a postMessage aimed at a frozen standalone page and can
+// launch a closed PWA on its bare start_url with the fragment gone, and the
+// parked copy is what the page reads back in both cases (30-notify.js
+// consumes it on boot, on resume, and in the message handler).
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   const session = (e.notification.data && e.notification.data.session) || "";
+  const park = !session ? Promise.resolve() :
+    caches.open(DEEPLINK_CACHE).then(c => c.put(DEEPLINK_KEY,
+      new Response(JSON.stringify({ session: session, at: Date.now() }))
+    )).catch(() => {});
   e.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
+    park.then(() =>
+      self.clients.matchAll({ type: "window", includeUncontrolled: true })
+    ).then((wins) => {
       if (wins.length) {
         wins[0].postMessage({ type: "open-session", session: session });
         if (wins[0].focus) return wins[0].focus();
