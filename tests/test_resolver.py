@@ -1821,18 +1821,36 @@ def test_a_doubted_window_reaches_a_little_further():
     assert 0.85 - R.CONF_RELAX <= score < 0.85
 
 
-def test_a_confidently_heard_common_word_is_left_alone():
+def test_a_confidently_heard_common_word_is_left_alone_in_prose():
     """"data base" merges to `data_base` on the separator-only rung — unless
-    the decoder is certain it heard both words, in which case the sentence
-    stands. This is the one thing a confident window changes, and it costs a
-    real merge to buy the protection."""
+    the user is writing sentences and the decoder is certain it heard both
+    words, in which case the sentence stands. This is the one thing a confident
+    window changes, and it costs a real merge to buy the protection."""
     index = R.build_index(screen=["data_base"])
     words = ["data", "base"]
-    merged, _, _, _ = R.match_window("data base", words, index, "shell", 0.80)
+    merged, _, _, _ = R.match_window("data base", words, index, "claude", 0.85)
     assert merged == "data_base"
-    kept, _, _, _ = R.match_window("data base", words, index, "shell", 0.80,
+    kept, _, _, _ = R.match_window("data base", words, index, "claude", 0.85,
                                    True, {"data": 0.99, "base": 0.97})
     assert kept == ""
+
+
+def test_the_shell_merges_a_confidently_heard_pair_anyway():
+    """The confident tightening stops at the shell door.
+
+    Shell dictation is where "data base" is *meant* to become `data_base`, and
+    it is said clearly every time — so certainty about the two words is no
+    argument against gluing them. The shell's protected class is already the
+    narrow one, and this is the merge it exists to allow.
+    """
+    index = R.build_index(screen=["data_base"])
+    words = ["data", "base"]
+    confident = {"data": 0.99, "base": 0.97}
+    merged, _, _, _ = R.match_window("data base", words, index, "shell", 0.80,
+                                     True, confident)
+    assert merged == "data_base"
+    blind, _, _, _ = R.match_window("data base", words, index, "shell", 0.80)
+    assert blind == "data_base"
 
 
 def test_a_confidently_heard_word_that_is_already_the_name_still_passes():
@@ -1883,29 +1901,71 @@ def test_middling_confidence_moves_nothing():
 
 def test_a_window_is_only_as_sure_as_its_least_sure_word():
     """One doubted word makes the window doubted, the same way one doubted
-    piece makes a word doubted."""
+    piece makes a word doubted — but only across a window the dict covers
+    whole."""
     assert R._window_confidence(["a", "b"], {"a": 0.99, "b": 0.2}) == 0.2
-    assert R._window_confidence(["a", "b"], {"a": 0.99}) == 0.99
+    assert R._window_confidence(["a", "b"], {"a": 0.99}) is None
     assert R._window_confidence(["a"], {}) is None
     assert R._window_confidence(["a"], None) is None
+    assert R._window_confidence([], {"a": 0.2}) is None
     # Keys are compared the way the recognizer wrote them: lowercased, with the
     # sentence punctuation that attaches to a word stripped off.
     assert R._window_confidence(["Test,"], {"test": 0.3}) == 0.3
 
 
-def test_the_protected_relaxation_admits_nothing_score_entry_can_produce():
-    """PROTECTED_CONF_RELAXED sits in a gap in score_entry's ladder.
+def test_one_scored_word_does_not_speak_for_its_neighbours():
+    """A partially covered window is neutral, not as sure as its one known word.
+
+    The rules rewrite and merge tokens on the way to the matcher, so a window
+    routinely holds a word the recognizer never scored. Whatever it said about
+    the other one is evidence about that word alone; letting it move the floor
+    for the pair would be moving it on a guess. Extreme confidence in either
+    direction must therefore land exactly where no confidence lands.
+    """
+    index = R.build_index(screen=["data_base"])
+    words = ["data", "base"]
+    blind = R.match_window("data base", words, index, "claude", 0.85)
+    for confidence in ({"data": 0.99}, {"data": 0.05}, {"base": 0.99},
+                       {"base": 0.05}):
+        assert R.match_window("data base", words, index, "claude", 0.85,
+                              True, confidence) == blind
+
+
+def test_the_protected_relaxation_opens_exactly_the_phonetic_rung():
+    """PROTECTED_CONF_RELAXED is 0.85 on purpose: score_entry's metaphone rung.
 
     The ladder yields 1.0, 0.95, 0.85, or similarity * 0.9 — and that product
     cannot reach 0.90, because a similarity of 1.0 means equal norms, which is
-    the 0.95 rung. So at 0.88 the doubted-protected relaxation is deliberately
-    inert, and this test is what will fail if someone lowers it to 0.85 or
-    below without meaning to open the phonetic rung to common English words.
+    the 0.95 rung. So every value in (0.85, 0.95] would admit exactly what
+    PROTECTED_MIN already admits and leave the relaxation inert. 0.85 is the
+    value that makes it do anything, and what it does is let a doubted common
+    English word be replaced by something that merely sounds like it.
+
+    That tradeoff is the decision this pins: a recognizer reporting low
+    confidence on a word it actually got right now costs the user a wrong
+    correction, bought against catching the garble-heard-as-a-common-word case
+    the feature exists for. Raising this constant switches the feature off
+    again; lowering it opens the fuzzy band, which the floor was never for.
     """
-    assert 0.85 < R.PROTECTED_CONF_RELAXED <= R.PROTECTED_MIN
+    assert R.PROTECTED_CONF_RELAXED == 0.85
+
+
+def test_a_doubted_common_word_snaps_to_what_it_sounds_like():
+    """The flagship case: the decoder doubted the very common word it wrote.
+
+    `centre` scores 0.85 against "center" — the metaphone rung, refused for a
+    protected window at any ordinary confidence. Doubt is what admits it, and
+    nothing else does.
+    """
     index = R.build_index(screen=["centre"])
     words = ["center"]
     assert R.score_entry("center", words, R.Entry("centre", "cwd")) == 0.85
-    doubted, _, _, _ = R.match_window("center", words, index, "claude", 0.85,
-                                      True, {"center": 0.2})
-    assert doubted == ""
+    doubted, score, _, _ = R.match_window("center", words, index, "claude",
+                                          0.85, True, {"center": 0.2})
+    assert doubted == "centre"
+    assert score == 0.85
+    # The same window, said with any ordinary certainty, keeps the word.
+    for confidence in (None, {"center": 0.7}, {"center": 0.99}):
+        refused, _, _, _ = R.match_window("center", words, index, "claude",
+                                          0.85, True, confidence)
+        assert refused == ""

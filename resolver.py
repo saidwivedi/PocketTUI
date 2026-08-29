@@ -1611,11 +1611,17 @@ CONF_RELAX = 0.05
 # product cannot reach 0.90, since a similarity of 1.0 means the norms are
 # equal, which is the 0.95 rung. So every value in (0.85, 0.95] admits exactly
 # the same matches as PROTECTED_MIN does, and this floor only becomes
-# observable at 0.85 or below, where it opens the phonetic rung. At 0.88 the
-# relaxation is deliberately inert: the plumbing is live and the decision to
-# actually let a doubted common word be replaced by a phonetic guess — the one
-# irreversible loosening in this file — is left as a one-constant change.
-PROTECTED_CONF_RELAXED = 0.88
+# observable at 0.85, where it opens the metaphone rung.
+#
+# 0.85 is that value, chosen deliberately. It is what makes the relaxation do
+# anything at all: the flagship case is the decoder doubting the very common
+# word it wrote, and the only replacement worth reaching for there is the one
+# that sounds the same. The tradeoff is real and one-directional — a doubted
+# common English word can now be replaced by a phonetic near-miss, so a
+# recognizer that reports low confidence on a word it got right will cost the
+# user a wrong correction. It is bought with the doubt itself: without a
+# reported confidence below ASR_CONF_LOW, PROTECTED_MIN still holds.
+PROTECTED_CONF_RELAXED = 0.85
 # Escape hatch: setting CONF_RELAX = 0 and PROTECTED_CONF_RELAXED = PROTECTED_MIN
 # restores confidence-blind behavior exactly for doubted windows, and passing no
 # confidence at all restores it for every window. Worth keeping in reach — the
@@ -2528,17 +2534,27 @@ def _window_confidence(words: list[str], confidence) -> float | None:
     The minimum over the window's words, because one doubted word is what makes
     a window suspect — the same reason a word takes the minimum over its pieces.
 
-    Only words actually present in the dict count. By the time a window reaches
-    the matcher the rule passes may have rewritten its tokens ("dot py" is now
-    ".py", a slash has glued two words into a path), and those rewritten forms
-    were never spoken as such. A window with nothing to look up returns None and
-    is treated as neutral rather than guessed at in either direction.
+    Every word must be present in the dict, or the answer is None. By the time a
+    window reaches the matcher the rule passes may have rewritten its tokens
+    ("dot py" is now ".py", a slash has glued two words into a path), and those
+    rewritten forms were never spoken as such. One surviving word must not speak
+    for the window around it: its confidence says nothing about a neighbour the
+    recognizer never scored, and a floor moved on that basis is moved on a
+    guess. Partial coverage — like no coverage, and like an empty window — is
+    neutral.
+
+    Accepted limitation: the dict is keyed by word, not by occurrence, so a word
+    said twice carries its worst occurrence's confidence into every window it
+    appears in. Aligning occurrences would mean tracking each spoken token
+    through the rule stages, which rewrite and merge them; that machinery does
+    not exist, and the floors move too little to justify building it for v1.
     """
     if not confidence:
         return None
-    scores = [confidence[key] for key in
-              (w.lower().strip(",.!?;:") for w in words) if key in confidence]
-    return min(scores) if scores else None
+    keys = [w.lower().strip(",.!?;:") for w in words]
+    if not keys or any(key not in confidence for key in keys):
+        return None
+    return min(confidence[key] for key in keys)
 
 
 def match_window(window: str, words: list[str], index: Index, register: str,
@@ -2578,12 +2594,19 @@ def match_window(window: str, words: list[str], index: Index, register: str,
         # was said, so a near-miss identifier is a live reading of the audio.
         threshold -= CONF_RELAX
         protected_min = PROTECTED_CONF_RELAXED
-    elif heard is not None and heard >= ASR_CONF_HIGH:
-        # Confidently decoded. Tighten the protected class only: a common word
-        # the decoder is sure it heard should survive untouched. The unprotected
-        # floor is deliberately left alone — "pie test" and "camera h m r" come
-        # back at full confidence because they *were* said clearly, and raising
-        # their bar would stop exactly the corrections this resolver exists for.
+    elif heard is not None and heard >= ASR_CONF_HIGH and register != "shell":
+        # Confidently decoded prose. Tighten the protected class only: a common
+        # word the decoder is sure it heard should never be replaced when the
+        # user is writing sentences. The unprotected floor is deliberately left
+        # alone — "pie test" and "camera h m r" come back at full confidence
+        # because they *were* said clearly, and raising their bar would stop
+        # exactly the corrections this resolver exists for.
+        #
+        # The shell is exempt. Its protected class is already the narrow one —
+        # only an all-common-word window is held back — and the separator merge
+        # this would block ("data base" → `data_base`) is the point of shell
+        # dictation, said confidently every time. Certainty about the words is
+        # not evidence against gluing them into the name they spell.
         protected_min = 1.0
     floor = max(threshold, protected_min if protected else 0.0)
     norm = normalize(window)
