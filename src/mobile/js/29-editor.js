@@ -12,6 +12,7 @@ let edHash = "";          // the hash this buffer was read at ("" = creating)
 let edDirty = false;
 let edReadOnly = false;   // a lossy (non-UTF-8) read must never be written back
 let edThemeComp = null;   // swapped when the app theme flips
+let edWrapComp = null;    // swapped when the Wrap button is tapped
 
 let cmLoading = null;
 function ensureCM() {
@@ -48,9 +49,15 @@ function edLanguage(name) {
   return [];
 }
 
-// Prose wraps, code scrolls sideways.
+// Prose wraps, code scrolls sideways — the Wrap button (cfg.editorWrapOn) adds
+// wrapping on top of this for whatever type is open, it never removes it.
 function edWraps(name) {
   return /\.(?:md|markdown|txt|text)$/i.test(name);
+}
+
+function edWrapExt() {
+  const CM = window.CM6;
+  return (edWraps(edPath) || cfg.editorWrapOn) ? CM.EditorView.lineWrapping : [];
 }
 
 function edThemeExt() {
@@ -80,6 +87,14 @@ function edSetDirty(on) {
   edDirty = on;
   $("editor-dirty").classList.toggle("show", on);
   $("btn-editor-save").classList.toggle("armed", on && !edReadOnly);
+}
+
+// Paints the Wrap button from cfg. A prose file wraps regardless of the
+// setting (edWraps(edPath) above), so the button still reads "on" for one —
+// turning it off there would say something the editor is not doing.
+function edSyncWrapButton() {
+  $("btn-editor-wrap").setAttribute("aria-pressed",
+    edWraps(edPath) || cfg.editorWrapOn ? "true" : "false");
 }
 
 async function openEditor(path, opts) {
@@ -119,6 +134,7 @@ async function openEditor(path, opts) {
   $("btn-editor-save").style.display = lossy ? "none" : "";
   edBuild(content, path);
   edSetDirty(false);
+  edSyncWrapButton();
 
   $("screen-files").classList.remove("active");
   $("screen-editor").classList.add("active");
@@ -130,6 +146,7 @@ function edBuild(content, path) {
   const CM = window.CM6;
   if (edView) edView.destroy();
   edThemeComp = new CM.Compartment();
+  edWrapComp = new CM.Compartment();
   edView = new CM.EditorView({
     state: CM.EditorState.create({
       doc: content,
@@ -145,7 +162,7 @@ function edBuild(content, path) {
         CM.highlightActiveLine(),
         CM.keymap.of([...CM.defaultKeymap, ...CM.historyKeymap, CM.indentWithTab]),
         edLanguage(path),
-        edWraps(path) ? CM.EditorView.lineWrapping : [],
+        edWrapComp.of(edWrapExt()),
         edThemeComp.of(edThemeExt()),
         edReadOnly
           ? [CM.EditorState.readOnly.of(true), CM.EditorView.editable.of(false)]
@@ -238,3 +255,11 @@ function closeEditor() {
 
 $("btn-editor-back").addEventListener("click", () => history.back());
 $("btn-editor-save").addEventListener("click", () => editorSave());
+// Applies immediately, same as the key-bar toggles in Settings: reconfigure
+// the compartment rather than rebuilding the buffer, so the cursor, selection
+// and undo history all survive the tap.
+$("btn-editor-wrap").addEventListener("click", () => {
+  cfg.editorWrapOn = !cfg.editorWrapOn;
+  if (edView) edView.dispatch({ effects: edWrapComp.reconfigure(edWrapExt()) });
+  edSyncWrapButton();
+});
