@@ -1878,6 +1878,43 @@ def test_dotfile_names_reach_the_parakeet_hotwords(parakeet_installed,
     assert seen["hotwords"] == "bashrc :0.5\nvimrc :0.5"
 
 
+def test_the_word_confidences_reach_the_resolver(parakeet_installed,
+                                                 sherpa_importable,
+                                                 monkeypatch, at_a_shell):
+    """What the engine reports about each word has to survive the trip.
+
+    The resolver decides what the numbers mean; this route only has to hand
+    them over, and hand over None when the engine had nothing to say.
+    """
+    seen = {}
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
+    monkeypatch.setattr(R, "history_vocabulary", lambda: [])
+    monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "dotfile_names", lambda: [])
+    monkeypatch.setattr(R, "learned_words", lambda: [])
+
+    def spy(text, **kwargs):
+        seen.update(kwargs)
+        return {"text": text, "register": "shell", "spans": []}
+
+    monkeypatch.setattr(A.resolver, "resolve", spy)
+
+    heard = {"git": 0.99, "status": 0.42}
+    monkeypatch.setattr(A, "run_parakeet",
+                        lambda model_dir, wav, hotwords=None: ("git status", heard))
+    A.transcribe(b"audio bytes", "work", "phone")
+    assert seen["confidence"] == heard
+
+    # The whisper path reports nothing, and must say so rather than inventing
+    # an empty dict the resolver would have to tell apart from a real one.
+    seen.clear()
+    monkeypatch.setattr(A, "run_parakeet",
+                        lambda model_dir, wav, hotwords=None: ("git status", None))
+    A.transcribe(b"audio bytes", "work", "phone")
+    assert seen["confidence"] is None
+
+
 def test_learned_words_still_outrank_the_dotfiles(monkeypatch):
     """The new source joins the low-priority tail; it does not jump the queue."""
     monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)

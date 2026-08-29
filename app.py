@@ -1860,7 +1860,7 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
         result = resolver.resolve(text, screen=screen, cwd=cwd,
                                   tmux_names=tmux_names(),
                                   budget=TRANSCRIBE_BUDGET_S, asr=True,
-                                  extra_vocab=history)
+                                  extra_vocab=history, confidence=confidence)
         payload = {"text": result["text"], "raw": text, "ms": ms}
         if truncated:
             payload["truncated"] = True
