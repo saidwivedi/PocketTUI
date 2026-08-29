@@ -257,6 +257,11 @@
          keyboard-geometry plumbing of its own needed. -->
     <div id="files-suggest"></div>
   </div>
+  <!-- Dims the file list while the address field is active, lighter than
+       sheet-scrim since the topbar above it (holding the field itself) has
+       to stay fully readable rather than dimming along with the list.
+       Tapping it closes the field without navigating, same as Escape. -->
+  <div id="files-suggest-scrim"></div>
   <div class="files-wrap">
     <div id="files-list"></div>
     <div id="files-empty">Empty folder</div>
