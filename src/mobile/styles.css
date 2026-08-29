@@ -1102,6 +1102,30 @@ html.term-open, body.term-open {
   overscroll-behavior: contain;
 }
 .sheet.show { transform: translateY(0); }
+/* The confirm sheet floats centered rather than docking at the bottom — the
+   same sheet in every other respect. Only position, corners (the sheet's own
+   radius, all around, its hairline running the whole rim), shadow direction,
+   and the enter move change: a slide-up means nothing detached from the
+   bottom edge, so it fades and settles on the sheet's own timing instead.
+   Hidden it sits mid-screen invisible, so pointer-events must gate it the
+   way the scrim gates itself. */
+.sheet.centered {
+  left: 50%; right: auto; bottom: auto; top: 50%;
+  width: calc(100% - 44px);
+  border: 1px solid var(--hair);
+  border-radius: 20px;
+  padding-bottom: 22px;   /* the safe-area pad serves the bottom dock only */
+  box-shadow: 0 8px 32px rgba(20, 16, 10, 0.16);
+  transform: translate(-50%, -50%) scale(0.96);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.28s var(--ease-out), opacity 0.28s var(--ease-out);
+}
+.sheet.centered.show {
+  transform: translate(-50%, -50%) scale(1);
+  opacity: 1;
+  pointer-events: auto;
+}
 .sheet h2 {
   font-family: var(--serif);
   font-size: 18px;

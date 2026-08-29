@@ -469,10 +469,11 @@
      CONFIRM SHEET
      ============================================================ -->
 <!-- appConfirm()'s one dialog, in the app's own modal idiom: a standard
-     bottom sheet — same classes, scrim, and action row as every other sheet —
-     holding a message line and a quiet-no / danger-yes pair. Opened through
-     showSheet(), which also closes whatever sheet asked the question. -->
-<div class="sheet" id="sheet-confirm" role="alertdialog" aria-modal="true"
+     sheet — same classes, scrim, and action row as every other sheet, floated
+     to the center by the .centered modifier — holding a message line and a
+     quiet-no / danger-yes pair. Opened through showSheet(), which also closes
+     whatever sheet asked the question. -->
+<div class="sheet centered" id="sheet-confirm" role="alertdialog" aria-modal="true"
      aria-describedby="confirm-msg">
   <p class="sheet-note" id="confirm-msg"></p>
   <div class="actions">
