@@ -465,6 +465,22 @@
   <button type="button" id="btn-session-kill">Kill session</button>
 </div>
 
+<!-- ============================================================
+     CONFIRM DIALOG
+     ============================================================ -->
+<!-- appConfirm()'s one dialog: a small centered card over its own scrim, so a
+     destructive question wears the app's theme instead of the OS's. -->
+<div class="confirm-scrim" id="confirm-scrim">
+  <div class="confirm" role="alertdialog" aria-modal="true"
+       aria-describedby="confirm-msg">
+    <p id="confirm-msg"></p>
+    <div class="actions">
+      <button type="button" id="btn-confirm-cancel">Cancel</button>
+      <button type="button" class="danger" id="btn-confirm-ok"></button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- Offered after a long press. Copy and Paste both have to run inside the tap
