@@ -3283,11 +3283,16 @@ def send_webpush_all(payload: dict) -> None:
         endpoint = str(entry.get("endpoint", ""))
         origin = "{0.scheme}://{0.netloc}".format(urllib.parse.urlsplit(endpoint))
         try:
+            # Apple validates the VAPID claims: a mailto: on a non-public
+            # domain (localhost) is a 403 BadJwtToken, and exp must be less
+            # than 24 h out — pinned here rather than inherited from library
+            # defaults (py_vapid's is exactly 24 h).
             mod.webpush(
                 entry.get("subscription") or {}, data,
                 vapid_private_key=private_key,
-                vapid_claims={"sub": "mailto:pockettui@localhost",
-                              "aud": origin},
+                vapid_claims={"sub": "https://pockettui.com",
+                              "aud": origin,
+                              "exp": int(time.time()) + 12 * 3600},
                 ttl=3600)
             kept.append(entry)
         except Exception as e:  # noqa: BLE001 — one dead sub must not stop the rest
