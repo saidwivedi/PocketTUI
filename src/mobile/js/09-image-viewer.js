@@ -172,6 +172,13 @@ function sendResize() {
   if (!term || !sock || sock.readyState !== WebSocket.OPEN) return;
   sock.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows, token: cfg.token, dev: cfg.devname }));
 }
+// Whether this client is on screen. The server holds this device's Web Push
+// (and the ntfy topic) while it is — the chips and badges are the in-app
+// signal — and resumes the moment hidden arrives or the socket dies.
+function sendVisibility(visible) {
+  if (!sock || sock.readyState !== WebSocket.OPEN) return;
+  sock.send(JSON.stringify({ type: "visibility", visible: !!visible }));
+}
 
 let fitTimer = null;
 function refit(delay=60) {
@@ -303,6 +310,7 @@ function connect() {
     hideConnBanner();
     // Size first, so tmux paints straight into the phone's geometry.
     sendResize();
+    sendVisibility(document.visibilityState === "visible");
     term.focus();
   };
   ws.onmessage = (ev) => {
@@ -426,4 +434,15 @@ document.addEventListener("visibilitychange", () => {
   // No reset — the reconnect's first frame replaces the screen; see connect().
   connect();
 });
+
+// The push gate's other half: every foreground/background flip goes to the
+// server (a fresh connection reports in its onopen instead). pagehide fires
+// where a backgrounding standalone PWA's visibilitychange does not on iOS —
+// see the voice-capture note — and forcing hidden there is safe: a wrong
+// "hidden" costs one redundant notification, a wrong "visible" swallows
+// real ones.
+document.addEventListener("visibilitychange", () => {
+  sendVisibility(document.visibilityState === "visible");
+});
+window.addEventListener("pagehide", () => sendVisibility(false));
 
