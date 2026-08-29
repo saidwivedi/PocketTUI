@@ -1,43 +1,19 @@
 // ============================================================
 // Session list
 // ============================================================
-// A row's trash button is a two-tap confirm rather than a browser confirm()
-// dialog: first tap arms it (bad-colored, "sure?"), a second tap within
-// TRASH_ARM_MS kills, anything else lets it cool back off on its own. Only
-// one row is ever armed at a time — arming a second disarms the first, same
-// as a real button that can't be in two states at once.
-const TRASH_ARM_MS = 2500;
-let trashArmed = null;   // { btn, timer } for whichever row is armed, or null
-
-function disarmTrash() {
-  if (!trashArmed) return;
-  clearTimeout(trashArmed.timer);
-  const { btn } = trashArmed;
-  btn.classList.remove("armed");
-  btn.setAttribute("aria-label", btn.dataset.label);
-  trashArmed = null;
-}
-
+// A row's trash button asks with the same confirm() dialog the session
+// sheet's kill row uses — one idiom for "sure?" wherever a kill can start.
 function trashBtn(s) {
-  const btn = el("button", {
+  return el("button", {
     class: "icon-btn btn-trash", type: "button",
-    "aria-label": "Kill " + s.name,
+    "aria-label": "Kill session " + s.name,
     onclick: (e) => {
       e.stopPropagation();
-      if (trashArmed && trashArmed.btn === btn) {
-        disarmTrash();
+      if (confirm("Kill '" + s.name + "'? Programs running in it are terminated.")) {
         killSession(s.name);
-        return;
       }
-      disarmTrash();   // stand down whatever other row was armed
-      btn.classList.add("armed");
-      btn.setAttribute("aria-label", "Tap again to kill " + s.name);
-      const timer = setTimeout(disarmTrash, TRASH_ARM_MS);
-      trashArmed = { btn, timer };
     },
   }, svgIcon("i-trash"));
-  btn.dataset.label = "Kill " + s.name;
-  return btn;
 }
 
 // The bell's three faces — off dim, "on" lit, "quiet" lit but slashed — set
@@ -97,10 +73,6 @@ function demoCard() {
 function renderSessions(sessions) {
   const list = $("list");
   list.innerHTML = "";
-  // The whole list is being torn down, so any row still counting down to
-  // auto-disarm is about to lose its button. Clear the timer explicitly
-  // rather than let it fire uselessly against a detached node later.
-  if (trashArmed) { clearTimeout(trashArmed.timer); trashArmed = null; }
   $("list-empty").style.display = sessions.length ? "none" : "block";
   for (const s of sessions) {
     const meta = el("div", { class: "item-meta" });
@@ -207,10 +179,10 @@ async function saveSessionSheet() {
 }
 
 // The actual kill, shared by the sheet's own button and each row's trash
-// button. Confirmation is each caller's own concern (the sheet's confirm()
-// dialog, the row button's arm-then-tap) — by the time this runs the user has
-// already said yes. Returns whether it succeeded, so a caller with its own
-// UI to close (the sheet) only closes it once the kill actually lands.
+// button. Confirmation is each caller's own concern (both put up the same
+// confirm() dialog) — by the time this runs the user has already said yes.
+// Returns whether it succeeded, so a caller with its own UI to close (the
+// sheet) only closes it once the kill actually lands.
 async function killSession(name) {
   try {
     const r = await fetch(apiURL("api/session/kill"), {
