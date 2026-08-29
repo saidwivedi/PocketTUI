@@ -265,12 +265,24 @@ function syncVoicePicker() {
   // tracks the backend.
   const auto = !cfg.voiceEngine;
   const sel = cfg.voiceEngine || settledVoiceEngine();
+  // Which row, if any, the session has given up on. The engine is still the
+  // user's choice and still shows as picked — the fallback deliberately does not
+  // write itself back — so without a word here the sheet agrees with a setting
+  // the session is quietly ignoring. Named on its own row rather than announced
+  // at the top, because the row is where the retry is: picking it again is what
+  // clears the latch, which is why the note says to tap rather than to reload.
+  const latched = voiceLatchVisible() ? configuredVoiceEngine() : "";
   for (const input of $("voice-engine").querySelectorAll("input")) {
     const on = input.value === sel;
     input.checked = on;
     const note = input.parentNode.querySelector(".note");
     const hint = input.value === "phone" ? "the keyboard's own mic" : note.textContent;
     note.textContent = on && auto ? (hint ? hint + " · auto" : "auto") : hint;
+    // Outranks the hint it replaces: "not installed" and the rest describe the
+    // engine at rest, and this one describes what is happening to it right now.
+    const failed = input.value === latched;
+    if (failed) note.textContent = "failed this session — using phone dictation; tap to retry";
+    input.parentNode.classList.toggle("failed", failed);
   }
 }
 
