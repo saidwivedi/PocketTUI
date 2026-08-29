@@ -163,6 +163,8 @@
 // and the physical-keyboard handler all arrive here, so the demo only has to
 // intercept this one function to receive all of them.
 function send(data) {
+  // Any key the user sends answers whatever prompt the chips were offering.
+  hideChips();
   if (demoMode) { demoInput(data); return; }
   if (sock && sock.readyState === WebSocket.OPEN) sock.send(data);
 }
@@ -204,6 +206,7 @@ function openTerminal(name) {
   currentSession = name;
   retries = 0;
   hideConnBanner();  // a banner left up by the previous session is stale here
+  hideChips();       // and so is a chips row — it named the old session's prompt
   $("screen-list").classList.remove("active");
   $("screen-term").classList.add("active");
   syncChrome();
@@ -326,6 +329,10 @@ function connect() {
           painted = true;
           return;
         }
+        // The pane watcher saying this session is waiting on a prompt (or,
+        // with empty options and line, that it stopped waiting): the chips
+        // row renders the offered answers.
+        if (ctl && ctl.type === "prompt") { showPromptChips(ctl); return; }
         // A control frame this build does not know — a newer server's. Writing
         // raw JSON into the grid helps nobody; drop it.
         if (ctl) return;
