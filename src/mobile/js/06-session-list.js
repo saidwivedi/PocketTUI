@@ -35,7 +35,10 @@ function setBellState(btn, mode, name) {
     "Notifications off for " + name);
 }
 
-async function loadSessions(spin=false) {
+// quiet suppresses the failure toast: the wide layout's periodic refresh
+// reloads a list nobody asked about, and a backend that has gone away already
+// reports through the terminal's own banner rather than a toast per tick.
+async function loadSessions(spin=false, quiet=false) {
   // Nothing to query yet — prompt instead of failing against the static host.
   if (needsSetup()) { openSettings(true); return; }
   const btn = $("btn-reload");
@@ -55,7 +58,7 @@ async function loadSessions(spin=false) {
     if (needsSetup()) $("list").appendChild(demoCard());
     $("list-empty").style.display = "none";
     $("list-error").style.display = "block";
-    toast("Couldn't load sessions");
+    if (!quiet) toast("Couldn't load sessions");
   } finally {
     btn.classList.remove("spin");
   }
@@ -119,7 +122,14 @@ function renderSessions(sessions) {
     }, svgIcon("i-bell"));
     setBellState(bell, s.notify, s.name);
 
-    const card = el("div", { class: "item", onclick: () => openTerminal(s.name) },
+    // data-name lets the wide layout's rail mark the open session's row
+    // without a rebuild (markSelectedSession below); .selected only renders
+    // there — the phone never shows the list and a terminal together.
+    const card = el("div", {
+      class: "item" + (s.name === currentSession ? " selected" : ""),
+      "data-name": s.name,
+      onclick: () => openTerminal(s.name),
+    },
       el("div", { class: "item-head" },
         el("div", { class: "item-dot" + (s.attached ? " live" : "") }),
         title,
@@ -133,6 +143,16 @@ function renderSessions(sessions) {
     list.appendChild(card);
   }
   if (needsSetup()) list.appendChild(demoCard());
+}
+
+// Repaints the rail's selected row in place — openTerminal and closeTerminal
+// call it so a switch never waits on a list rebuild. The demo card carries no
+// data-name, so it can never read as selected.
+function markSelectedSession() {
+  for (const row of $("list").children) {
+    row.classList.toggle("selected",
+      !!currentSession && row.dataset.name === currentSession);
+  }
 }
 
 // The session sheet edits both names at once and carries the kill row. The
@@ -263,7 +283,9 @@ $("btn-reload").addEventListener("click", () => loadSessions(true));
   let startY = null;
   const scr = $("screen-list");
   scr.addEventListener("touchstart", (e) => {
-    startY = window.scrollY <= 0 ? e.touches[0].clientY : null;
+    // In the wide layout the rail scrolls itself rather than the page.
+    const top = isWideLayout() ? scr.scrollTop : window.scrollY;
+    startY = top <= 0 ? e.touches[0].clientY : null;
   }, { passive: true });
   scr.addEventListener("touchend", (e) => {
     if (startY !== null && e.changedTouches[0].clientY - startY > 70) loadSessions(true);
