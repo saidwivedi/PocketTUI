@@ -466,18 +466,18 @@
 </div>
 
 <!-- ============================================================
-     CONFIRM DIALOG
+     CONFIRM SHEET
      ============================================================ -->
-<!-- appConfirm()'s one dialog: a small centered card over its own scrim, so a
-     destructive question wears the app's theme instead of the OS's. -->
-<div class="confirm-scrim" id="confirm-scrim">
-  <div class="confirm" role="alertdialog" aria-modal="true"
-       aria-describedby="confirm-msg">
-    <p id="confirm-msg"></p>
-    <div class="actions">
-      <button type="button" id="btn-confirm-cancel">Cancel</button>
-      <button type="button" class="danger" id="btn-confirm-ok"></button>
-    </div>
+<!-- appConfirm()'s one dialog, in the app's own modal idiom: a standard
+     bottom sheet — same classes, scrim, and action row as every other sheet —
+     holding a message line and a quiet-no / danger-yes pair. Opened through
+     showSheet(), which also closes whatever sheet asked the question. -->
+<div class="sheet" id="sheet-confirm" role="alertdialog" aria-modal="true"
+     aria-describedby="confirm-msg">
+  <p class="sheet-note" id="confirm-msg"></p>
+  <div class="actions">
+    <button type="button" id="btn-confirm-cancel">Cancel</button>
+    <button type="button" class="danger" id="btn-confirm-ok"></button>
   </div>
 </div>
 
