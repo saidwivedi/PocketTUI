@@ -129,7 +129,7 @@ def test_detect_prompt_weights_the_cursor_line_first():
 # The watcher state machine
 # ---------------------------------------------------------------------------
 
-def row(name, notify=False, alias="", representative=True):
+def row(name, notify="off", alias="", representative=True):
     return {"name": name, "created": 0, "attached": 0, "windows": 1,
             "grouped": False, "group": "", "sid": 0, "alias": alias,
             "notify": notify, "representative": representative}
@@ -159,7 +159,7 @@ def kinds(events):
 
 
 def test_prompt_fires_once_per_episode_with_chips_and_push():
-    rows = [row("work", notify=True, alias="My Run")]
+    rows = [row("work", notify="on", alias="My Run")]
     t = 1000
     # First sight mid-burst: baseline, never a notification.
     assert A.watch_update(rows, [pane("work", t, cmd="node")], t + 1, 0.0,
@@ -188,7 +188,7 @@ def test_prompt_fires_once_per_episode_with_chips_and_push():
 
 
 def test_activity_resume_clears_the_chips_and_rearms():
-    rows = [row("work", notify=True)]
+    rows = [row("work", notify="on")]
     t = 1000
     A.watch_update(rows, [pane("work", t, cmd="node")], t + 1, 0.0, classify_boom)
     A.watch_update(rows, [pane("work", t + 20, cmd="node")], t + 20, 20.0,
@@ -212,7 +212,7 @@ def test_activity_resume_clears_the_chips_and_rearms():
 def test_min_busy_gate_blocks_short_shell_episodes():
     # `ls`: a two-second flicker of output, shell prompt back. No
     # classification, no notification.
-    rows = [row("work", notify=True)]
+    rows = [row("work", notify="on")]
     t = 1000
     A.watch_update(rows, [pane("work", t - 100)], t, 0.0, classify_boom)
     A.watch_update(rows, [pane("work", t + 2)], t + 3, 3.0, classify_boom)
@@ -227,7 +227,7 @@ def test_sleep_then_echo_done_fires_one_finished():
     # The acceptance demo: `sleep 30; echo done`. The typed command is a
     # sub-MIN_BUSY burst, but sleep still holds the pane, so the episode
     # spans the quiet run and the final burst clears the gate.
-    rows = [row("work", notify=True)]
+    rows = [row("work", notify="on")]
     classify = classify_quiet
     A.watch_update(rows, [pane("work", 1000, cmd="zsh")], 1001, 1.0, classify_boom)
     A.watch_update(rows, [pane("work", 1000, cmd="sleep")], 1003, 3.0, classify_boom)
@@ -249,7 +249,7 @@ def test_sleep_then_echo_done_fires_one_finished():
 
 
 def test_resident_agent_with_no_shape_notifies_quiet():
-    rows = [row("work", notify=True)]
+    rows = [row("work", notify="on")]
     t = 1000
     A.watch_update(rows, [pane("work", t, cmd="claude")], t + 1, 0.0, classify_boom)
     A.watch_update(rows, [pane("work", t + 20, cmd="claude")], t + 20, 20.0,
@@ -261,7 +261,7 @@ def test_resident_agent_with_no_shape_notifies_quiet():
 
 
 def test_notify_off_computes_state_but_dispatches_nothing():
-    rows = [row("work", notify=False)]
+    rows = [row("work", notify="off")]
     t = 1000
     A.watch_update(rows, [pane("work", t, cmd="node")], t + 1, 0.0, classify_boom)
     A.watch_update(rows, [pane("work", t + 20, cmd="node")], t + 20, 20.0,
@@ -273,8 +273,25 @@ def test_notify_off_computes_state_but_dispatches_nothing():
     assert A.WATCHER["work"].state == "waiting"
 
 
+def test_notify_quiet_marks_the_push_silent():
+    # Same episode as the with-sound test; the only difference the mode makes
+    # is the silent flag riding in the payload. (The with-sound payload is
+    # asserted key-for-key above, which is what proves it carries no flag.)
+    rows = [row("work", notify="quiet")]
+    t = 1000
+    A.watch_update(rows, [pane("work", t, cmd="node")], t + 1, 0.0, classify_boom)
+    A.watch_update(rows, [pane("work", t + 20, cmd="node")], t + 20, 20.0,
+                   classify_boom)
+    events = A.watch_update(rows, [pane("work", t + 20, cmd="node")], t + 30,
+                            30.0, classify_yn)
+    push = [e for e in events if e["kind"] == "push"]
+    assert len(push) == 1
+    assert push[0]["payload"]["silent"] is True
+    assert push[0]["payload"]["kind"] == "waiting"
+
+
 def test_min_gap_swallows_a_second_notification_inside_30s():
-    rows = [row("work", notify=True)]
+    rows = [row("work", notify="on")]
     t = 1000
     A.watch_update(rows, [pane("work", t, cmd="node")], t + 1, 0.0, classify_boom)
     A.watch_update(rows, [pane("work", t + 15, cmd="node")], t + 15, 15.0,
@@ -295,7 +312,7 @@ def test_min_gap_swallows_a_second_notification_inside_30s():
 
 
 def test_bell_edge_fires_immediately_even_while_busy():
-    rows = [row("work", notify=True)]
+    rows = [row("work", notify="on")]
     t = 1000
     A.watch_update(rows, [pane("work", t)], t + 1, 0.0, classify_boom)
     events = A.watch_update(rows, [pane("work", t + 2, bell=True)], t + 2, 2.0,
@@ -307,8 +324,8 @@ def test_bell_edge_fires_immediately_even_while_busy():
 
 
 def test_non_representatives_and_vanished_sessions_are_dropped():
-    rows = [row("work", notify=True),
-            row("phone-work", notify=True, representative=False)]
+    rows = [row("work", notify="on"),
+            row("phone-work", notify="on", representative=False)]
     panes = [pane("work", 1000, cmd="node"), pane("phone-work", 1000, cmd="node")]
     A.watch_update(rows, panes, 1001, 0.0, classify_boom)
     assert set(A.WATCHER) == {"work"}
@@ -340,7 +357,7 @@ def test_watch_panes_parses_and_filters_active_panes(monkeypatch):
 def test_watcher_aggregates_activity_and_bell_across_windows():
     # Activity is the max over the session's windows; the bell can ring in a
     # background window; the command is the active window's.
-    rows = [row("work", notify=True)]
+    rows = [row("work", notify="on")]
     panes = [pane("work", 900, cmd="node", active=True),
              pane("work", 1000, cmd="make", active=False, bell=False)]
     A.watch_update(rows, panes, 1001, 0.0, classify_boom)
@@ -489,11 +506,13 @@ def test_vapid_keys_mint_once_and_persist(push_paths):
 # ---------------------------------------------------------------------------
 
 # The renamed-base group from test_sessions.py: "work2" represents the group,
-# "phone-work" is a device view, "solo" stands alone with @notify already on.
+# "phone-work" is a device view, "solo" stands alone with a legacy "on"
+# already set, "hush" alone in quiet mode.
 def scripted_tmux(monkeypatch):
     lines = ("work2\t100\t0\t1\t1\twork\t$0\t\t\n"
              "phone-work\t200\t0\t1\t1\twork\t$1\t\t\n"
-             "solo\t300\t0\t1\t0\t\t$2\tMy Solo\ton\n")
+             "solo\t300\t0\t1\t0\t\t$2\tMy Solo\ton\n"
+             "hush\t400\t0\t1\t0\t\t$3\t\tquiet\n")
     calls = []
 
     def tmux(*args):
@@ -506,26 +525,57 @@ def scripted_tmux(monkeypatch):
     return calls
 
 
-def test_session_rows_carry_the_notify_flag(monkeypatch):
+def test_session_rows_carry_the_notify_mode(monkeypatch):
     scripted_tmux(monkeypatch)
-    flags = {r["name"]: r["notify"] for r in A.session_rows()}
-    assert flags == {"work2": False, "phone-work": False, "solo": True}
+    modes = {r["name"]: r["notify"] for r in A.session_rows()}
+    assert modes == {"work2": "off", "phone-work": "off", "solo": "on",
+                     "hush": "quiet"}
 
 
-def test_notify_on_sets_the_option_on_the_representative(client, monkeypatch):
+@pytest.mark.parametrize("raw,mode", [
+    # Legacy installs only ever wrote "on"; any other hand-set non-empty value
+    # was an opt-in too, so unknown spellings read as the louder mode.
+    ("", "off"), ("off", "off"), ("on", "on"), ("quiet", "quiet"),
+    ("1", "on"), ("yes", "on"),
+])
+def test_notify_mode_normalizes_legacy_values(raw, mode):
+    assert A._notify_mode(raw) == mode
+
+
+@pytest.mark.parametrize("mode", ["on", "quiet"])
+def test_notify_mode_sets_the_option_on_the_representative(client, monkeypatch,
+                                                           mode):
     calls = scripted_tmux(monkeypatch)
-    r = client.post("/api/notify", json={"session": "work2", "on": True})
+    r = client.post("/api/notify", json={"session": "work2", "mode": mode})
     assert r.status_code == 200
-    assert r.json() == {"session": "work2", "notify": True}
-    assert ("set-option", "-t", "work2", "@notify", "on") in calls
+    assert r.json() == {"session": "work2", "notify": mode}
+    assert ("set-option", "-t", "work2", "@notify", mode) in calls
 
 
 def test_notify_off_unsets_the_option(client, monkeypatch):
     calls = scripted_tmux(monkeypatch)
-    r = client.post("/api/notify", json={"session": "solo", "on": False})
+    r = client.post("/api/notify", json={"session": "solo", "mode": "off"})
     assert r.status_code == 200
-    assert r.json() == {"session": "solo", "notify": False}
+    assert r.json() == {"session": "solo", "notify": "off"}
     assert ("set-option", "-u", "-t", "solo", "@notify") in calls
+
+
+@pytest.mark.parametrize("on,mode", [(True, "on"), (False, "off")])
+def test_notify_legacy_boolean_body_still_works(client, monkeypatch, on, mode):
+    # A shell cached from before modes posts {"on": bool}; it lands on the
+    # matching mode rather than erroring out from under the stale UI.
+    scripted_tmux(monkeypatch)
+    r = client.post("/api/notify", json={"session": "work2", "on": on})
+    assert r.status_code == 200
+    assert r.json() == {"session": "work2", "notify": mode}
+
+
+@pytest.mark.parametrize("mode", ["loud", "", "ON", 5, None, True])
+def test_notify_rejects_garbage_modes(client, monkeypatch, mode):
+    calls = scripted_tmux(monkeypatch)
+    r = client.post("/api/notify", json={"session": "work2", "mode": mode})
+    assert r.status_code == 400
+    assert not any(c[0] == "set-option" for c in calls)
 
 
 @pytest.mark.parametrize("target", ["phone-work", "missing"])
@@ -537,16 +587,17 @@ def test_notify_refuses_non_representatives_and_ghosts(client, monkeypatch,
     assert not any(c[0] == "set-option" for c in calls)
 
 
-def test_sessions_payload_carries_notify_state_and_activity(client, monkeypatch):
+def test_sessions_payload_carries_notify_mode_and_activity(client, monkeypatch):
     scripted_tmux(monkeypatch)
     A.WATCHER["solo"] = A.WatchState(state="waiting", last_activity=1234)
     by_name = {s["name"]: s
                for s in client.get("/api/sessions").json()["sessions"]}
-    assert by_name["solo"]["notify"] is True
+    assert by_name["solo"]["notify"] == "on"
     assert by_name["solo"]["state"] == "waiting"
     assert by_name["solo"]["last_activity"] == 1234
+    assert by_name["hush"]["notify"] == "quiet"
     # A session the watcher has not seen reads idle, not missing fields.
-    assert by_name["work2"]["notify"] is False
+    assert by_name["work2"]["notify"] == "off"
     assert by_name["work2"]["state"] == "idle"
     assert by_name["work2"]["last_activity"] == 0
 
@@ -699,6 +750,28 @@ def test_ntfy_posts_title_headers_and_body(monkeypatch):
     assert seen["headers"]["Title"] == "My Run"
     assert seen["headers"]["Tags"] == "bell"
     assert seen["headers"]["Click"] == "https://pockettui.example/app/#session=work"
+    # Only a silent payload lowers the priority.
+    assert "Priority" not in seen["headers"]
+
+
+def test_ntfy_lowers_priority_for_a_silent_payload(monkeypatch):
+    seen = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(req, timeout=None):
+        seen["headers"] = dict(req.header_items())
+        return Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("POCKETTUI_NTFY_URL", "https://ntfy.example/pockettui")
+    A.send_ntfy({**PAYLOAD, "silent": True})
+    assert seen["headers"]["Priority"] == "low"
 
 
 def test_ntfy_does_nothing_without_the_env(monkeypatch):
@@ -784,14 +857,12 @@ def test_notify_option_round_trips_through_session_rows(client, monkeypatch):
     try:
         rc, _ = A.tmux("new-session", "-d", "-s", "nwork")
         assert rc == 0
-        r = client.post("/api/notify", json={"session": "nwork", "on": True})
-        assert r.status_code == 200
-        row = A.find_row(A.session_rows(), "nwork")
-        assert row is not None and row["notify"] is True
-        r = client.post("/api/notify", json={"session": "nwork", "on": False})
-        assert r.status_code == 200
-        row = A.find_row(A.session_rows(), "nwork")
-        assert row is not None and row["notify"] is False
+        for mode in ("on", "quiet", "off"):
+            r = client.post("/api/notify", json={"session": "nwork",
+                                                 "mode": mode})
+            assert r.status_code == 200
+            row = A.find_row(A.session_rows(), "nwork")
+            assert row is not None and row["notify"] == mode
         # And the watcher's pane poll parses real output for the session.
         panes = [p for p in A.watch_panes() if p["session"] == "nwork"]
         assert len(panes) == 1

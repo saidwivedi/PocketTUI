@@ -62,29 +62,36 @@ async function ensurePushSubscription() {
   }
 }
 
-// The list row's bell. Enabling rides the tap through permission + subscribe
-// (iOS grants both only from a user gesture), then sets @notify either way —
-// on iOS outside the home-screen app there is no push to be had, so the toast
-// says what would fix it while the ntfy transport keeps working.
+// The list row's bell cycles the session's mode: off → with sound → silent →
+// off. Leaving off rides the tap through permission + subscribe (iOS grants
+// both only from a user gesture), then sets @notify either way — on iOS
+// outside the home-screen app there is no push to be had, so the toast says
+// what would fix it while the ntfy transport keeps working; otherwise the
+// toast names the mode the tap just landed on.
 async function toggleNotify(s, btn) {
-  const on = !s.notify;
-  if (on) {
+  const mode = s.notify === "off" ? "on" : s.notify === "on" ? "quiet" : "off";
+  let hinted = false;
+  if (s.notify === "off") {
     const pushed = await ensurePushSubscription();
     if (!pushed && a2hsPlatform() === "ios" && !a2hsInstalled()) {
       toast("Add to Home Screen to get push notifications on this phone", 3500);
+      hinted = true;
     }
   }
   try {
     const r = await fetch(apiURL("api/notify"), {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ session: s.name, on: on }),
+      body: JSON.stringify({ session: s.name, mode: mode }),
     });
     const data = await r.json().catch(() => null);
     if (!r.ok) { toast(data && data.error ? data.error : "Couldn't update notifications"); return; }
-    s.notify = !!data.notify;
-    btn.classList.toggle("on", s.notify);
-    btn.setAttribute("aria-pressed", s.notify ? "true" : "false");
+    s.notify = data.notify;
+    setBellState(btn, s.notify, s.name);
+    if (!hinted) {
+      toast(s.notify === "on" ? "Notifications with sound" :
+            s.notify === "quiet" ? "Silent notifications" : "Notifications off");
+    }
   } catch (e) {
     toast("Couldn't update notifications");
   }
