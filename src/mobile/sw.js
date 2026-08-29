@@ -27,6 +27,9 @@ self.addEventListener("push", (e) => {
     body: d.body || "",
     tag: d.tag || "pockettui",
     icon: "icon-192.png",
+    // Quiet-mode sessions ask for a silent banner; a platform that ignores
+    // the option just plays its sound, which is the right degradation.
+    silent: !!d.silent,
     data: { session: d.session || "" },
   }));
 });

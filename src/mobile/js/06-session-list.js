@@ -40,6 +40,22 @@ function trashBtn(s) {
   return btn;
 }
 
+// The bell's three faces — off dim, "on" lit, "quiet" lit but slashed — set
+// in one place so the first render and every later tap agree on glyph, class,
+// and spoken label alike.
+function setBellState(btn, mode, name) {
+  btn.classList.toggle("on", mode === "on");
+  btn.classList.toggle("quiet", mode === "quiet");
+  const icon = mode === "quiet" ? "#i-bell-off" : "#i-bell";
+  const use = btn.querySelector("use");
+  use.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", icon);
+  use.setAttribute("href", icon);
+  btn.setAttribute("aria-label",
+    mode === "on" ? "Notifications with sound for " + name :
+    mode === "quiet" ? "Silent notifications for " + name :
+    "Notifications off for " + name);
+}
+
 async function loadSessions(spin=false) {
   // Nothing to query yet — prompt instead of failing against the static host.
   if (needsSetup()) { openSettings(true); return; }
@@ -116,14 +132,14 @@ function renderSessions(sessions) {
       onclick: (e) => { e.stopPropagation(); openSessionSheet(s); },
     }, svgIcon("i-pencil"));
 
-    // Per-session notification opt-in. The tap is the user gesture the
-    // permission and push-subscription asks need, so both live in the handler.
+    // Per-session notification mode, cycled off → with sound → silent. The
+    // tap is the user gesture the permission and push-subscription asks need,
+    // so both live in the handler.
     const bell = el("button", {
-      class: "icon-btn btn-bell" + (s.notify ? " on" : ""), type: "button",
-      "aria-label": "Notifications for " + s.name,
-      "aria-pressed": s.notify ? "true" : "false",
+      class: "icon-btn btn-bell", type: "button",
       onclick: (e) => { e.stopPropagation(); toggleNotify(s, e.currentTarget); },
     }, svgIcon("i-bell"));
+    setBellState(bell, s.notify, s.name);
 
     const card = el("div", { class: "item", onclick: () => openTerminal(s.name) },
       el("div", { class: "item-head" },

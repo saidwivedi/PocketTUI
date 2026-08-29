@@ -468,7 +468,7 @@ def session_rows() -> list[dict]:
             "group": group,
             "sid": _session_sid(sid),
             "alias": alias,
-            "notify": notify != "",
+            "notify": _notify_mode(notify),
         })
 
     # Oldest member per group, ordered by session id: tmux hands ids out in
@@ -497,6 +497,16 @@ def _session_sid(raw: str) -> int:
         return int(raw.lstrip("$"))
     except ValueError:
         return 1 << 62
+
+
+def _notify_mode(raw: str) -> str:
+    """The raw @notify option as one of "off"/"on"/"quiet". Legacy installs
+    only ever wrote "on", and any other hand-set non-empty value was an opt-in
+    too, so everything but the two known-quiet spellings reads as the louder
+    mode rather than silently downgrading someone's notifications."""
+    if raw in ("", "off"):
+        return "off"
+    return "quiet" if raw == "quiet" else "on"
 
 
 def find_row(rows: list[dict], name: str) -> dict | None:
@@ -3007,18 +3017,23 @@ def _watch_notify(row: dict, w: WatchState, mono: float,
                   kind: str, body: str) -> list[dict]:
     """The push event this moment has earned, or [] — the @notify opt-in and
     the per-session gap are enforced here, in one place."""
-    if not row["notify"]:
+    if row["notify"] == "off":
         return []
     if w.notified_at is not None and mono - w.notified_at < NOTIFY_GAP_S:
         return []
     w.notified_at = mono
-    return [{"kind": "push", "session": row["name"], "payload": {
+    payload = {
         "title": row["alias"] or row["name"],
         "body": body,
         "tag": "ptui-" + row["name"],
         "session": row["name"],
         "kind": kind,
-    }}]
+    }
+    # Quiet mode rides in the payload: sw.js hands it to showNotification's
+    # `silent`, and the ntfy transport lowers its priority.
+    if row["notify"] == "quiet":
+        payload["silent"] = True
+    return [{"kind": "push", "session": row["name"], "payload": payload}]
 
 
 def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
@@ -3383,6 +3398,8 @@ def send_ntfy(payload: dict) -> None:
     title = str(payload.get("title", "PocketTUI"))
     body = str(payload.get("body", "") or payload.get("kind", ""))
     headers = {"Title": _ntfy_header(title), "Tags": "bell"}
+    if payload.get("silent"):
+        headers["Priority"] = "low"
     app_url = os.environ.get("POCKETTUI_APP_URL", "")
     if app_url:
         headers["Click"] = (app_url + "#session="
@@ -3475,26 +3492,33 @@ def api_push_unsubscribe(body: dict = Body(...)) -> Response:
 
 @app.post("/api/notify")
 def api_notify(body: dict = Body(...)) -> Response:
-    """Set (or clear) a session's notification opt-in.
+    """Set a session's notification mode: "off", "on" (sound), or "quiet".
 
     Stored as the session's own `@notify` option, exactly as @alias is: it
     lives and dies with the session, every device sees the same answer, and
-    only the group's representative is a valid target.
+    only the group's representative is a valid target. A shell cached from
+    before modes still posts the old boolean body, which maps onto two of the
+    three modes.
     """
     name = str(body.get("session", ""))
     row = find_row(session_rows(), name)
     if row is None or not row["representative"]:
         return JSONResponse({"error": "no such session"}, status_code=404)
 
-    on = bool(body.get("on"))
-    # No "=" exact-match prefix: set-option rejects it, as noted in enable_mouse.
-    if on:
-        rc, _ = tmux("set-option", "-t", name, "@notify", "on")
+    if "mode" in body:
+        mode = body.get("mode")
     else:
+        mode = "on" if body.get("on") else "off"
+    if mode not in ("off", "on", "quiet"):
+        return JSONResponse({"error": "bad mode"}, status_code=400)
+    # No "=" exact-match prefix: set-option rejects it, as noted in enable_mouse.
+    if mode == "off":
         rc, _ = tmux("set-option", "-u", "-t", name, "@notify")
+    else:
+        rc, _ = tmux("set-option", "-t", name, "@notify", mode)
     if rc != 0:
         return JSONResponse({"error": "could not set notify"}, status_code=500)
-    return no_store(JSONResponse({"session": name, "notify": on}))
+    return no_store(JSONResponse({"session": name, "notify": mode}))
 
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
