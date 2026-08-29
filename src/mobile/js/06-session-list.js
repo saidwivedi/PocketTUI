@@ -1,6 +1,45 @@
 // ============================================================
 // Session list
 // ============================================================
+// A row's trash button is a two-tap confirm rather than a browser confirm()
+// dialog: first tap arms it (bad-colored, "sure?"), a second tap within
+// TRASH_ARM_MS kills, anything else lets it cool back off on its own. Only
+// one row is ever armed at a time — arming a second disarms the first, same
+// as a real button that can't be in two states at once.
+const TRASH_ARM_MS = 2500;
+let trashArmed = null;   // { btn, timer } for whichever row is armed, or null
+
+function disarmTrash() {
+  if (!trashArmed) return;
+  clearTimeout(trashArmed.timer);
+  const { btn } = trashArmed;
+  btn.classList.remove("armed");
+  btn.setAttribute("aria-label", btn.dataset.label);
+  trashArmed = null;
+}
+
+function trashBtn(s) {
+  const btn = el("button", {
+    class: "icon-btn btn-trash", type: "button",
+    "aria-label": "Kill " + s.name,
+    onclick: (e) => {
+      e.stopPropagation();
+      if (trashArmed && trashArmed.btn === btn) {
+        disarmTrash();
+        killSession(s.name);
+        return;
+      }
+      disarmTrash();   // stand down whatever other row was armed
+      btn.classList.add("armed");
+      btn.setAttribute("aria-label", "Tap again to kill " + s.name);
+      const timer = setTimeout(disarmTrash, TRASH_ARM_MS);
+      trashArmed = { btn, timer };
+    },
+  }, svgIcon("i-trash"));
+  btn.dataset.label = "Kill " + s.name;
+  return btn;
+}
+
 async function loadSessions(spin=false) {
   // Nothing to query yet — prompt instead of failing against the static host.
   if (needsSetup()) { openSettings(true); return; }
@@ -42,6 +81,10 @@ function demoCard() {
 function renderSessions(sessions) {
   const list = $("list");
   list.innerHTML = "";
+  // The whole list is being torn down, so any row still counting down to
+  // auto-disarm is about to lose its button. Clear the timer explicitly
+  // rather than let it fire uselessly against a detached node later.
+  if (trashArmed) { clearTimeout(trashArmed.timer); trashArmed = null; }
   $("list-empty").style.display = sessions.length ? "none" : "block";
   for (const s of sessions) {
     const meta = el("div", { class: "item-meta" });
@@ -88,6 +131,7 @@ function renderSessions(sessions) {
         title,
         bell,
         edit,
+        trashBtn(s),
         el("div", { class: "chev" }, svgIcon("i-fwd")),
       ),
       meta,
@@ -146,23 +190,33 @@ async function saveSessionSheet() {
   }
 }
 
-async function killSheetSession() {
-  const s = sheetSession;
-  if (!s) return;
-  if (!confirm("Kill '" + s.name + "'? Programs running in it are terminated.")) return;
+// The actual kill, shared by the sheet's own button and each row's trash
+// button. Confirmation is each caller's own concern (the sheet's confirm()
+// dialog, the row button's arm-then-tap) — by the time this runs the user has
+// already said yes. Returns whether it succeeded, so a caller with its own
+// UI to close (the sheet) only closes it once the kill actually lands.
+async function killSession(name) {
   try {
     const r = await fetch(apiURL("api/session/kill"), {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ session: s.name }),
+      body: JSON.stringify({ session: name }),
     });
     const data = await r.json().catch(() => null);
-    if (!r.ok) { toast(data && data.error ? data.error : "Couldn't kill the session"); return; }
-    showSheet(false);
+    if (!r.ok) { toast(data && data.error ? data.error : "Couldn't kill the session"); return false; }
     loadSessions();
+    return true;
   } catch (e) {
     toast("Couldn't kill the session");
+    return false;
   }
+}
+
+async function killSheetSession() {
+  const s = sheetSession;
+  if (!s) return;
+  if (!confirm("Kill '" + s.name + "'? Programs running in it are terminated.")) return;
+  if (await killSession(s.name)) showSheet(false);
 }
 
 $("btn-session-cancel").addEventListener("click", () => showSheet(false));
