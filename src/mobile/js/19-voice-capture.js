@@ -246,6 +246,15 @@ function resolveVoiceEngine() {
 // would paint "Phone dictation" on a computer that is running Parakeet.
 function settledVoiceEngine() {
   if (voiceForcedPhone) return "phone";
+  return configuredVoiceEngine();
+}
+
+// What the setting resolves to with the session's failure set aside — the
+// engine the user would be getting if nothing had gone wrong. Only worth asking
+// separately to know whether the latch is actually overriding something: a user
+// who chose the phone anyway is not being overridden by a fallback to it, and
+// telling them their engine failed would be news about a choice they never made.
+function configuredVoiceEngine() {
   let want = cfg.voiceEngine;
   if (!want && cfg.legacyLocalVoiceOff) want = "phone";
   if (!want) want = (voiceStatus && voiceStatus.active) || "phone";
@@ -256,6 +265,15 @@ function settledVoiceEngine() {
   // every device whose first status fetch happened to miss.
   if (voiceStatus && !voiceStatus.engines[want]) return "phone";
   return want;
+}
+
+// Whether the session's fallback is currently costing the user the engine they
+// asked for. The latch alone is not enough to report: it is also set on a device
+// whose setting resolves to the phone regardless, where "using phone dictation
+// instead" describes no change at all. Both the mic key's dot and the Settings
+// note ask this, so the two can never disagree about whether to speak up.
+function voiceLatchVisible() {
+  return voiceForcedPhone && configuredVoiceEngine() !== "phone";
 }
 
 // Ask the backend which engines it has and which it prefers. Cached for the
@@ -1101,6 +1119,11 @@ function recSyncMic() {
   const live = recording();
   btn.classList.toggle("listening", live || listening());
   btn.classList.toggle("busy", recBusy);
+  // A corner dot for the whole of a session that has fallen back: the toast that
+  // announced the failure is long gone by the third tap, and without this the
+  // only sign the local engine is being skipped is that the transcripts read
+  // differently. Settings says the rest — this just says look there.
+  btn.classList.toggle("forced-phone", voiceLatchVisible());
   // The face swaps with the state, so the spoken label has to as well — a key
   // reading "stop" to the eye and "compose" to a screen reader is worse than
   // either alone.
@@ -1180,6 +1203,10 @@ async function startLocalRecording(engine) {
   if (!recVoiceChecked) await recProbeVoice(engine);
   if (recVoiceNotSetup) {
     voiceForcedPhone = true;
+    // Before the handover, not after: startDictation() only reaches recSyncMic()
+    // on the branch that has a recogniser to start, and the phone without one is
+    // exactly the device where the dot has the most to say.
+    recSyncMic();
     toast(REC_NO_VOICE_MSG);
     startDictation();
     return;
