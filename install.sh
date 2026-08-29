@@ -781,8 +781,8 @@ remote_version() {
         v="$(curl -fsSL --max-time 5 "$BASE_URL/version.txt" 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
     fi
     case "$v" in
-        [0-9]*.[0-9]*.[0-9]*) printf '%s' "$v" ;;
-        *)                    printf 'unknown' ;;
+        ([0-9]*.[0-9]*.[0-9]*) printf '%s' "$v" ;;
+        (*)                    printf 'unknown' ;;
     esac
 }
 
@@ -816,11 +816,11 @@ run_installer() {
 }
 
 case "${1:-}" in
-    update)
+    (update)
         shift
         run_installer ${@+"$@"}
         ;;
-    version|--version|-V)
+    (version|--version|-V)
         have="$(local_version)"
         there="$(remote_version)"
         echo "installed  $have"
@@ -834,7 +834,7 @@ case "${1:-}" in
             echo "An update is available. Install it with:  pockettui update"
         fi
         ;;
-    *)
+    (*)
         echo "usage: pockettui update | version"
         echo
         echo "  update   fetch and install the current version, in place"
