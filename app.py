@@ -1823,6 +1823,38 @@ def api_learn(body: dict = Body(...)) -> Response:
     return no_store(JSONResponse({"learned": learned}))
 
 
+@app.get("/api/learned")
+def api_learned() -> Response:
+    """Every correction the store holds, so the user can see what was learned.
+
+    Newest-use first, unpromoted entries included: a pair the user has only
+    corrected once is exactly the one they most want to catch before it fires
+    twice and starts rewriting transcripts on its own.
+    """
+    entries = sorted(resolver.load_learned(), key=lambda e: e["last_ts"], reverse=True)
+    out = [{
+        "wrong": e["wrong"],
+        "right": e["right"],
+        "count": e["count"],
+        "utterances": e["utterances"],
+        "last_ts": e["last_ts"],
+        "promoted": e["utterances"] >= resolver.LEARNED_PROMOTE_AT,
+    } for e in entries]
+    return no_store(JSONResponse({"entries": out}))
+
+
+@app.post("/api/learned_delete")
+def api_learned_delete(body: dict = Body(...)) -> Response:
+    """Remove one learned pair, or all of them with `{"all": true}`."""
+    if body.get("all"):
+        deleted = resolver.clear_learned()
+    else:
+        wrong = str(body.get("wrong", "") or "")
+        right = str(body.get("right", "") or "")
+        deleted = resolver.delete_correction(wrong, right) if wrong and right else 0
+    return no_store(JSONResponse({"deleted": deleted}))
+
+
 @app.post("/api/session")
 def api_new_session(body: dict = Body(...)) -> Response:
     """Create a detached tmux session the phone can then attach to.
