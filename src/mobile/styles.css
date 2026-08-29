@@ -1875,11 +1875,13 @@ html.term-open, body.term-open {
     font-size: 13px;
   }
 
-  /* Compact single-line rows. The title carries the row (ellipsized), the
-     meta line folds away, and the chevron goes with it — the selected fill
-     and the pointer already say "openable" here, so its width is better
-     spent on the name. One line also means one name: the alias keeps the
-     row and the tmux name stays in the session sheet. */
+  /* Compact two-line rows: the title on top (ellipsized), the phone's meta
+     line beneath it distilled — the running command and the watcher's
+     verdict keep their colors, while the window count, age and separators
+     fold away so the line stays one dense read even at 240px. The chevron
+     goes too — the selected fill and the pointer already say "openable"
+     here — and one row means one name: the alias keeps the row and the
+     tmux name stays in the session sheet. */
   #screen-list .item {
     padding: 8px 10px;
     margin-bottom: 6px;
@@ -1895,38 +1897,26 @@ html.term-open, body.term-open {
     text-overflow: ellipsis;
   }
   #screen-list .item .title .realname { display: none; }
-  #screen-list .item .item-meta { display: none; }
   #screen-list .item .chev { display: none; }
-  #screen-list .item .btn-bell, #screen-list .item .btn-alias,
-  #screen-list .item .btn-trash {
-    padding: 3px;
-    margin-top: 0;
-    /* Behind the state badge below: order lifts the ::after (order 0, last
-       in DOM among the head's order-0 items) ahead of the buttons, so the
-       row reads dot · name · verdict · controls. */
-    order: 1;
+  #screen-list .item .item-meta {
+    /* Under the title's own left edge: the 7px dot plus the head's 7px gap. */
+    margin-left: 14px;
+    margin-top: 1px;
+    gap: 5px;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+    overflow: hidden;
+    font-size: 10px;
   }
+  /* The classless spans are the window count and age; the dots between are
+     .sep. A session with neither command nor state keeps a one-line row —
+     an emptied meta line takes no height at all. */
+  #screen-list .item .item-meta > span:not([class]),
+  #screen-list .item .item-meta .sep { display: none; }
+  #screen-list .item .btn-bell, #screen-list .item .btn-alias,
+  #screen-list .item .btn-trash { padding: 3px; margin-top: 0; }
   #screen-list .item .btn-bell svg, #screen-list .item .btn-alias svg,
   #screen-list .item .btn-trash svg { width: 14px; height: 14px; }
-  /* The watcher's verdict, rebuilt from the row's data-state now that the
-     meta line carrying it is folded away — it is the whole point of the
-     badge polling, so it survives compaction as a short accent word. */
-  #screen-list .item .item-head::after {
-    order: 0;
-    flex: 0 0 auto;
-    font-family: var(--mono);
-    font-size: 9.5px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
-  #screen-list .item[data-state="waiting"] .item-head::after {
-    content: "needs input";
-    color: var(--warn);
-  }
-  #screen-list .item[data-state="active"] .item-head::after {
-    content: "running";
-    color: var(--good);
-  }
 
   /* The rail's resize handle: a strip straddling the border, invisible at
      rest — the border itself is the affordance — tinted while hovered or
