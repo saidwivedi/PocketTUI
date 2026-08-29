@@ -18,9 +18,13 @@ const KEYS = [
   { label: "shift", mod: "shift", cls: "span-2", swipe: { seq: "_" } },
   // Meta, for the line editors: alt+b/f/. and friends arrive as ESC-prefixed
   // characters, composed in seqWithMods and the typed-character hook exactly
-  // like ctrl and shift are. Gated on cfg.altKeyOn in buildKeybar() — off by
-  // default, like the search key above.
-  { label: "alt",   mod: "alt",   cls: "span-2", swipe: { seq: "/" } },
+  // like ctrl and shift are. Gated on cfg.altKeyOn — off by default, like the
+  // search key above. Always built (see buildKeybar()) rather than skipped:
+  // the expanded grid's later columns are pinned by absolute number, so a
+  // missing word-key button would leave its column an empty gap rather than
+  // closing up. The .k-alt class is instead display:none'd by the .no-alt
+  // grid variant in styles.css, which also renumbers those later columns.
+  { label: "alt",   mod: "alt",   cls: "span-2 k-alt", swipe: { seq: "/" } },
   // A terminal's Enter is a carriage return; \n would send a bare line feed that
   // readline and tmux both read as ctrl+J instead. No repeat — a held Enter
   // firing a shell command over and over is never what a thumb meant. narrow,

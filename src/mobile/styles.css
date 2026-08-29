@@ -1012,6 +1012,18 @@ html.term-open, body.term-open {
   /* Two rows of chips would otherwise stretch to the bar's own height. */
   align-items: stretch;
 }
+/* Alt (cfg.altKeyOn) is always built in the DOM — see buildKeybar() — and hidden
+   here instead of skipped there. The collapsed row is flex, so hiding it there
+   reflows the row for free. The expanded grid cannot: every column from
+   backspace on is placed by an absolute column number below, so a hidden alt
+   would still leave column 5's width reserved as an empty gap. .no-alt below
+   drops that word-key track and renumbers everything after it left by one, so
+   the row actually shrinks instead of showing a hole. */
+.keybar.no-alt > .k-alt { display: none; }
+.keybar.expanded.no-alt {
+  grid-template-columns: repeat(4, minmax(28px, 1.1fr)) minmax(28px, 0.85fr)
+                         minmax(28px, 1fr) repeat(4, minmax(28px, 1.15fr));
+}
 /* The keys that persist across both rows are laid out by span, not duplicated, so
    every listener and every bit of armed-modifier state survives the toggle. */
 .keybar.expanded > .span-2 { grid-row: span 2; }
@@ -1023,17 +1035,26 @@ html.term-open, body.term-open {
    explicit column alone leaves the row to auto-placement's flow cursor, which
    enter (later in source order but an earlier column) would drag past column 6
    — so the row is pinned here too, matching .span-2 above instead of relying
-   on it. */
+   on it. .no-alt shifts every one of these left by one column to match the
+   word-key track it just lost. */
 .keybar.expanded > .k-bs    { grid-column: 6; grid-row: 1 / span 2; }
 .keybar.expanded > .k-enter { grid-column: 7; grid-row: 1 / span 2; }
 .keybar.expanded > .k-up    { grid-column: 9; grid-row: 1; }
 .keybar.expanded > .k-left  { grid-column: 8; grid-row: 2; }
 .keybar.expanded > .k-down  { grid-column: 9; grid-row: 2; }
 .keybar.expanded > .k-right { grid-column: 10; grid-row: 2; }
+.keybar.expanded.no-alt > .k-bs    { grid-column: 5; }
+.keybar.expanded.no-alt > .k-enter { grid-column: 6; }
+.keybar.expanded.no-alt > .k-up    { grid-column: 8; }
+.keybar.expanded.no-alt > .k-left  { grid-column: 7; }
+.keybar.expanded.no-alt > .k-down  { grid-column: 8; }
+.keybar.expanded.no-alt > .k-right { grid-column: 9; }
 /* Close sits on the top row: it is the control that undoes the expansion, so it
    reads better level with the row that appeared than buried at the bottom. */
 .keybar.expanded > .k-close   { grid-column: 11; grid-row: 1; }
 .keybar.expanded > .k-compose { grid-column: 11; grid-row: 2; }
+.keybar.expanded.no-alt > .k-close   { grid-column: 10; }
+.keybar.expanded.no-alt > .k-compose { grid-column: 10; }
 
 /* ============================================================
    SETTINGS SHEET
