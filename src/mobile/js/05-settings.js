@@ -77,6 +77,7 @@ function openSettings(firstRun) {
   // answer matters, and asking on open is what makes a fresh setup_voice.sh run
   // show up without a reload.
   fetchVoiceStatus(true).then(syncVoicePicker);
+  refreshLearned();
   $("dbg-toggle").checked = cfg.debug;
   $("sheet-title").textContent = firstRun ? "Connect your computer" : "Settings";
   $("sheet-note").classList.toggle("hide", !firstRun);
@@ -334,6 +335,71 @@ $("voice-engine").addEventListener("change", (e) => {
 $("dbg-toggle").addEventListener("change", (e) => {
   cfg.debug = e.target.checked;
   setDebug(e.target.checked);
+});
+// Fetches and paints the learned-corrections list. Hidden outright rather than
+// shown empty on a demo/unpaired session or a failed fetch, since none of those
+// says anything true about a store on a real machine — an empty list there
+// would read as "nothing learned" when the honest answer is "couldn't ask."
+async function refreshLearned() {
+  const section = $("learned-section");
+  if (demoMode || needsSetup()) { section.classList.remove("show"); return; }
+  let entries;
+  try {
+    const r = await fetch(apiURL("api/learned"), { cache: "no-store", headers: authHeaders() });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    entries = (await r.json()).entries || [];
+  } catch (e) {
+    section.classList.remove("show");
+    return;
+  }
+  section.classList.add("show");
+  renderLearned(entries);
+}
+
+function renderLearned(entries) {
+  const rows = $("learned-rows");
+  rows.innerHTML = "";
+  $("learned-empty").classList.toggle("show", entries.length === 0);
+  $("btn-learned-clear").classList.toggle("show", entries.length > 0);
+  for (const e of entries) {
+    const row = document.createElement("div");
+    row.className = "list-row" + (e.promoted ? "" : " dim");
+    const text = document.createElement("span");
+    text.className = "list-row-text";
+    text.textContent = e.wrong + " → " + e.right + " ×" + e.count;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "list-row-del";
+    del.setAttribute("aria-label", "Remove");
+    del.textContent = "✕";
+    del.addEventListener("click", () => deleteLearned(e.wrong, e.right));
+    row.appendChild(text);
+    row.appendChild(del);
+    rows.appendChild(row);
+  }
+}
+
+async function deleteLearned(wrong, right) {
+  try {
+    await fetch(apiURL("api/learned_delete"), {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ wrong: wrong, right: right }),
+    });
+  } catch (e) { /* the row is refetched either way; a stale one just persists */ }
+  refreshLearned();
+}
+
+$("btn-learned-clear").addEventListener("click", async () => {
+  if (!confirm("Clear every learned correction?")) return;
+  try {
+    await fetch(apiURL("api/learned_delete"), {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ all: true }),
+    });
+  } catch (e) { /* the row is refetched either way; a stale one just persists */ }
+  refreshLearned();
 });
 $("backend-token").addEventListener("input", (e) => {
   const input = e.target;

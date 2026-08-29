@@ -1119,6 +1119,61 @@ html.term-open, body.term-open {
    only part that stays at full strength, because it is the instruction. */
 .sheet .radio-row.off { cursor: default; color: var(--whisper); }
 .sheet .radio-row.off input { opacity: 0.4; }
+/* Hidden by default: demo mode, an unpaired device and a failed fetch all have
+   nothing true to show here, same reasoning as .sheet-install above. */
+#learned-section { display: none; margin-top: 18px; }
+#learned-section.show { display: block; }
+.list-rows { display: flex; flex-direction: column; }
+.list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--hair);
+  font-size: 13px;
+  color: var(--ink);
+}
+.list-row:last-child { border-bottom: none; }
+/* Unpromoted: seen once, not yet trusted to rewrite anything. Dimmed rather
+   than hidden, because it is exactly the entry a bad guess needs catching on
+   before a second utterance promotes it. */
+.list-row.dim { color: var(--whisper); }
+.list-row-text { overflow-wrap: anywhere; }
+.list-row-del {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--tertiary);
+  cursor: pointer;
+}
+.list-row-del:active { transform: scale(0.9); }
+#learned-empty {
+  display: none;
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--whisper);
+}
+#learned-empty.show { display: block; }
+#btn-learned-clear {
+  display: none;
+  margin-top: 10px;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+#btn-learned-clear.show { display: inline-block; }
+#btn-learned-clear:active { transform: scale(0.96); }
 .sheet .actions {
   display: flex; gap: 10px; justify-content: flex-end;
   margin-top: 18px;

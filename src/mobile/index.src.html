@@ -253,6 +253,17 @@
   <div class="actions" id="voice-confirm-row">
     <button type="button" id="btn-voice-confirm">Confirm</button>
   </div>
+  <!-- What the corrections table has learned from edited transcripts. Hidden
+       until it has something to show: a fetch that fails or a demo/unpaired
+       session has nothing true to say about a store on a machine it cannot
+       reach. Lazily fetched when the sheet opens, same as voice status above,
+       so a store nobody has looked at yet costs nothing on every other visit. -->
+  <div id="learned-section">
+    <label id="learned-label">Learned corrections</label>
+    <div class="list-rows" id="learned-rows"></div>
+    <p id="learned-empty">Nothing learned yet.</p>
+    <button type="button" id="btn-learned-clear">Clear all</button>
+  </div>
   <!-- Last in the sheet because it is a diagnostic, not part of connecting. -->
   <div class="toggle-row">
     <label for="dbg-toggle">Debug log</label>
