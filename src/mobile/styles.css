@@ -1616,6 +1616,29 @@ html.term-open, body.term-open {
 }
 #btn-editor-save:active { transform: scale(0.96); }
 #btn-editor-save[disabled] { opacity: 0.45; }
+/* Same pill as Save, but smaller and quiet by default — a reading preference,
+   not the primary action of the bar. Lit the same way Save is: filled umber
+   exactly while it is the active state. */
+.editor-wrap-toggle {
+  flex: 0 0 auto;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+  transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out),
+              border-color 0.14s var(--ease-out);
+}
+.editor-wrap-toggle[aria-pressed="true"] {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+}
+.editor-wrap-toggle:active { transform: scale(0.96); }
 #editor-host { flex: 1 1 auto; min-height: 0; }
 #editor-host .cm-editor { height: 100%; }
 #editor-host .cm-editor.cm-focused { outline: none; }
