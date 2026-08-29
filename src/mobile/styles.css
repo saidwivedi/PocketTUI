@@ -824,6 +824,28 @@ html.term-open, body.term-open {
 .k-compose.busy .idle { display: none; }
 .k-compose.listening .stop,
 .k-compose.busy .stop { display: inline-flex; }
+/* The local engine failed and the session is on the phone's recogniser instead.
+   A dot in the corner rather than a changed glyph: the key still records and
+   still stops, so its face must keep saying so — this is a footnote about where
+   the audio goes, and the answer is in Settings. Warm amber, not the umber the
+   active states use, so it reads as a caveat beside them rather than another
+   one of them. */
+.k-compose { position: relative; }
+.k-compose.forced-phone::after {
+  content: "";
+  position: absolute;
+  top: 3px; right: 3px;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--warn);
+  /* The listening and busy states fill the key with a colour the dot is close
+     to, and a footnote that disappears exactly while the user is watching the
+     key is no footnote. The ring is the key's own background, so the dot stays
+     separated from whatever is behind it. */
+  box-shadow: 0 0 0 1.5px var(--card-2);
+}
+.k-compose.listening.forced-phone::after,
+.k-compose.busy.forced-phone::after { box-shadow: 0 0 0 1.5px var(--paper); }
 @keyframes mic-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.62; }
@@ -1089,6 +1111,10 @@ html.term-open, body.term-open {
   color: var(--whisper);
 }
 .sheet .radio-row .note:empty { display: none; }
+/* Failed this session. The row is still choosable — tapping it is the retry —
+   so nothing here dims it; the note alone carries the news, at the same weight
+   as the row's name because it is the reason the user came looking. */
+.sheet .radio-row.failed .note { color: var(--warn); }
 /* Unavailable: still legible, plainly not choosable. The note beside it is the
    only part that stays at full strength, because it is the instruction. */
 .sheet .radio-row.off { cursor: default; color: var(--whisper); }
