@@ -52,6 +52,15 @@ function openExplorer(path) {
 }
 
 function closeExplorer() {
+  // Back (popstate or the edge swipe) while the address field is open closes
+  // just the field, same as Escape — same pushState-back trick editorPopped()
+  // uses for a dirty buffer, since the pop has already happened by the time
+  // either gets a say.
+  if ($("files-path-wrap").classList.contains("editing")) {
+    closePathEdit();
+    history.pushState({ files: true }, "", location.href);
+    return;
+  }
   $("screen-files").classList.remove("active");
   const back = filesOrigin || "screen-list";
   filesOrigin = null;
@@ -79,24 +88,53 @@ async function openFilesAtCwd() {
   openExplorer(cwd);
 }
 
+// Keyed by the server's own normalized path (what data.path comes back as,
+// not necessarily what was requested — ~ resolves, PATH_REWRITES can retarget
+// a mount). The address field's suggestions read this before fetching, so
+// retyping or backspacing within a directory already listed costs nothing.
+const filesListCache = new Map();
+
+// Raw GET against /api/fs/list, cache-populating. Throws on anything but a
+// clean 200 so callers keep their own error handling (loadDir's toast-style
+// failure, the suggestion dropdown's inline note) rather than sharing one.
+async function fsList(path) {
+  const q = path ? "?path=" + encodeURIComponent(path) : "";
+  const r = await fetch(apiURL("api/fs/list" + q),
+                        { cache: "no-store", headers: authHeaders() });
+  if (r.status === 401) { rejectToken(); throw new Error("unauthorized"); }
+  const data = await r.json().catch(() => null);
+  if (!r.ok || !data) {
+    const err = new Error((data && data.error) || "HTTP " + r.status);
+    err.code = data && data.error;
+    throw err;
+  }
+  filesListCache.set(data.path, data);
+  return data;
+}
+
+// Paints a successful /api/fs/list response — shared by loadDir and the
+// address bar's Enter handler, which needs the same rendering but has to
+// inspect the failure first (a "not a directory" error there still might be
+// a file to open, where loadDir's callers always mean a directory).
+function applyListing(data) {
+  filesPath = data.path;
+  filesHome = data.home || "";
+  renderCrumbs(data.path);
+  renderEntries(data.entries || []);
+  $("files-error").style.display = "none";
+}
+function showListError(e) {
+  dbg("fs list failed:", e);
+  $("files-list").innerHTML = "";
+  $("files-empty").style.display = "none";
+  $("files-error").style.display = "block";
+}
+
 async function loadDir(path) {
   try {
-    const q = path ? "?path=" + encodeURIComponent(path) : "";
-    const r = await fetch(apiURL("api/fs/list" + q),
-                          { cache: "no-store", headers: authHeaders() });
-    if (r.status === 401) { rejectToken(); return; }
-    const data = await r.json().catch(() => null);
-    if (!r.ok || !data) throw new Error((data && data.error) || "HTTP " + r.status);
-    filesPath = data.path;
-    filesHome = data.home || "";
-    renderCrumbs(data.path);
-    renderEntries(data.entries || []);
-    $("files-error").style.display = "none";
+    applyListing(await fsList(path));
   } catch (e) {
-    dbg("fs list failed:", e);
-    $("files-list").innerHTML = "";
-    $("files-empty").style.display = "none";
-    $("files-error").style.display = "block";
+    showListError(e);
   }
 }
 
@@ -128,6 +166,184 @@ function renderCrumbs(path) {
   // The tail is the current folder — that is the segment to keep in view.
   wrap.scrollLeft = wrap.scrollWidth;
 }
+
+// ---- address bar ------------------------------------------------------------
+// Tapping btn-files-edit-path swaps files-crumbs for files-path-input, an
+// editable field pre-filled with the current path. Typing filters the parent
+// directory's listing down to entries whose name starts with the segment
+// after the last "/" (auto-roll: completing a directory appends "/" and
+// starts filtering the next segment, exactly like tab-completion in a shell).
+// Escape, the back button/edge-swipe and tapping away all close it without
+// navigating; only a suggestion tap or Enter does.
+
+let suggestGen = 0;   // stamped on every fetch so a slow one can't clobber a later reply
+let suggestTimer = null;
+const SUGGEST_DEBOUNCE = 180;   // ms of no typing before a list request fires
+
+// Splits an in-progress path into the directory to list and the partial name
+// typed after its last "/" — e.g. "/home/sai/pro" -> ["/home/sai", "pro"],
+// "/home/sai/" -> ["/home/sai", ""], "/" -> ["/", ""], "~/pro" -> ["~", "pro"].
+function splitTyped(v) {
+  const i = v.lastIndexOf("/");
+  if (i < 0) return [v.startsWith("~") ? "~" : "", v];
+  const dir = v.slice(0, i) || "/";
+  return [dir, v.slice(i + 1)];
+}
+
+function openPathEdit() {
+  $("files-path-wrap").classList.add("editing");
+  const input = $("files-path-input");
+  input.value = filesPath;
+  input.focus();
+  // setSelectionRange after focus, not before — iOS otherwise ignores it on a
+  // field that was not already focused.
+  input.setSelectionRange(input.value.length, input.value.length);
+  const [dirPart, segPart] = splitTyped(input.value);
+  if (dirPart) loadSuggestions(dirPart, segPart);
+}
+
+function closePathEdit() {
+  $("files-path-wrap").classList.remove("editing");
+  $("files-path-input").blur();
+  hideSuggestions();
+  clearTimeout(suggestTimer);
+  suggestTimer = null;
+  suggestGen++;   // orphans any fetch already in flight
+}
+
+function hideSuggestions() {
+  $("files-suggest").classList.remove("show");
+  $("files-suggest").innerHTML = "";
+}
+
+function suggestRow(entry) {
+  return el("button", { type: "button", class: "suggest-row" },
+    el("span", { class: "file-ic " + entry.type },
+       svgIcon(entry.type === "dir" ? "i-folder" : "i-file")),
+    el("span", { class: "name" }, entry.name),
+  );
+}
+
+function renderSuggestions(dirPart, segPart, entries) {
+  const box = $("files-suggest");
+  box.innerHTML = "";
+  const matches = entries.filter(e => e.name.startsWith(segPart));
+  if (!matches.length) {
+    box.appendChild(el("div", { class: "suggest-note" },
+      segPart ? "No matches" : "Empty folder"));
+  } else {
+    for (const e of matches) {
+      const row = suggestRow(e);
+      row.addEventListener("click", () => pickSuggestion(dirPart, e));
+      box.appendChild(row);
+    }
+  }
+  box.classList.add("show");
+}
+
+// Directory: complete the segment, append "/", keep editing and immediately
+// list the next (as yet empty) segment underneath it — the auto-roll. File:
+// navigate there like a tap in the list would, and close the field.
+function pickSuggestion(dirPart, entry) {
+  const input = $("files-path-input");
+  const full = joinPath(dirPart, entry.name);
+  if (entry.type === "dir") {
+    input.value = full + "/";
+    input.focus();
+    clearTimeout(suggestTimer);
+    loadSuggestions(full, "");   // immediate — no debounce for a deliberate tap
+    return;
+  }
+  closePathEdit();
+  openEntry(entry, dirPart);
+}
+
+// The actual list-and-render step, shared by the debounced typing path below
+// and the auto-roll after a directory tap, which needs it to run at once
+// rather than wait out the debounce meant for a still-moving finger.
+async function loadSuggestions(dirPart, segPart) {
+  const gen = ++suggestGen;
+  const cached = filesListCache.get(dirPart);
+  try {
+    const data = cached || await fsList(dirPart);
+    if (gen !== suggestGen) return;   // the field moved on while this was in flight
+    renderSuggestions(dirPart, segPart, data.entries || []);
+  } catch (e) {
+    if (gen !== suggestGen) return;
+    const box = $("files-suggest");
+    box.innerHTML = "";
+    // Same wording the explorer's own error state uses for not_readable;
+    // not_found and bad_path are both just "nothing to suggest yet" here —
+    // the user may still be mid-directory-name.
+    box.appendChild(el("div", { class: "suggest-note" },
+      e.code === "not_readable" ? "Can't read this folder" : "No matches"));
+    box.classList.add("show");
+  }
+}
+
+function fetchSuggestions(typed) {
+  clearTimeout(suggestTimer);
+  const [dirPart, segPart] = splitTyped(typed);
+  if (!dirPart) { hideSuggestions(); return; }
+  suggestTimer = setTimeout(() => loadSuggestions(dirPart, segPart), SUGGEST_DEBOUNCE);
+}
+
+// Enter, or the on-screen keyboard's own go/search key (both fire "submit"
+// on a text input's enclosing form — there isn't one here, so this is wired
+// to the input's keydown instead). Resolves the typed path exactly: a
+// directory is opened like a crumb tap, a file like a list tap; neither
+// existing surfaces the explorer's own error state rather than a dead end.
+async function submitPathEdit() {
+  const typed = $("files-path-input").value.trim();
+  if (!typed) { closePathEdit(); return; }
+  clearTimeout(suggestTimer);
+  suggestGen++;
+  try {
+    const data = await fsList(typed);
+    closePathEdit();
+    applyListing(data);
+    return;
+  } catch (e) {
+    if (e.code !== "not_a_directory") {
+      closePathEdit();
+      showListError(e);
+      return;
+    }
+  }
+  // Not a directory: it may still be a file. Split off the parent and confirm
+  // the leaf is really there rather than trusting the typed name outright.
+  const [dirPart, name] = splitTyped(typed);
+  try {
+    const data = dirPart ? (filesListCache.get(dirPart) || await fsList(dirPart)) : null;
+    const entry = data && (data.entries || []).find(e => e.name === name);
+    if (entry) { closePathEdit(); openEntry(entry, dirPart); return; }
+  } catch (e2) {}
+  toast("Couldn't find that path");
+}
+
+$("btn-files-edit-path").addEventListener("click", () => {
+  if ($("files-path-wrap").classList.contains("editing")) closePathEdit();
+  else openPathEdit();
+});
+$("files-path-input").addEventListener("input", (e) => fetchSuggestions(e.target.value));
+$("files-path-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); submitPathEdit(); }
+  else if (e.key === "Escape") { e.preventDefault(); closePathEdit(); }
+});
+// Losing focus to anything but a suggestion row (which itself closes the
+// field on tap) means the user tapped away — close without navigating, same
+// as Escape. Deferred, same idea as composeBlurred() in 17-key-bar.js
+// (blur fires before the click that caused it), but longer than its tick-0:
+// a touch's click can lag its own blur by more than one turn on mobile, and
+// firing early here would drop the suggestion tap on the floor.
+$("files-path-input").addEventListener("blur", () => {
+  setTimeout(() => {
+    if (document.activeElement !== $("files-path-input")
+        && !$("files-suggest").contains(document.activeElement)) {
+      closePathEdit();
+    }
+  }, 150);
+});
 
 function renderEntries(entries) {
   const list = $("files-list");
@@ -180,8 +396,8 @@ function wireRow(row, entry) {
   });
 }
 
-function openEntry(e) {
-  const full = joinPath(filesPath, e.name);
+function openEntry(e, dir=filesPath) {
+  const full = joinPath(dir, e.name);
   if (e.type === "dir") { loadDir(full); return; }
   // A broken link or a special file: nothing to enter or edit, so the sheet
   // (whose Download is the only sensible offer) is the whole answer.

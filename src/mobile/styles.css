@@ -1504,6 +1504,71 @@ html.term-open, body.term-open {
 .crumb.current { color: var(--ink); font-weight: 600; }
 .crumb-sep { flex: 0 0 auto; color: var(--whisper); font-size: 12px; }
 
+#files-path-wrap { flex: 1; min-width: 0; display: flex; }
+/* Same field as the sheet inputs, compacted for the topbar row; hidden until
+   btn-files-edit-path swaps it in for #files-crumbs. */
+#files-path-input {
+  display: none;
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+#files-path-input:focus { border-color: var(--umber); outline: none; }
+#files-path-wrap.editing #files-crumbs { display: none; }
+#files-path-wrap.editing #files-path-input { display: block; }
+/* .topbar is position:sticky, which (like position:relative) is itself a
+   positioned element — enough of a containing block to anchor this without
+   a dedicated wrapper. Full width of the bar rather than just the input, so
+   it reads as one dropdown under the header regardless of how much of the
+   row the input takes. */
+#files-suggest {
+  display: none;
+  position: absolute;
+  top: 100%; left: 0; right: 0;
+  margin: 4px 14px 0;
+  max-height: 45vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.14);
+  z-index: 60;
+}
+#files-suggest.show { display: block; }
+.suggest-row {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  padding: 11px 13px;
+  border: none; border-bottom: 1px solid var(--hair);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.suggest-row:last-child { border-bottom: none; }
+.suggest-row:active { background: var(--umber-tint); }
+.suggest-row .file-ic { flex: 0 0 auto; width: 16px; height: 16px; display: inline-flex; color: var(--tertiary); }
+.suggest-row .file-ic.dir { color: var(--umber); }
+.suggest-row .file-ic svg { width: 100%; height: 100%; }
+.suggest-row span.name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Same italic-serif idiom as #files-empty/#files-error, for the same reason:
+   a state, not an entry to tap. */
+.suggest-note {
+  padding: 14px 13px;
+  color: var(--tertiary);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13px;
+}
+
 .files-wrap {
   padding: 0 16px 40px;
   animation: fade-in 0.32s var(--ease-out);

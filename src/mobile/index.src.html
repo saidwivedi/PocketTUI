@@ -230,12 +230,32 @@
      FILE EXPLORER
      ============================================================ -->
 <div class="screen" id="screen-files">
-  <div class="topbar">
+  <div class="topbar files-topbar">
     <button class="icon-btn" id="btn-files-back" aria-label="Back"><svg><use href="#i-back"/></svg></button>
-    <!-- Tappable path segments. Scrolls sideways rather than wrapping, pinned
-         to the tail so the current folder is always the segment in view. -->
-    <div id="files-crumbs"></div>
+    <!-- Wraps crumbs and the address field so only one of the two takes up
+         room at a time — the .editing class (toggled by JS) swaps which one
+         is display:none. -->
+    <div id="files-path-wrap">
+      <!-- Tappable path segments. Scrolls sideways rather than wrapping, pinned
+           to the tail so the current folder is always the segment in view. -->
+      <div id="files-crumbs"></div>
+      <!-- Hidden until btn-files-edit-path is tapped. inputmode="url" and
+           autocapitalize/autocorrect off for the same reason the backend
+           address field in Settings uses them: a path is typed, not composed. -->
+      <input type="text" id="files-path-input" inputmode="url" autocapitalize="off"
+             autocorrect="off" spellcheck="false" autocomplete="off"
+             placeholder="/path/to/folder" aria-label="Go to path">
+    </div>
+    <button class="icon-btn" id="btn-files-edit-path" aria-label="Go to path"><svg><use href="#i-pencil"/></svg></button>
     <button class="icon-btn" id="btn-files-add" aria-label="New file, folder or upload"><svg><use href="#i-plus"/></svg></button>
+    <!-- Matching entries for the path segment being typed in files-path-input.
+         A child of the topbar rather than files-path-wrap so it can span the
+         bar's full width; position:sticky on .topbar still anchors it the
+         same way absolute positioning would anchor to a plain positioned
+         parent, so it tracks the header through the page's own scroll and
+         whatever the soft keyboard does to the viewport, with no
+         keyboard-geometry plumbing of its own needed. -->
+    <div id="files-suggest"></div>
   </div>
   <div class="files-wrap">
     <div id="files-list"></div>
