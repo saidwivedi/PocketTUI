@@ -1861,9 +1861,29 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
                                   tmux_names=tmux_names(),
                                   budget=TRANSCRIBE_BUDGET_S, asr=True,
                                   extra_vocab=history, confidence=confidence)
+        # Doubt is only worth flagging to the user for a word that actually
+        # reached them: the resolver already rewrites plenty of what the
+        # decoder got wrong, and re-litigating its low-confidence guesses
+        # after they've been corrected would just teach the user to distrust
+        # words that are no longer there. So this walks result["text"], the
+        # final surface the phone shows, not the raw ASR output the decoder
+        # produced before resolver.resolve() had a chance to fix it.
+        unsure: list[str] = []
+        if confidence:
+            seen: set[str] = set()
+            for word in result["text"].split():
+                key = word.lower().strip(",.!?;:")
+                if (key and key not in seen and key in confidence
+                        and confidence[key] < resolver.ASR_CONF_LOW):
+                    seen.add(key)
+                    unsure.append(word)
+        if unsure:
+            log(f"transcribe unsure={','.join(unsure)}")
         payload = {"text": result["text"], "raw": text, "ms": ms}
         if truncated:
             payload["truncated"] = True
+        if unsure:
+            payload["unsure"] = unsure
         return no_store(JSONResponse(payload))
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "transcribe_timeout"}, status_code=500)
