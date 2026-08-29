@@ -1368,6 +1368,19 @@ def learn_corrections(heard: str, sent: str, path=None, now: float = 0.0) -> int
         entries.sort(key=lambda e: e["last_ts"], reverse=True)
         entries = entries[:LEARNED_MAX_ENTRIES]
 
+    if not _write_learned(entries, target):
+        return 0
+    if not path:
+        _learned_cache["stamp"] = None
+    return len(pairs)
+
+
+def _write_learned(entries: list[dict], target: Path) -> bool:
+    """Atomic tmp+rename write of `entries` to `target`. True on success.
+
+    A reader must see either the old store or the new one, never a
+    half-written one — shared by every writer of this file.
+    """
     tmp = target.with_name(target.name + f".tmp{os.getpid()}")
     try:
         with open(tmp, "w") as fh:
@@ -1378,10 +1391,41 @@ def learn_corrections(heard: str, sent: str, path=None, now: float = 0.0) -> int
             os.unlink(tmp)
         except OSError:
             pass
+        return False
+    return True
+
+
+def delete_correction(wrong: str, right: str, path=None) -> int:
+    """Remove one (wrong, right) pair from the store. Returns entries removed.
+
+    Match is case-insensitive on both halves, the same key learn_corrections
+    folds new evidence into. Invalidates the read cache so the very next
+    resolve sees the store without it, rather than whatever mtime/size the
+    cache last saw.
+    """
+    target = Path(path) if path else LEARNED_PATH
+    entries = load_learned(path)
+    key = (wrong.lower(), right.lower())
+    kept = [e for e in entries if (e["wrong"].lower(), e["right"].lower()) != key]
+    removed = len(entries) - len(kept)
+    if removed and not _write_learned(kept, target):
+        return 0
+    if removed and not path:
+        _learned_cache["stamp"] = None
+    return removed
+
+
+def clear_learned(path=None) -> int:
+    """Empty the store entirely. Returns the number of entries removed."""
+    target = Path(path) if path else LEARNED_PATH
+    entries = load_learned(path)
+    if not entries:
+        return 0
+    if not _write_learned([], target):
         return 0
     if not path:
         _learned_cache["stamp"] = None
-    return len(pairs)
+    return len(entries)
 
 
 def learned_corrections(path=None) -> list[dict]:
