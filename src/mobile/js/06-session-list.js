@@ -49,6 +49,15 @@ function renderSessions(sessions) {
     meta.appendChild(el("span", {}, s.windows + (s.windows === 1 ? " window" : " windows")));
     meta.appendChild(el("span", { class: "sep" }, "·"));
     meta.appendChild(el("span", {}, relTime(s.created)));
+    // The pane watcher's verdict: amber says the session is waiting on its
+    // human, green that it is producing output right now. Idle earns nothing.
+    if (s.state === "waiting") {
+      meta.appendChild(el("span", { class: "sep" }, "·"));
+      meta.appendChild(el("span", { class: "state waiting" }, "needs input"));
+    } else if (s.state === "active") {
+      meta.appendChild(el("span", { class: "sep" }, "·"));
+      meta.appendChild(el("span", { class: "state active" }, "running"));
+    }
 
     // With an alias set it becomes the row's title and the real tmux name moves
     // to a quiet second line — the name their tooling uses is still visible.
@@ -61,10 +70,20 @@ function renderSessions(sessions) {
       onclick: (e) => { e.stopPropagation(); openSessionSheet(s); },
     }, svgIcon("i-pencil"));
 
+    // Per-session notification opt-in. The tap is the user gesture the
+    // permission and push-subscription asks need, so both live in the handler.
+    const bell = el("button", {
+      class: "icon-btn btn-bell" + (s.notify ? " on" : ""), type: "button",
+      "aria-label": "Notifications for " + s.name,
+      "aria-pressed": s.notify ? "true" : "false",
+      onclick: (e) => { e.stopPropagation(); toggleNotify(s, e.currentTarget); },
+    }, svgIcon("i-bell"));
+
     const card = el("div", { class: "item", onclick: () => openTerminal(s.name) },
       el("div", { class: "item-head" },
         el("div", { class: "item-dot" + (s.attached ? " live" : "") }),
         title,
+        bell,
         edit,
         el("div", { class: "chev" }, svgIcon("i-fwd")),
       ),

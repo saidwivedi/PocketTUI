@@ -295,6 +295,16 @@ body {
 }
 .item .btn-alias svg { width: 16px; height: 16px; }
 .item:hover .btn-alias { color: var(--secondary); }
+/* The bell shares the pencil's quiet manner until it is on — an enabled
+   session's bell holds the accent so the opted-in rows read at a glance. */
+.item .btn-bell {
+  padding: 4px;
+  margin-top: -1px;
+  color: var(--whisper);
+}
+.item .btn-bell svg { width: 16px; height: 16px; }
+.item:hover .btn-bell { color: var(--secondary); }
+.item .btn-bell.on, .item:hover .btn-bell.on { color: var(--umber); }
 
 .item .item-meta {
   margin-left: 20px;
@@ -307,6 +317,10 @@ body {
 }
 .item .item-meta .sep { color: var(--whisper); }
 .item .item-meta .cmd { color: var(--umber); font-weight: 600; }
+/* The pane watcher's badge: amber for a session waiting on its human, green
+   for one producing output right now. Idle sessions carry nothing. */
+.item .item-meta .state.waiting { color: var(--warn); font-weight: 600; }
+.item .item-meta .state.active { color: var(--good); }
 
 #list-empty, #list-error {
   text-align: center;
@@ -826,6 +840,48 @@ html.term-open, body.term-open {
   -webkit-user-select: none; user-select: none;
 }
 .snipbar button:active { transform: scale(0.96); background: var(--hair); }
+
+/* ============================================================
+   PROMPT CHIPS — a detected prompt's answers, above the key bar
+   ============================================================ */
+/* Same glass as the snippet row so the dock stays one surface. Shown only
+   while the pane watcher says a prompt is up; sending any key hides it. */
+.chipbar {
+  flex: 0 0 auto;
+  display: none;
+  gap: 5px;
+  padding: 3px 5px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  background: rgba(255, 253, 247, 0.94);
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  border-top: 1px solid var(--hair);
+  z-index: 20;
+}
+:root[data-theme="dark"] .chipbar { background: rgba(31, 28, 22, 0.94); }
+.chipbar.show { display: flex; }
+.chipbar::-webkit-scrollbar { display: none; }
+/* Answers carry the accent the snippet chips do not: this row only exists
+   because something is waiting, so its keys are the point of the screen. */
+.chipbar button {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--umber);
+  background: var(--card-2);
+  border: 1px solid var(--hair-strong);
+  border-radius: 7px;
+  min-height: 28px;
+  min-width: 44px;
+  padding: 0 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+}
+.chipbar button:active { transform: scale(0.96); background: var(--hair); }
 
 /* ============================================================
    KEY BAR — docked above the soft keyboard

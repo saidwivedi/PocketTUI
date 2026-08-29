@@ -103,6 +103,10 @@
       <path d="M6.5 3.5h7l4 4.5v12.5h-11z"/>
       <path d="M13.5 3.5V8h4"/>
     </symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 8.5a6 6 0 0 0-12 0c0 6.4-2.5 7.5-2.5 7.5h17S18 14.9 18 8.5"/>
+      <path d="M10.3 19.5a2 2 0 0 0 3.4 0"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -214,6 +218,11 @@
   <!-- Optional quick-command chips, built from Settings; hidden until the
        toggle there turns them on. -->
   <div class="snipbar" id="snipbar"></div>
+  <!-- Prompt chips: when the pane watcher detects the session waiting on a
+       question, its answers land here (plus ⏎ and esc, which every prompt
+       understands). Hidden until a prompt frame arrives; sending any key —
+       chip or otherwise — puts it away. -->
+  <div class="chipbar" id="chips" role="toolbar" aria-label="Prompt answers"></div>
   <div class="keybar" id="keybar"></div>
 </div>
 
