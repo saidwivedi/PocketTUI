@@ -86,6 +86,7 @@ JS_FRAGMENTS = (
     # last word, and these views are wired by then like everything else.
     "28-file-explorer.js",
     "29-editor.js",
+    "30-notify.js",
     "27-boot.js",
 )
 
