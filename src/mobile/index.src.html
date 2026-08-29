@@ -302,6 +302,19 @@
 </div>
 
 <!-- ============================================================
+     WIDE-LAYOUT EMPTY PANE
+     ============================================================ -->
+<!-- Wide layouts only (the WIDE LAYOUT media query in styles.css): with the
+     session list riding the left rail, closing a session leaves the main pane
+     bare paper — this hint fills it. A later sibling of the screens on
+     purpose, so the stylesheet alone hides it whenever any of them is active;
+     on phones it never displays at all. -->
+<div id="wide-empty" aria-hidden="true">
+  <svg><use href="#i-logo"/></svg>
+  <p>No session open — pick one from the list.</p>
+</div>
+
+<!-- ============================================================
      SETTINGS
      ============================================================ -->
 <div class="sheet-scrim" id="sheet-scrim"></div>

@@ -203,6 +203,29 @@ function openDemo() {
 }
 
 function openTerminal(name) {
+  // Wide layouts reach here from the always-visible rail, possibly with the
+  // explorer or editor holding the main pane; both close first so the
+  // terminal never lands under the editor (#screen-editor paints later in
+  // the DOM), with a dirty buffer getting the same say its own back gives
+  // it — first, before anything below touches the socket. Phone flows never
+  // arrive with either screen up (the list is hidden behind them), so the
+  // isWideLayout() gate just keeps the deep-link edge cases exactly as they
+  // were.
+  if (isWideLayout()) {
+    if ($("screen-editor").classList.contains("active")) {
+      if (edDirty && !confirm("Discard your unsaved changes?")) return;
+      closeEditor();
+    }
+    if ($("screen-files").classList.contains("active")) {
+      // Not arriving via back — no pop happened — so the address field (if
+      // open) just closes and the screen follows.
+      closePathEdit();
+      closeExplorer();
+    }
+  }
+  // Whether this open is a switch inside an already-open terminal pane —
+  // only the rail makes that possible; read before the classes move below.
+  const wasOpen = $("screen-term").classList.contains("active");
   // Retire anything still open from a previous session, so socketLive() below
   // can never see a stale socket and skip the connect for this one.
   clearTimeout(retryTimer);
@@ -223,7 +246,13 @@ function openTerminal(name) {
   // Whether the strip's mic is offered depends on this session: the demo has no
   // backend to transcribe against.
   recSyncMic();
-  history.pushState({ term: name }, "", location.href);
+  // One history entry per terminal visit, not per session viewed: a rail
+  // switch replaces the entry, so back still means "close the pane" however
+  // many sessions were clicked through. wasOpen is never true on the phone
+  // outside the deep-link edge, and the gate keeps that edge on the old push.
+  if (wasOpen && isWideLayout()) history.replaceState({ term: name }, "", location.href);
+  else history.pushState({ term: name }, "", location.href);
+  markSelectedSession();
   requestAnimationFrame(() => {
     if (demoMode) {
       // Fit before the banner is written: demoStart() wraps its prose to
@@ -263,6 +292,7 @@ function closeTerminal(skipReload) {
   $("screen-term").classList.remove("active");
   $("screen-list").classList.add("active");
   syncChrome();
+  markSelectedSession();
   releaseMods();
   // Leaving with the strip open would carry its keyboard onto the session list.
   setCompose(false);
