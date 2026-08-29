@@ -31,30 +31,31 @@ function toast(msg, ms=1800) {
   clearTimeout(toast._t); toast._t = setTimeout(()=>t.classList.remove("show"), ms);
 }
 // A themed stand-in for confirm(): the native dialog wears the OS's look, not
-// the app's. One question at a time — the pending resolver doubles as the
-// "dialog is open" flag. Scrim tap and Escape both answer no.
+// the app's. The question rides the app's own modal idiom — a bottom sheet
+// shown through showSheet(), whose single-sheet rule also closes whatever
+// sheet asked it. One question at a time — the pending resolver doubles as
+// the "open" flag. Closing the sheet any way but the OK button (Cancel, the
+// scrim, Escape, another sheet taking over) answers no: showSheet() settles
+// every hide, so no path can leave the promise dangling.
 let confirmResolve = null;
 function appConfirm(message, opts={}) {
   return new Promise((resolve) => {
     confirmResolve = resolve;
     $("confirm-msg").textContent = message;
     $("btn-confirm-ok").textContent = opts.confirmLabel || "OK";
-    $("confirm-scrim").classList.add("show");
+    showSheet(true, "sheet-confirm");
     $("btn-confirm-cancel").focus();
   });
 }
 function settleConfirm(answer) {
   if (!confirmResolve) return;
   const resolve = confirmResolve;
-  confirmResolve = null;
-  $("confirm-scrim").classList.remove("show");
+  confirmResolve = null;   // before showSheet: its settle hook must not loop
+  showSheet(false);
   resolve(answer);
 }
 $("btn-confirm-ok").addEventListener("click", () => settleConfirm(true));
 $("btn-confirm-cancel").addEventListener("click", () => settleConfirm(false));
-$("confirm-scrim").addEventListener("click", (e) => {
-  if (e.target === e.currentTarget) settleConfirm(false);
-});
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && confirmResolve) { e.preventDefault(); settleConfirm(false); }
 });

@@ -1082,64 +1082,6 @@ html.term-open, body.term-open {
 }
 .sheet-scrim.show { opacity: 1; pointer-events: auto; }
 
-/* appConfirm()'s dialog: the sheets' materials — card surface, hairline rim,
-   the same lifted shadow — shaped as a small centered card, so a destructive
-   question stays in the app's own voice instead of the OS's. Above the sheets:
-   the session sheet's kill row asks from inside an open sheet. */
-.confirm-scrim {
-  position: fixed; inset: 0;
-  display: flex; align-items: center; justify-content: center;
-  padding: 24px;
-  background: rgba(20, 16, 10, 0.34);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.18s var(--ease-out);
-  z-index: 300;
-}
-.confirm-scrim.show { opacity: 1; pointer-events: auto; }
-.confirm {
-  width: 100%;
-  max-width: 340px;
-  background: var(--card);
-  border: 1px solid var(--hair-strong);
-  border-radius: 16px;
-  padding: 20px;
-  box-shadow: 0 8px 32px rgba(20, 16, 10, 0.16);
-  transform: scale(0.96);
-  transition: transform 0.18s var(--ease-out);
-}
-.confirm-scrim.show .confirm { transform: scale(1); }
-.confirm p {
-  margin: 0 0 18px;
-  font-size: 14px;
-  line-height: 1.5;
-  color: var(--ink);
-  overflow-wrap: break-word;   /* session names can run long */
-}
-/* The sheets' action-row recipe, with --bad standing where .primary puts the
-   accent: this row's yes is destructive. */
-.confirm .actions {
-  display: flex; gap: 10px; justify-content: flex-end;
-}
-.confirm .actions button {
-  font-family: var(--sans);
-  font-size: 14px;
-  font-weight: 500;
-  padding: 11px 20px;
-  border-radius: 12px;
-  cursor: pointer;
-  border: 1px solid var(--hair-strong);
-  background: transparent;
-  color: var(--secondary);
-  transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out);
-}
-.confirm .actions button:active { transform: scale(0.96); }
-.confirm .actions button.danger {
-  background: var(--bad);
-  border-color: var(--bad);
-  color: var(--paper);
-}
-
 .sheet {
   position: fixed; left: 0; right: 0; bottom: 0;
   background: var(--card);
@@ -1393,6 +1335,9 @@ html.term-open, body.term-open {
   border-color: var(--umber);
   color: var(--paper);
 }
+/* The confirm sheet's destructive yes: the file explorer's danger idiom
+   (.sheet-menu button.danger), worn by a standard action-row button. */
+.sheet .actions button.danger { color: var(--bad); }
 /* The first-run voice step's own action row. Absent entirely the rest of the
    time — past setup the picker applies on the tap and the sheet's Save/Cancel
    row is the only one there is. */
