@@ -79,6 +79,8 @@ function openSettings(firstRun) {
   // show up without a reload.
   fetchVoiceStatus(true).then(syncVoicePicker);
   $("dbg-toggle").checked = cfg.debug;
+  $("search-toggle").checked = cfg.scrollbackSearchOn;
+  $("alt-toggle").checked = cfg.altKeyOn;
   $("snip-toggle").checked = cfg.snippetsOn;
   $("snip-text").value = cfg.snippets;
   $("snip-edit").classList.toggle("show", cfg.snippetsOn);
@@ -326,6 +328,18 @@ $("voice-engine").addEventListener("change", (e) => {
 $("dbg-toggle").addEventListener("change", (e) => {
   cfg.debug = e.target.checked;
   setDebug(e.target.checked);
+});
+// Applies on the tap, same as the switches above: the key it adds or drops is
+// this sheet's scrim sitting over the key bar, so nothing can be mid-press
+// underneath when the rebuild lands.
+$("search-toggle").addEventListener("change", (e) => {
+  cfg.scrollbackSearchOn = e.target.checked;
+  if (!e.target.checked) closeSearch();
+  buildKeybar();
+});
+$("alt-toggle").addEventListener("change", (e) => {
+  cfg.altKeyOn = e.target.checked;
+  buildKeybar();
 });
 // Applies on the tap, like the voice picker and debug switch: the row appears
 // and disappears behind the sheet as the switch moves, and Cancel must not

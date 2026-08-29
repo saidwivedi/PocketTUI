@@ -3,35 +3,40 @@
 // ============================================================
 // One row of keys collapsed; tapping the arrows key opens a second row and the
 // four directions take over the inverted-T. `cls` carries the grid placement for
-// the expanded state, `only` which state a key appears in — the DOM is built once
-// and never rebuilt, so armed modifiers and in-flight auto-repeat survive a
-// toggle. Order here is the collapsed order and the grid's auto-placement order.
+// the expanded state, `only` which state a key appears in — the DOM survives an
+// arrows/collapse toggle untouched, so armed modifiers and in-flight auto-repeat
+// survive it too (buildKeybar() in 19-voice-capture.js does rebuild the bar
+// wholesale, but only from Settings, whose scrim blocks the bar meanwhile).
+// Order here is the collapsed order and the grid's auto-placement order.
 // `swipe` is a key's swipe-up alternate, Termux-style: `seq` is what an upward
-// swipe sends instead of the tap, `hint` the whisper in the key's corner that
-// says so. Toggles (arrows, mic, close) carry none — they have no seq to trade.
+// swipe sends instead of the tap. Toggles (arrows, mic, close) carry none —
+// they have no seq to trade.
 const KEYS = [
-  { label: "esc",   seq: "\x1b",  cls: "span-2", swipe: { seq: "`", hint: "`" } },
-  { label: "tab",   seq: "\t",    cls: "span-2", swipe: { seq: "|", hint: "|" } },
-  { label: "ctrl",  mod: "ctrl",  cls: "span-2", swipe: { seq: "~", hint: "~" } },
-  { label: "shift", mod: "shift", cls: "span-2", swipe: { seq: "_", hint: "_" } },
+  { label: "esc",   seq: "\x1b",  cls: "span-2", swipe: { seq: "`" } },
+  { label: "tab",   seq: "\t",    cls: "span-2", swipe: { seq: "|" } },
+  { label: "ctrl",  mod: "ctrl",  cls: "span-2", swipe: { seq: "~" } },
+  { label: "shift", mod: "shift", cls: "span-2", swipe: { seq: "_" } },
   // Meta, for the line editors: alt+b/f/. and friends arrive as ESC-prefixed
   // characters, composed in seqWithMods and the typed-character hook exactly
-  // like ctrl and shift are.
-  { label: "alt",   mod: "alt",   cls: "span-2", swipe: { seq: "/", hint: "/" } },
+  // like ctrl and shift are. Gated on cfg.altKeyOn in buildKeybar() — off by
+  // default, like the search key above.
+  { label: "alt",   mod: "alt",   cls: "span-2", swipe: { seq: "/" } },
   // A terminal's Enter is a carriage return; \n would send a bare line feed that
   // readline and tmux both read as ctrl+J instead. No repeat — a held Enter
   // firing a shell command over and over is never what a thumb meant. narrow,
   // so the glyph keys — enter, backspace, arrows, mic — all share one width.
   { label: "⏎",     seq: "\r",    narrow: true, cls: "span-2 k-enter", aria: "Enter",
-    swipe: { seq: "-", hint: "-" } },
+    swipe: { seq: "-" } },
   { label: "⌫",     seq: "\x7f",  narrow: true, repeat: true, cls: "span-2 k-bs", aria: "Backspace",
-    swipe: { seq: "\x1b[3~", hint: "del" } },
+    swipe: { seq: "\x1b[3~" } },
   { icon: "i-arrows", arrows: true, narrow: true, only: "collapsed", aria: "Show arrow keys" },
   // Collapsed-only, like the arrows toggle above: the expanded row is a full
   // grid with every cell already spoken for (see .keybar.expanded below), and
   // search is a scrollback errand rather than something the arrow-editing
   // workflow needs beside it. focusing for the same reason the compose key is:
-  // opening search means putting the caret in its field.
+  // opening search means putting the caret in its field. Also gated on
+  // cfg.scrollbackSearchOn in buildKeybar() (19-voice-capture.js) — off by
+  // default, since it is a slot most sessions never reach for.
   { icon: "i-search", search: true, focusing: true, narrow: true, only: "collapsed",
     aria: "Find in scrollback" },
   // The terminal's way into the file explorer, at the pane's own cwd.
@@ -42,13 +47,13 @@ const KEYS = [
   // The arrows' alternates are the nav keys that live beside them on a real
   // keyboard: Home/End across, PgUp/PgDn along.
   { label: "←",     seq: "\x1b[D", narrow: true, repeat: true, cls: "k-left",  only: "expanded",
-    swipe: { seq: "\x1b[H",  hint: "⇤" } },
+    swipe: { seq: "\x1b[H" } },
   { label: "↓",     seq: "\x1b[B", narrow: true, repeat: true, cls: "k-down",  only: "expanded",
-    swipe: { seq: "\x1b[6~", hint: "⇟" } },
+    swipe: { seq: "\x1b[6~" } },
   { label: "↑",     seq: "\x1b[A", narrow: true, repeat: true, cls: "k-up",    only: "expanded",
-    swipe: { seq: "\x1b[5~", hint: "⇞" } },
+    swipe: { seq: "\x1b[5~" } },
   { label: "→",     seq: "\x1b[C", narrow: true, repeat: true, cls: "k-right", only: "expanded",
-    swipe: { seq: "\x1b[F",  hint: "⇥" } },
+    swipe: { seq: "\x1b[F" } },
   // Focus is the point of this key, not a side effect — it opens the compose
   // strip and puts the caret in it, so it shares the keyboard toggle's exemption
   // from the focus-preserving preventDefault below. icon2 is the face it wears

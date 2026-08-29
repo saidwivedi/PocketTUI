@@ -971,9 +971,20 @@ function sendKey(seq) {
 // so the wobble inside a sloppy tap can never turn into one.
 const SWIPE_DIST = 30;   // px of upward travel before a press is a swipe
 
-(function buildKeybar() {
+// Rebuilds the bar wholesale from KEYS, skipping the search and alt keys when
+// their Settings toggle is off. Callable again from Settings — the sheet's
+// scrim sits above the key bar and blocks its taps, so there is never a
+// gesture in flight on it for a rebuild to interrupt.
+function buildKeybar() {
   const bar = $("keybar");
+  bar.textContent = "";
+  // modButtons is about to be rebuilt from scratch, and turning Alt off can
+  // drop its button while it is still armed — nothing would be left to tap to
+  // release it, so every one-shot modifier is cleared rather than left stuck.
+  releaseMods();
   for (const k of KEYS) {
+    if (k.search && !cfg.scrollbackSearchOn) continue;
+    if (k.mod === "alt" && !cfg.altKeyOn) continue;
     // Two icons means a key that swaps face with its state (the mic becoming a
     // stop square while a local take runs). Each face gets its own span so CSS
     // can do the swapping, rather than the state machine rewriting the DOM
@@ -989,9 +1000,6 @@ const SWIPE_DIST = 30;   // px of upward travel before a press is a swipe
     if (k.cls) b.classList.add(...k.cls.split(" "));
     if (k.only) b.classList.add(k.only + "-only");
     if (k.mod) modButtons[k.mod] = b;
-    // The alternate's corner hint. Decoration for the eye — a screen reader
-    // gets the tap meaning from the button itself.
-    if (k.swipe) b.appendChild(el("span", { class: "swipe-hint", "aria-hidden": "true" }, k.swipe.hint));
     // Every key but the focusing ones must leave focus exactly where it is:
     // stealing it would drop the soft keyboard, and handing it back would raise
     // one the user had just dismissed. pointerdown fires before focus moves.
@@ -1101,7 +1109,8 @@ const SWIPE_DIST = 30;   // px of upward travel before a press is a swipe
     });
     bar.appendChild(b);
   }
-})();
+}
+buildKeybar();
 
 // Paste needs the keypress itself as the user gesture — iOS only grants clipboard
 // reads from inside the handler, so this cannot be deferred to a promise chain
