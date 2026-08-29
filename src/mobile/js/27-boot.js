@@ -68,11 +68,12 @@ if (wantDemo) {
   // of the terminal lands on a list that is already there. The same tap also
   // parked a copy of the name — take it so it cannot re-fire on resume.
   const target = deepLinkSession;
-  takePendingSession().then(() => openSessionByName(target));
+  dbg("deeplink: boot fragment", target);
+  takePendingSession("boot-fragment").then(() => openSessionByName(target));
 } else {
   // An iOS launch from a notification tap can land here on the bare
   // start_url with no fragment at all; the parked copy is the deep link then.
-  loadSessions().then(consumePendingSession);
+  loadSessions().then(() => consumePendingSession("boot"));
 }
 initA2hsHint();
 
@@ -124,4 +125,27 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
       reg.update().catch(()=>{});
     });
   }).catch(()=>{});
+}
+
+// One debug line answering "which app is this, and is the new worker live":
+// the shell's own stamp, the ACTIVE worker's version (asked over a
+// MessageChannel — the stamp only says what shell was served, not which
+// worker controls it; an old worker never replies, and "(no reply)" is
+// itself the answer), and the origin separating the installed deployments.
+if (cfg.debug && "serviceWorker" in navigator) {
+  try {
+    const swCtl = navigator.serviceWorker.controller;
+    const verLine = (sw) => dbg("ver shell=" + SW_VERSION + " sw=" + sw + " origin=" + location.origin);
+    if (!swCtl) {
+      verLine("(none)");
+    } else {
+      const ch = new MessageChannel();
+      const t = setTimeout(() => verLine("(no reply)"), 3000);
+      ch.port1.onmessage = (ev) => {
+        clearTimeout(t);
+        verLine((ev.data && ev.data.version) || "?");
+      };
+      swCtl.postMessage({ type: "version?" }, [ch.port2]);
+    }
+  } catch (e) {}
 }
