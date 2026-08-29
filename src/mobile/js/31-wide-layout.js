@@ -14,6 +14,56 @@
 const wideQuery = window.matchMedia("(min-width: 768px) and (min-height: 500px)");
 function isWideLayout() { return wideQuery.matches; }
 
+// The rail's width is a preference like the terminal font size: dragged, not
+// typed, clamped again on read so a stale or hand-edited value can never
+// wedge the rail, and restored at boot. Setting the variable is inert on the
+// phone — nothing outside the wide media query reads it.
+const RAIL_MIN = 240, RAIL_MAX = 480, RAIL_DEFAULT = 320;
+function storedRailW() {
+  try {
+    const v = parseInt(localStorage.getItem("pockettui_sidebar_w"), 10);
+    if (Number.isFinite(v)) return Math.min(RAIL_MAX, Math.max(RAIL_MIN, v));
+  } catch (e) {}
+  return RAIL_DEFAULT;
+}
+let railW = storedRailW();
+document.documentElement.style.setProperty("--sidebar-w", railW + "px");
+
+// Dragging the rail's edge resizes it live: every pane border derives from
+// the variable, so the panes track the pointer for free, while the grid
+// refit rides its own debounce — landing on pauses and once, forced, at
+// release, the way the pinch gesture settles its font size. The handle is a
+// fixed strip over the rail's border (see #rail-resize), so its own left
+// edge follows the variable too. Pointer events cover mouse and touch alike.
+(function railResize() {
+  const handle = $("rail-resize");
+  let dragging = false;
+  handle.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    handle.classList.add("dragging");
+    handle.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    // The rail starts at the viewport's left edge, so the pointer's x IS the
+    // requested width.
+    railW = Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(e.clientX)));
+    document.documentElement.style.setProperty("--sidebar-w", railW + "px");
+    refit();
+  });
+  const finish = () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove("dragging");
+    try { localStorage.setItem("pockettui_sidebar_w", String(railW)); } catch (e) {}
+    // Forced now: the debounce above may have swallowed the last move.
+    refit(0);
+  };
+  handle.addEventListener("pointerup", finish);
+  handle.addEventListener("pointercancel", finish);
+})();
+
 // Crossing the breakpoint reshapes the terminal's pane — the rail claims or
 // returns its width — so the grid refits here as well as via the window's own
 // resize listener. Entering wide also means the list just appeared after

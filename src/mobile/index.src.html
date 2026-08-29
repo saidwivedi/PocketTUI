@@ -313,6 +313,12 @@
   <svg><use href="#i-logo"/></svg>
   <p>No session open — pick one from the list.</p>
 </div>
+<!-- The rail's resize handle: a fixed strip straddling the rail's right edge,
+     wide layouts only (display gated in styles.css). A body child rather than
+     a child of the rail, whose own scrolling would carry an absolutely
+     positioned handle away with the list. Pointer events drag --sidebar-w
+     live — see 31-wide-layout.js. -->
+<div id="rail-resize" aria-hidden="true"></div>
 
 <!-- ============================================================
      SETTINGS

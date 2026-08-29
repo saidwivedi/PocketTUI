@@ -1090,9 +1090,13 @@ html.term-open, body.term-open {
   border-radius: 20px 20px 0 0;
   padding: 22px 22px calc(22px + var(--safe-bot));
   transform: translateY(100%);
-  transition: transform 0.28s var(--ease-out);
+  /* The raised shadow is gated on .show below: hidden, every sheet sits just
+     past the bottom edge, and five of them stacking their 32px-blur shadows
+     bled back up over the key bar as a dark band on light paper. It rides
+     the transition so a closing sheet fades its shadow with the slide
+     instead of dropping it at the first frame. */
+  transition: transform 0.28s var(--ease-out), box-shadow 0.28s var(--ease-out);
   z-index: 210;
-  box-shadow: 0 -8px 32px rgba(20, 16, 10, 0.16);
   /* First run stacks the install block, three fields, the buttons and the FAQ —
      taller than a short phone in landscape, and a fixed sheet clips the overflow
      off the top of the screen with no way to reach it. Cap it and scroll inside
@@ -1102,7 +1106,10 @@ html.term-open, body.term-open {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
 }
-.sheet.show { transform: translateY(0); }
+.sheet.show {
+  transform: translateY(0);
+  box-shadow: 0 -8px 32px rgba(20, 16, 10, 0.16);
+}
 /* The confirm sheet floats centered rather than docking at the bottom — the
    same sheet in every other respect. Only position, corners (the sheet's own
    radius, all around, its hairline running the whole rim), shadow direction,
@@ -1808,8 +1815,10 @@ html.term-open, body.term-open {
 /* ============================================================
    WIDE LAYOUT — the session list as a persistent left rail
    ============================================================ */
-/* Never on phones: the hint below only exists for the two-pane layout. */
+/* Never on phones: the hint and the resize handle below only exist for the
+   two-pane layout. */
 #wide-empty { display: none; }
+#rail-resize { display: none; }
 
 /* Tablets and desktops. Everything two-pane lives behind this one query —
    the markup and screen classes stay exactly the phone's, the stylesheet
@@ -1849,6 +1858,92 @@ html.term-open, body.term-open {
      together, so the class only ever paints here. */
   .item.selected { border-color: var(--umber); background: var(--umber-tint); }
 
+  /* The rail's own type scale: a dense desktop sidebar, not a phone list
+     that happens to be 320px wide. Everything scoped to #screen-list so the
+     main pane's screens keep the phone sizes untouched. */
+  #screen-list .topbar { padding: 10px 14px 8px; }
+  #screen-list .brand { font-size: 15px; }
+  #screen-list .brand .glyph { width: 18px; height: 18px; }
+  #screen-list .icon-btn { padding: 6px; }
+  #screen-list .icon-btn svg { width: 17px; height: 17px; }
+  #screen-list .list-wrap { padding: 0 14px 24px; }
+  #screen-list .list-new { margin: 8px 0 10px; }
+  #screen-list .pill-btn { font-size: 12px; padding: 7px 10px 7px 8px; }
+  #screen-list .eyebrow { font-size: 10px; margin-bottom: 10px; }
+  #screen-list #list-empty, #screen-list #list-error {
+    padding: 32px 12px;
+    font-size: 13px;
+  }
+
+  /* Compact single-line rows. The title carries the row (ellipsized), the
+     meta line folds away, and the chevron goes with it — the selected fill
+     and the pointer already say "openable" here, so its width is better
+     spent on the name. One line also means one name: the alias keeps the
+     row and the tmux name stays in the session sheet. */
+  #screen-list .item {
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border-radius: 10px;
+  }
+  #screen-list .item .item-head { gap: 7px; align-items: center; }
+  #screen-list .item .item-dot { width: 7px; height: 7px; margin-top: 0; }
+  #screen-list .item .title {
+    font-size: 14px;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #screen-list .item .title .realname { display: none; }
+  #screen-list .item .item-meta { display: none; }
+  #screen-list .item .chev { display: none; }
+  #screen-list .item .btn-bell, #screen-list .item .btn-alias,
+  #screen-list .item .btn-trash {
+    padding: 3px;
+    margin-top: 0;
+    /* Behind the state badge below: order lifts the ::after (order 0, last
+       in DOM among the head's order-0 items) ahead of the buttons, so the
+       row reads dot · name · verdict · controls. */
+    order: 1;
+  }
+  #screen-list .item .btn-bell svg, #screen-list .item .btn-alias svg,
+  #screen-list .item .btn-trash svg { width: 14px; height: 14px; }
+  /* The watcher's verdict, rebuilt from the row's data-state now that the
+     meta line carrying it is folded away — it is the whole point of the
+     badge polling, so it survives compaction as a short accent word. */
+  #screen-list .item .item-head::after {
+    order: 0;
+    flex: 0 0 auto;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  #screen-list .item[data-state="waiting"] .item-head::after {
+    content: "needs input";
+    color: var(--warn);
+  }
+  #screen-list .item[data-state="active"] .item-head::after {
+    content: "running";
+    color: var(--good);
+  }
+
+  /* The rail's resize handle: a strip straddling the border, invisible at
+     rest — the border itself is the affordance — tinted while hovered or
+     dragged. Live geometry is 31-wide-layout.js's railResize(). */
+  #rail-resize {
+    display: block;
+    position: fixed;
+    top: 0; bottom: 0;
+    left: calc(var(--sidebar-w) - 5px);
+    width: 10px;
+    cursor: col-resize;
+    touch-action: none;
+    z-index: 60;
+    -webkit-user-select: none; user-select: none;
+  }
+  #rail-resize:hover, #rail-resize.dragging { background: var(--umber-soft); }
+
   /* With no main screen up the pane would be bare paper; this quiet hint
      (see the #wide-empty markup) fills it, and goes away the moment any
      main screen — all earlier siblings — is active. */
@@ -1873,11 +1968,31 @@ html.term-open, body.term-open {
   #screen-files.active ~ #wide-empty,
   #screen-editor.active ~ #wide-empty { display: none; }
 
-  /* Bottom sheets are phone furniture; at this width they cap and center.
-     left/right stay 0, so the auto margins do the centering without
-     touching the slide-up transform; the centered confirm keeps its own
-     translate and only needs the cap. */
-  .sheet { max-width: 480px; margin-left: auto; margin-right: auto; }
-  .sheet.centered { max-width: 480px; }
+  /* Bottom sheets are phone furniture; at this width every sheet presents
+     the way the confirm already does — floating dead center, all corners
+     rounded, fade-and-settle instead of slide-up. The recipe is
+     .sheet.centered's verbatim (see it above), widened to every sheet so
+     the dialogs speak one language here. pointer-events must gate exactly
+     like the confirm's: hidden, a sheet now sits invisible mid-screen over
+     the main pane, where an off-bottom dock never needed the guard. The
+     safe-area pad serves the bottom dock only. */
+  .sheet {
+    left: 50%; right: auto; bottom: auto; top: 50%;
+    width: calc(100% - 44px);
+    max-width: 480px;
+    border: 1px solid var(--hair);
+    border-radius: 20px;
+    padding-bottom: 22px;
+    box-shadow: 0 8px 32px rgba(20, 16, 10, 0.16);
+    transform: translate(-50%, -50%) scale(0.96);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.28s var(--ease-out), opacity 0.28s var(--ease-out);
+  }
+  .sheet.show {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 </style>
