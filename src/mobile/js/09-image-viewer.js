@@ -172,12 +172,24 @@ function sendResize() {
   if (!term || !sock || sock.readyState !== WebSocket.OPEN) return;
   sock.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows, token: cfg.token, dev: cfg.devname }));
 }
+// Set when a hidden report could not be sent; cleared once one has been.
+let missedHidden = false;
 // Whether this client is on screen. The server holds this device's Web Push
 // (and the ntfy topic) while it is — the chips and badges are the in-app
 // signal — and resumes the moment hidden arrives or the socket dies.
 function sendVisibility(visible) {
-  if (!sock || sock.readyState !== WebSocket.OPEN) return;
+  if (!sock || sock.readyState !== WebSocket.OPEN) {
+    // The report never reached the server. A *hidden* that goes missing is the
+    // one that matters: the server keeps this device's last known visibility
+    // across the linger, so without it the reconnect's visible=true is
+    // true→true, no edge, and the window is never claimed back — the phone
+    // comes out of a pocket to a laptop-sized screen. Remember the miss and
+    // replay it on the next open (see onopen).
+    if (!visible) missedHidden = true;
+    return;
+  }
   sock.send(JSON.stringify({ type: "visibility", visible: !!visible }));
+  if (!visible) missedHidden = false;
 }
 
 let fitTimer = null;
@@ -229,6 +241,12 @@ function openTerminal(name) {
   // Retire anything still open from a previous session, so socketLive() below
   // can never see a stale socket and skip the connect for this one.
   clearTimeout(retryTimer);
+  // Leaving this view on purpose, so the server hears it the way it hears a
+  // lock: the PTY lingers either way, and only a recorded hidden makes the
+  // reopen's visible read as an edge and claim the window back. Without it,
+  // switching away and straight back inside the linger window is true→true and
+  // the terminal comes up at whatever size the other client left it.
+  sendVisibility(false);
   sockGen++;
   cancelCoast();
   cancelTermSelection();
@@ -285,6 +303,9 @@ function closeTerminal(skipReload) {
   if (fromURL) { location.replace("/"); return; }
   demoStop();
   currentSession = null;
+  // Same as the session switch above: an intentional close is a hidden, or
+  // reopening within the linger window claims nothing.
+  sendVisibility(false);
   // Bump the generation so any close still in flight is treated as superseded.
   sockGen++;
   cancelCoast();
@@ -342,6 +363,11 @@ function connect() {
     hideConnBanner();
     // Size first, so tmux paints straight into the phone's geometry.
     sendResize();
+    // A hidden that never made it out (the socket was already gone when the
+    // screen locked) is replayed here, immediately ahead of the current state:
+    // the server needs the False to be on record for the True to read as the
+    // hidden→visible edge that claims the window back.
+    if (missedHidden && document.visibilityState === "visible") sendVisibility(false);
     sendVisibility(document.visibilityState === "visible");
     term.focus();
   };
@@ -438,6 +464,13 @@ $("btn-conn-retry").addEventListener("click", () => {
 $("btn-conn-sessions").addEventListener("click", () => closeTerminal());
 
 function scheduleReconnect() {
+  // Nothing to reconnect *to* while the app is off screen: the socket would be
+  // killed again within seconds, and every attempt that did land is churn the
+  // server has to absorb. The visibilitychange handler below kicks connect()
+  // on the way back, which puts the reconnect and this device's visible report
+  // in the same moment — which is what claims the window for the phone the
+  // user has just picked up.
+  if (document.hidden) return;
   retries += 1;
   // 0.5s → 5s, capped; only nag with a toast once it's clearly not transient.
   const delay = Math.min(500 * Math.pow(1.7, retries - 1), 5000);

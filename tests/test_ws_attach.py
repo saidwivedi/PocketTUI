@@ -74,6 +74,16 @@ def hello(ws, token=TOKEN, dev="phone", cols=80, rows=24):
                              "token": token, "dev": dev}))
 
 
+def report(ws, visible):
+    """The client's visibility report.
+
+    Sent on every open, on every visibilitychange, and before every intentional
+    close. Its hidden→visible edge is what hands the shared window to this
+    device, so most of what follows is written in these frames.
+    """
+    ws.send_text(json.dumps({"type": "visibility", "visible": bool(visible)}))
+
+
 def collect_bytes(ws, needle, tries=20):
     """Binary frames accumulated until `needle` shows up (echo + PTY timing
     can split it across frames)."""
@@ -490,6 +500,130 @@ def test_a_dropped_socket_takes_its_visibility_with_it(client, bridge):
     assert A.visible_devs() == set()
 
 
+def test_a_claim_never_signals_an_attachment_that_has_lost_its_socket():
+    # claim_size signals a PID, so the one thing it must never do is fire at an
+    # attachment that is on its way out: the child is about to be reaped and
+    # the number handed to whatever the kernel allocates next. Every gate is
+    # checked here rather than in an integration test, because the window this
+    # guards is a few microseconds wide and cannot be raced deliberately.
+    sent = []
+    real_kill = os.kill
+
+    def spy(pid, sig):
+        sent.append((pid, sig))
+
+    att = A.Attachment(os.getpid(), -1, asyncio.Queue(),
+                       session="work", dev="phone")
+    A.ATTACHED["guard-view"] = att
+    A.os.kill = spy
+    try:
+        assert A.claim_size("guard-view", att) is True
+        assert sent == [(os.getpid(), signal.SIGWINCH)]
+
+        # A retired attachment: superseded by a newer connection, its PTY
+        # about to go. retire() is what clears `live`, and either gate alone
+        # is enough to stop the signal.
+        sent.clear()
+        att.last_claim = 0.0
+        att.retire()
+        assert att.live is False
+        assert A.claim_size("guard-view", att) is False
+
+        # Live again but no longer the view's attachment — a newer connection
+        # took the slot and this object is a leftover.
+        att.live = True
+        att.retired = asyncio.Event()
+        att.last_claim = 0.0
+        A.ATTACHED["guard-view"] = A.Attachment(
+            0, -1, asyncio.Queue(), session="work", dev="phone")
+        assert A.claim_size("guard-view", att) is False
+
+        # And gone from the dict entirely.
+        del A.ATTACHED["guard-view"]
+        assert A.claim_size("guard-view", att) is False
+        assert sent == []
+    finally:
+        A.os.kill = real_kill
+        A.ATTACHED.pop("guard-view", None)
+
+
+def test_a_claim_that_fired_is_throttled_but_a_no_op_is_not():
+    # The throttle is deliberately *after* the fact: iOS fires visibilitychange
+    # twice on one unlock, and the second must not signal again. A call that
+    # was refused stamps nothing, so the next real edge is not swallowed.
+    sent = []
+    real_kill = os.kill
+    att = A.Attachment(os.getpid(), -1, asyncio.Queue(),
+                       session="work", dev="phone")
+    A.ATTACHED["throttle-view"] = att
+    A.os.kill = lambda pid, sig: sent.append(pid)
+    try:
+        assert A.claim_size("throttle-view", att) is True
+        assert A.claim_size("throttle-view", att) is False   # the double-fire
+        assert len(sent) == 1
+
+        stamp = att.last_claim
+        att.live = False
+        assert A.claim_size("throttle-view", att) is False
+        # Refused by the guard, not the throttle: nothing was stamped, so the
+        # attachment's own clock did not move.
+        assert att.last_claim == stamp
+    finally:
+        A.os.kill = real_kill
+        del A.ATTACHED["throttle-view"]
+
+
+def test_teardown_clears_live_even_when_the_pty_does_not_linger(client, bridge):
+    # `live` is what says "a socket is speaking for this device": the push gate
+    # reads it (visible_devs), the chip channel reads it, and a claim refuses
+    # to signal without it. The non-lingering endings used to leave it True on
+    # a reaped attachment.
+    with client.websocket_connect("/ws/attach/work") as first:
+        hello(first)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        original = A.ATTACHED["phone-work"]
+        report(first, True)
+        assert wait_for(lambda: A.visible_devs() == {"phone"})
+        with client.websocket_connect("/ws/attach/work") as second:
+            hello(second)
+            # Superseded: retire() clears `live` up front, so nothing counts
+            # the retired attachment for the rest of its teardown.
+            assert wait_for(lambda: original.live is False)
+            assert wait_for(lambda: reaped(original.pid))
+            assert A.claim_size("phone-work", original) is False
+            assert A.visible_devs() == set()
+
+
+def test_the_adoption_contract_sends_adopted_in_place_of_the_replay(
+        client, bridge, monkeypatch):
+    # Both halves of the contract the client's term.reset() hangs off. A fresh
+    # attach is re-initialised by tmux, so it gets the scrollback replay; an
+    # adopted one must not, even though the same history is sitting there to
+    # send — painting it costs a reset, and the reset takes the DECSET modes
+    # tmux still believes this terminal has.
+    monkeypatch.setattr(A, "capture_history",
+                        lambda name, lines=A.REPLAY_LINES: "kept")
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        frame = ws.receive()
+        assert frame.get("bytes") is None
+        assert json.loads(frame["text"]) == {"type": "replay", "data": "kept"}
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        # No "adopted" frame anywhere behind it: collect_bytes fails on a text
+        # frame, so the echo proves the rest of the stream is binary.
+        ws.send_bytes(b"fresh\n")
+        collect_bytes(ws, b"fresh")
+    assert wait_for(lambda: not A.ATTACHED["phone-work"].live)
+
+    with client.websocket_connect("/ws/attach/work") as ws2:
+        hello(ws2)
+        frame = ws2.receive()
+        assert frame.get("bytes") is None
+        assert json.loads(frame["text"]) == {"type": "adopted"}
+        ws2.send_bytes(b"adopted\n")
+        collect_bytes(ws2, b"adopted")   # and no replay behind it either
+
+
 # ---------------------------------------------------------------------------
 # Integration: the real tmux, on an isolated server
 # ---------------------------------------------------------------------------
@@ -802,3 +936,273 @@ class TestRealTmux:
             assert wait_for(lambda: pins() == "latest 0"), pins()
             assert wait_for(
                 lambda: A.tmux("show-hooks", "-t", "phone-base")[1].strip() == "")
+
+    # -- the visibility claim ----------------------------------------------
+    #
+    # Adoption is what stopped a reconnecting phone from stealing the laptop's
+    # window, and it works — but it took the pickup with it: a phone that came
+    # back from a pocket adopted silently and sat at laptop size. The claim
+    # puts the pickup back without putting the churn back, and the difference
+    # between the two is entirely in the visibility reports below.
+
+    def settled(self, session, want):
+        """Wait for the shared window to reach `want` and stay there."""
+        assert wait_for(lambda: self.width(session) == want), \
+            self.width(session)
+        time.sleep(0.3)
+        assert self.width(session) == want
+
+    def sampler(self, session="base"):
+        """Every shared-window width seen until the caller stops it."""
+        seen = []
+        stop = threading.Event()
+
+        def run():
+            while not stop.is_set():
+                seen.append(self.width(session))
+                time.sleep(0.05)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return seen, stop, t
+
+    def test_a_phone_that_reported_hidden_claims_the_window_on_pickup(
+            self, client):
+        # The pickup, end to end. The phone locks (hidden), its socket dies,
+        # the laptop keeps the window at 200; the phone comes back inside the
+        # linger window and the visible report on the far side is what hands
+        # the window to it. Nothing else in the reconnect may do it — the
+        # adoption is deliberately invisible to tmux.
+        self.new_session("base", cols=200, rows=50)
+        lap = self.laptop("base")
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            report(ws, True)
+            assert wait_for(lambda: self.width() == "40"), self.width()
+            os.write(lap, b"echo laptop-typing\n")
+            self.settled("base", "200")
+            # The lock, reported while the socket is still up.
+            report(ws, False)
+            assert wait_for(lambda: A.ATTACHED["phone-base"].visible is False)
+        assert wait_for(lambda: not A.ATTACHED["phone-base"].live)
+        self.settled("base", "200")
+
+        with client.websocket_connect("/ws/attach/base") as ws2:
+            hello(ws2, cols=40, rows=20)
+            assert wait_for(lambda: A.ATTACHED["phone-base"].live)
+            # Adopting is silent: same tmux client, no attach, no resize. The
+            # window is still the laptop's at this point.
+            self.settled("base", "200")
+            report(ws2, True)
+            assert wait_for(lambda: self.width() == "40"), self.width()
+            # And the laptop takes it straight back the moment it is used —
+            # the claim is a claim, not a pin.
+            os.write(lap, b"echo laptop-again\n")
+            assert wait_for(lambda: self.width() == "200"), self.width()
+
+    def test_a_foregrounded_phone_churning_never_claims_the_window(self, client):
+        # The other side of the same coin, and the regression that matters
+        # most: a phone sitting in the user's hand loses its socket anyway
+        # (flaky wifi, a walk out of range) and reconnects on its backoff. It
+        # never reported hidden, so every reconnect's visible=true is
+        # true→true — no edge, no claim — and the laptop's window never moves.
+        self.new_session("base", cols=200, rows=50)
+        lap = self.laptop("base")
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            report(ws, True)
+            assert wait_for(lambda: self.width() == "40"), self.width()
+            os.write(lap, b"echo laptop-typing\n")
+            self.settled("base", "200")
+
+        seen, stop, t = self.sampler()
+        try:
+            for n in range(5):
+                assert wait_for(lambda: not A.ATTACHED["phone-base"].live)
+                with client.websocket_connect("/ws/attach/base") as ws:
+                    hello(ws, cols=40, rows=20)
+                    # Exactly what the client sends in onopen, every time.
+                    report(ws, True)
+                    assert wait_for(lambda: A.ATTACHED["phone-base"].live)
+                    os.write(lap, f"echo round-{n}\n".encode())
+                    time.sleep(0.2)
+        finally:
+            stop.set()
+            t.join(timeout=2)
+        assert set(seen) == {"200"}, sorted(set(seen))
+
+    def test_a_fresh_attachments_first_visible_report_claims_nothing(
+            self, client):
+        # A fresh attachment starts hidden, so the visible=true every client
+        # sends in onopen is an edge on paper. It must not claim: the attach it
+        # rode in on already did, and the report arrives a moment later — long
+        # enough for the laptop to have taken the window back, which this
+        # would then steal a second time for a phone that did nothing. The
+        # exemption is for the *first* report of a fresh attachment only; the
+        # pickup case above is an adopted one and still claims.
+        self.new_session("base", cols=200, rows=50)
+        lap = self.laptop("base")
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            # The attach itself claims, as it always has.
+            assert wait_for(lambda: self.width() == "40"), self.width()
+            os.write(lap, b"echo laptop-typing\n")
+            self.settled("base", "200")
+            # …and only now does the connect-time report land.
+            report(ws, True)
+            assert wait_for(lambda: A.ATTACHED["phone-base"].visible is True)
+            self.settled("base", "200")
+
+    def test_an_intentional_close_and_reopen_claims_the_window(self, client):
+        # Closing the terminal (back to the session list, or a rail switch on a
+        # wide layout) drops the socket the same way a lock does, and the PTY
+        # lingers the same way. Without the client reporting hidden on its way
+        # out, reopening straight afterwards adopts a still-visible attachment
+        # and comes up at the laptop's size — the reproducible half of
+        # "sometimes it doesn't resize". The report before the close is what
+        # makes the reopen an edge.
+        self.new_session("base", cols=200, rows=50)
+        lap = self.laptop("base")
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            report(ws, True)
+            assert wait_for(lambda: self.width() == "40"), self.width()
+            os.write(lap, b"echo laptop-typing\n")
+            self.settled("base", "200")
+            report(ws, False)          # closeTerminal(), before sock.close()
+            assert wait_for(lambda: A.ATTACHED["phone-base"].visible is False)
+
+        # Reopened immediately, well inside the linger.
+        with client.websocket_connect("/ws/attach/base") as ws2:
+            hello(ws2, cols=40, rows=20)
+            report(ws2, True)
+            assert wait_for(lambda: self.width() == "40"), self.width()
+
+    def test_a_live_socket_claims_on_the_visible_edge_with_no_input(self, client):
+        # No reconnect at all: the app was backgrounded and foregrounded fast
+        # enough that the socket survived. The edge still has to claim, and it
+        # has to do it without anything that reads as user input — no key is
+        # written to the PTY here.
+        self.new_session("base", cols=200, rows=50)
+        lap = self.laptop("base")
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            report(ws, True)
+            assert wait_for(lambda: self.width() == "40"), self.width()
+            os.write(lap, b"echo laptop-typing\n")
+            self.settled("base", "200")
+
+            report(ws, False)
+            assert wait_for(lambda: A.ATTACHED["phone-base"].visible is False)
+            self.settled("base", "200")
+            report(ws, True)
+            assert wait_for(lambda: self.width() == "40"), self.width()
+
+    def test_claiming_a_window_this_client_already_owns_resizes_nothing(
+            self, client, monkeypatch):
+        # The common case: the phone is the last active client already, so the
+        # claim must be a no-op. The old primitive could not be — it worked by
+        # writing a size tmux did not have and taking it back, so every claim
+        # cost a real resize and a repaint at a size no client ever asked for.
+        # SIGWINCH cannot: the size on the fd is never touched, and tmux
+        # recalculates to the numbers it already had.
+        self.new_session("base", cols=200, rows=50)
+        lap = self.laptop("base")
+        fired = []
+        signalled = []
+        real = A.claim_size
+        real_kill = os.kill
+
+        def spy(view, me):
+            # Nothing else in this test signals, so a bare wrapper on os.kill
+            # is enough to prove the claim really reached the tmux client
+            # rather than being skipped as unnecessary.
+            monkeypatch.setattr(
+                A.os, "kill",
+                lambda pid, sig: (signalled.append((pid, sig)),
+                                  real_kill(pid, sig))[1])
+            try:
+                got = real(view, me)
+            finally:
+                monkeypatch.setattr(A.os, "kill", real_kill)
+            fired.append(got)
+            return got
+
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            report(ws, True)
+            assert wait_for(lambda: self.width() == "40"), self.width()
+            fd = A.ATTACHED["phone-base"].fd
+            time.sleep(0.3)
+
+            def fd_size():
+                rows, cols = struct.unpack(
+                    "HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))[:2]
+                return cols, rows
+
+            # Sampled in-process and unthrottled, so a size written and taken
+            # back within a millisecond is still caught — the fake intermediate
+            # the jiggle depended on would show up here as (40, 19).
+            fd_seen = set()
+            stop = threading.Event()
+
+            def watch_fd():
+                while not stop.is_set():
+                    fd_seen.add(fd_size())
+
+            t = threading.Thread(target=watch_fd, daemon=True)
+            t.start()
+            seen, stop_w, tw = self.sampler()
+            try:
+                A.claim_size = spy
+                report(ws, False)
+                assert wait_for(
+                    lambda: A.ATTACHED["phone-base"].visible is False)
+                report(ws, True)
+                assert wait_for(lambda: fired == [True], timeout=5), fired
+                time.sleep(0.5)
+            finally:
+                A.claim_size = real
+                stop.set()
+                stop_w.set()
+                t.join(timeout=2)
+                tw.join(timeout=2)
+
+            # The signal really went out — and moved nothing, on either side.
+            assert fired == [True]
+            assert signalled == [(A.ATTACHED["phone-base"].pid,
+                                  signal.SIGWINCH)]
+            assert fd_seen == {(40, 20)}, fd_seen
+            assert set(seen) == {"40"}, sorted(set(seen))
+            # And the no-op left a working client behind: the laptop can still
+            # take the window, and the phone can still take it back.
+            os.write(lap, b"echo laptop-typing\n")
+            assert wait_for(lambda: self.width() == "200"), self.width()
+
+    def test_a_hidden_report_that_never_reached_the_server_still_claims(
+            self, client):
+        # The latch. iOS can kill the socket before visibilitychange fires, so
+        # the hidden never goes out and the server still believes this device
+        # is on screen — the reconnect's visible=true would be true→true and
+        # claim nothing. The client remembers the miss and replays the pair,
+        # false then true, on the next open; the false is what makes the true
+        # an edge again.
+        self.new_session("base", cols=200, rows=50)
+        lap = self.laptop("base")
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            report(ws, True)
+            assert wait_for(lambda: self.width() == "40"), self.width()
+            os.write(lap, b"echo laptop-typing\n")
+            self.settled("base", "200")
+        # Dropped still believing itself visible — no hidden was ever sent.
+        assert wait_for(lambda: not A.ATTACHED["phone-base"].live)
+        assert A.ATTACHED["phone-base"].visible is True
+
+        with client.websocket_connect("/ws/attach/base") as ws2:
+            hello(ws2, cols=40, rows=20)
+            assert wait_for(lambda: A.ATTACHED["phone-base"].live)
+            report(ws2, False)
+            assert wait_for(lambda: A.ATTACHED["phone-base"].visible is False)
+            report(ws2, True)
+            assert wait_for(lambda: self.width() == "40"), self.width()
