@@ -614,12 +614,17 @@ $("btn-files-back").addEventListener("click", () => history.back());
 window.addEventListener("popstate", (ev) => {
   if ($("screen-editor").classList.contains("active")) { editorPopped(); return; }
   if (!$("screen-files").classList.contains("active")) return;
-  // A path-carrying state is a folder visited from here — land on it in
-  // place (closeExplorer's address-field check still wins if that's open,
-  // same as any other back). No further push: the pop already put history
-  // where this folder belongs.
-  const path = ev.state && ev.state.path;
-  if (path !== undefined && !$("files-path-wrap").classList.contains("editing")) {
+  // Any state still flagged `files` is a folder inside the explorer — land on
+  // it in place: the path it carries, or the entry folder for the bare state
+  // openExplorer pushed before the first listing could name it. Only a state
+  // without the flag is the pop past the entry, and only that closes. Two
+  // exceptions fall through to closeExplorer as before: an open address field
+  // (back closes just the field, same as any other back), and an entry folder
+  // that never resolved, which has nowhere to land. No further push otherwise:
+  // the pop already put history where this folder belongs.
+  const st = ev.state;
+  const path = st && st.files ? (st.path || filesEntryPath) : null;
+  if (path && !$("files-path-wrap").classList.contains("editing")) {
     if (filesListCache.has(path)) applyListing(filesListCache.get(path));
     else loadDir(path);
     return;
