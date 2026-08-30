@@ -2932,76 +2932,51 @@ def set_winsize(fd: int, cols: int, rows: int) -> bool:
     return True
 
 
-def get_winsize(fd: int) -> tuple[int, int]:
-    """This PTY's (cols, rows), or (0, 0) if the fd is gone."""
-    try:
-        rows, cols = struct.unpack(
-            "HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))[:2]
-    except OSError:
-        return 0, 0
-    return cols, rows
-
-
-def window_size(view: str) -> tuple[int, int]:
-    """The (cols, rows) of the window this view is showing, or (0, 0).
-
-    The window is shared with every other client of the session group, so this
-    is the size the *laptop* is imposing when it differs from ours.
-    """
-    rc, out = tmux("display-message", "-p", "-t", view,
-                   "#{window_width}\t#{window_height}")
-    parts = out.strip().split("\t")
-    if rc != 0 or len(parts) != 2:
-        return 0, 0
-    try:
-        return int(parts[0]), int(parts[1])
-    except ValueError:
-        return 0, 0
-
-
 # The window a device is looking at should be sized for that device, and tmux
 # under `window-size latest` gives it to whichever client was active last.
 # Typing counts; a fresh attach counts; refresh-client does not, and neither
-# does re-writing a size tmux already has (see set_winsize). So the only way to
-# say "this client is the one being looked at" without faking a keystroke is a
-# *changed* winsize — hence the jiggle below.
-CLAIM_DEBOUNCE_S = 2.0
+# does re-writing a size tmux already has (see set_winsize).
+#
+# SIGWINCH to our own child is the one thing that reads as a real terminal
+# resize without being one. The child execs into a tmux *client*, whose
+# SIGWINCH handler sends MSG_RESIZE to the server; the server's handler calls
+# server_client_update_latest() — the same function a physically resized
+# terminal goes through — before recalculating the window. So the claim is
+# tmux's native path: exactly one resize, no fake intermediate size on the way,
+# no option to mutate, and a clean no-op when the window already has our size
+# (the server recalculates to the same numbers and nothing moves). Verified
+# against tmux 3.5a.
+#
+# How long a claim that actually fired stops the next one. Not a debounce
+# before the fact — the visible edge already suppresses duplicate trues — just
+# enough to absorb iOS firing visibilitychange twice on one unlock.
+CLAIM_THROTTLE_S = 1.0
 
 
-async def claim_size(view: str, me: "Attachment") -> bool:
-    """Hand the shared window to this client's size. True if it jiggled.
+def claim_size(view: str, me: "Attachment") -> bool:
+    """Hand the shared window to this client's size. True if it signalled.
 
-    Called on the hidden→visible edge: picking a device up is the user saying
-    they are looking at it, and before the linger (which suppresses the attach
-    that used to do this implicitly) that look happened to claim the window.
-    Nothing happens when the window already has our size — the common case, and
-    the one that keeps a foregrounded phone's reconnect churn silent — and at
-    most one claim lands per CLAIM_DEBOUNCE_S, so a burst of edges is one
-    resize rather than a flicker.
+    Called synchronously on the hidden→visible edge: picking a device up is the
+    user saying they are looking at it, and before the linger (which suppresses
+    the attach that used to do this implicitly) that look happened to claim the
+    window. Synchronous on purpose — the guard below is only worth anything if
+    nothing can await between it and the kill, or the PID could be reaped and
+    recycled underneath us.
     """
     now = time.monotonic()
-    if now - me.last_claim < CLAIM_DEBOUNCE_S:
+    if now - me.last_claim < CLAIM_THROTTLE_S:
         return False
-    me.last_claim = now
-    cols, rows = get_winsize(me.fd)
-    if not cols or not rows:
+    # This attachment must still be the view's, still have a socket, and not be
+    # on its way out: signalling a reaped PID would land on whatever the kernel
+    # handed the number to next.
+    if ATTACHED.get(view) is not me or not me.live or me.retired.is_set():
         return False
-    if await asyncio.to_thread(window_size, view) == (cols, rows):
-        return False
-    # The socket may have gone while tmux was answering; the PTY is still ours
-    # through the linger, but a claim for a device that just left is not.
-    if not me.live:
-        return False
-    # Any real change, then back: tmux records the resize as this client's
-    # activity, and the size it settles on is the one we started with. Rows
-    # rather than cols, and away from the clamp so the first write is never
-    # swallowed as a no-op.
     try:
-        set_winsize(me.fd, cols, rows - 1 if rows > 2 else rows + 1)
-        set_winsize(me.fd, cols, rows)
+        os.kill(me.pid, signal.SIGWINCH)
     except OSError:
         return False
-    log(f"claim size view={view} {cols}x{rows}")
+    me.last_claim = now
+    log(f"claim size view={view} pid={me.pid}")
     return True
 
 
@@ -3181,6 +3156,12 @@ class Attachment:
         self.last_claim = 0.0
 
     def retire(self) -> None:
+        # `live` goes down with the socket, not with the teardown that follows
+        # it: from here on this attachment has no client to speak for. A claim
+        # racing the handover would otherwise signal a PID about to be reaped,
+        # and the push gate would go on counting a device whose socket is
+        # already spoken for (visible_devs, notify_session_views).
+        self.live = False
         self.retired.set()
 
     def adopt(self) -> None:
@@ -3418,6 +3399,10 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
     # never linger — there would be nothing left to adopt.
     pty_gone = False
 
+    # Whether the next visibility frame is this connection's first, which is
+    # the one the client sends unprompted on open (see the claim rule below).
+    first_visibility = True
+
     def on_readable() -> None:
         try:
             data = os.read(fd, 65536)
@@ -3452,6 +3437,7 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                 await ws.send_bytes(data)
 
     async def pump_in() -> None:
+        nonlocal first_visibility
         while True:
             msg = await ws.receive()
             if msg.get("type") == "websocket.disconnect":
@@ -3477,11 +3463,24 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                 if ctl and ctl.get("type") == "visibility":
                     was = me.visible
                     me.visible = bool(ctl.get("visible"))
+                    initial, first_visibility = first_visibility, False
                     # Looking at this device again is what claims the shared
                     # window for it — the edge only, so the report every
                     # connect carries leaves a foregrounded phone alone.
-                    if me.visible and not was:
-                        asyncio.create_task(claim_size(view, me))
+                    #
+                    # A fresh attachment starts hidden, so its connect-time
+                    # visible=true is an edge against nothing: the attach it
+                    # rode in on already claimed the window, and claiming again
+                    # would take it back off a laptop that had reclaimed it in
+                    # between. An adopted one is the opposite — a stored False
+                    # is a device that really did go away (the phone reported
+                    # hidden before the lock killed its socket), and its return
+                    # is exactly the pickup this exists for.
+                    connect_time = initial and not adopted
+                    if me.visible and not was and not connect_time:
+                        # Inline, not a task: the guard inside is only sound
+                        # with nothing awaiting between it and the signal.
+                        claim_size(view, me)
                     continue
             os.write(fd, text.encode("utf-8"))
             watch_saw_input(session_name)
@@ -3507,8 +3506,12 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         # enough — only we ever remove ourselves.
         lingering = (not me.retired.is_set() and not pty_gone
                      and ATTACHED.get(view) is me)
+        # No socket either way, so nothing may still speak for this device: a
+        # claim can no longer signal the PID (claim_size), and the push gate
+        # stops counting it (visible_devs). The lingering branch needs it too —
+        # it is what tells linger_pty and a reconnect that this PTY is free.
+        me.live = False
         if lingering:
-            me.live = False
             # `visible` is left exactly as the device last reported it, so the
             # reconnect can tell a phone that locked from one that never left
             # the foreground (see Attachment.adopt). Nothing believes it
