@@ -740,10 +740,13 @@ def view_name(target: str, dev: str) -> str:
 def attach_argv(target: str, view: str) -> list[str]:
     """Command that gives the phone its own view of `target`.
 
-    A grouped session shares the target's windows but keeps its own current
-    window and size, so the phone client's small size never squeezes the
-    laptop's client. Reuse the view across reconnects (-d kicks off any stale
-    client of it) so the phone's window selection survives a dropout.
+    A grouped session shares the target's window objects but keeps its own
+    current window, so the phone can sit on a different window than the laptop.
+    Size is not private that way: it is a property of the shared window, so two
+    clients on the same window do fight over it — see pin_view_size, which
+    settles that fight on the smallest one. Reuse the view across reconnects
+    (-d kicks off any stale client of it) so the phone's window selection
+    survives a dropout.
     """
     if session_exists(view):
         return [*TMUX_BIN, "attach", "-d", "-t", f"={view}"]
@@ -767,6 +770,46 @@ def enable_mouse(view: str) -> None:
             tmux("set-option", "-t", view, "mouse", "on")
             return
         time.sleep(0.05)
+
+
+# Applied to every window this device's view shares, and re-applied by a hook
+# to windows linked in later. Both are window options — tmux has no session
+# scope for either — so they go on the windows themselves rather than on a
+# global the user's other sessions would inherit.
+SIZE_POLICY = (("window-size", "smallest"), ("aggressive-resize", "on"))
+
+
+def pin_view_size(view: str) -> None:
+    """Size the shared windows to the smallest client actually viewing them.
+
+    tmux's default `window-size latest` gives a shared window the size of
+    whichever client last had activity, so a phone and a laptop on the same
+    window snap each other between 40 columns and 200 every few seconds, each
+    snap a full SIGWINCH redraw on the other device. `smallest` picks one size
+    and holds it; `aggressive-resize` narrows "smallest" to the clients whose
+    current window it is, so a phone parked on another window (or detached)
+    hands the laptop its own size back.
+
+    The hook covers windows opened after this attach: linking a window
+    re-syncs the whole group, and it fires on this device's own view — never
+    on the user's session, whose hooks a grouped session does not share.
+    """
+    # The session only exists once the attach child has spawned it, so retry
+    # briefly rather than racing the fork.
+    for _ in range(20):
+        if not session_exists(view):
+            time.sleep(0.05)
+            continue
+        rc, out = tmux("list-windows", "-t", view, "-F", "#{window_id}")
+        for wid in (out.split() if rc == 0 else []):
+            for opt, val in SIZE_POLICY:
+                tmux("set-option", "-w", "-t", wid, opt, val)
+        # Plain set-hook resets the list, `-a` appends, so reattaching leaves
+        # these two entries rather than piling up copies.
+        for n, (opt, val) in enumerate(SIZE_POLICY):
+            tmux("set-hook", *(["-a"] if n else []), "-t", view,
+                 "window-linked", f"set-option -w {opt} {val}")
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -3093,8 +3136,9 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         me = Attachment(pid, fd, out, session_name, dev)
         ATTACHED[view] = me
 
-    # Off-thread: enable_mouse polls for the just-spawned session.
+    # Off-thread: both poll for the just-spawned session.
     asyncio.create_task(asyncio.to_thread(enable_mouse, view))
+    asyncio.create_task(asyncio.to_thread(pin_view_size, view))
 
     def on_readable() -> None:
         try:
