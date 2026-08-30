@@ -462,8 +462,11 @@ html.term-open, body.term-open {
 }
 #sel-pill button:active { background: rgba(250, 248, 243, 0.16); }
 /* A long press on empty space has nothing to copy, so the pill comes up as
-   Paste/Cancel alone rather than offering a Copy that would return "". */
+   Paste/Cancel alone rather than offering a Copy that would return "". A press
+   that did select something is the mirror image: Copy/Cancel, without a Paste
+   that has nothing to do with the text under the finger. */
 #sel-pill.no-copy #btn-sel-copy { display: none; }
+#sel-pill.no-paste #btn-sel-paste { display: none; }
 
 /* Selection handles — the lollipop dots that hang off each end of a selection,
    the way every mobile text field draws them. The element itself is the 44px
