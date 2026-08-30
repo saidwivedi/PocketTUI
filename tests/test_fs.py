@@ -8,6 +8,8 @@ the auth path itself is covered by the transcribe suite's server-level tests.
 
 import os
 import sys
+import time
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -307,6 +309,113 @@ def test_download_any_file_as_attachment(client, tree):
 def test_download_missing_is_404(client, tree):
     assert client.get("/api/fs/download",
                       params={"path": str(tree / "absent")}).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# signed download links
+# ---------------------------------------------------------------------------
+
+def mint(client, path):
+    """The minted link, as a server-absolute path the TestClient can GET.
+
+    The route answers it relative (no leading slash) because that is what the
+    client's apiURL() composes against; the leading slash is what makes it a
+    request here.
+    """
+    r = client.get("/api/fs/download_link", params={"path": str(path)})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["url"].startswith("api/fs/signed_download?")
+    return "/" + data["url"], data
+
+
+def test_download_link_round_trip_streams_the_file_as_an_attachment(client, tree):
+    (tree / "blob.bin").write_bytes(b"PK\x00\x03rest")
+    url, data = mint(client, tree / "blob.bin")
+    assert data["name"] == "blob.bin"
+    assert data["expires_in"] == A.DOWNLOAD_TTL
+
+    r = client.get(url)
+    assert r.status_code == 200
+    assert r.content == b"PK\x00\x03rest"
+    dispo = r.headers["content-disposition"]
+    assert dispo.startswith("attachment") and "blob.bin" in dispo
+
+
+def test_signed_download_needs_no_token_header(client, tree, monkeypatch):
+    """The whole point: a bare browser navigation, which carries no header."""
+    monkeypatch.setattr(A, "LIMITER", A.AuthLimiter())
+    url, _ = mint(client, tree / "beta.txt")
+    monkeypatch.setattr(A, "AUTH_TOKEN", "ABCDEFGHIJ")
+
+    r = client.get(url)
+    assert r.status_code == 200
+    assert r.content == b"beta\n"
+    # The neighbouring route is still gated, so this is an exemption for the
+    # signed path alone and not a hole in the middleware.
+    assert client.get("/api/fs/download",
+                      params={"path": str(tree / "beta.txt")}).status_code == 401
+
+
+def test_signed_download_expired_is_rejected(client, tree):
+    target = str(tree / "beta.txt")
+    stale = int(time.time()) - 1
+    r = client.get("/api/fs/signed_download", params={
+        "path": target, "exp": stale, "sig": A.download_sig(target, stale)})
+    assert r.status_code == 403
+    assert r.json()["error"] == "expired"
+
+
+def test_signed_download_unsigned_is_rejected(client, tree):
+    r = client.get("/api/fs/signed_download", params={"path": str(tree / "beta.txt")})
+    assert r.status_code == 403
+    assert r.json()["error"] == "bad_signature"
+
+
+def test_signed_download_tampered_path_is_rejected(client, tree):
+    (tree / "secret.txt").write_text("secret\n")
+    url, _ = mint(client, tree / "beta.txt")
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+
+    for swapped in (str(tree / "secret.txt"),
+                    # A traversal appended to the signed path is a different
+                    # path, so it needs a signature of its own — and only the
+                    # gated mint hands those out.
+                    str(tree / "sub" / ".." / "secret.txt")):
+        r = client.get("/api/fs/signed_download",
+                       params={**q, "path": swapped})
+        assert r.status_code == 403
+        assert r.json()["error"] == "bad_signature"
+    # Untampered, the same query still works — the rejection was the swap.
+    assert client.get(url).status_code == 200
+
+
+def test_signed_download_expiry_is_covered_by_the_signature(client, tree):
+    url, _ = mint(client, tree / "beta.txt")
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+    r = client.get("/api/fs/signed_download",
+                   params={**q, "exp": int(q["exp"]) + 86400})
+    assert r.status_code == 403
+    assert r.json()["error"] == "bad_signature"
+
+
+def test_download_link_refuses_a_path_it_cannot_resolve(client, tree):
+    # fs_path()'s rule, the one every /api/fs/* route already applies: nothing
+    # that is not an absolute local path gets a link, so nothing relative to
+    # the server's cwd can be signed at all.
+    for bad in ("relative/beta.txt", "../../etc/passwd", ""):
+        assert client.get("/api/fs/download_link",
+                          params={"path": bad}).status_code == 404
+    # A directory is not a download either.
+    assert client.get("/api/fs/download_link",
+                      params={"path": str(tree / "sub")}).status_code == 404
+
+
+def test_signed_download_of_a_vanished_file_is_404(client, tree):
+    (tree / "doomed.bin").write_bytes(b"x")
+    url, _ = mint(client, tree / "doomed.bin")
+    (tree / "doomed.bin").unlink()
+    assert client.get(url).status_code == 404
 
 
 # ---------------------------------------------------------------------------
