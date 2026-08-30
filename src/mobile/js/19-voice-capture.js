@@ -1506,14 +1506,72 @@ function buildKeybar() {
 }
 buildKeybar();
 
+// What an image on the clipboard can arrive as, in preference order. iOS Safari
+// normalises anything pasted into image/png, so the first entry is the one that
+// nearly always hits; the rest are for the browsers that hand the type through.
+const PASTE_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
 // Paste needs the keypress itself as the user gesture — iOS only grants clipboard
 // reads from inside the handler, so this cannot be deferred to a promise chain
-// started later. term.paste() applies bracketed-paste framing when tmux asked for it.
+// started later. That rule is why read() is called here rather than after any
+// check that could await: by the time an async hop resolved, the grant is gone.
+// term.paste() applies bracketed-paste framing when tmux asked for it.
 function pasteFromClipboard() {
   dbg("paste: reading clipboard");
-  if (!navigator.clipboard || !navigator.clipboard.readText) {
+  if (!navigator.clipboard || (!navigator.clipboard.read && !navigator.clipboard.readText)) {
     dbg("paste: no clipboard API");
     toast("Clipboard unavailable");
+    return;
+  }
+  // read() sees pictures as well as text; readText() is the older, narrower
+  // door. Some browsers gate the first and allow the second, so a rejection
+  // here is not the end — it falls through to the text-only path.
+  if (navigator.clipboard.read) {
+    navigator.clipboard.read()
+      .then(items => pasteClipboardItems(items))
+      .catch(err => { dbg("paste: read() refused:", err); pasteClipboardText(); });
+    return;
+  }
+  pasteClipboardText();
+}
+
+// A clipboard read that came back. An image is the interesting case and takes
+// precedence: a screenshot copied from Photos carries no text worth pasting,
+// and one copied from a web page is what the user pointed at.
+function pasteClipboardItems(items) {
+  const list = items || [];
+  for (const item of list) {
+    const t = PASTE_IMAGE_TYPES.find(x => item.types.includes(x));
+    if (!t) continue;
+    dbg("paste: image on clipboard type=" + t);
+    item.getType(t)
+      .then(blob => uploadPastedImage(blob))
+      .catch(err => { dbg("paste: getType failed:", err); toast("Clipboard blocked"); });
+    return;
+  }
+  for (const item of list) {
+    if (!item.types.includes("text/plain")) continue;
+    item.getType("text/plain").then(b => b.text()).then(text => {
+      // Length only, never the text: a clipboard on this device may well be holding
+      // a password, and the panel is on screen.
+      dbg("paste: got " + (text ? text.length : 0) + " chars");
+      if (text && term) term.paste(text);
+    }).catch(err => { dbg("paste: getType failed:", err); pasteClipboardText(); });
+    return;
+  }
+  // A clipboard holding only types we have no use for. readText() may still
+  // make something of it.
+  dbg("paste: no image or text among " + list.length + " items");
+  pasteClipboardText();
+}
+
+// The original path, unchanged in what it does. On iOS this may already be
+// outside the gesture window that read() spent — acceptable, since it only ever
+// runs once read() has failed, and a blocked read is what the toast reports.
+function pasteClipboardText() {
+  if (!navigator.clipboard || !navigator.clipboard.readText) {
+    dbg("paste: no readText fallback");
+    toast("Clipboard blocked");
     return;
   }
   navigator.clipboard.readText().then(text => {
