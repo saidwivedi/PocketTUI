@@ -939,11 +939,32 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1; then
     HAVE_LAUNCHD=1
 fi
 
-# A service starts with almost no environment, so when tmux lives in the
-# install's own conda env the unit has to name that bin dir itself. On a normal
-# install ENV_BIN is empty and this line is absent, leaving the unit as it was.
-UNIT_ENV_LINE=""
-[[ -n "$ENV_BIN" ]] && UNIT_ENV_LINE="Environment=PATH=$ENV_BIN:/usr/local/bin:/usr/bin:/bin"
+# A service starts with almost no environment, so the launcher has to name the
+# directory tmux actually lives in. app.py runs tmux by bare name, and the PATH
+# systemd and launchd hand a unit covers /usr/bin but not /opt/homebrew/bin, a
+# Nix profile, ~/.local/bin, or this install's own conda env. Preflight looked
+# for tmux on the *interactive* PATH, so whatever it found there has to be
+# carried across explicitly — otherwise the install looks successful, the
+# service starts, and every tmux call inside it fails.
+#
+# The install's own env wins when it is the one that supplied tmux; otherwise it
+# is the tmux preflight validated, resolved once here rather than trusted to be
+# on some other PATH later.
+TMUX_BIN_DIR="$ENV_BIN"
+if [[ -z "$TMUX_BIN_DIR" ]]; then
+    TMUX_EXE="$(command -v tmux 2>/dev/null || true)"
+    [[ -n "$TMUX_EXE" ]] && TMUX_BIN_DIR="$(dirname "$TMUX_EXE")"
+fi
+
+# The PATH every generated service gets. Prepended, not appended: where two tmux
+# binaries exist, the one this install validated is the one that has to win.
+SERVICE_PATH="/usr/local/bin:/usr/bin:/bin"
+if [[ -n "$TMUX_BIN_DIR" ]]; then
+    case ":$SERVICE_PATH:" in
+        (*":$TMUX_BIN_DIR:"*) ;;
+        (*) SERVICE_PATH="$TMUX_BIN_DIR:$SERVICE_PATH" ;;
+    esac
+fi
 
 # The unit we would install. Built once, up here, so that the "is the file on
 # disk already exactly this?" check and the write that follows can never drift
@@ -958,8 +979,8 @@ StartLimitIntervalSec=0
 Type=simple
 Restart=always
 RestartSec=10
-WorkingDirectory=$INSTALL_DIR${UNIT_ENV_LINE:+
-$UNIT_ENV_LINE}
+WorkingDirectory=$INSTALL_DIR
+Environment="PATH=$SERVICE_PATH"
 ExecStart=$VENV_PY $INSTALL_DIR/app.py --port $PORT
 
 [Install]
@@ -1027,18 +1048,6 @@ start_service() {
     fi
 }
 
-# The launchd counterpart of UNIT_ENV_LINE: same reason, plist spelling. Empty
-# on a normal install, so the agent keeps the shape it had before.
-AGENT_ENV_BLOCK=""
-if [[ -n "$ENV_BIN" ]]; then
-    AGENT_ENV_BLOCK="
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>$ENV_BIN:/usr/local/bin:/usr/bin:/bin</string>
-    </dict>"
-fi
-
 # The launchd equivalent of UNIT_CONTENT, built once for the same reason.
 # RunAtLoad starts it now and at every login; KeepAlive brings it back if it
 # dies, which is what Restart=always does on the systemd side.
@@ -1057,7 +1066,12 @@ AGENT_CONTENT="$(cat <<EOF
         <string>$PORT</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>$INSTALL_DIR</string>$AGENT_ENV_BLOCK
+    <string>$INSTALL_DIR</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>$SERVICE_PATH</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
