@@ -331,7 +331,8 @@ function connect() {
   // Whether this connection has painted its first screenful. The old screen is
   // kept up during the connect (no blind reset — see scheduleReconnect), so the
   // first frame of the new connection is what wipes it: a replay control frame
-  // when the server sends one, otherwise the first binary attach output.
+  // when the server sends one, otherwise the first binary attach output. An
+  // "adopted" frame says the wipe must not happen at all.
   let painted = false;
 
   ws.onopen = () => {
@@ -353,6 +354,15 @@ function connect() {
       if (ev.data.startsWith("{")) {
         let ctl = null;
         try { ctl = JSON.parse(ev.data); } catch (e) {}
+        // This reconnect took over the tmux client the dropped socket left
+        // behind, so tmux saw no detach and will not re-initialise us: the
+        // modes it turned on once — mouse tracking, bracketed paste,
+        // application cursor keys — exist only in this terminal, and a reset
+        // would drop them while tmux went on believing they were set (dead
+        // scroll until the next fresh attach). Keep the screen and the
+        // scrollback exactly as they are; the server's refresh-client repaint
+        // is on its way to bring the visible rows up to date.
+        if (ctl && ctl.type === "adopted") { painted = true; return; }
         if (ctl && ctl.type === "replay") {
           // Scrollback from before the disconnect (and what arrived during
           // it). Paint it from the top, then park the cursor on the bottom row
