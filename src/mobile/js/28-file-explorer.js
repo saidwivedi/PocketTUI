@@ -518,27 +518,36 @@ $("btn-file-delete").addEventListener("click", async () => {
   loadDir(filesPath);
 });
 
-// Through fetch rather than a plain link: /api/* only answers to the token
-// header, which a navigation cannot carry.
+// The browser does the downloading, not us. Fetching the bytes here to hand
+// over a blob: URL held the whole file in the page's memory before the save
+// sheet opened, and iOS kills the app for that on anything large. So the token
+// header only buys a short-lived signed link (a navigation cannot carry the
+// header, hence the signature) and the browser streams the file itself.
 async function downloadFile(path, name) {
   toast("Downloading…");
+  let url;
   try {
-    const r = await fetch(apiURL("api/fs/download?path=" + encodeURIComponent(path)),
-                          { headers: authHeaders() });
+    const r = await fetch(apiURL("api/fs/download_link?path=" + encodeURIComponent(path)),
+                          { cache: "no-store", headers: authHeaders() });
     if (r.status === 401) { rejectToken(); return; }
     if (!r.ok) throw new Error("HTTP " + r.status);
-    const url = URL.createObjectURL(await r.blob());
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name || baseName(path);
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    // Not straight away: Safari needs the URL alive until its save sheet is done.
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    url = apiURL((await r.json()).url);
   } catch (e) {
     toast("Couldn't download");
+    return;
   }
+  // A synchronous anchor click, for openUrl()'s reason: window.open lands on a
+  // blank tab in Safari. No target — the browser keeps the page and saves the
+  // file, here or in the tab it hands the cross-origin backend.
+  const a = document.createElement("a");
+  a.href = url;
+  // Honoured same-origin only; against the public deploy's cross-origin backend
+  // it is ignored and the server's Content-Disposition is what saves the file.
+  a.download = name || baseName(path);
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 // ---- the + sheet -----------------------------------------------------------

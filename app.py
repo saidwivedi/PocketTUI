@@ -118,6 +118,11 @@ TOKEN_HEADER = "X-PocketTUI-Token"
 # Only the routes that read or touch the machine are gated.
 GATED_PREFIXES = ("/api/",)
 
+# The one gated path that answers without the header: a signed download link,
+# which the browser fetches as a plain navigation and a navigation cannot carry
+# one. Its query string is the credential instead — see api_fs_signed_download.
+SIGNED_PATHS = ("/api/fs/signed_download",)
+
 
 def normalize_token(raw: str) -> str:
     """Canonical form of a typed token, or "" if it is not one.
@@ -367,6 +372,8 @@ async def require_token(request: Request, call_next):
     if AUTH_TOKEN is None or request.method == "OPTIONS":
         return await call_next(request)
     if not request.url.path.startswith(GATED_PREFIXES):
+        return await call_next(request)
+    if request.url.path in SIGNED_PATHS:
         return await call_next(request)
 
     ok, reason = check_auth(
@@ -2788,6 +2795,78 @@ def api_fs_download(path: str = "") -> Response:
     terminal's tap-to-view: this one is the explorer's get-it-onto-the-phone
     path, and it types nothing — the phone's own viewer decides.
     """
+    p = fs_path(path)
+    if p is None or not p.is_file():
+        return fs_error("not_found", 404)
+    return no_store(FileResponse(p, media_type="application/octet-stream",
+                                 filename=p.name))
+
+
+# A download the *browser* performs, rather than the page. Fetching the file
+# with the token header means holding all of it in the PWA's memory before the
+# save sheet ever opens, which iOS answers by killing the app; handing the
+# browser a URL lets it stream to disk, and FileResponse serves it in chunks.
+#
+# A navigation carries no header, so the link carries its own credential: an
+# HMAC over the path and an expiry, keyed on a secret minted at startup. The
+# key never leaves this process and dies with it, so a restart voids every
+# outstanding link — the right lifetime for something that lives a minute.
+# Nothing else changes: the mint is gated like its neighbours, and the signed
+# route resolves the path through the same fs_path() every /api/fs/* route
+# uses, so it can reach exactly what an authenticated caller could reach.
+DOWNLOAD_KEY = secrets.token_bytes(32)
+DOWNLOAD_TTL = 60
+
+
+def download_sig(path: str, expires: int) -> str:
+    return hmac.new(DOWNLOAD_KEY, f"{expires}\n{path}".encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+@app.get("/api/fs/download_link")
+def api_fs_download_link(path: str = "") -> Response:
+    """Mint a short-lived signed URL for `path`, relative like the client's own.
+
+    Answered relative (no leading slash) because that is what apiURL() composes
+    against: the same string works same-origin, behind `tailscale serve`'s
+    /pockettui/ prefix, and against a cross-origin backend.
+
+    What is signed is the path *after* fs_path() — expanded and rewritten — so
+    the signed route resolves the same file this one checked, not a spelling of
+    it that could land somewhere else.
+    """
+    p = fs_path(path)
+    if p is None or not p.is_file():
+        return fs_error("not_found", 404)
+    target = str(p)
+    expires = int(time.time()) + DOWNLOAD_TTL
+    query = urllib.parse.urlencode({"path": target, "exp": expires,
+                                    "sig": download_sig(target, expires)})
+    return no_store(JSONResponse({"url": f"api/fs/signed_download?{query}",
+                                  "name": p.name, "expires_in": DOWNLOAD_TTL}))
+
+
+@app.get("/api/fs/signed_download")
+def api_fs_signed_download(request: Request, path: str = "", exp: str = "",
+                           sig: str = "") -> Response:
+    """Stream a file whose link this server signed. Unauthenticated by design.
+
+    Throttled where its neighbours are not, because this is the only /api/ route
+    a stranger can call at all: without the key they cannot get past the
+    signature, and the bucket keeps them from trying at speed. The signature is
+    checked before the expiry, so a tampered path never reads as merely stale.
+    """
+    refusal = throttled("download", RATE_FILE, request)
+    if refusal is not None:
+        return refusal
+    try:
+        expires = int(exp)
+    except ValueError:
+        return fs_error("bad_signature", 403)
+    if not hmac.compare_digest(sig, download_sig(path, expires)):
+        return fs_error("bad_signature", 403)
+    if time.time() > expires:
+        return fs_error("expired", 403)
     p = fs_path(path)
     if p is None or not p.is_file():
         return fs_error("not_found", 404)
