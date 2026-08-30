@@ -2,19 +2,26 @@
 
 Two layers. The bridge tests run against a stubbed tmux with /bin/cat standing
 in for the attach child, which is enough to prove the protocol: auth closes,
-the replay text frame's shape and ordering, binary round-trips, resize, and one
-connection retiring another. The integration tests at the bottom run the real
-thing against an isolated tmux server (`-L pockettui-test -f /dev/null`) via
-the TMUX_BIN seam, so nothing they create can touch the user's own sessions.
+the replay text frame's shape and ordering, binary round-trips, resize, one
+connection retiring another, and the linger window a dropped socket leaves its
+PTY in. The integration tests at the bottom run the real thing against an
+isolated tmux server (`-L pockettui-test -f /dev/null`) via the TMUX_BIN seam,
+so nothing they create can touch the user's own sessions — including the one
+property this all exists for: a phone reconnecting must not resize the window
+the laptop is looking at.
 """
 
+import asyncio
 import fcntl
 import json
+import os
 import shutil
+import signal
 import struct
 import subprocess
 import sys
 import termios
+import threading
 import time
 from pathlib import Path
 
@@ -78,6 +85,36 @@ def collect_bytes(ws, needle, tries=20):
         if needle in acc:
             return acc
     raise AssertionError(f"{needle!r} never arrived; got {acc!r}")
+
+
+def collect_binary(ws, needle, timeout=15.0):
+    """Binary frames until `needle` shows up, ignoring the control channel.
+
+    The blocking receive runs on a thread, so a frame that never comes fails
+    the test instead of hanging the suite.
+    """
+    acc = bytearray()
+    found = threading.Event()
+
+    def run():
+        while not found.is_set():
+            data = ws.receive().get("bytes")
+            if data:
+                acc.extend(data)
+                if needle in acc:
+                    found.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert found.wait(timeout), f"{needle!r} never arrived; got {bytes(acc)!r}"
+    return bytes(acc)
+
+
+def reaped(pid):
+    """True once `pid` is gone for good — exited *and* waited for."""
+    try:
+        return os.waitpid(pid, os.WNOHANG)[0] != 0
+    except OSError:
+        return True
 
 
 def wait_for(predicate, timeout=3.0):
@@ -295,6 +332,159 @@ def test_notify_rides_the_out_queue_as_text(client, bridge):
 
 
 # ---------------------------------------------------------------------------
+# Linger and adoption
+# ---------------------------------------------------------------------------
+# A socket that simply went away leaves its PTY up for LINGER_S, so the phone's
+# reconnect can take the same PTY back instead of running a second `tmux
+# attach` — an attach is activity, and activity is what hands the shared window
+# to whoever attached (see the real-tmux tests below).
+
+@pytest.fixture
+def short_linger(monkeypatch):
+    """Linger long enough to observe, short enough to wait out in a test."""
+    monkeypatch.setattr(A, "LINGER_S", 0.4)
+
+
+def test_a_lost_socket_leaves_the_pty_lingering_for_the_reconnect(client, bridge):
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        att = A.ATTACHED["phone-work"]
+        ws.send_bytes(b"before\n")
+        collect_bytes(ws, b"before")
+
+    # The socket is gone; the PTY is not, and the slot still holds it.
+    assert wait_for(lambda: not A.ATTACHED["phone-work"].live)
+    assert A.ATTACHED["phone-work"] is att
+    os.kill(att.pid, 0)   # raises if the child was reaped
+
+    with client.websocket_connect("/ws/attach/work") as ws2:
+        hello(ws2)
+        assert wait_for(lambda: A.ATTACHED["phone-work"].live)
+        # Adopted, not respawned: same object, same PTY, same tmux client.
+        assert A.ATTACHED["phone-work"] is att
+        assert A.ATTACHED["phone-work"].pid == att.pid
+        # And the adopted bridge carries input straight away.
+        ws2.send_bytes(b"after\n")
+        collect_bytes(ws2, b"after")
+
+
+def test_linger_expiry_reaps_the_pty_and_the_next_connect_is_fresh(
+        client, bridge, short_linger):
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        att = A.ATTACHED["phone-work"]
+
+    assert wait_for(lambda: "phone-work" not in A.ATTACHED, timeout=5)
+    # Reaped, not merely forgotten — a zombie would still be waitable.
+    assert wait_for(lambda: reaped(att.pid), timeout=5)
+
+    with client.websocket_connect("/ws/attach/work") as ws2:
+        hello(ws2)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        assert A.ATTACHED["phone-work"].pid != att.pid
+
+
+def test_a_superseding_connection_still_retires_rather_than_adopts(client, bridge):
+    # The other takeover: the old socket is still live, so it must be told to
+    # go, and the new connection gets its own PTY.
+    with client.websocket_connect("/ws/attach/work") as first:
+        hello(first)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        original = A.ATTACHED["phone-work"]
+        with client.websocket_connect("/ws/attach/work") as second:
+            hello(second)
+            assert wait_for(lambda: A.ATTACHED.get("phone-work") not in
+                            (None, original))
+            assert A.ATTACHED["phone-work"].pid != original.pid
+            assert wait_for(lambda: reaped(original.pid))
+            second.send_bytes(b"mine\n")
+            collect_bytes(second, b"mine")
+
+
+def test_adoption_skips_an_unchanged_resize_but_applies_a_real_one(
+        client, bridge, monkeypatch):
+    # The client re-sends its size on every connect. Re-applying it would be a
+    # resize tmux counts as activity, so an unchanged size must not reach the
+    # ioctl; a rotation must.
+    calls = []
+    real = A.set_winsize
+
+    def spy(fd, cols, rows):
+        changed = real(fd, cols, rows)
+        calls.append((cols, rows, changed))
+        return changed
+
+    monkeypatch.setattr(A, "set_winsize", spy)
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws, cols=90, rows=30)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        fd = A.ATTACHED["phone-work"].fd
+    assert wait_for(lambda: not A.ATTACHED["phone-work"].live)
+
+    with client.websocket_connect("/ws/attach/work") as ws2:
+        hello(ws2, cols=90, rows=30)
+        assert wait_for(lambda: A.ATTACHED["phone-work"].live)
+        assert wait_for(lambda: calls and calls[-1] == (90, 30, False))
+    assert wait_for(lambda: not A.ATTACHED["phone-work"].live)
+
+    with client.websocket_connect("/ws/attach/work") as ws3:
+        hello(ws3, cols=44, rows=30)
+        assert wait_for(lambda: calls and calls[-1] == (44, 30, True))
+
+        def winsize():
+            rows, cols = struct.unpack(
+                "HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))[:2]
+            return cols, rows
+
+        assert wait_for(lambda: winsize() == (44, 30)), winsize()
+
+
+def test_the_server_going_down_takes_a_lingering_pty_with_it(bridge):
+    # A lingering PTY has no handler of its own to notice the shutdown, so the
+    # lifespan reaps it — otherwise its tmux client would outlive the server.
+    with TestClient(A.app) as c:
+        with c.websocket_connect("/ws/attach/work") as ws:
+            hello(ws)
+            assert wait_for(lambda: "phone-work" in A.ATTACHED)
+            att = A.ATTACHED["phone-work"]
+        assert wait_for(lambda: not A.ATTACHED["phone-work"].live)
+    assert "phone-work" not in A.ATTACHED
+    assert wait_for(lambda: reaped(att.pid))
+
+
+def test_a_lingering_attachment_is_neither_present_nor_notified():
+    # The push gate and the chip channel both key on a live socket. A PTY
+    # lingering while the phone is locked must count for neither, or the
+    # notification it exists to allow would be suppressed.
+    att = A.Attachment(0, -1, asyncio.Queue(), session="work", dev="phone")
+    att.visible = True
+    A.ATTACHED["unit-view"] = att
+    try:
+        assert A.visible_devs() == {"phone"}
+        A.notify_session_views("work", "chips")
+        assert att.out.qsize() == 1
+
+        att.live = False
+        assert A.visible_devs() == set()
+        A.notify_session_views("work", "chips")
+        assert att.out.qsize() == 1
+    finally:
+        del A.ATTACHED["unit-view"]
+
+
+def test_a_dropped_socket_takes_its_visibility_with_it(client, bridge):
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        ws.send_text(json.dumps({"type": "visibility", "visible": True}))
+        assert wait_for(lambda: A.visible_devs() == {"phone"})
+    assert wait_for(lambda: not A.ATTACHED["phone-work"].live)
+    assert A.visible_devs() == set()
+
+
+# ---------------------------------------------------------------------------
 # Integration: the real tmux, on an isolated server
 # ---------------------------------------------------------------------------
 
@@ -311,13 +501,69 @@ class TestRealTmux:
     def isolated_server(self, monkeypatch):
         monkeypatch.setattr(A, "TMUX_BIN", list(TMUX_TEST_BIN))
         monkeypatch.setattr(A, "AUTH_TOKEN", None)
+        self._ptys = []
+        self._stop = threading.Event()
         yield
+        self._stop.set()
+        for pid, fd in self._ptys:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGHUP)
+            except OSError:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except OSError:
+                pass
         subprocess.run([*TMUX_TEST_BIN, "kill-server"],
                        capture_output=True, timeout=10)
 
-    def new_session(self, name):
-        rc, _ = A.tmux("new-session", "-d", "-s", name, "-x", "80", "-y", "24")
+    def new_session(self, name, cols=80, rows=24):
+        rc, _ = A.tmux("new-session", "-d", "-s", name,
+                       "-x", str(cols), "-y", str(rows))
         assert rc == 0, f"could not create {name}"
+
+    # -- the laptop half of the pair ---------------------------------------
+
+    def laptop(self, session, cols=200, rows=50):
+        """An ordinary tmux client of `session` on its own PTY.
+
+        Not a WebSocket: this is the desktop terminal the phone shares the
+        window with, and the client whose size the phone must stop stealing.
+        Its screen is read and dropped by a thread for the life of the test —
+        a tmux client whose tty nobody reads blocks on its own repaint and then
+        stops answering keys, which would look exactly like the bug.
+        """
+        pid, fd = A.spawn_pty(
+            [*TMUX_TEST_BIN, "attach", "-t", f"={session}"], cols, rows)
+        os.set_blocking(fd, False)
+        self._ptys.append((pid, fd))
+
+        def drain():
+            while not self._stop.is_set():
+                try:
+                    if not os.read(fd, 1 << 16):
+                        return
+                except BlockingIOError:
+                    time.sleep(0.01)
+                except OSError:
+                    return
+
+        threading.Thread(target=drain, daemon=True).start()
+        assert wait_for(lambda: self.clients(session) != [])
+        return fd
+
+    def width(self, session="base"):
+        rc, out = A.tmux("display-message", "-p", "-t", session,
+                         "#{window_width}")
+        return out.strip() if rc == 0 else ""
+
+    def clients(self, session):
+        rc, out = A.tmux("list-clients", "-t", session, "-F", "#{client_tty}")
+        return out.split() if rc == 0 else []
 
     def test_list_and_representative_rule(self):
         self.new_session("base")
@@ -392,3 +638,161 @@ class TestRealTmux:
     def test_capture_history_is_empty_for_a_fresh_session(self):
         self.new_session("blank")
         assert A.capture_history("blank") == ""
+
+    # -- the pair: a phone and a laptop on one window -----------------------
+
+    def test_activity_still_decides_the_shared_window_size(self, client):
+        # The baseline the linger exists to protect. tmux's `window-size
+        # latest` is the behaviour the user wants: whoever was active last owns
+        # the size, so the phone attaching claims it and the laptop's next
+        # keystroke claims it straight back — with the phone still attached.
+        self.new_session("base", cols=200, rows=50)
+        lap = self.laptop("base")
+        assert wait_for(lambda: self.width() == "200"), self.width()
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            assert wait_for(lambda: self.width() == "40"), self.width()
+            os.write(lap, b"echo laptop-typing\n")
+            assert wait_for(lambda: self.width() == "200"), self.width()
+            # And it stays there while the phone sits idle.
+            time.sleep(0.5)
+            assert self.width() == "200"
+
+    def test_reconnect_churn_never_resizes_the_shared_window(self, client):
+        # The bug: the phone's socket dies seconds after the app backgrounds
+        # and comes back on a 0.5–5 s backoff. Every reconnect used to be a
+        # fresh `tmux attach`, which is activity, which snapped the laptop's
+        # window to phone size until the next keystroke snapped it back. That
+        # churn is the flicker; adoption removes it.
+        self.new_session("base", cols=200, rows=50)
+        lap = self.laptop("base")
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            # The first attach is a real one and claims the window, as it
+            # should; the laptop takes it back. Both are waited for, or the
+            # churn below would start from an unsettled size.
+            assert wait_for(lambda: self.width() == "40"), self.width()
+            os.write(lap, b"echo laptop-typing\n")
+            assert wait_for(lambda: self.width() == "200"), self.width()
+        phone_tty = self.clients("phone-base")
+        assert len(phone_tty) == 1
+
+        widths = []
+        stop = threading.Event()
+
+        def sample():
+            while not stop.is_set():
+                widths.append(self.width())
+                time.sleep(0.05)
+
+        sampler = threading.Thread(target=sample, daemon=True)
+        sampler.start()
+        try:
+            for n in range(5):
+                with client.websocket_connect("/ws/attach/base") as ws:
+                    hello(ws, cols=40, rows=20)
+                    assert wait_for(lambda: A.ATTACHED["phone-base"].live)
+                    # The laptop keeps working through the churn.
+                    os.write(lap, f"echo round-{n}\n".encode())
+                    time.sleep(0.2)
+                assert wait_for(lambda: not A.ATTACHED["phone-base"].live)
+                # Same tmux client throughout: tmux saw neither a detach nor
+                # an attach, which is why nothing resized.
+                assert self.clients("phone-base") == phone_tty
+        finally:
+            stop.set()
+            sampler.join(timeout=2)
+        assert set(widths) == {"200"}, sorted(set(widths))
+
+    def test_an_adopted_reconnect_gets_the_output_it_missed(self, client):
+        self.new_session("base", cols=200, rows=50)
+        lap = self.laptop("base")
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            assert wait_for(lambda: self.clients("phone-base") != [])
+        assert wait_for(lambda: not A.ATTACHED["phone-base"].live)
+
+        # Output produced while the phone had no socket at all. The PTY is
+        # still being drained, so tmux is not blocked on it.
+        os.write(lap, b"echo GAPMARK\n")
+        assert wait_for(lambda: b"GAPMARK" in subprocess.run(
+            [*TMUX_TEST_BIN, "capture-pane", "-p", "-t", "base"],
+            capture_output=True).stdout)
+
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            # The adopted PTY never re-attached, so tmux has no reason to
+            # repaint by itself — redraw_view is what puts the screen the
+            # phone missed on the wire, as PTY bytes rather than as the
+            # scrollback replay that precedes them.
+            collect_binary(ws, b"GAPMARK")
+            # Input works immediately after the adoption.
+            ws.send_bytes(b"echo ADOPTED-INPUT\n")
+            collect_binary(ws, b"ADOPTED-INPUT")
+
+    def test_linger_expiry_detaches_and_the_next_connect_re_attaches(
+            self, client, monkeypatch):
+        monkeypatch.setattr(A, "LINGER_S", 0.5)
+        self.new_session("base", cols=200, rows=50)
+        lap = self.laptop("base")
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            assert wait_for(lambda: A.ATTACHED.get("phone-base") is not None)
+            pid = A.ATTACHED["phone-base"].pid
+            assert wait_for(lambda: self.width() == "40"), self.width()
+            os.write(lap, b"echo laptop-typing\n")
+            assert wait_for(lambda: self.width() == "200"), self.width()
+
+        # Nobody came back: the PTY goes, and with it the tmux client.
+        assert wait_for(lambda: "phone-base" not in A.ATTACHED, timeout=5)
+        assert wait_for(lambda: self.clients("phone-base") == [])
+        assert wait_for(lambda: reaped(pid), timeout=5)   # no zombie either
+        assert self.width() == "200"
+
+        # Picking the phone back up later is a real attach again — and a real
+        # attach claiming the window size is the behaviour to keep.
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            assert wait_for(lambda: self.width() == "40"), self.width()
+
+    def test_killing_the_session_takes_a_lingering_pty_with_it(self, client):
+        self.new_session("base", cols=200, rows=50)
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            assert wait_for(lambda: self.clients("phone-base") != [])
+            pid = A.ATTACHED["phone-base"].pid
+        assert wait_for(lambda: not A.ATTACHED["phone-base"].live)
+
+        r = client.post("/api/session/kill", json={"session": "base"})
+        assert r.status_code == 200
+        # The child loses its session, the drain sees the PTY hang up, and the
+        # linger ends there rather than at its timeout.
+        assert wait_for(lambda: "phone-base" not in A.ATTACHED, timeout=5)
+        assert wait_for(lambda: reaped(pid), timeout=5)
+
+    def test_attaching_heals_the_0_8_118_size_pins(self, client):
+        self.new_session("base", cols=200, rows=50)
+        rc, _ = A.tmux("new-session", "-d", "-s", "phone-base", "-t", "base")
+        assert rc == 0
+        # Exactly what build 0.8.118 wrote into the user's tmux server.
+        A.tmux("set-option", "-w", "-t", "phone-base", "window-size", "smallest")
+        A.tmux("set-option", "-w", "-t", "phone-base", "aggressive-resize", "on")
+        A.tmux("set-hook", "-t", "phone-base", "window-linked",
+               "set-option -w window-size smallest")
+        A.tmux("set-hook", "-a", "-t", "phone-base", "window-linked",
+               "set-option -w aggressive-resize on")
+        assert A.tmux("show-hooks", "-t", "phone-base")[1].count(
+            "window-linked") == 2
+
+        def pins():
+            rc, out = A.tmux("list-windows", "-t", "base", "-F",
+                             "#{window-size} #{aggressive-resize}")
+            return out.strip()
+
+        assert pins() == "smallest 1"
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            # Back to the inherited default: activity decides the size again.
+            assert wait_for(lambda: pins() == "latest 0"), pins()
+            assert wait_for(
+                lambda: A.tmux("show-hooks", "-t", "phone-base")[1].strip() == "")
