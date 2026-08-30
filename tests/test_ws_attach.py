@@ -360,6 +360,12 @@ def test_a_lost_socket_leaves_the_pty_lingering_for_the_reconnect(client, bridge
 
     with client.websocket_connect("/ws/attach/work") as ws2:
         hello(ws2)
+        # The adoption announces itself in place of the replay frame: tmux
+        # never re-initialises this client, so the terminal — and the modes
+        # tmux believes it set on it — must survive the reconnect unreset.
+        msg = ws2.receive()
+        assert msg.get("bytes") is None
+        assert json.loads(msg["text"]) == {"type": "adopted"}
         assert wait_for(lambda: A.ATTACHED["phone-work"].live)
         # Adopted, not respawned: same object, same PTY, same tmux client.
         assert A.ATTACHED["phone-work"] is att
