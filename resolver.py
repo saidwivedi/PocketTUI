@@ -1782,6 +1782,14 @@ def apply_rules(text: str, register: str) -> str:
         return text
 
     strict = register != "shell"
+    # One rule reaches past `strict`, and only one: the "slash X" opener that
+    # builds a rooted path. A Claude Code composer is the other place absolute
+    # paths are dictated — telling the agent which directory to work in is most
+    # of what gets said to it — so that register earns the opener even though it
+    # is otherwise the conservative one. An editor does not: there the same
+    # words are prose being typed into a document, and a "/" grown out of them
+    # would be a character the user has to go back and delete.
+    rooted_paths = register in ("shell", "claude")
     out: list[str] = []
     i = 0
     n = len(tokens)
@@ -1849,7 +1857,7 @@ def apply_rules(text: str, register: str) -> str:
                 i += 2
                 continue
 
-        if not strict and low == "slash" and i + 1 < n and _is_wordish(tokens[i + 1]):
+        if rooted_paths and low == "slash" and i + 1 < n and _is_wordish(tokens[i + 1]):
             # "cd to slash is slash cluster": the first slash has nothing on its
             # left worth joining — a command word or a preposition is not a path
             # segment — so it opens an absolute path instead. The rest of the
@@ -2349,6 +2357,50 @@ def _snap_merges(first: str, second: str, home: str, deadline: float) -> bool:
     return bool(_snap_segment(base, head, deadline))
 
 
+# What the salvage below has to leave behind: a path, not a pair of words. Two
+# segments is the same bar _snap_walk sets before it will probe the root at all,
+# so "either/or" and "input/output" are never worth a syscall.
+_GLUED_MIN_SEGMENTS = 2
+
+
+def _snap_glued(token: str, home: str, deadline: float) -> str:
+    """Split a rooted path the joiner pass glued a word onto, or return it as-is.
+
+    apply_rules only turns a spoken "slash is slash cluster" into "/is/cluster"
+    where the word to its left leads a path ("cd to", "in"). After anything else
+    the generic joiner rule wins instead and glues the whole utterance into one
+    unrooted token — "folder/is/cluster/fast/stvi/work" — which snap_paths would
+    otherwise never examine, because it is neither rooted nor a path relative to
+    the cwd. The path is all there; one word of the sentence is stuck to it.
+
+    The filesystem decides where the seam is. Each "/" is tried left to right,
+    and the first one whose remainder begins with a real directory of the root
+    ("/is") is taken as the boundary the speaker left between their sentence and
+    their path. Nothing weaker counts: that head must exist exactly, so a token
+    whose remainder roots nowhere comes back untouched. Everything past the head
+    is left to the ordinary walk, which is where the digit guard and the scoring
+    thresholds already live — this only decides where the path starts.
+    """
+    if _PATH_TOKEN_RE.match(token) or "/" not in token:
+        return token
+    if not _REL_PATH_TOKEN_RE.match(token):
+        return token
+    segments = [s for s in token.split("/") if s]
+    # The seam needs a word on its left and a whole path on its right.
+    for cut in range(1, len(segments) - _GLUED_MIN_SEGMENTS + 1):
+        if deadline and time.monotonic() > deadline:
+            break
+        if not _snap_resolves_to_dir("/" + segments[cut], home):
+            continue
+        rooted = "/" + "/".join(segments[cut:])
+        # Two tokens where there was one: snap_paths joins its output on spaces,
+        # so returning the halves joined the same way puts the space back where
+        # the speaker left it.
+        return "/".join(segments[:cut]) + " " \
+            + _snap_walk(rooted, home, deadline)
+    return token
+
+
 def snap_paths(text: str, budget: float = PATH_SNAP_BUDGET_S,
                cwd: str = "") -> str:
     """Correct dictated path tokens against the filesystem. Never raises.
@@ -2383,12 +2435,15 @@ def snap_paths(text: str, budget: float = PATH_SNAP_BUDGET_S,
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            if not is_path_token(token):
-                out.append(token)
-                i += 1
-                continue
             body = token.rstrip(_PATH_TRAIL)
             trail = token[len(body):]
+            if not is_path_token(token):
+                # Not a path by shape — but a rooted one the joiner pass glued a
+                # word onto is not path-shaped either, so this is the last place
+                # it can be recognized.
+                out.append(_snap_glued(body, home, deadline) + trail)
+                i += 1
+                continue
             # A split path is merged before the walk, so the walk sees the whole
             # thing and can carry a corrected prefix into the second half. The
             # merge reads both halves as rooted paths, so it stays confined to
@@ -2402,7 +2457,14 @@ def snap_paths(text: str, budget: float = PATH_SNAP_BUDGET_S,
                 body = body.rstrip("/") + "/" + nxt_body.lstrip("/")
                 trail = nxt[len(nxt_body):]
                 i += 1
-            out.append(_snap_walk(body, home, deadline, base) + trail)
+            walked = _snap_walk(body, home, deadline, base)
+            # A relative token the cwd could not explain gets the same second
+            # look: with a cwd set, the glued token is relative-shaped and lands
+            # here rather than in the branch above, and the walk it just failed
+            # was against the wrong directory entirely.
+            if walked == body and not _PATH_TOKEN_RE.match(body):
+                walked = _snap_glued(body, home, deadline)
+            out.append(walked + trail)
             i += 1
         return " ".join(out)
     except Exception:  # noqa: BLE001 — a snap failure must not cost the transcript

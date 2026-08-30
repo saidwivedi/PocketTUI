@@ -73,6 +73,18 @@ def no_engine_override(monkeypatch):
     monkeypatch.setattr(A, "PARAKEET_DIR", Path("/nonexistent-parakeet"))
 
 
+@pytest.fixture(autouse=True)
+def no_hotword_username(monkeypatch):
+    """No login name in the hotword list, whoever is running the suite.
+
+    The list reserves the username unconditionally, so leaving the real one in
+    place would make every exact-match assertion about hotwords depend on the
+    account the suite ran under. The tests that are about the reservation put a
+    name back.
+    """
+    monkeypatch.setattr(A, "_hotword_username", lambda: "")
+
+
 @pytest.fixture
 def installed(tmp_path, monkeypatch):
     """A voice/ directory that looks complete without containing a real model."""
@@ -561,6 +573,61 @@ def test_an_empty_vocabulary_is_an_empty_string(monkeypatch):
     monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
     assert A.parakeet_hotwords(history=[], learned=[]) == ""
     assert A.parakeet_hotwords() == ""
+
+
+def test_the_username_is_in_the_vocabulary_whatever_else_is(monkeypatch):
+    """Home and project paths are dictated constantly, and the username is the
+    one word every one of them ends up needing. Before this it rode along only
+    when the scrollback happened to hold it."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    monkeypatch.setattr(A, "_hotword_username", lambda: "sdwivedi")
+    assert lines_of(A.parakeet_hotwords()) == ["sdwivedi"]
+    assert lines_of(A.parakeet_hotwords(history=[], learned=[])) == ["sdwivedi"]
+
+
+def test_the_username_sits_behind_the_learned_words_and_ahead_of_history(
+        monkeypatch):
+    """Learned words are still the strongest evidence here; everything the user
+    merely typed is behind the one word they cannot do without."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    monkeypatch.setattr(A, "_hotword_username", lambda: "sdwivedi")
+    text = A.parakeet_hotwords(history=["micromamba"], learned=["tokenhmr"])
+    assert lines_of(text) == ["tokenhmr", "sdwivedi", "micromamba"]
+
+
+def test_the_username_buys_one_slot_even_when_history_has_it(monkeypatch):
+    """A user whose own name is all over their history reserves it once."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    monkeypatch.setattr(A, "_hotword_username", lambda: "sdwivedi")
+    text = A.parakeet_hotwords(history=["sdwivedi", "sbatch", "sdwivedi"])
+    assert lines_of(text) == ["sdwivedi", "sbatch"]
+
+
+def test_the_username_survives_a_history_that_fills_the_cap(monkeypatch):
+    """The reservation is what makes it a guarantee: 900 typed words cannot
+    push it out of the 500 slots."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    monkeypatch.setattr(A, "_hotword_username", lambda: "sdwivedi")
+    lines = lines_of(A.parakeet_hotwords(history=[f"hmr{n}x" for n in range(900)]))
+    assert lines[0] == "sdwivedi"
+    assert len(lines) == A.MAX_HOTWORDS
+
+
+def test_the_username_bypasses_the_filters_history_words_face(monkeypatch):
+    """A login name is a name, and no shape test would know that: "local" as a
+    username is the word the decoder needs, not the English one it drops."""
+    monkeypatch.delenv("POCKETTUI_HOTWORD_SCORE", raising=False)
+    monkeypatch.setattr(A, "_hotword_username", lambda: "local")
+    assert lines_of(A.parakeet_hotwords(history=["local"])) == ["local"]
+
+
+def test_a_login_with_no_readable_name_costs_one_word_not_the_decode(
+        monkeypatch):
+    """getuser() reads passwd and the environment; both can fail on a machine
+    the server is otherwise perfectly able to transcribe on."""
+    monkeypatch.setattr(A.getpass, "getuser",
+                        lambda: (_ for _ in ()).throw(OSError("no passwd")))
+    assert A._hotword_username() == ""
 
 
 def test_the_boost_cannot_reach_the_cliff(monkeypatch):

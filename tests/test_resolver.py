@@ -164,6 +164,21 @@ def test_rules_absolute_paths_and_cd(spoken, expected):
     assert R.apply_rules(spoken, "shell") == expected
 
 
+@pytest.mark.parametrize("register,expected", [
+    # Dictating a path to a Claude Code composer is what the composer is for,
+    # so the opener follows the user there...
+    ("shell", "go to /is/cluster/fast"),
+    ("claude", "go to /is/cluster/fast"),
+    # ...and no further: in an editor the same words are a sentence being
+    # typed, and the joiner rule's glued token is the accepted reading.
+    ("editor", "go to/is/cluster/fast"),
+])
+def test_rules_open_a_rooted_path_outside_the_shell_too(register, expected):
+    """The one strict-register exception, and the register it stops at."""
+    assert R.apply_rules("go to slash is slash cluster slash fast",
+                         register) == expected
+
+
 @pytest.mark.parametrize("spoken,register,expected", [
     # Mid-sentence is not command position: the word stays a word.
     ("that seedy pattern", "shell", "that seedy pattern"),
@@ -579,6 +594,35 @@ def test_a_relative_token_is_never_rooted_at_the_filesystem_root(relproj):
         assert not R.snap_paths(text, cwd=relproj).startswith("/")
     assert R._snap_walk("tests/test_camerahmr.py", os.path.expanduser("~"), 0) == \
         "tests/test_camerahmr.py"
+
+
+def test_snap_splits_a_word_the_joiner_glued_onto_a_rooted_path(tree):
+    """The failure this salvage exists for: "slash is slash cluster" spoken
+    after a word that does not lead a path is glued into one unrooted token,
+    which nothing downstream would have looked at. "/tmp" is a real directory
+    of the root, so that is where the sentence ends and the path begins."""
+    spoken = f"folder{tree}/claster/fast"
+    assert R.snap_paths(spoken) == f"folder {tree}/cluster/fast"
+
+
+def test_snap_salvages_a_glued_path_the_cwd_cannot_explain(tree, relproj):
+    """With a cwd set the glued token is relative-shaped, so it is walked
+    against the wrong directory first. Failing there is not the answer."""
+    spoken = f"folder{tree}/claster/fast"
+    assert R.snap_paths(spoken, cwd=relproj) == f"folder {tree}/cluster/fast"
+
+
+def test_snap_does_not_split_a_pair_of_words():
+    """"/tmp" exists, but one segment behind it is not a path — without this
+    the salvage would put a space inside every "input/output" ever dictated."""
+    assert R.snap_paths("notes/tmp") == "notes/tmp"
+
+
+def test_snap_leaves_a_glued_token_that_roots_nowhere_alone():
+    """No boundary whose remainder starts at a real root directory means no
+    evidence of a path, and the token comes back exactly as it came in."""
+    spoken = "pancake/qqqqqqqq/wagon"
+    assert R.snap_paths(spoken) == spoken
 
 
 @pytest.mark.parametrize("text", [
