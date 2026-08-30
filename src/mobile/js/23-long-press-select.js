@@ -4,7 +4,9 @@
 // A phone has no right-click and no modifier to hold, so getting text out of the
 // terminal is a long press: hold still for half a second and the word under the
 // finger is selected, keep dragging and the selection follows, let go and a pill
-// offers to copy it. The whole gesture is ours from the moment the timer fires —
+// offers to copy it. Two places have no word to offer: blank space, and the row
+// the cursor is on, where the user is typing rather than reading — both come up
+// as a Paste pill instead. The whole gesture is ours from the moment the timer fires —
 // termGesture keeps drag-to-scroll out of it, and preventDefault keeps iOS from
 // answering the same press with its magnifier.
 //
@@ -22,10 +24,14 @@
   const pill = $("sel-pill");
   const handles = { start: $("sel-handle-start"), end: $("sel-handle-end") };
   const HOLD_MS = 350;   // how long the finger has to stay put
-  const SLOP = 10;       // px of travel that cancels the hold
 
   let timer = null;
   let startX = 0, startY = 0;
+  // px of travel that cancels the hold, measured fresh at each touchstart because
+  // a pinch changes it. One cell height is deliberate: drag-to-scroll claims the
+  // touch at exactly that much travel, so there is no band where the hold has
+  // been cancelled but no scroll has started and the touch decays into a tap.
+  let holdSlop = 17;
   // The two ends of the selection, in absolute buffer coordinates. During the
   // opening long-press these are the seeded word's ends and only grow outward;
   // once the handles are up either one can be moved anywhere the other allows.
@@ -172,9 +178,14 @@
     pill.style.top = top + "px";
   }
 
-  // The resting state after any gesture that leaves a selection standing.
+  // The resting state after any gesture that leaves a selection standing. There
+  // is text under the finger, so the pill is Copy/Cancel: pasting has nothing to
+  // do with the selection, and offering it here only invites pasting over it.
+  // Both classes are set on every path so neither can survive the previous pill.
   function showSelectionUI() {
     selActive = true;
+    pill.classList.remove("no-copy");
+    pill.classList.add("no-paste");
     placeHandles();
     placePill();
   }
@@ -272,6 +283,7 @@
     if (edgeSwipe || termGesture || !term || e.touches.length !== 1) return;
     const t = e.touches[0];
     startX = t.clientX; startY = t.clientY;
+    holdSlop = termCellSize().h || 17;
     timer = setTimeout(() => {
       timer = null;
       // The hold survived, so this touch is a selection from here on and the
@@ -279,7 +291,17 @@
       termGesture = "select";
       abortDragScroll();
       const cell = termCellAt(startX, startY);
-      const bufRow = cell.row + term.buffer.active.viewportY;
+      const buf = term.buffer.active;
+      const bufRow = cell.row + buf.viewportY;
+      // The row the cursor is on is where the user is typing, so a press there is
+      // asking to paste into what they are typing, not to select the prompt text
+      // they can already see. Same in vim's alt screen, where it is the line being
+      // edited rather than a shell prompt.
+      if (bufRow === buf.baseY + buf.cursorY) {
+        head = tail = null;
+        dbg("select: cursor row at", cell.col + "," + bufRow, "-> paste only");
+        return;
+      }
       const [col, len] = wordAt(bufRow, cell.col);
       if (len === 0) {
         // Empty space: nothing to select, but a long press here is still how you
@@ -299,7 +321,7 @@
     if (timer) {
       // Still waiting on the hold: any real travel means this was a drag.
       const t = e.touches[0];
-      if (Math.abs(t.clientX - startX) > SLOP || Math.abs(t.clientY - startY) > SLOP) cancelHold();
+      if (Math.abs(t.clientX - startX) > holdSlop || Math.abs(t.clientY - startY) > holdSlop) cancelHold();
       return;
     }
     if (dragging) return;   // a handle owns this touch
@@ -316,12 +338,11 @@
     e.preventDefault();
     selectEndedAt = Date.now();
     // A press that found a word leaves it selected with handles on it; one that
-    // landed on empty space leaves the pill alone, offering Paste.
+    // selected nothing — empty space, or the cursor's own row — leaves the pill
+    // alone, offering Paste.
     if (head && term.getSelection()) {
-      pill.classList.remove("no-copy");
       showSelectionUI();
     } else {
-      pill.classList.add("no-copy");
       selActive = true;
       placePasteOnlyPill(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
     }
@@ -336,6 +357,8 @@
   // the press itself, on the same above-then-below rule as the other one.
   function placePasteOnlyPill(clientX, clientY) {
     const cell = termCellSize();
+    pill.classList.remove("no-paste");
+    pill.classList.add("no-copy");
     pill.classList.add("show");
     const box = pill.getBoundingClientRect();
     let left = clientX - box.width / 2;

@@ -523,9 +523,10 @@
 <div class="toast" id="toast"></div>
 
 <!-- Offered after a long press. Copy and Paste both have to run inside the tap
-     itself — iOS grants the clipboard only from a user gesture. Copy is hidden
-     when the press found no word to select, leaving Paste as the whole point of
-     a long press on empty space. -->
+     itself — iOS grants the clipboard only from a user gesture. Only ever one of
+     the two is on offer: a press that selected a word shows Copy, and a press
+     with nothing to select — empty space, or the prompt line itself — shows
+     Paste, which is the whole point of a long press there. -->
 <div id="sel-pill">
   <button type="button" id="btn-sel-copy">Copy</button>
   <button type="button" id="btn-sel-paste">Paste</button>

@@ -1555,7 +1555,7 @@ function pasteClipboardItems(items) {
       // Length only, never the text: a clipboard on this device may well be holding
       // a password, and the panel is on screen.
       dbg("paste: got " + (text ? text.length : 0) + " chars");
-      if (text && term) term.paste(text);
+      insertPastedText(text);
     }).catch(err => { dbg("paste: getType failed:", err); pasteClipboardText(); });
     return;
   }
@@ -1563,6 +1563,30 @@ function pasteClipboardItems(items) {
   // make something of it.
   dbg("paste: no image or text among " + list.length + " items");
   pasteClipboardText();
+}
+
+// Where pasted text lands, on the same rule insertImagePath() follows: with the
+// strip open the user is writing a message and the clipboard belongs at their
+// caret, replacing whatever was selected there; with it shut the terminal is
+// what they are looking at, so term.paste() sends it to the pty with bracketed
+// framing. Unlike a staged image path the text goes in verbatim — no padding
+// spaces — since it is what the user copied, not a token being attached. Focus
+// is left where it was: a paste over the terminal must not raise the keyboard
+// the user had put away.
+function insertPastedText(text) {
+  if (!text) return;
+  if (composeOpen) {
+    const ta = $("compose-text"), v = ta.value;
+    const start = Math.min(typeof ta.selectionStart === "number" ? ta.selectionStart : v.length, v.length);
+    const end = Math.min(typeof ta.selectionEnd === "number" ? ta.selectionEnd : start, v.length);
+    ta.value = v.slice(0, start) + text + v.slice(end);
+    const caret = start + text.length;
+    try { ta.setSelectionRange(caret, caret); } catch (e) {}
+    // Where the Send button learns it has something to send.
+    composeGrow();
+  } else if (term) {
+    term.paste(text);
+  }
 }
 
 // The original path, unchanged in what it does. On iOS this may already be
@@ -1578,7 +1602,7 @@ function pasteClipboardText() {
     // Length only, never the text: a clipboard on this device may well be holding
     // a password, and the panel is on screen.
     dbg("paste: got " + (text ? text.length : 0) + " chars");
-    if (text && term) term.paste(text);
+    insertPastedText(text);
   }).catch(err => { dbg("paste failed:", err); toast("Clipboard blocked"); });
 }
 
