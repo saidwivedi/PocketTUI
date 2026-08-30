@@ -829,9 +829,10 @@ def redraw_view(view: str) -> None:
     """Force a full repaint of whatever client is on `view`.
 
     An adopted PTY never detached, so tmux has no reason to repaint — but the
-    reconnecting client resets its terminal on the replay frame and would sit
-    on scrollback alone. refresh-client redraws that one client and, unlike an
-    attach, does not count as activity, so the shared window keeps its size.
+    reconnecting client missed whatever landed while its socket was down and
+    would sit on a stale screen. refresh-client redraws that one client and,
+    unlike an attach, does not count as activity, so the shared window keeps
+    its size.
     """
     rc, out = tmux("list-clients", "-t", view, "-F", "#{client_tty}")
     for tty in (out.split() if rc == 0 else []):
@@ -2931,6 +2932,79 @@ def set_winsize(fd: int, cols: int, rows: int) -> bool:
     return True
 
 
+def get_winsize(fd: int) -> tuple[int, int]:
+    """This PTY's (cols, rows), or (0, 0) if the fd is gone."""
+    try:
+        rows, cols = struct.unpack(
+            "HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))[:2]
+    except OSError:
+        return 0, 0
+    return cols, rows
+
+
+def window_size(view: str) -> tuple[int, int]:
+    """The (cols, rows) of the window this view is showing, or (0, 0).
+
+    The window is shared with every other client of the session group, so this
+    is the size the *laptop* is imposing when it differs from ours.
+    """
+    rc, out = tmux("display-message", "-p", "-t", view,
+                   "#{window_width}\t#{window_height}")
+    parts = out.strip().split("\t")
+    if rc != 0 or len(parts) != 2:
+        return 0, 0
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return 0, 0
+
+
+# The window a device is looking at should be sized for that device, and tmux
+# under `window-size latest` gives it to whichever client was active last.
+# Typing counts; a fresh attach counts; refresh-client does not, and neither
+# does re-writing a size tmux already has (see set_winsize). So the only way to
+# say "this client is the one being looked at" without faking a keystroke is a
+# *changed* winsize — hence the jiggle below.
+CLAIM_DEBOUNCE_S = 2.0
+
+
+async def claim_size(view: str, me: "Attachment") -> bool:
+    """Hand the shared window to this client's size. True if it jiggled.
+
+    Called on the hidden→visible edge: picking a device up is the user saying
+    they are looking at it, and before the linger (which suppresses the attach
+    that used to do this implicitly) that look happened to claim the window.
+    Nothing happens when the window already has our size — the common case, and
+    the one that keeps a foregrounded phone's reconnect churn silent — and at
+    most one claim lands per CLAIM_DEBOUNCE_S, so a burst of edges is one
+    resize rather than a flicker.
+    """
+    now = time.monotonic()
+    if now - me.last_claim < CLAIM_DEBOUNCE_S:
+        return False
+    me.last_claim = now
+    cols, rows = get_winsize(me.fd)
+    if not cols or not rows:
+        return False
+    if await asyncio.to_thread(window_size, view) == (cols, rows):
+        return False
+    # The socket may have gone while tmux was answering; the PTY is still ours
+    # through the linger, but a claim for a device that just left is not.
+    if not me.live:
+        return False
+    # Any real change, then back: tmux records the resize as this client's
+    # activity, and the size it settles on is the one we started with. Rows
+    # rather than cols, and away from the clamp so the first write is never
+    # swallowed as a no-op.
+    try:
+        set_winsize(me.fd, cols, rows - 1 if rows > 2 else rows + 1)
+        set_winsize(me.fd, cols, rows)
+    except OSError:
+        return False
+    log(f"claim size view={view} {cols}x{rows}")
+    return True
+
+
 # A bare $HOME/.terminfo (holding only the user's own terminal entry) makes
 # ncurses resolve TERM against that directory alone, so tmux dies with
 # "missing or unsuitable terminal: xterm-256color". Naming the system databases
@@ -3072,11 +3146,14 @@ class Attachment:
     `visible`/`last_seen` feed the push gate (visible_devs): the client
     reports its document visibility over the control channel, and every
     received frame stamps last_seen so a dead connection's stale "visible"
-    stops counting.
+    stops counting. The hidden→visible edge of that same report is also what
+    hands the shared window to this device (claim_size), which is why
+    `visible` survives a linger while everything else about the socket does
+    not.
     """
 
     __slots__ = ("pid", "fd", "out", "done", "retired", "session", "dev",
-                 "visible", "last_seen", "live", "linger_task")
+                 "visible", "last_seen", "last_claim", "live", "linger_task")
 
     def __init__(self, pid: int, fd: int, out: asyncio.Queue,
                  session: str = "", dev: str = "") -> None:
@@ -3100,6 +3177,8 @@ class Attachment:
         # never reports (an older frontend) must never suppress a push.
         self.visible = False
         self.last_seen = time.monotonic()
+        # When this attachment last claimed the shared window (claim_size).
+        self.last_claim = 0.0
 
     def retire(self) -> None:
         self.retired.set()
@@ -3110,8 +3189,16 @@ class Attachment:
         Synchronous on purpose, and called under the view's lock: cancelling
         the timer and claiming the PTY in one step is what stops the timer from
         reaping a PTY somebody just adopted. Everything scoped to a connection
-        rather than to the PTY starts over — the two handshake events, and the
-        push gate's visibility, which the new client reports for itself.
+        rather than to the PTY starts over — the two handshake events.
+
+        `visible` deliberately does not: it is a property of the device, not of
+        the socket, and the reconnect's own visible=true has to read as an edge
+        only when the device really went away. A phone that locked reported
+        hidden before iOS killed the socket, so it comes back to a False and
+        claims the window; a phone churning in the foreground never reported
+        hidden, so its reconnect is True→True and claims nothing. Nothing else
+        reads `visible` off a lingering attachment — the push gate takes only
+        live ones (visible_devs).
         """
         if self.linger_task is not None:
             self.linger_task.cancel()
@@ -3119,7 +3206,6 @@ class Attachment:
         self.live = True
         self.done = asyncio.Event()
         self.retired = asyncio.Event()
-        self.visible = False
         self.last_seen = time.monotonic()
 
     def notify(self, text: str) -> None:
@@ -3258,19 +3344,17 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
     view = view_name(session_name, dev)
     log(f"conn {cid} view={view}")
 
-    # Replay the tail of the pane's scrollback before the PTY exists, so the
-    # frame is on the wire ahead of any attach output and the client can paint
-    # history first, repaint on top. The *view's* pane is captured when there is
-    # one — its own current window is what this device was looking at — falling
-    # back to the base session for a first open. Empty (fresh session, alt
-    # screen, capture failure) means no frame at all: the client then resets on
-    # the first binary frame instead, exactly as it does against an old server.
+    # The tail of the pane's scrollback, captured before the PTY exists so the
+    # target is the one this device was last looking at. The *view's* pane when
+    # there is one, falling back to the base session for a first open. Empty
+    # (fresh session, alt screen, capture failure) means no frame at all: the
+    # client then resets on the first binary frame instead, exactly as it does
+    # against an old server. Whether it goes on the wire at all is decided
+    # below, once we know whether this connection attached or adopted; either
+    # way it is still ahead of any PTY byte, because nothing drains `out` onto
+    # the socket until pump_out starts.
     target = resolve_target(session_name, dev)
-    if target:
-        history = await asyncio.to_thread(capture_history, target)
-        if history:
-            await ws.send_text(json.dumps(
-                {"type": "replay", "data": history.replace("\n", "\r\n")}))
+    history = await asyncio.to_thread(capture_history, target) if target else ""
 
     # Claim the view's PTY — adopt a lingering one, or retire a live one and
     # spawn ours — as one atomic step, so two connections can never be pumping
@@ -3305,6 +3389,14 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         pid, fd, out = me.pid, me.fd, me.out
 
     if adopted:
+        # No replay: the client must keep the terminal it already has. tmux saw
+        # neither a detach nor an attach, so it will not re-initialise this
+        # client — the modes it set once (mouse tracking, bracketed paste,
+        # application cursor keys) live only in the client's terminal, and the
+        # reset that painting a replay frame costs would take them with it,
+        # leaving scroll dead until the next fresh attach. This frame says so;
+        # redraw_view below puts the screen back over whatever is still there.
+        await ws.send_text(json.dumps({"type": "adopted"}))
         # The reader is already on this fd from the connection that spawned it.
         # Only the size and the repaint are this connection's to do: the client
         # re-sends its size on every connect, and a size tmux already has must
@@ -3313,6 +3405,12 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         set_winsize(fd, cols, rows)
         asyncio.create_task(asyncio.to_thread(redraw_view, view))
     else:
+        # A real attach: tmux re-initialises the client, so the terminal is
+        # about to be rewritten anyway and history goes out first for the
+        # repaint to land on top of.
+        if history:
+            await ws.send_text(json.dumps(
+                {"type": "replay", "data": history.replace("\n", "\r\n")}))
         # Off-thread: waits for the session the attach child is spawning.
         asyncio.create_task(asyncio.to_thread(prepare_view, view))
 
@@ -3377,7 +3475,13 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                     set_winsize(fd, ctl.get("cols", 80), ctl.get("rows", 24))
                     continue
                 if ctl and ctl.get("type") == "visibility":
+                    was = me.visible
                     me.visible = bool(ctl.get("visible"))
+                    # Looking at this device again is what claims the shared
+                    # window for it — the edge only, so the report every
+                    # connect carries leaves a foregrounded phone alone.
+                    if me.visible and not was:
+                        asyncio.create_task(claim_size(view, me))
                     continue
             os.write(fd, text.encode("utf-8"))
             watch_saw_input(session_name)
@@ -3405,10 +3509,10 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                      and ATTACHED.get(view) is me)
         if lingering:
             me.live = False
-            # The push gate reads visibility off live sockets only; leaving a
-            # stale "visible" behind would suppress notifications for a phone
-            # that is in the user's pocket.
-            me.visible = False
+            # `visible` is left exactly as the device last reported it, so the
+            # reconnect can tell a phone that locked from one that never left
+            # the foreground (see Attachment.adopt). Nothing believes it
+            # meanwhile: the push gate reads live sockets only (visible_devs).
             me.linger_task = asyncio.create_task(linger_pty(view, me, loop))
         elif ATTACHED.get(view) is me:
             del ATTACHED[view]
@@ -4075,6 +4179,9 @@ def visible_devs() -> set[str]:
     Presence is a property of the socket, never of the PTY: an attachment
     lingering after its socket died (see linger_pty) is a phone in a pocket,
     and counting it would swallow exactly the notifications that phone needs.
+    `live` is what enforces that — a lingering attachment keeps the visibility
+    its device last reported (Attachment.adopt needs it) and is excluded here
+    however that reads.
 
     Read from the watcher's worker thread, written on the event loop — the
     same GIL-protected-dict discipline WATCHER lives under.
