@@ -1412,6 +1412,20 @@ def _hotword_pieces(word: str) -> list[str]:
     return pieces
 
 
+def _hotword_username() -> str:
+    """The login name, or "" when there is none to read.
+
+    The one word in the list that comes from the machine rather than from
+    anything the request carried, so it is read here rather than passed in.
+    Never raises: an account whose name the system will not give up costs the
+    vocabulary one word, not the decode.
+    """
+    try:
+        return str(getpass.getuser()).strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def parakeet_hotwords(history: list[str] | None = None,
                       learned: list[str] | None = None) -> str:
     """The vocabulary of this request as the hotwords string sherpa-onnx reads.
@@ -1425,9 +1439,16 @@ def parakeet_hotwords(history: list[str] | None = None,
 
     Learned words come first because they are the strongest evidence this
     server has — the user corrected this exact word by hand — and because the
-    cap is a real one at this vocabulary's size. History and ssh hosts follow
-    in the order they arrive, which history_vocabulary() has already sorted by
-    how often and how recently the user typed them.
+    cap is a real one at this vocabulary's size. The login username comes next,
+    always and from the system rather than from any source passed in: home and
+    project paths are dictated constantly, and it is the one word whose absence
+    is felt on every one of them. Reserving it here is what makes it a
+    guarantee — Parakeet only ever had it when the scrollback happened to, and
+    a decode with a cold history is exactly when the word is hardest to hear.
+    Ahead of history is far enough: nothing the user merely typed can crowd it
+    out of the cap. History and ssh hosts follow in the order they arrive, which
+    history_vocabulary() has already sorted by how often and how recently the
+    user typed them.
 
     History and ssh words are filtered twice more on the way in, because both
     of the ways that source wastes the cap are mechanical. Bare English is
@@ -1439,13 +1460,18 @@ def parakeet_hotwords(history: list[str] | None = None,
     the prompt's shape test: shape is a guess at whether the model needs a word,
     and a learned word carries the answer.
 
-    Empty in, empty out: a machine with no history and nothing learned gets no
-    hotwords argument at all rather than an empty one.
+    Empty in, near-empty out: a machine with no history and nothing learned is
+    left with the username alone, and one whose login has no name at all gets no
+    hotwords argument rather than an empty one.
     """
     ordered: list[str] = []
     seen: set[str] = set()
     families: set[str] = set()
-    for source, trusted in ((learned or [], True), (history or [], False)):
+    # The username is a source of its own, between the two, and trusted like the
+    # learned words: it is a name with no pronunciation to be right about, and
+    # nothing about its shape would tell the filters that.
+    for source, trusted in ((learned or [], True), ([_hotword_username()], True),
+                            (history or [], False)):
         for word in source:
             for piece in _hotword_pieces(word):
                 key = piece.lower()
