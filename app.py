@@ -79,7 +79,9 @@ async def lifespan(app: FastAPI):
     The watcher (see "Pane watcher & notifications" below) is the one piece of
     this server that acts without a request to answer, so it lives as a task
     the lifespan owns: started once the app is up, cancelled — and awaited, so
-    a mid-tick capture finishes cleanly — on the way down.
+    a mid-tick capture finishes cleanly — on the way down. The way down also
+    takes any PTY still lingering without a socket (see linger_pty), which has
+    no handler of its own to notice the shutdown.
     """
     task = asyncio.create_task(watcher_loop())
     try:
@@ -90,6 +92,7 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+        await reap_lingering()
 
 
 app = FastAPI(title="PocketTUI", lifespan=lifespan)
@@ -742,9 +745,9 @@ def attach_argv(target: str, view: str) -> list[str]:
 
     A grouped session shares the target's window objects but keeps its own
     current window, so the phone can sit on a different window than the laptop.
-    Size is not private that way: it is a property of the shared window, so two
-    clients on the same window do fight over it — see pin_view_size, which
-    settles that fight on the smallest one. Reuse the view across reconnects
+    Size is not private that way: it belongs to the shared window, and tmux's
+    `window-size latest` gives that window the size of whichever client was
+    active last — a keystroke, or an attach. Reuse the view across reconnects
     (-d kicks off any stale client of it) so the phone's window selection
     survives a dropout.
     """
@@ -761,55 +764,78 @@ def enable_mouse(view: str) -> None:
     alone (a grouped session carries its own options), so the laptop's client of
     the same windows keeps whatever the user configured.
     """
-    # The session only exists once the attach child has spawned it, so retry
-    # briefly rather than racing the fork.
+    # No "=" exact-match prefix here: set-option rejects it outright
+    # ("no such session"), unlike the session-target commands above.
+    tmux("set-option", "-t", view, "mouse", "on")
+
+
+# Build 0.8.118 tried to stop two clients resizing each other by pinning the
+# shared windows to `window-size smallest` + `aggressive-resize on`, and by
+# hooking `window-linked` on the view so windows opened later got pinned too.
+# That made the smallest client win permanently — the laptop stuck at phone
+# size — so the pins are gone. They outlive the code, though: they were written
+# into the user's running tmux server, where they survive every upgrade. This
+# undoes them, which is why it runs on attach rather than living in a release
+# note nobody can execute.
+
+def heal_size_pins(view: str) -> None:
+    """Undo build 0.8.118's size pinning on the windows this view shares.
+
+    Only the exact pinned values are unset, so a window-size the user chose for
+    themselves — `manual`, say — survives. The hooks go whatever the windows
+    say: `set-hook -u` drops the whole array (both entries the pin installed),
+    and leaving them behind would re-pin the next window the group opens.
+    """
+    rc, out = tmux("list-windows", "-t", view, "-F",
+                   "#{window_id}\t#{window-size}\t#{aggressive-resize}")
+    fix: list[str] = []
+    for line in (out.splitlines() if rc == 0 else []):
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        wid, size, aggressive = parts
+        if size == "smallest":
+            fix += [";", "set-option", "-w", "-t", wid, "-u", "window-size"]
+        if aggressive in ("1", "on"):
+            fix += [";", "set-option", "-w", "-t", wid, "-u",
+                    "aggressive-resize"]
+    rc, out = tmux("show-hooks", "-t", view)
+    if rc == 0 and "window-linked" in out:
+        fix += [";", "set-hook", "-u", "-t", view, "window-linked"]
+    if fix:
+        # One invocation for the lot: tmux takes ";"-separated commands, and
+        # unsetting an option that is not set is a no-op, so this is safe to
+        # repeat.
+        tmux(*fix[1:])
+        log(f"healed 0.8.118 size pins on view={view}")
+
+
+def prepare_view(view: str) -> None:
+    """Post-attach setup for this device's view, off the event loop.
+
+    The attach child is what spawns the session, so this waits for the fork
+    rather than racing it. Only a real attach comes through here — a reconnect
+    that adopts a lingering PTY (see linger_pty) changes nothing tmux can see.
+    """
     for _ in range(20):
         if session_exists(view):
-            # No "=" exact-match prefix here: set-option rejects it outright
-            # ("no such session"), unlike the session-target commands above.
-            tmux("set-option", "-t", view, "mouse", "on")
+            enable_mouse(view)
+            heal_size_pins(view)
             return
         time.sleep(0.05)
 
 
-# Applied to every window this device's view shares, and re-applied by a hook
-# to windows linked in later. Both are window options — tmux has no session
-# scope for either — so they go on the windows themselves rather than on a
-# global the user's other sessions would inherit.
-SIZE_POLICY = (("window-size", "smallest"), ("aggressive-resize", "on"))
+def redraw_view(view: str) -> None:
+    """Force a full repaint of whatever client is on `view`.
 
-
-def pin_view_size(view: str) -> None:
-    """Size the shared windows to the smallest client actually viewing them.
-
-    tmux's default `window-size latest` gives a shared window the size of
-    whichever client last had activity, so a phone and a laptop on the same
-    window snap each other between 40 columns and 200 every few seconds, each
-    snap a full SIGWINCH redraw on the other device. `smallest` picks one size
-    and holds it; `aggressive-resize` narrows "smallest" to the clients whose
-    current window it is, so a phone parked on another window (or detached)
-    hands the laptop its own size back.
-
-    The hook covers windows opened after this attach: linking a window
-    re-syncs the whole group, and it fires on this device's own view — never
-    on the user's session, whose hooks a grouped session does not share.
+    An adopted PTY never detached, so tmux has no reason to repaint — but the
+    reconnecting client resets its terminal on the replay frame and would sit
+    on scrollback alone. refresh-client redraws that one client and, unlike an
+    attach, does not count as activity, so the shared window keeps its size.
     """
-    # The session only exists once the attach child has spawned it, so retry
-    # briefly rather than racing the fork.
-    for _ in range(20):
-        if not session_exists(view):
-            time.sleep(0.05)
-            continue
-        rc, out = tmux("list-windows", "-t", view, "-F", "#{window_id}")
-        for wid in (out.split() if rc == 0 else []):
-            for opt, val in SIZE_POLICY:
-                tmux("set-option", "-w", "-t", wid, opt, val)
-        # Plain set-hook resets the list, `-a` appends, so reattaching leaves
-        # these two entries rather than piling up copies.
-        for n, (opt, val) in enumerate(SIZE_POLICY):
-            tmux("set-hook", *(["-a"] if n else []), "-t", view,
-                 "window-linked", f"set-option -w {opt} {val}")
-        return
+    rc, out = tmux("list-clients", "-t", view, "-F", "#{client_tty}")
+    for tty in (out.split() if rc == 0 else []):
+        tmux("refresh-client", "-t", tty)
 
 
 # ---------------------------------------------------------------------------
@@ -2883,10 +2909,26 @@ async def api_image(request: Request) -> Response:
 # PTY <-> WebSocket bridge
 # ---------------------------------------------------------------------------
 
-def set_winsize(fd: int, cols: int, rows: int) -> None:
+def set_winsize(fd: int, cols: int, rows: int) -> bool:
+    """Put `cols`x`rows` on the PTY. False means it was already that size.
+
+    A size tmux already has is not written at all. Every client re-sends its
+    size the moment it connects, and a resize is activity — under
+    `window-size latest` an activity is what hands the shared window to this
+    client. The kernel would swallow a no-op TIOCSWINSZ anyway; not making the
+    call is the version of that which does not depend on the kernel.
+    """
     cols = max(2, min(int(cols), 500))
     rows = max(2, min(int(rows), 300))
+    try:
+        cur = struct.unpack(
+            "HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))[:2]
+    except OSError:
+        cur = ()
+    if cur == (rows, cols):
+        return False
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    return True
 
 
 # A bare $HOME/.terminfo (holding only the user's own terminal entry) makes
@@ -2970,13 +3012,33 @@ async def reap(pid: int, fd: int) -> None:
 # each other, and each kicked client's PTY dies, closing its WebSocket, whose
 # browser then reconnects and kicks the other one back. That ping-pong is what
 # made opening a session flap several times before settling. One lock per
-# view name serialises attaches, and ATTACHED tracks the live one so a new
-# connection can retire its predecessor deliberately instead of racing it.
+# view name serialises attaches, and ATTACHED tracks the one PTY a view has so
+# a new connection can take it over deliberately instead of racing it.
 # Keying on the view rather than the target is what lets two devices watch one
 # session: they hold different views, so neither ever retires the other, while
-# the same device reconnecting still lands on its own view and retires itself.
+# the same device reconnecting still lands on its own view and takes it back.
+#
+# An entry is in one of two states, and which one it is decides what a new
+# connection does with it:
+#   live  — a WebSocket handler is pumping it. A new connection retires it
+#           (the retired/done handshake) and attaches its own PTY.
+#   lingering — the socket is gone but the PTY is not, for LINGER_S. A new
+#           connection adopts it: same PTY, same tmux client, so tmux sees
+#           neither a detach nor an attach. That is the whole point — an
+#           attach is activity, and `window-size latest` hands the shared
+#           window to the last active client, so a phone reconnecting on its
+#           backoff every few seconds would drag the laptop's window down to
+#           phone size over and over. Nothing tmux can see happens now.
+# Entries leave the dict only under the lock, so the linger timer expiring and
+# a reconnect adopting cannot both win.
 ATTACH_LOCKS: dict[str, asyncio.Lock] = {}
 ATTACHED: dict[str, "Attachment"] = {}
+
+# How long a socket-less PTY waits for its device to come back. Long enough to
+# cover a phone's 0.5–5 s reconnect backoff and a screen lock the user thinks
+# better of; short enough that picking the phone back up later is a real
+# attach, which is what claims the window size for it again.
+LINGER_S = 20.0
 
 # Monotonic id per WebSocket, so interleaved connections stay tellable apart in
 # the log — the flapping this guards against is only legible with these.
@@ -2988,14 +3050,19 @@ def log(msg: str) -> None:
 
 
 class Attachment:
-    """The one live PTY this server holds for a phone session.
+    """The one PTY this server holds for a phone session.
 
-    `retire()` is what a newer connection calls to take over: it wakes the old
-    connection's own handler, which then tears its PTY down and closes its
-    WebSocket on its own thread of control. Reaping another connection's fd from
-    the outside is not enough — closing an fd out from under an add_reader does
-    not reliably fire the callback, so the old handler would block forever on
-    its queue and leave the browser holding a socket that never closes.
+    `retire()` is what a newer connection calls to take over a *live* one: it
+    wakes the old connection's own handler, which then tears its PTY down and
+    closes its WebSocket on its own thread of control. Reaping another
+    connection's fd from the outside is not enough — closing an fd out from
+    under an add_reader does not reliably fire the callback, so the old handler
+    would block forever on its queue and leave the browser holding a socket
+    that never closes.
+
+    `adopt()` is the other takeover, of a *lingering* one, where there is no
+    handler to wake and nothing to tear down: the new connection just starts
+    pumping the PTY that is already there.
 
     `notify()` is how anything else in this server speaks to the attached
     client: a str lands on the same out queue the PTY bytes ride and pump_out
@@ -3009,7 +3076,7 @@ class Attachment:
     """
 
     __slots__ = ("pid", "fd", "out", "done", "retired", "session", "dev",
-                 "visible", "last_seen")
+                 "visible", "last_seen", "live", "linger_task")
 
     def __init__(self, pid: int, fd: int, out: asyncio.Queue,
                  session: str = "", dev: str = "") -> None:
@@ -3018,6 +3085,11 @@ class Attachment:
         self.out = out
         self.done = asyncio.Event()
         self.retired = asyncio.Event()
+        # A WebSocket handler is pumping this PTY. False means lingering: the
+        # PTY is up but nobody is reading it, and linger_task holds the timer
+        # that reaps it if the device does not come back.
+        self.live = True
+        self.linger_task: asyncio.Task | None = None
         # The session this view is watching, so the pane watcher can find
         # every attached view of a session without decoding view names.
         self.session = session
@@ -3032,6 +3104,24 @@ class Attachment:
     def retire(self) -> None:
         self.retired.set()
 
+    def adopt(self) -> None:
+        """Hand this lingering PTY to a fresh WebSocket.
+
+        Synchronous on purpose, and called under the view's lock: cancelling
+        the timer and claiming the PTY in one step is what stops the timer from
+        reaping a PTY somebody just adopted. Everything scoped to a connection
+        rather than to the PTY starts over — the two handshake events, and the
+        push gate's visibility, which the new client reports for itself.
+        """
+        if self.linger_task is not None:
+            self.linger_task.cancel()
+            self.linger_task = None
+        self.live = True
+        self.done = asyncio.Event()
+        self.retired = asyncio.Event()
+        self.visible = False
+        self.last_seen = time.monotonic()
+
     def notify(self, text: str) -> None:
         """Queue one JSON control message for this connection's client."""
         self.out.put_nowait(text)
@@ -3042,6 +3132,73 @@ def attach_lock(name: str) -> asyncio.Lock:
     if lock is None:
         lock = ATTACH_LOCKS[name] = asyncio.Lock()
     return lock
+
+
+async def linger_pty(view: str, me: Attachment,
+                     loop: asyncio.AbstractEventLoop) -> None:
+    """Hold a socket-less PTY open for LINGER_S, then reap it.
+
+    Cancelled by Attachment.adopt when the device comes back in time; the
+    device that does not come back leaves through here, and its next connect is
+    a real attach — which is exactly right, because picking the phone back up
+    *should* claim the window size for it.
+
+    The queue has to be drained meanwhile: tmux keeps painting the pane, and a
+    PTY nobody reads fills up and blocks its writer. The bytes are dropped
+    rather than buffered — a reconnect replays the pane's scrollback and then
+    repaints from tmux itself (see redraw_view), so tmux's own history is the
+    buffer, and a better one than a queue this process would have to cap.
+    """
+    deadline = time.monotonic() + LINGER_S
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            try:
+                if await asyncio.wait_for(me.out.get(), left) is None:
+                    break     # the PTY hung up — its session was killed
+            except asyncio.TimeoutError:
+                break
+        # Leaving is a decision about the dict, so it is made under the lock:
+        # a reconnect that got there first is holding it, and adopt() has
+        # already flipped `live` by the time this can look.
+        async with attach_lock(view):
+            if me.live:
+                return
+            if ATTACHED.get(view) is me:
+                del ATTACHED[view]
+    except asyncio.CancelledError:
+        # Adopted (or the server is going down and reap_lingering has it).
+        raise
+    try:
+        loop.remove_reader(me.fd)
+    except (OSError, ValueError):
+        pass
+    await reap(me.pid, me.fd)
+    me.done.set()
+    log(f"linger over view={view} pid={me.pid} reason=timeout-or-pty-gone")
+
+
+async def reap_lingering() -> None:
+    """Tear down every socket-less PTY, for a server on its way down.
+
+    A lingering PTY has no handler to notice the shutdown, so without this its
+    tmux client would outlive the server that spawned it.
+    """
+    loop = asyncio.get_running_loop()
+    for view, att in list(ATTACHED.items()):
+        if att.live:
+            continue
+        if att.linger_task is not None:
+            att.linger_task.cancel()
+        if ATTACHED.get(view) is att:
+            del ATTACHED[view]
+        try:
+            loop.remove_reader(att.fd)
+        except (OSError, ValueError):
+            pass
+        await reap(att.pid, att.fd)
 
 
 @app.websocket("/ws/attach/{session_name}")
@@ -3115,30 +3272,53 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
             await ws.send_text(json.dumps(
                 {"type": "replay", "data": history.replace("\n", "\r\n")}))
 
-    # Retire the previous attachment and spawn ours as one atomic step, so two
-    # connections can never have a live PTY for the same view at once.
+    # Claim the view's PTY — adopt a lingering one, or retire a live one and
+    # spawn ours — as one atomic step, so two connections can never be pumping
+    # one view at once and nothing can reap a PTY this connection just took.
     async with attach_lock(view):
-        prev = ATTACHED.pop(view, None)
-        if prev is not None:
-            log(f"conn {cid} retiring previous attachment pid={prev.pid}")
-            prev.retire()
-            # Let the old handler finish its own teardown before this attach
-            # runs, so `tmux attach -d` never has a live client to kick.
-            try:
-                await asyncio.wait_for(prev.done.wait(), timeout=3)
-            except asyncio.TimeoutError:
-                log(f"conn {cid} previous attachment slow to exit; continuing")
-        pid, fd = spawn_pty(attach_argv(session_name, view), cols, rows)
-        os.set_blocking(fd, False)
-        # PTY reads land in this queue via add_reader; None marks the PTY
-        # closing. str items are JSON control messages (Attachment.notify).
-        out: asyncio.Queue = asyncio.Queue()
-        me = Attachment(pid, fd, out, session_name, dev)
-        ATTACHED[view] = me
+        prev = ATTACHED.get(view)
+        adopted = prev is not None and not prev.live
+        if adopted:
+            me = prev
+            me.adopt()
+            log(f"conn {cid} adopting lingering pty={me.pid}")
+        else:
+            if prev is not None:
+                del ATTACHED[view]
+                log(f"conn {cid} retiring previous attachment pid={prev.pid}")
+                prev.retire()
+                # Let the old handler finish its own teardown before this
+                # attach runs, so `tmux attach -d` never has a live client to
+                # kick.
+                try:
+                    await asyncio.wait_for(prev.done.wait(), timeout=3)
+                except asyncio.TimeoutError:
+                    log(f"conn {cid} previous attachment slow to exit; "
+                        "continuing")
+            pid, fd = spawn_pty(attach_argv(session_name, view), cols, rows)
+            os.set_blocking(fd, False)
+            # PTY reads land in this queue via add_reader; None marks the PTY
+            # closing. str items are JSON control messages (Attachment.notify).
+            out: asyncio.Queue = asyncio.Queue()
+            me = Attachment(pid, fd, out, session_name, dev)
+            ATTACHED[view] = me
+        pid, fd, out = me.pid, me.fd, me.out
 
-    # Off-thread: both poll for the just-spawned session.
-    asyncio.create_task(asyncio.to_thread(enable_mouse, view))
-    asyncio.create_task(asyncio.to_thread(pin_view_size, view))
+    if adopted:
+        # The reader is already on this fd from the connection that spawned it.
+        # Only the size and the repaint are this connection's to do: the client
+        # re-sends its size on every connect, and a size tmux already has must
+        # not be written (see set_winsize) — but a real change, a rotation say,
+        # is a resize the user asked for.
+        set_winsize(fd, cols, rows)
+        asyncio.create_task(asyncio.to_thread(redraw_view, view))
+    else:
+        # Off-thread: waits for the session the attach child is spawning.
+        asyncio.create_task(asyncio.to_thread(prepare_view, view))
+
+    # Set by pump_out when the PTY hangs up, which is the one ending that must
+    # never linger — there would be nothing left to adopt.
+    pty_gone = False
 
     def on_readable() -> None:
         try:
@@ -3154,12 +3334,17 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         else:
             out.put_nowait(data)
 
-    loop.add_reader(fd, on_readable)
+    # An adopted PTY kept its reader through the linger — re-adding one would
+    # only replace the identical callback.
+    if not adopted:
+        loop.add_reader(fd, on_readable)
 
     async def pump_out() -> None:
+        nonlocal pty_gone
         while True:
             data = await out.get()
             if data is None:
+                pty_gone = True
                 break
             # Binary frames are raw PTY bytes; text frames are the JSON control
             # channel (notify). The client tells them apart by frame type.
@@ -3208,21 +3393,41 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
     finally:
         for t in tasks:
             t.cancel()
-        try:
-            loop.remove_reader(fd)
-        except (OSError, ValueError):
-            pass
-        # Drop the slot only if we still own it. No lock here: the retiring
-        # connection holds it while waiting on me.done, so taking it would
-        # deadlock. Identity is enough — only we ever remove ourselves, and a
-        # newer connection has already replaced the entry by this point.
-        if ATTACHED.get(view) is me:
+        # Whether the PTY outlives this socket is decided here, in one
+        # synchronous step: no await, so no other connection can see this
+        # attachment half-way between live and lingering. A socket that simply
+        # went away (the phone backgrounding) leaves the PTY up for the
+        # reconnect to adopt; being superseded or losing the PTY itself ends it
+        # now. No lock around any of it: a retiring connection holds that lock
+        # while waiting on me.done, so taking it would deadlock. Identity is
+        # enough — only we ever remove ourselves.
+        lingering = (not me.retired.is_set() and not pty_gone
+                     and ATTACHED.get(view) is me)
+        if lingering:
+            me.live = False
+            # The push gate reads visibility off live sockets only; leaving a
+            # stale "visible" behind would suppress notifications for a phone
+            # that is in the user's pocket.
+            me.visible = False
+            me.linger_task = asyncio.create_task(linger_pty(view, me, loop))
+        elif ATTACHED.get(view) is me:
             del ATTACHED[view]
-        await reap(pid, fd)
-        reason = "superseded" if me.retired.is_set() else "client-or-pty-gone"
+        if me.retired.is_set():
+            reason = "superseded"
+        elif lingering:
+            reason = f"socket-gone; pty lingers {LINGER_S:.0f}s"
+        else:
+            reason = "client-or-pty-gone"
         log(f"conn {cid} close session={session_name} reason={reason}")
-        # Unblocks the newer connection, which is waiting for our PTY to be gone.
-        me.done.set()
+        if not lingering:
+            try:
+                loop.remove_reader(fd)
+            except (OSError, ValueError):
+                pass
+            await reap(pid, fd)
+            # Unblocks the newer connection, which is waiting for our PTY to be
+            # gone.
+            me.done.set()
         try:
             await ws.close()
         except RuntimeError:
@@ -3745,9 +3950,13 @@ def watch_tick_sync() -> list[dict]:
 
 
 def notify_session_views(session: str, text: str) -> None:
-    """Queue one control frame for every view attached to `session`."""
+    """Queue one control frame for every view attached to `session`.
+
+    Live views only: a lingering attachment has no socket to put a frame on,
+    and its drain would throw it away anyway.
+    """
     for att in list(ATTACHED.values()):
-        if att.session == session:
+        if att.live and att.session == session:
             att.notify(text)
 
 
@@ -3863,12 +4072,17 @@ VISIBLE_STALE_S = 90.0
 def visible_devs() -> set[str]:
     """Device names whose attached client is on screen right now.
 
+    Presence is a property of the socket, never of the PTY: an attachment
+    lingering after its socket died (see linger_pty) is a phone in a pocket,
+    and counting it would swallow exactly the notifications that phone needs.
+
     Read from the watcher's worker thread, written on the event loop — the
     same GIL-protected-dict discipline WATCHER lives under.
     """
     mono = time.monotonic()
     return {att.dev for att in list(ATTACHED.values())
-            if att.visible and mono - att.last_seen <= VISIBLE_STALE_S}
+            if att.live and att.visible
+            and mono - att.last_seen <= VISIBLE_STALE_S}
 
 
 def send_webpush_all(payload: dict) -> None:
