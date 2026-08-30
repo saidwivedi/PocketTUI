@@ -2726,6 +2726,117 @@ def api_fs_download(path: str = "") -> Response:
 
 
 # ---------------------------------------------------------------------------
+# Pasted images
+# ---------------------------------------------------------------------------
+# An image on the clipboard reaches Claude Code as a path on the prompt line,
+# which means the bytes have to land somewhere first. They land here, and the
+# route answers with the absolute path the client types.
+
+# A clipboard image is a screenshot, not a photo library; past this the paste
+# was a mistake worth answering quickly.
+MAX_IMAGE_BYTES = 15 * 1024 * 1024
+# Under $HOME rather than beside this file: images churn on every paste, and
+# staged inside the repo they would dirty `git status` continuously. A $HOME
+# holding a space would break the space-free path the client pastes without
+# bracketing — out of scope.
+IMAGE_DIR = Path.home() / ".pockettui" / "images"
+IMAGE_KEEP = 30
+
+
+def sniff_image(raw: bytes) -> str:
+    """The extension `raw` earns from its magic bytes, or "" for anything else.
+
+    The client's Content-Type is never consulted — the same stance decode_audio
+    takes with audio, where the header is a hint and the bytes are the fact.
+    All four extensions are in MEDIA_TYPES above, so a staged image is already
+    servable back through GET /api/file for tap-to-view.
+    """
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if raw[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return ".webp"
+    return ""
+
+
+def prune_images(d: Path) -> None:
+    """Keep the newest IMAGE_KEEP staged pastes; unlink the rest.
+
+    Count rather than age: one rule, no clock math. Pasting more than
+    IMAGE_KEEP images before Claude Code has read the first would evict an
+    unread one — a wide enough window to accept that. Each unlink stands alone
+    because a file deleted underneath us is not a reason to fail the upload
+    that just succeeded.
+    """
+    try:
+        staged = sorted(d.glob("paste-*"), key=lambda p: p.stat().st_mtime,
+                        reverse=True)
+    except OSError:
+        return
+    for stale in staged[IMAGE_KEEP:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
+def store_image(raw: bytes, session: str, dev: str) -> Response:
+    """Stage a pasted image, off the event loop.
+
+    Split from the route the way transcribe is, so the write runs in the
+    threadpool and the tests can drive it without HTTP. `session` and `dev` are
+    the client's context for the log line only — an image lands in the same
+    place whoever pasted it.
+
+    Unlike /api/fs/upload, a missing directory is created rather than a 404:
+    the client names no path here, so there is nothing for it to have got wrong.
+    """
+    if not raw:
+        return JSONResponse({"error": "empty"}, status_code=422)
+    if len(raw) > MAX_IMAGE_BYTES:
+        return JSONResponse({"error": "too_large"}, status_code=413)
+    ext = sniff_image(raw)
+    if not ext:
+        return JSONResponse({"error": "not_image"}, status_code=422)
+
+    # No spaces or colons anywhere in the name: the client pastes this path
+    # straight at a prompt, which may not be bracketing what it receives.
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    p = IMAGE_DIR / f"paste-{stamp}-{secrets.token_hex(3)}{ext}"
+    try:
+        IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+        atomic_write(p, raw, None)
+    except OSError:
+        return JSONResponse({"error": "not_writable"}, status_code=500)
+    # After the write, so the file just staged counts as one of the survivors.
+    prune_images(IMAGE_DIR)
+    log(f"image session={session!r} dev={dev!r} bytes={len(raw)} name={p.name}")
+    return no_store(JSONResponse({"path": str(p), "bytes": len(raw)}))
+
+
+@app.post("/api/image")
+async def api_image(request: Request) -> Response:
+    """Stage an image the user pasted, and answer with its path.
+
+    The body is the image itself rather than a multipart form, the shape
+    /api/transcribe and /api/fs/upload already take. Whatever Content-Type the
+    browser hung on the clipboard blob is ignored — store_image sniffs the
+    bytes, so a mislabelled paste is rejected on what it actually is.
+    """
+    refusal = throttled("file", RATE_FILE, request)
+    if refusal is not None:
+        return refusal
+    raw = await request.body()
+    session = str(request.query_params.get("session", ""))
+    dev = str(request.query_params.get("dev", ""))
+    return await run_in_threadpool(
+        store_image, raw, session, dev if DEV_RE.match(dev) else "")
+
+
+# ---------------------------------------------------------------------------
 # PTY <-> WebSocket bridge
 # ---------------------------------------------------------------------------
 
