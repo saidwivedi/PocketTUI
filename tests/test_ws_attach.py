@@ -625,6 +625,102 @@ def test_the_adoption_contract_sends_adopted_in_place_of_the_replay(
 
 
 # ---------------------------------------------------------------------------
+# Backpressure
+# ---------------------------------------------------------------------------
+# The out queue is per attachment, and the PTY fills it far faster than a phone
+# on a stalled link drains it. Reads stop at the high-water mark and start again
+# at the low one, which is what keeps a `yes` on a dead link from growing that
+# queue until the machine swaps. Nothing may be dropped or reordered by it.
+
+# One block is 8 bytes and holds no newline: the PTY rewrites \n on the way out,
+# and these have to come back byte for byte.
+FLOOD_BLOCKS = 40000
+FLOOD_EXPECTED = b"".join(b"%07d." % i for i in range(FLOOD_BLOCKS))
+FLOOD_TAIL = b"%07d." % (FLOOD_BLOCKS - 1)
+
+
+@pytest.fixture
+def flooding_pty(monkeypatch):
+    """An attach child that floods and then behaves like /bin/cat, with marks
+    small enough to hit in a test."""
+    monkeypatch.setattr(A, "HIGH_WATER", 64 << 10)
+    monkeypatch.setattr(A, "LOW_WATER", 16 << 10)
+    src = ("import sys\n"
+           "out = sys.stdout.buffer\n"
+           f"out.write(b''.join(b'%07d.' % i for i in range({FLOOD_BLOCKS})))\n"
+           "out.flush()\n"
+           "for line in sys.stdin.buffer:\n"
+           "    out.write(line)\n"
+           "    out.flush()\n")
+    monkeypatch.setattr(A, "attach_argv",
+                        lambda target, view: [sys.executable, "-c", src])
+
+
+@pytest.fixture
+def stalled_send(monkeypatch):
+    """Hold every binary frame at the socket, the way a phone whose link has
+    gone away holds it. Returns the release."""
+    real = A.WebSocket.send_bytes
+    gate = threading.Event()
+
+    async def send_bytes(self, data):
+        while not gate.is_set():
+            await asyncio.sleep(0.01)
+        await real(self, data)
+
+    monkeypatch.setattr(A.WebSocket, "send_bytes", send_bytes)
+    return gate
+
+
+def test_a_stalled_socket_cannot_grow_the_out_queue_without_bound(
+        client, bridge, flooding_pty, stalled_send):
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        att = A.ATTACHED["phone-work"]
+        # The child floods; the socket takes nothing. Reads stop one read past
+        # the mark, and with the reader off the fd the queue stops growing.
+        assert wait_for(lambda: att.paused, timeout=10)
+        peak = att.pending
+        assert peak <= A.HIGH_WATER + 65536, peak
+        time.sleep(0.3)
+        assert att.paused and att.pending == peak
+
+        # Let the socket drain: reads resume under the low mark, and every byte
+        # the child wrote is still there, in order, exactly once.
+        stalled_send.set()
+        assert collect_binary(ws, FLOOD_TAIL, timeout=30) == FLOOD_EXPECTED
+        assert wait_for(lambda: not att.paused and att.pending == 0)
+
+
+def test_a_paused_reader_comes_back_for_the_connection_that_adopts(
+        client, bridge, flooding_pty, stalled_send):
+    # A socket that dies while its reader is paused leaves the PTY lingering
+    # with nothing on the fd. linger_pty drops those bytes, but draining them is
+    # still what puts the reader back — without it the reconnect would adopt a
+    # PTY nobody is reading.
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        att = A.ATTACHED["phone-work"]
+        assert wait_for(lambda: att.paused, timeout=10)
+
+    stalled_send.set()
+    assert wait_for(lambda: not att.live)
+    assert wait_for(lambda: not att.paused and att.pending <= A.LOW_WATER,
+                    timeout=10)
+
+    with client.websocket_connect("/ws/attach/work") as ws2:
+        hello(ws2)
+        assert json.loads(ws2.receive()["text"]) == {"type": "adopted"}
+        assert A.ATTACHED["phone-work"] is att
+        # Reading works on the adopted PTY: this echo only comes back if the
+        # fd still has its callback.
+        ws2.send_bytes(b"after\n")
+        collect_binary(ws2, b"after")
+
+
+# ---------------------------------------------------------------------------
 # Integration: the real tmux, on an isolated server
 # ---------------------------------------------------------------------------
 

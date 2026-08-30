@@ -3089,6 +3089,18 @@ ATTACHED: dict[str, "Attachment"] = {}
 # attach, which is what claims the window size for it again.
 LINGER_S = 20.0
 
+# How much unsent PTY output one attachment may hold before it stops reading,
+# and how far that has to fall for it to start again. A phone on a stalled link
+# drains far slower than `yes` or a verbose build fills, so without this the out
+# queue is only bounded by the machine's memory. Nothing is dropped or
+# coalesced: pausing the reader is backpressure onto this attachment's *own*
+# tmux client (every attachment spawns one — see spawn_pty below), so only that
+# client's output stalls while tmux goes on painting the pane for everyone else,
+# and the bytes are still there, in order, when reading resumes. The gap between
+# the marks is what keeps a fast client from stop-starting a read at a time.
+HIGH_WATER = 4 << 20
+LOW_WATER = 1 << 20
+
 # Monotonic id per WebSocket, so interleaved connections stay tellable apart in
 # the log — the flapping this guards against is only legible with these.
 CONN_SEQ = 0
@@ -3118,6 +3130,11 @@ class Attachment:
     sends it as a *text* frame — the server→client control channel, which the
     client reads as JSON where PTY bytes stay binary.
 
+    `queued`/`drained` are the bookkeeping that bounds the out queue: they live
+    here rather than in the handler's closures because the PTY outlives the
+    socket — a paused reader may have to be re-armed by a *later* connection's
+    pump_out, or by linger_pty with no connection at all.
+
     `visible`/`last_seen` feed the push gate (visible_devs): the client
     reports its document visibility over the control channel, and every
     received frame stamps last_seen so a dead connection's stale "visible"
@@ -3128,7 +3145,8 @@ class Attachment:
     """
 
     __slots__ = ("pid", "fd", "out", "done", "retired", "session", "dev",
-                 "visible", "last_seen", "last_claim", "live", "linger_task")
+                 "visible", "last_seen", "last_claim", "live", "linger_task",
+                 "reader", "pending", "paused")
 
     def __init__(self, pid: int, fd: int, out: asyncio.Queue,
                  session: str = "", dev: str = "") -> None:
@@ -3154,6 +3172,13 @@ class Attachment:
         self.last_seen = time.monotonic()
         # When this attachment last claimed the shared window (claim_size).
         self.last_claim = 0.0
+        # The fd's read callback, and the bytes it has queued but nobody has
+        # sent yet. `paused` means the callback is off the fd: the queue is at
+        # the high-water mark and whoever drains it next puts the reader back
+        # (queued/drained).
+        self.reader = None
+        self.pending = 0
+        self.paused = False
 
     def retire(self) -> None:
         # `live` goes down with the socket, not with the teardown that follows
@@ -3193,6 +3218,31 @@ class Attachment:
         """Queue one JSON control message for this connection's client."""
         self.out.put_nowait(text)
 
+    def queued(self, data: bytes) -> None:
+        """Account for one chunk arriving, stopping reads at the high mark."""
+        self.pending += len(data)
+        if not self.paused and self.pending >= HIGH_WATER:
+            self.paused = True
+            asyncio.get_running_loop().remove_reader(self.fd)
+
+    def drained(self, data: bytes) -> None:
+        """Account for one chunk leaving, starting reads again at the low one.
+
+        Called before the send it belongs to, not after: the send is the slow
+        part, and a reader that only came back once the socket had swallowed
+        everything would never have a queue to work ahead into.
+        """
+        self.pending -= len(data)
+        if self.paused and self.pending <= LOW_WATER:
+            self.paused = False
+            try:
+                asyncio.get_running_loop().add_reader(self.fd, self.reader)
+            except (OSError, ValueError):
+                # The PTY was reaped under us — a linger cancelled by the
+                # shutdown sweep drains one last item after its fd is closed.
+                # There is nothing left to read either way.
+                pass
+
 
 def attach_lock(name: str) -> asyncio.Lock:
     lock = ATTACH_LOCKS.get(name)
@@ -3223,10 +3273,16 @@ async def linger_pty(view: str, me: Attachment,
             if left <= 0:
                 break
             try:
-                if await asyncio.wait_for(me.out.get(), left) is None:
-                    break     # the PTY hung up — its session was killed
+                item = await asyncio.wait_for(me.out.get(), left)
             except asyncio.TimeoutError:
                 break
+            if item is None:
+                break         # the PTY hung up — its session was killed
+            if not isinstance(item, str):
+                # Dropping the bytes still has to give back the backpressure
+                # they took: a reader left off the fd here would be missing
+                # from it for the reconnect that adopts this PTY.
+                me.drained(item)
         # Leaving is a decision about the dict, so it is made under the lock:
         # a reconnect that got there first is holding it, and adopt() has
         # already flipped `live` by the time this can look.
@@ -3416,9 +3472,12 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
             out.put_nowait(None)
         else:
             out.put_nowait(data)
+            me.queued(data)
 
     # An adopted PTY kept its reader through the linger — re-adding one would
-    # only replace the identical callback.
+    # only replace the identical callback. It is still stored, because a
+    # reader paused under the previous connection is re-armed from here.
+    me.reader = on_readable
     if not adopted:
         loop.add_reader(fd, on_readable)
 
@@ -3434,6 +3493,7 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
             if isinstance(data, str):
                 await ws.send_text(data)
             else:
+                me.drained(data)
                 await ws.send_bytes(data)
 
     async def pump_in() -> None:
