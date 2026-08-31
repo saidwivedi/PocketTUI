@@ -94,6 +94,26 @@ function storedFontSize() {
   return FONT_DEFAULT;
 }
 
+// Shift+Enter sends a bare line feed instead of xterm's carriage return. The
+// agent TUIs (Claude Code and friends) bind \n to "newline, don't submit" out of
+// the box, and a lone \n crosses tmux untouched — whereas the kitty encoding
+// \x1b[13;2u would be read as literal text, since nothing in this stack ever
+// negotiates that protocol.
+//
+// preventDefault stops the browser writing the line break into xterm's hidden
+// textarea, and the false is returned for keypress and keyup as well as keydown:
+// a keydown the handler refuses leaves _keyDownHandled false, so xterm's
+// keypress path would still see charCode 13 and send its own \r on top of ours.
+function shiftEnterIsNewline(ev) {
+  if (ev.key !== "Enter" || !ev.shiftKey) return true;
+  if (ev.ctrlKey || ev.altKey || ev.metaKey) return true;
+  if (ev.type === "keydown") {
+    ev.preventDefault();
+    send("\n");
+  }
+  return false;
+}
+
 function ensureTerm() {
   if (term) return;
   term = new Terminal({
@@ -112,6 +132,7 @@ function ensureTerm() {
   useWebgl();
   useSearch();
   term.onData(d => send(d));
+  term.attachCustomKeyEventHandler(shiftEnterIsNewline);
   term.registerLinkProvider({ provideLinks: provideImageLinks });
   // A selection can go away without the gesture asking — a reset, or xterm
   // dropping it on a repaint — and the Copy pill must not outlive it.

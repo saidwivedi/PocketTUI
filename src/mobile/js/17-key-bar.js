@@ -31,6 +31,14 @@ const KEYS = [
   // so the glyph keys — enter, backspace, arrows, mic — all share one width.
   { label: "⏎",     seq: "\r",    narrow: true, cls: "span-2 k-enter", aria: "Enter",
     swipe: { seq: "-" } },
+  // The other Enter: a bare line feed, which the agent TUIs bind to "newline,
+  // don't submit" and tmux passes through untouched. A phone keyboard has no
+  // shift+enter to press, so the combination gets a key of its own — armed
+  // shift plus ⏎ sends the same byte (see seqWithMods), this is the one tap.
+  // No repeat, for the ⏎ key's reason. Collapsed-only, like the folder and
+  // search keys: every column of the expanded grid is placed by absolute
+  // number, so a key added there would mean renumbering the whole row.
+  { label: "⇧⏎",    seq: "\n",    narrow: true, only: "collapsed", aria: "Newline (Shift+Enter)" },
   { label: "⌫",     seq: "\x7f",  narrow: true, repeat: true, cls: "span-2 k-bs", aria: "Backspace",
     swipe: { seq: "\x1b[3~" } },
   { icon: "i-arrows", arrows: true, narrow: true, only: "collapsed", aria: "Show arrow keys" },
