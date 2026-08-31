@@ -4,9 +4,9 @@
 
 # PocketTUI
 
-**Your computer's terminal, on your phone.**
+**Your terminal. Any browser. Any device.**
 
-Check on jobs, keep Claude or Codex going, or kick off something new while you're away from your laptop.
+Your actual running terminal, wherever you are. Open a browser, connect to your machine, and pick up exactly where you left off — check on jobs, keep Claude or Codex going, or start something new.
 
 [**pockettui.com**](https://pockettui.com) · [Open the app](https://pockettui.com/app/) · [Live demo](https://pockettui.com/demo)
 
@@ -15,7 +15,14 @@ Check on jobs, keep Claude or Codex going, or kick off something new while you'r
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)](#install)
 [![Website](https://img.shields.io/website?url=https%3A%2F%2Fpockettui.com&label=pockettui.com)](https://pockettui.com)
 
-<img src="https://pockettui.com/landing_assets/hero-combo-round.png?v=8" alt="A tmux session on the computer, and the same session attached on a phone" width="92%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://pockettui.com/landing_assets/pockettui-connect.png">
+  <img src="https://pockettui.com/landing_assets/pockettui-connect-light.png" alt="One machine's terminal, connected from a phone, tablet, and laptop" width="46%">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://pockettui.com/landing_assets/hero-combo-shadow-round.png">
+  <img src="https://pockettui.com/landing_assets/hero-combo-light-shadow-round.png" alt="A tmux session on the computer, and the same session attached on a phone" width="46%">
+</picture>
 
 </div>
 
