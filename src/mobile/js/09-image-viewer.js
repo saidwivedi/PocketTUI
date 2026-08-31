@@ -214,34 +214,133 @@ function openDemo() {
   openTerminal(DEMO_SESSION);
 }
 
-function openTerminal(name) {
+// ============================================================
+// Per-session file views
+// ============================================================
+// A reader or an editor opened from a terminal belongs to that terminal's
+// session. Switching sessions from the rail puts the whole view away — buffer,
+// caret, undo history, the folder it was opened from — hands the pane to the
+// session that was tapped, and brings back whatever that one had put away
+// itself. Held in memory only: a reload drops a stashed view exactly as it
+// drops an open one.
+//
+// A view is two things, and both have to be put away together: the screens'
+// own state (edStash / readerStash / filesStash own their halves) and the
+// history entries it pushed. The entries are spent before the switch, in the
+// one coalesced go(-n) btn-files-term already relies on, and pushed again on
+// the way back — so back unwinds a restored view exactly as it would have
+// unwound one that never left.
+//
+// The map only ever holds sessions that are *off* screen: an entry is made
+// when the rail leaves a session, and dropped the moment that session is
+// opened again. So a view can never be closed normally while it is also
+// stashed, and nothing has to clean up after closeEditor or closeReader.
+const fileViews = new Map();
+
+// The switch waiting on the go(-n) above: the single popstate it lands as is
+// what resumes it (see the popstate handler below).
+let pendingSwitch = null;
+
+// The key is a session name, and a name outlives the session that wore it: a
+// killed one is free for the next `tmux new`, and a rename hands it over on the
+// spot. Either way the view has to move with the session rather than stay with
+// the name, or a brand-new session opens onto a dead one's buffer. The list is
+// where both are known, so it says so through these three (06-session-list.js)
+// rather than reaching into the map.
+function dropFileView(name) { fileViews.delete(name); }
+
+function renameFileView(from, to) {
+  if (!fileViews.has(from)) return;
+  fileViews.set(to, fileViews.get(from));
+  fileViews.delete(from);
+}
+
+// Sessions the server no longer lists are gone however they went — killed from
+// another device, or from tmux itself — so their views go too. Called from the
+// list's own prune of per-session state, off the same fresh payload: only a
+// listing that actually arrived is allowed to declare anything missing.
+function keepFileViews(names) {
+  for (const name of fileViews.keys()) {
+    if (!names.has(name)) fileViews.delete(name);
+  }
+}
+
+// Which file view is holding the pane, or null for none. The explorer on its
+// own is not one — it carries nothing the user would lose, and it closes.
+function fileViewKind() {
+  if ($("screen-editor").classList.contains("active")) return "editor";
+  if ($("screen-reader").classList.contains("active")) return "reader";
+  return null;
+}
+
+function stashFileView(session, kind) {
+  // The browsing underneath is read before the screen above it is taken down,
+  // and goes into the same entry: coming back to a file view that had lost its
+  // folder would be half a restore.
+  const view = { files: filesStash() };
+  if (kind === "editor") view.editor = edStash();
+  else view.reader = readerStash();
+  filesTeardown();
+  fileViews.set(session, view);
+}
+
+function restoreFileView(session) {
+  const view = fileViews.get(session);
+  fileViews.delete(session);
+  filesRestore(view.files);
+  // Every entry the view owned, in the order it was pushed and in the shape
+  // its own push site uses: openExplorer's, one per level navigated into
+  // (navigateDir's), then the single one the reader and the editor share.
+  // Nothing reads these back — the unwind goes by filesStack and the screen
+  // classes — but the count is what back spends, and it has to be exact.
+  history.pushState({ files: true }, "", location.href);
+  for (const path of view.files.stack.slice(1)) {
+    history.pushState({ files: true, path: path }, "", location.href);
+  }
+  history.pushState(view.editor ? { editor: true } : { reader: true }, "", location.href);
+  if (view.editor) edRestore(view.editor);
+  else readerRestore(view.reader);
+}
+
+// `resumed` marks the second half of a switch that had a file view to put away
+// first: its entries are spent and history already sits on the terminal's own.
+function openTerminal(name, resumed) {
+  // A rail tap while a switch is still spending entries retargets that switch
+  // rather than starting a second one on top of it.
+  if (pendingSwitch && !resumed) { pendingSwitch.name = name; return; }
   // Wide layouts reach here from the always-visible rail, possibly with the
-  // explorer, reader or editor holding the main pane. A file screen outlives
-  // the switch on purpose: the reader and the editor show a file, not a
-  // session, so the terminal changes underneath them — the rail's highlight is
-  // what says the switch happened — and they come down when the user is done
-  // reading, not when the socket moves. That is what the flag below buys: the
-  // screen and history moves are skipped while one of them is up, and nothing
-  // here tears a buffer out from under its owner.
-  //
-  // The explorer is the one that still closes, so the terminal never lands
-  // under the files list. It is only the active screen when neither of the
-  // other two is up — both take its active class while they are — so the
-  // browsing behind them (the folder, the stack, their history entries) is
-  // untouched here and unwinds later exactly as it always did, ending in
-  // closeExplorer's refit on this session's terminal.
-  //
-  // Phone flows never arrive with any of them up (the list is hidden behind
-  // them), so the isWideLayout() gate just keeps the deep-link edge cases
-  // exactly as they were.
-  const covered = isWideLayout()
-    && ($("screen-reader").classList.contains("active")
-        || $("screen-editor").classList.contains("active"));
-  if (isWideLayout() && $("screen-files").classList.contains("active")) {
-    // Not arriving via back — no pop happened — so the address field (if
-    // open) just closes and the screen follows.
-    closePathEdit();
-    closeExplorer();
+  // explorer, reader or editor holding the main pane. Phone flows never arrive
+  // with any of them up (the list is hidden behind them), so the isWideLayout()
+  // gate keeps the deep-link edge cases exactly as they were.
+  if (isWideLayout() && !resumed) {
+    const kind = fileViewKind();
+    // A view opened from a terminal is that session's own: put it away rather
+    // than tearing it down, spend the entries it owns, and finish the switch
+    // when their pop lands. Nothing is discarded, so nothing is asked.
+    if (kind && filesOrigin === "screen-term" && currentSession) {
+      // Tapping the row that is already open: the pane is this session's, and
+      // so is the view on it. There is nothing to switch away from — and a
+      // stash made here would be one for a session that is on screen, which
+      // is the one thing the map must never hold.
+      if (name === currentSession) return;
+      pendingSwitch = { name: name, from: currentSession };
+      history.go(-(filesEntryCount() + 1));
+      return;
+    }
+    // A view opened from the session list belongs to no session — there is no
+    // terminal under it to come back to — so it closes on the spot, with a
+    // dirty buffer getting the same say its own back gives it.
+    if (kind === "reader") closeReader();
+    if ($("screen-editor").classList.contains("active")) {
+      if (edDirty && !confirm("Discard your unsaved changes?")) return;
+      closeEditor();
+    }
+    if ($("screen-files").classList.contains("active")) {
+      // Not arriving via back — no pop happened — so the address field (if
+      // open) just closes and the screen follows.
+      closePathEdit();
+      closeExplorer();
+    }
   }
   // Whether this open is a switch inside an already-open terminal pane —
   // only the rail makes that possible; read before the classes move below.
@@ -263,16 +362,11 @@ function openTerminal(name) {
   retries = 0;
   hideConnBanner();  // a banner left up by the previous session is stale here
   hideChips();       // and so is a chips row — it named the old session's prompt
-  // Left where they are under a file screen: the terminal taking the active
-  // class there would paint a second screen under the editor, and — the half
-  // that actually breaks — every pop unwinding the editor would reach this
-  // file's popstate handler as a live terminal and close the session. The
-  // socket is switching either way; the class arrives when the file screen
-  // finally goes, from closeExplorer, which refits on its way back.
-  if (!covered) {
-    $("screen-list").classList.remove("active");
-    $("screen-term").classList.add("active");
-  }
+  // The pane comes forward for every switch that reaches here — whatever was
+  // over it has been put away or closed above. A view this session put away
+  // itself takes it back at the end, once the terminal underneath is its own.
+  $("screen-list").classList.remove("active");
+  $("screen-term").classList.add("active");
   syncChrome();
   ensureTerm();
   term.reset();
@@ -282,18 +376,21 @@ function openTerminal(name) {
   recSyncMic();
   // One history entry per terminal visit, not per session viewed: a rail
   // switch replaces the entry, so back still means "close the pane" however
-  // many sessions were clicked through. A switch under a file screen is not a
-  // visit — the pane never came forward, and the entry it pushed when it did
-  // is still on the stack underneath the file screens' own — so it pushes
-  // nothing; an entry here would only be spent closing the editor and leave a
-  // back that goes nowhere at the end. wasOpen is never true on the phone
+  // many sessions were clicked through. A resumed switch replaces too, and for
+  // the same reason read from the other end: spending the view's entries has
+  // just travelled back onto the pane's own, which is exactly the entry a rail
+  // switch is entitled to overwrite. wasOpen is never true on the phone
   // outside the deep-link edge, and the gate keeps that edge on the old push.
-  if (!covered) {
-    if (wasOpen && isWideLayout()) history.replaceState({ term: name }, "", location.href);
-    else history.pushState({ term: name }, "", location.href);
+  if (resumed || (wasOpen && isWideLayout())) {
+    history.replaceState({ term: name }, "", location.href);
+  } else {
+    history.pushState({ term: name }, "", location.href);
   }
   markSelectedSession();
   clearUnread(name);   // opening is what marks a session read
+  // Whatever this session had put away when the rail last left it, back on top
+  // of the terminal it was opened over — which is live again underneath it.
+  if (fileViews.has(name)) restoreFileView(name);
   requestAnimationFrame(() => {
     if (demoMode) {
       // Fit before the banner is written: demoStart() wraps its prose to
@@ -508,7 +605,25 @@ function scheduleReconnect() {
   }, delay);
 }
 
-window.addEventListener("popstate", () => {
+window.addEventListener("popstate", (e) => {
+  // The pop a rail switch was waiting on: the file view's entries are spent, so
+  // history now sits on the terminal's own and the switch can finish.
+  //
+  // That pop is wholly the switch's, and saying so is load-bearing rather than
+  // tidy. The switch can end with the tapped session's own view restored — the
+  // very screens the explorer's handler answers for, back up before it runs
+  // (this file's listener is registered first, so it is still ahead of it) —
+  // and it would read this pop as a back out of the editor it has just been
+  // handed, confirm over an unsaved buffer and close it again. Nothing else
+  // listens for popstate, so cutting the rest of them off costs nothing.
+  if (pendingSwitch) {
+    e.stopImmediatePropagation();
+    const p = pendingSwitch;
+    pendingSwitch = null;
+    stashFileView(p.from, fileViewKind());
+    openTerminal(p.name, true);
+    return;
+  }
   if ($("screen-term").classList.contains("active")) closeTerminal();
 });
 
