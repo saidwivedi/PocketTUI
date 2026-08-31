@@ -1341,11 +1341,18 @@ const REPEAT_RAMP = 1500;   // ms of holding before reaching REPEAT_FAST
 // readline both understand: ESC [ 1 ; <mod> <final>. Anything else takes an
 // armed alt as an ESC prefix — the meta convention, so alt+⌫ deletes a word —
 // while ctrl and shift have nothing portable to say there and pass it through.
+//
+// Shift+Enter is the one exception to that pass-through: it does have a portable
+// meaning, the bare line feed the agent TUIs bind to "newline, don't submit",
+// which is what shift+⏎ on a hardware keyboard sends here too (see 07-terminal).
+// So the armed modifier means the same thing on the ⏎ key as it does on a real
+// one, rather than being silently swallowed.
 function seqWithMods(seq) {
   const m = (mods.ctrl ? 4 : 0) + (mods.alt ? 2 : 0) + (mods.shift ? 1 : 0);
   if (!m) return seq;
   const csi = seq.match(/^\x1b\[([A-DFH])$/);
   if (csi) return "\x1b[1;" + (m + 1) + csi[1];
+  if (mods.shift && seq === "\r") seq = "\n";
   return mods.alt ? "\x1b" + seq : seq;
 }
 
