@@ -216,27 +216,32 @@ function openDemo() {
 
 function openTerminal(name) {
   // Wide layouts reach here from the always-visible rail, possibly with the
-  // explorer, reader or editor holding the main pane; they close first so the
-  // terminal never lands under one of them (#screen-editor and #screen-reader
-  // paint later in the DOM), with a dirty buffer getting the same say its own
-  // back gives it — first, before anything below touches the socket. Phone
-  // flows never arrive with any of them up (the list is hidden behind them),
-  // so the isWideLayout() gate just keeps the deep-link edge cases exactly as
-  // they were.
-  if (isWideLayout()) {
-    // Closing the reader puts the explorer back, which the branch below then
-    // closes in its turn.
-    if ($("screen-reader").classList.contains("active")) closeReader();
-    if ($("screen-editor").classList.contains("active")) {
-      if (edDirty && !confirm("Discard your unsaved changes?")) return;
-      closeEditor();
-    }
-    if ($("screen-files").classList.contains("active")) {
-      // Not arriving via back — no pop happened — so the address field (if
-      // open) just closes and the screen follows.
-      closePathEdit();
-      closeExplorer();
-    }
+  // explorer, reader or editor holding the main pane. A file screen outlives
+  // the switch on purpose: the reader and the editor show a file, not a
+  // session, so the terminal changes underneath them — the rail's highlight is
+  // what says the switch happened — and they come down when the user is done
+  // reading, not when the socket moves. That is what the flag below buys: the
+  // screen and history moves are skipped while one of them is up, and nothing
+  // here tears a buffer out from under its owner.
+  //
+  // The explorer is the one that still closes, so the terminal never lands
+  // under the files list. It is only the active screen when neither of the
+  // other two is up — both take its active class while they are — so the
+  // browsing behind them (the folder, the stack, their history entries) is
+  // untouched here and unwinds later exactly as it always did, ending in
+  // closeExplorer's refit on this session's terminal.
+  //
+  // Phone flows never arrive with any of them up (the list is hidden behind
+  // them), so the isWideLayout() gate just keeps the deep-link edge cases
+  // exactly as they were.
+  const covered = isWideLayout()
+    && ($("screen-reader").classList.contains("active")
+        || $("screen-editor").classList.contains("active"));
+  if (isWideLayout() && $("screen-files").classList.contains("active")) {
+    // Not arriving via back — no pop happened — so the address field (if
+    // open) just closes and the screen follows.
+    closePathEdit();
+    closeExplorer();
   }
   // Whether this open is a switch inside an already-open terminal pane —
   // only the rail makes that possible; read before the classes move below.
@@ -258,8 +263,16 @@ function openTerminal(name) {
   retries = 0;
   hideConnBanner();  // a banner left up by the previous session is stale here
   hideChips();       // and so is a chips row — it named the old session's prompt
-  $("screen-list").classList.remove("active");
-  $("screen-term").classList.add("active");
+  // Left where they are under a file screen: the terminal taking the active
+  // class there would paint a second screen under the editor, and — the half
+  // that actually breaks — every pop unwinding the editor would reach this
+  // file's popstate handler as a live terminal and close the session. The
+  // socket is switching either way; the class arrives when the file screen
+  // finally goes, from closeExplorer, which refits on its way back.
+  if (!covered) {
+    $("screen-list").classList.remove("active");
+    $("screen-term").classList.add("active");
+  }
   syncChrome();
   ensureTerm();
   term.reset();
@@ -269,10 +282,16 @@ function openTerminal(name) {
   recSyncMic();
   // One history entry per terminal visit, not per session viewed: a rail
   // switch replaces the entry, so back still means "close the pane" however
-  // many sessions were clicked through. wasOpen is never true on the phone
+  // many sessions were clicked through. A switch under a file screen is not a
+  // visit — the pane never came forward, and the entry it pushed when it did
+  // is still on the stack underneath the file screens' own — so it pushes
+  // nothing; an entry here would only be spent closing the editor and leave a
+  // back that goes nowhere at the end. wasOpen is never true on the phone
   // outside the deep-link edge, and the gate keeps that edge on the old push.
-  if (wasOpen && isWideLayout()) history.replaceState({ term: name }, "", location.href);
-  else history.pushState({ term: name }, "", location.href);
+  if (!covered) {
+    if (wasOpen && isWideLayout()) history.replaceState({ term: name }, "", location.href);
+    else history.pushState({ term: name }, "", location.href);
+  }
   markSelectedSession();
   clearUnread(name);   // opening is what marks a session read
   requestAnimationFrame(() => {
