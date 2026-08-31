@@ -118,10 +118,11 @@ TOKEN_HEADER = "X-PocketTUI-Token"
 # Only the routes that read or touch the machine are gated.
 GATED_PREFIXES = ("/api/",)
 
-# The one gated path that answers without the header: a signed download link,
-# which the browser fetches as a plain navigation and a navigation cannot carry
-# one. Its query string is the credential instead — see api_fs_signed_download.
-SIGNED_PATHS = ("/api/fs/signed_download",)
+# The gated paths that answer without the header: signed links, which the
+# browser fetches for itself — as a plain navigation, or as a tag's own media
+# load — and neither can carry one. Their query string is the credential
+# instead — see api_fs_signed_download and api_signed_file.
+SIGNED_PATHS = ("/api/fs/signed_download", "/api/signed_file")
 
 
 def normalize_token(raw: str) -> str:
@@ -2445,28 +2446,22 @@ MEDIA_TYPES = {
 }
 
 
-@app.get("/api/file")
-def api_file(request: Request, path: str = "") -> Response:
-    """Serve an image or video by absolute path, for tap-to-view in the terminal.
+def media_file(raw: str) -> tuple[Path, str] | None:
+    """`raw` as a servable media file and its type, or None when it is neither.
 
     No restriction on where the file lives beyond the extension allowlist: this
     server already bridges a full shell to the same clients, so reading a file
     off disk crosses no boundary they could not cross by typing `cat`.
 
-    Every rejection answers 404 alike, so a probe learns nothing about which
-    check failed — or about what exists. Range requests (which iOS video needs)
-    are handled by starlette's FileResponse itself.
+    One None for every reason, so a caller answering it has nothing to leak.
     """
-    refusal = throttled("file", RATE_FILE, request)
-    if refusal is not None:
-        return refusal
-
+    path = str(raw or "")
     # Tools print paths with a leading ~ as often as expanded ones.
     if path.startswith("~"):
         path = str(Path.home()) + path[1:]
     p = Path(path)
     if not p.is_absolute():
-        return Response(status_code=404)
+        return None
     if not p.exists():
         for src, dst in PATH_REWRITES:
             if path.startswith(src):
@@ -2477,7 +2472,29 @@ def api_file(request: Request, path: str = "") -> Response:
     p = p.resolve()
     kind = MEDIA_TYPES.get(p.suffix.lower())
     if kind is None or not p.is_file():
+        return None
+    return p, kind
+
+
+@app.get("/api/file")
+def api_file(request: Request, path: str = "") -> Response:
+    """Serve an image or video by absolute path, for tap-to-view in the terminal.
+
+    Every rejection answers 404 alike, so a probe learns nothing about which
+    check failed — or about what exists. Range requests (which iOS video needs)
+    are handled by starlette's FileResponse itself.
+
+    The viewer itself no longer comes here: a tag cannot carry the pairing
+    header, so it loads through api_signed_file, which serves the same bytes
+    off the same media_file(). This stays for anything that can send one.
+    """
+    refusal = throttled("file", RATE_FILE, request)
+    if refusal is not None:
+        return refusal
+    found = media_file(path)
+    if found is None:
         return Response(status_code=404)
+    p, kind = found
     return no_store(FileResponse(p, media_type=kind))
 
 
@@ -2814,12 +2831,15 @@ def api_fs_download(path: str = "") -> Response:
 # Nothing else changes: the mint is gated like its neighbours, and the signed
 # route resolves the path through the same fs_path() every /api/fs/* route
 # uses, so it can reach exactly what an authenticated caller could reach.
-DOWNLOAD_KEY = secrets.token_bytes(32)
+#
+# The key is shared with the viewer's links further down; each purpose signs
+# under its own tag, so a link minted for one route is not one for the other.
+LINK_KEY = secrets.token_bytes(32)
 DOWNLOAD_TTL = 60
 
 
 def download_sig(path: str, expires: int) -> str:
-    return hmac.new(DOWNLOAD_KEY, f"{expires}\n{path}".encode("utf-8"),
+    return hmac.new(LINK_KEY, f"download\n{expires}\n{path}".encode("utf-8"),
                     hashlib.sha256).hexdigest()
 
 
@@ -2872,6 +2892,75 @@ def api_fs_signed_download(request: Request, path: str = "", exp: str = "",
         return fs_error("not_found", 404)
     return no_store(FileResponse(p, media_type="application/octet-stream",
                                  filename=p.name))
+
+
+# The viewer's twin of the pair above, and there for a sharper version of the
+# same reason: an <img> or a <video> fetches its own bytes, and a tag has no
+# way to send the pairing header at all. Same shape — a gated mint, an ungated
+# route that verifies what it signed — over /api/file's semantics rather than
+# the explorer's: media_file() decides what is servable, and the answer goes
+# out inline and typed, with no Content-Disposition, so the tag renders it
+# instead of the phone offering to save it.
+#
+# Longer-lived than a download link on purpose. The expiry is checked per
+# request, and a playing video keeps coming back for the next Range for as long
+# as it plays; a minute would strand playback partway through a clip. An hour
+# outlasts anything watched on a phone and still dies with the process.
+FILE_TTL = 3600
+
+
+def file_sig(path: str, expires: int) -> str:
+    return hmac.new(LINK_KEY, f"file\n{expires}\n{path}".encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+@app.get("/api/file_link")
+def api_file_link(path: str = "") -> Response:
+    """Mint a short-lived signed URL for viewing `path`, relative like its neighbour.
+
+    Answered relative for api_fs_download_link's reason, and what is signed is
+    likewise the path media_file() resolved — expanded, rewritten and with the
+    extension already checked — so the signed route serves the file this one
+    approved and nothing that merely spells it differently.
+    """
+    found = media_file(path)
+    if found is None:
+        return Response(status_code=404)
+    target = str(found[0])
+    expires = int(time.time()) + FILE_TTL
+    query = urllib.parse.urlencode({"path": target, "exp": expires,
+                                    "sig": file_sig(target, expires)})
+    return no_store(JSONResponse({"url": f"api/signed_file?{query}",
+                                  "expires_in": FILE_TTL}))
+
+
+@app.get("/api/signed_file")
+def api_signed_file(request: Request, path: str = "", exp: str = "",
+                    sig: str = "") -> Response:
+    """Serve media whose link this server signed, inline. Unauthenticated by design.
+
+    Throttled, and the signature checked before the expiry, for
+    api_fs_signed_download's reasons. Where the two answers differ: a link that
+    does not verify or has run out says so, since that is a fact about the link
+    and not about the disk, while everything the path itself fails answers 404
+    alike the way /api/file does. Range requests are FileResponse's own.
+    """
+    refusal = throttled("file", RATE_FILE, request)
+    if refusal is not None:
+        return refusal
+    try:
+        expires = int(exp)
+    except ValueError:
+        return fs_error("bad_signature", 403)
+    if not hmac.compare_digest(sig, file_sig(path, expires)):
+        return fs_error("bad_signature", 403)
+    if time.time() > expires:
+        return fs_error("expired", 403)
+    found = media_file(path)
+    if found is None:
+        return Response(status_code=404)
+    p, kind = found
+    return no_store(FileResponse(p, media_type=kind))
 
 
 # ---------------------------------------------------------------------------

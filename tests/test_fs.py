@@ -419,6 +419,123 @@ def test_signed_download_of_a_vanished_file_is_404(client, tree):
 
 
 # ---------------------------------------------------------------------------
+# signed media links
+# ---------------------------------------------------------------------------
+# What the viewer's <img>/<video> loads, since neither can send the header.
+
+@pytest.fixture
+def shot(tree):
+    """A file the media allowlist accepts, with bytes worth reading back."""
+    p = tree / "shot.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"pixels")
+    return p
+
+
+def mint_file(client, path):
+    r = client.get("/api/file_link", params={"path": str(path)})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["url"].startswith("api/signed_file?")
+    return "/" + data["url"], data
+
+
+def test_file_link_round_trip_serves_the_media_inline(client, shot):
+    url, data = mint_file(client, shot)
+    assert data["expires_in"] == A.FILE_TTL
+
+    r = client.get(url)
+    assert r.status_code == 200
+    assert r.content == b"\x89PNG\r\n\x1a\npixels"
+    assert r.headers["content-type"] == "image/png"
+    # Inline is the whole point: an attachment would make the tag a download.
+    assert "content-disposition" not in r.headers
+
+
+def test_signed_file_serves_a_range(client, shot):
+    """What a long video's playback keeps coming back for."""
+    url, _ = mint_file(client, shot)
+    r = client.get(url, headers={"Range": "bytes=0-3"})
+    assert r.status_code == 206
+    assert r.content == b"\x89PNG"
+
+
+def test_signed_file_needs_no_token_header(client, shot, monkeypatch):
+    """The whole point: a tag's own load, which carries no header."""
+    monkeypatch.setattr(A, "LIMITER", A.AuthLimiter())
+    url, _ = mint_file(client, shot)
+    monkeypatch.setattr(A, "AUTH_TOKEN", "ABCDEFGHIJ")
+
+    r = client.get(url)
+    assert r.status_code == 200
+    assert r.content == b"\x89PNG\r\n\x1a\npixels"
+    # The route it stands in for is still gated, and so is the mint — the
+    # exemption is the signed path's alone.
+    assert client.get("/api/file", params={"path": str(shot)}).status_code == 401
+    assert client.get("/api/file_link", params={"path": str(shot)}).status_code == 401
+
+
+def test_signed_file_expired_is_rejected(client, shot):
+    target = str(shot)
+    stale = int(time.time()) - 1
+    r = client.get("/api/signed_file", params={
+        "path": target, "exp": stale, "sig": A.file_sig(target, stale)})
+    assert r.status_code == 403
+    assert r.json()["error"] == "expired"
+
+
+def test_signed_file_unsigned_or_garbled_is_rejected(client, shot):
+    for params in ({"path": str(shot)},
+                   {"path": str(shot), "exp": "soon", "sig": "x" * 64},
+                   {"path": str(shot), "exp": int(time.time()) + 60, "sig": "nope"}):
+        r = client.get("/api/signed_file", params=params)
+        assert r.status_code == 403
+        assert r.json()["error"] == "bad_signature"
+
+
+def test_signed_file_tampered_path_is_rejected(client, tree, shot):
+    (tree / "other.png").write_bytes(b"\x89PNG other")
+    url, _ = mint_file(client, shot)
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+    r = client.get("/api/signed_file", params={**q, "path": str(tree / "other.png")})
+    assert r.status_code == 403
+    assert r.json()["error"] == "bad_signature"
+    assert client.get(url).status_code == 200
+
+
+def test_a_download_link_is_not_a_viewer_link(client, shot):
+    """Each purpose signs under its own tag, on the one shared key."""
+    target = str(shot)
+    expires = int(time.time()) + 60
+    r = client.get("/api/signed_file", params={
+        "path": target, "exp": expires, "sig": A.download_sig(target, expires)})
+    assert r.status_code == 403
+    assert r.json()["error"] == "bad_signature"
+
+
+def test_file_link_refuses_what_api_file_would_refuse(client, tree):
+    # media_file()'s rules, answered 404 alike: not the allowlist, not absolute,
+    # not there, not a file.
+    for bad in (str(tree / "beta.txt"), "relative/shot.png", "",
+                str(tree / "absent.png"), str(tree / "sub")):
+        assert client.get("/api/file_link", params={"path": bad}).status_code == 404
+
+
+def test_signed_file_rechecks_the_allowlist(client, tree):
+    """A signature is not a licence to serve a file /api/file would not."""
+    target = str(tree / "beta.txt")
+    expires = int(time.time()) + 60
+    r = client.get("/api/signed_file", params={
+        "path": target, "exp": expires, "sig": A.file_sig(target, expires)})
+    assert r.status_code == 404
+
+
+def test_signed_file_of_a_vanished_file_is_404(client, shot):
+    url, _ = mint_file(client, shot)
+    shot.unlink()
+    assert client.get(url).status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # session cwd
 # ---------------------------------------------------------------------------
 
