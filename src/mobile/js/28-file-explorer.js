@@ -496,7 +496,7 @@ $("btn-file-download").addEventListener("click", () => {
   const e = filesSelected;
   if (!e) return;
   showSheet(false);
-  downloadFile(joinPath(filesPath, e.name), e.name);
+  downloadFile(joinPath(filesPath, e.name), e.name, e.size);
 });
 
 $("btn-file-delete").addEventListener("click", async () => {
@@ -518,13 +518,50 @@ $("btn-file-delete").addEventListener("click", async () => {
   loadDir(filesPath);
 });
 
-// The browser does the downloading, not us. Fetching the bytes here to hand
-// over a blob: URL held the whole file in the page's memory before the save
-// sheet opened, and iOS kills the app for that on anything large. So the token
-// header only buys a short-lived signed link (a navigation cannot carry the
-// header, hence the signature) and the browser streams the file itself.
-async function downloadFile(path, name) {
+// Above this a blob held whole in the page's memory is what makes iOS kill the
+// PWA, so anything bigger goes the long way round.
+const DOWNLOAD_BLOB_MAX = 30 * 1024 * 1024;
+
+// Two ways down, because neither is good at the other's size. Below the cap the
+// page fetches the bytes itself and hands the save sheet a blob — one tap, no
+// browser chrome, which is what nearly every download here is. Above it, or
+// when the size is unknown, the browser has to do the downloading instead.
+function downloadFile(path, name, size) {
+  if (typeof size === "number" && size <= DOWNLOAD_BLOB_MAX) {
+    return downloadAsBlob(path, name);
+  }
+  return downloadViaLink(path, name);
+}
+
+// Through fetch rather than a plain link: /api/* only answers to the token
+// header, which a navigation cannot carry.
+async function downloadAsBlob(path, name) {
   toast("Downloading…");
+  try {
+    const r = await fetch(apiURL("api/fs/download?path=" + encodeURIComponent(path)),
+                          { headers: authHeaders() });
+    if (r.status === 401) { rejectToken(); return; }
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name || baseName(path);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Not straight away: Safari needs the URL alive until its save sheet is done.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    toast("Couldn't download");
+  }
+}
+
+// The browser does the downloading, not us. So the token header only buys a
+// short-lived signed link (a navigation cannot carry the header, hence the
+// signature) and the browser streams the file itself. No "Downloading…" toast:
+// the browser puts its own download UI on screen, and ours would only sit on
+// top of it and outlive it. Silence unless something goes wrong.
+async function downloadViaLink(path, name) {
   let url;
   try {
     const r = await fetch(apiURL("api/fs/download_link?path=" + encodeURIComponent(path)),
