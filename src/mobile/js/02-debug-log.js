@@ -173,6 +173,13 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_editor_wrap", "1");
     else localStorage.removeItem("pockettui_editor_wrap");
   },
+  // The editor's vim keybindings. Off by default: the plain editor is what
+  // most taps want, and vim needs a real Escape key to be usable at all.
+  get editorVimOn() { return localStorage.getItem("pockettui_editor_vim") === "1"; },
+  set editorVimOn(v) {
+    if (v) localStorage.setItem("pockettui_editor_vim", "1");
+    else localStorage.removeItem("pockettui_editor_vim");
+  },
 };
 
 // The name becomes a tmux session name, so it is held to what tmux and the
