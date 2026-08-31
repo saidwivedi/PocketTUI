@@ -199,6 +199,44 @@ function edLoadVimrc() {
   return edVimrcRead;
 }
 
+// :w and :q are muscle memory, and the extension ships neither — its ex command
+// list has `write` (which writes to a textarea that does not exist here) and no
+// quit at all. These wire the two words to the buttons they mean. Registered
+// once per page load, like the vimrc: they land in vim's global command map.
+//
+// Matching is by prefix of the full name — ":q" reaches "quit", but ":qa" and
+// ":wqa" reach nothing unless registered in their own right, so each *all form
+// is spelled out. One file per editor, so the all-buffer forms mean the same
+// thing as the plain ones.
+let edVimExDone = false;
+function edDefineVimEx() {
+  if (edVimExDone) return;
+  edVimExDone = true;
+  const V = window.CM6.Vim;
+  // ":q!" arrives as command "q" with "!" as its argument.
+  const bang = (params) => /^\s*!/.test((params && params.argString) || "");
+  const quit = (cm, params) => {
+    // Discarding is dropping the dirty flag before the pop: editorPopped's
+    // confirm is what a bare :q is meant to hit and a :q! is meant to skip.
+    if (bang(params)) edSetDirty(false);
+    history.back();
+  };
+  const saveQuit = async () => {
+    // editorSave clears dirty only on a write that landed, and no-ops on a
+    // read-only buffer — either way, closing is what did not fail.
+    if (!edReadOnly) await editorSave();
+    if (!edDirty) history.back();
+  };
+  // The filename argument is ignored: this editor has exactly one file open.
+  V.defineEx("write", "w", () => { editorSave(); });
+  V.defineEx("quit", "q", quit);
+  V.defineEx("qall", "qa", quit);
+  V.defineEx("wq", "wq", saveQuit);
+  V.defineEx("wqall", "wqa", saveQuit);
+  V.defineEx("xit", "x", saveQuit);
+  V.defineEx("xall", "xa", saveQuit);
+}
+
 async function openEditor(path, opts) {
   const create = !!(opts && opts.create);
   let content = "", hash = "", lossy = false;
@@ -238,7 +276,7 @@ async function openEditor(path, opts) {
   edSetDirty(false);
   edSyncWrapButton();
   edSyncVimButton();
-  if (cfg.editorVimOn) edLoadVimrc();
+  if (cfg.editorVimOn) { edDefineVimEx(); edLoadVimrc(); }
 
   $("screen-files").classList.remove("active");
   $("screen-editor").classList.add("active");
@@ -375,5 +413,5 @@ $("btn-editor-vim").addEventListener("click", () => {
   cfg.editorVimOn = !cfg.editorVimOn;
   if (edView) edView.dispatch({ effects: edVimComp.reconfigure(edVimExt()) });
   edSyncVimButton();
-  if (cfg.editorVimOn) edLoadVimrc();
+  if (cfg.editorVimOn) { edDefineVimEx(); edLoadVimrc(); }
 });
