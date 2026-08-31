@@ -307,33 +307,46 @@ $("btn-session-cancel").addEventListener("click", () => showSheet(false));
 $("btn-session-save").addEventListener("click", saveSessionSheet);
 $("btn-session-kill").addEventListener("click", killSheetSession);
 
-// The folder is sticky because the next session is usually started in the same
-// project as the last one.
+// "sess-0831-2143" — no "." or ":" so it clears the tmux separator rule below.
+function defaultSessionName() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return "sess-" + p(d.getMonth() + 1) + p(d.getDate()) + "-" +
+         p(d.getHours()) + p(d.getMinutes());
+}
+
 function openNewSession() {
   $("new-name").value = "";
-  $("new-dir").value = cfg.newdir;
+  // Show the name an empty field will produce, not a made-up example.
+  $("new-name").placeholder = defaultSessionName();
   showSheet(true, "sheet-new");
   $("new-name").focus();
 }
 
 async function createSession() {
-  const name = $("new-name").value.trim();
-  if (!name) { toast("Enter a name"); return; }
+  const typed = $("new-name").value.trim();
   // tmux reads these as window/pane separators, so a name carrying one never
   // addresses the session it looks like. The server rejects them too.
   for (const c of [".", ":"]) {
-    if (name.includes(c)) { toast("Names can't contain " + c); return; }
+    if (typed.includes(c)) { toast("Names can't contain " + c); return; }
   }
-  const dir = $("new-dir").value.trim();
+  const base = typed || defaultSessionName();
   try {
-    const r = await fetch(apiURL("api/session"), {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ name: name, dir: dir }),
-    });
-    const data = await r.json().catch(() => null);
+    let data = null, r = null;
+    // Two auto-named sessions in the same minute collide; suffix past it rather
+    // than blaming the user for a name they never chose.
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const name = attempt === 1 ? base : base + "-" + attempt;
+      r = await fetch(apiURL("api/session"), {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ name: name, dir: "" }),
+      });
+      data = await r.json().catch(() => null);
+      const dup = data && data.error && data.error.includes("already exists");
+      if (r.ok || typed || !dup) break;
+    }
     if (!r.ok) { toast(data && data.error ? data.error : "Couldn't create the session"); return; }
-    cfg.newdir = dir;
     showSheet(false);
     $("new-name").value = "";
     openTerminal(data.session);
