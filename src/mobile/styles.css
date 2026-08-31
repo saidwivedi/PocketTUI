@@ -1916,7 +1916,9 @@ html.term-open, body.term-open {
   background: var(--umber);
 }
 .editor-dirty.show { display: inline-block; }
-#btn-editor-save {
+/* The reader's Edit is the same pill in the same slot of the same bar, so it
+   shares Save's rule rather than restating it. */
+#btn-editor-save, #btn-reader-edit {
   flex: 0 0 auto;
   font-family: var(--sans);
   font-size: 13.5px;
@@ -1936,7 +1938,7 @@ html.term-open, body.term-open {
   border-color: var(--umber);
   color: var(--paper);
 }
-#btn-editor-save:active { transform: scale(0.96); }
+#btn-editor-save:active, #btn-reader-edit:active { transform: scale(0.96); }
 #btn-editor-save[disabled] { opacity: 0.45; }
 /* Same pill as Save, but smaller and quiet by default — a reading preference,
    not the primary action of the bar. Lit the same way Save is: filled umber
@@ -1970,6 +1972,134 @@ html.term-open, body.term-open {
 #editor-host { flex: 1 1 auto; min-height: 0; }
 #editor-host .cm-editor { height: 100%; }
 #editor-host .cm-editor.cm-focused { outline: none; }
+
+/* ============================================================
+   MARKDOWN READER
+   ============================================================ */
+/* The editor's fixed column, minus the keyboard inset — nothing here takes
+   typing — and with the document scrolling where CodeMirror would be. */
+#screen-reader {
+  position: fixed; inset: 0;
+  flex-direction: column;
+  background: var(--paper);
+  padding-top: var(--safe-top);
+}
+#screen-reader.active { display: flex; }
+#reader-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Reading measure first: the column stops at a paragraph's worth of width and
+   centres, so the same document reads on a phone and beside the rail. Every
+   block that can outgrow it — code, tables, long URLs — is boxed below rather
+   than allowed to push the page sideways. */
+.md-body {
+  max-width: 38em;
+  margin: 0 auto;
+  padding: 14px 20px calc(40px + var(--safe-bot));
+  font-size: 15.5px;
+  line-height: 1.62;
+  color: var(--ink-2);
+  overflow-wrap: break-word;
+}
+.md-body > :first-child { margin-top: 0; }
+.md-body p { margin: 0 0 0.95em; }
+/* Serif headings, the voice the app already uses for a title. */
+.md-body h1, .md-body h2, .md-body h3,
+.md-body h4, .md-body h5, .md-body h6 {
+  font-family: var(--serif);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  color: var(--ink);
+  margin: 1.5em 0 0.5em;
+}
+.md-body h1 { font-size: 25px; }
+.md-body h2 { font-size: 21px; }
+.md-body h3 { font-size: 18px; }
+.md-body h4 { font-size: 16px; }
+.md-body h5, .md-body h6 { font-size: 15px; color: var(--secondary); }
+/* The two top levels carry a hairline, the way a printed page rules a section. */
+.md-body h1, .md-body h2 {
+  padding-bottom: 0.24em;
+  border-bottom: 1px solid var(--hair);
+}
+.md-body a { color: var(--umber); text-decoration: underline; text-underline-offset: 2px; }
+.md-body strong { font-weight: 650; color: var(--ink); }
+.md-body s { color: var(--tertiary); }
+.md-body hr {
+  border: none;
+  border-top: 1px solid var(--hair);
+  margin: 1.8em 0;
+}
+.md-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+.md-body code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  padding: 1.5px 5px;
+  border-radius: 5px;
+  background: var(--umber-tint);
+  color: var(--ink);
+}
+.md-body pre {
+  margin: 1.1em 0;
+  padding: 12px 14px;
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+/* Inside a block the pill would only repeat the box it already sits in. */
+.md-body pre code {
+  display: block;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  white-space: pre;
+}
+.md-body blockquote {
+  margin: 1.1em 0;
+  padding: 0.1em 0 0.1em 14px;
+  border-left: 2px solid var(--hair-strong);
+  color: var(--secondary);
+  font-style: italic;
+}
+.md-body ul, .md-body ol { margin: 0 0 0.95em; padding-left: 1.5em; }
+/* A nested list belongs to the line above it, not to the gap after it. */
+.md-body li > ul, .md-body li > ol { margin: 0.2em 0 0; }
+.md-body li { margin: 0.2em 0; }
+.md-body li::marker { color: var(--tertiary); }
+/* A checked-off item is done being read, hence the quieter marker. */
+.md-body li.md-task { list-style: none; margin-left: -1.2em; }
+.md-body li.md-task input {
+  margin: 0 8px 0 0;
+  accent-color: var(--umber);
+  vertical-align: baseline;
+}
+.md-body .md-table {
+  margin: 1.1em 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.md-body table { border-collapse: collapse; font-size: 14px; }
+.md-body th, .md-body td {
+  border: 1px solid var(--hair);
+  padding: 6px 11px;
+  text-align: left;
+}
+.md-body th { background: var(--paper-rec); font-weight: 600; color: var(--ink); }
 
 /* ============================================================
    WIDE LAYOUT — the session list as a persistent left rail
@@ -2009,7 +2139,9 @@ html.term-open, body.term-open {
   /* Main-pane screens start past the rail and its gutter: the fixed screens
      move their left edge, the explorer — a page-scrolling screen — shifts
      by margin instead. */
-  #screen-term, #screen-editor { left: calc(var(--sidebar-w) + var(--rail-gutter)); }
+  #screen-term, #screen-editor, #screen-reader {
+    left: calc(var(--sidebar-w) + var(--rail-gutter));
+  }
   #screen-files { margin-left: calc(var(--sidebar-w) + var(--rail-gutter)); }
 
   /* The rail's row for the session open in the main pane, in the accent the
@@ -2151,7 +2283,8 @@ html.term-open, body.term-open {
   }
   #screen-term.active ~ #wide-empty,
   #screen-files.active ~ #wide-empty,
-  #screen-editor.active ~ #wide-empty { display: none; }
+  #screen-editor.active ~ #wide-empty,
+  #screen-reader.active ~ #wide-empty { display: none; }
 
   /* Bottom sheets are phone furniture; at this width every sheet presents
      the way the confirm already does — floating dead center, all corners

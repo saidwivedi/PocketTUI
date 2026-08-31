@@ -89,6 +89,7 @@ JS_FRAGMENTS = (
     "30-notify.js",
     "31-wide-layout.js",
     "32-image-paste.js",
+    "33-md-reader.js",
     "27-boot.js",
 )
 

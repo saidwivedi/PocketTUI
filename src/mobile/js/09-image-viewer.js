@@ -216,14 +216,17 @@ function openDemo() {
 
 function openTerminal(name) {
   // Wide layouts reach here from the always-visible rail, possibly with the
-  // explorer or editor holding the main pane; both close first so the
-  // terminal never lands under the editor (#screen-editor paints later in
-  // the DOM), with a dirty buffer getting the same say its own back gives
-  // it — first, before anything below touches the socket. Phone flows never
-  // arrive with either screen up (the list is hidden behind them), so the
-  // isWideLayout() gate just keeps the deep-link edge cases exactly as they
-  // were.
+  // explorer, reader or editor holding the main pane; they close first so the
+  // terminal never lands under one of them (#screen-editor and #screen-reader
+  // paint later in the DOM), with a dirty buffer getting the same say its own
+  // back gives it — first, before anything below touches the socket. Phone
+  // flows never arrive with any of them up (the list is hidden behind them),
+  // so the isWideLayout() gate just keeps the deep-link edge cases exactly as
+  // they were.
   if (isWideLayout()) {
+    // Closing the reader puts the explorer back, which the branch below then
+    // closes in its turn.
+    if ($("screen-reader").classList.contains("active")) closeReader();
     if ($("screen-editor").classList.contains("active")) {
       if (edDirty && !confirm("Discard your unsaved changes?")) return;
       closeEditor();
