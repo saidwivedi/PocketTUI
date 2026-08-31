@@ -637,11 +637,34 @@ $("btn-files-upload").addEventListener("click", () => {
 });
 
 $("files-upload-input").addEventListener("change", (ev) => {
-  const f = ev.target.files && ev.target.files[0];
-  ev.target.value = "";  // picking the same file again must still fire change
-  if (f) uploadFile(f, false);
+  // The FileList is live and empties with the input, so copy it out before the
+  // reset that lets the same pick fire change again.
+  const files = Array.from(ev.target.files || []);
+  ev.target.value = "";
+  if (files.length) uploadFiles(files);
 });
 
+// One file at a time, never in parallel: a 409 asks its own Replace? question,
+// and a pile of confirms racing each other is unanswerable.
+async function uploadFiles(files) {
+  let done = 0, failed = 0;
+  for (const f of files) {
+    const err = await uploadFile(f, false);
+    if (err === null) { done++; continue; }
+    // "" is a declined replace or an expired token — both already said their
+    // piece, or deliberately say nothing.
+    if (err) { failed++; if (files.length === 1) toast(err); }
+  }
+  if (files.length === 1) { if (done) toast("Uploaded " + files[0].name); }
+  else if (done) toast("Uploaded " + done + (done === 1 ? " file" : " files")
+                       + (failed ? ", " + failed + " failed" : ""));
+  else if (failed) toast("Couldn't upload " + failed + " files");
+  if (done) loadDir(filesPath);
+}
+
+// Returns null when the file landed, "" when nothing more should be said, and
+// otherwise the message for whatever went wrong — the batch decides whether
+// that surfaces per file or as one summary.
 async function uploadFile(f, overwrite) {
   const target = joinPath(filesPath, f.name);
   try {
@@ -650,17 +673,16 @@ async function uploadFile(f, overwrite) {
     // with /api/transcribe.
     const r = await fetch(apiURL("api/fs/upload" + q),
                           { method: "POST", headers: authHeaders(), body: f });
-    if (r.status === 401) { rejectToken(); return; }
+    if (r.status === 401) { rejectToken(); return ""; }
     if (r.status === 409 && !overwrite) {
-      if (confirm(f.name + " already exists here. Replace it?")) uploadFile(f, true);
-      return;
+      if (confirm(f.name + " already exists here. Replace it?")) return uploadFile(f, true);
+      return "";
     }
-    if (r.status === 413) { toast("Too large to upload (50 MB max)"); return; }
+    if (r.status === 413) return "Too large to upload (50 MB max)";
     if (!r.ok) throw new Error("HTTP " + r.status);
-    toast("Uploaded " + f.name);
-    loadDir(filesPath);
+    return null;
   } catch (e) {
-    toast("Couldn't upload");
+    return "Couldn't upload";
   }
 }
 
