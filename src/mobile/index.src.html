@@ -323,6 +323,24 @@
 </div>
 
 <!-- ============================================================
+     MARKDOWN READER
+     ============================================================ -->
+<!-- Where a .md file lands instead of the editor. Edit swaps this screen for
+     that one in place, on the history entry this screen already pushed, so the
+     two views of a file cost one back between them. -->
+<div class="screen" id="screen-reader">
+  <div class="topbar editor-bar">
+    <button class="icon-btn" id="btn-reader-back" aria-label="Close the reader"><svg><use href="#i-back"/></svg></button>
+    <div class="editor-name"><span id="reader-filename"></span></div>
+    <button type="button" id="btn-reader-edit">Edit</button>
+  </div>
+  <!-- The scroller, so the topbar stays put while the document moves. -->
+  <div id="reader-scroll">
+    <article id="reader-body" class="md-body"></article>
+  </div>
+</div>
+
+<!-- ============================================================
      WIDE-LAYOUT EMPTY PANE
      ============================================================ -->
 <!-- Wide layouts only (the WIDE LAYOUT media query in styles.css): with the

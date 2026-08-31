@@ -33,6 +33,10 @@ let filesPressedAt = 0;
 // over /api/file rather than in the editor.
 const FILES_MEDIA_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|mp4|webm|mov)$/i;
 
+// Markdown opens rendered, in the reader (33-md-reader.js), rather than in the
+// editor — Edit there is one tap away.
+const FILES_MD_RE = /\.(?:md|markdown)$/i;
+
 function joinPath(dir, name) {
   return (dir === "/" ? "" : dir) + "/" + name;
 }
@@ -139,6 +143,36 @@ async function fsList(path) {
     throw err;
   }
   filesListCache.set(data.path, data);
+  return data;
+}
+
+// /api/fs/read, with the answers both readers of a file — the editor and the
+// markdown reader — give: an expired token asks for the pairing code again, a
+// file that is not text or is too big offers the download instead, and
+// anything else is one toast. Returns the payload, or null once it has already
+// said its piece. Shared rather than repeated so the two screens cannot drift
+// into telling the same story two ways.
+async function fsReadText(path) {
+  let r, data;
+  try {
+    r = await fetch(apiURL("api/fs/read?path=" + encodeURIComponent(path)),
+                    { cache: "no-store", headers: authHeaders() });
+    data = await r.json().catch(() => null);
+  } catch (e) { toast("Couldn't read the file"); return null; }
+  if (r.status === 401) { rejectToken(); return null; }
+  if (!r.ok) {
+    const err = data && data.error;
+    if (err === "binary_file" || err === "too_large") {
+      const why = err === "binary_file" ? "isn't a text file"
+                                        : "is too big to open here";
+      if (confirm(baseName(path) + " " + why + ". Download it instead?")) {
+        downloadFile(path, baseName(path));
+      }
+    } else {
+      toast("Couldn't read the file");
+    }
+    return null;
+  }
   return data;
 }
 
@@ -472,6 +506,7 @@ function openEntry(e, dir=filesPath) {
   // (whose Download is the only sensible offer) is the whole answer.
   if (e.type === "link") { openFileActions(e); return; }
   if (FILES_MEDIA_RE.test(e.name)) { showImage(full); return; }
+  if (FILES_MD_RE.test(e.name)) { openReader(full); return; }
   openEditor(full);
 }
 
@@ -720,6 +755,7 @@ $("btn-files-term").addEventListener("click", () => {
 // ignores these pops — #screen-term is not active while either screen is up.
 window.addEventListener("popstate", () => {
   if ($("screen-editor").classList.contains("active")) { editorPopped(); return; }
+  if ($("screen-reader").classList.contains("active")) { closeReader(); return; }
   if (!$("screen-files").classList.contains("active")) return;
   // A go(-n) past several entries arrives as one popstate, not n of them, so
   // the per-level unwind below would land on the folder one up while history
@@ -786,6 +822,7 @@ function attachEdgeSwipe(scr, onBack) {
 }
 attachEdgeSwipe($("screen-files"), () => history.back());
 attachEdgeSwipe($("screen-editor"), () => history.back());
+attachEdgeSwipe($("screen-reader"), () => history.back());
 
 // Pull-down to refresh — the session list's own pattern.
 (function() {

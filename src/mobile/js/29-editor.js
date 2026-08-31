@@ -237,30 +237,16 @@ function edDefineVimEx() {
   V.defineEx("xall", "xa", saveQuit);
 }
 
+// opts.create opens an empty buffer for a file that does not exist yet;
+// opts.noHistory says the entry this screen unwinds on is already on the stack
+// — the markdown reader's Edit hands over the one it pushed, so the two views
+// of a file cost one back between them.
 async function openEditor(path, opts) {
   const create = !!(opts && opts.create);
   let content = "", hash = "", lossy = false;
   if (!create) {
-    let r, data;
-    try {
-      r = await fetch(apiURL("api/fs/read?path=" + encodeURIComponent(path)),
-                      { cache: "no-store", headers: authHeaders() });
-      data = await r.json().catch(() => null);
-    } catch (e) { toast("Couldn't read the file"); return; }
-    if (r.status === 401) { rejectToken(); return; }
-    if (!r.ok) {
-      const err = data && data.error;
-      if (err === "binary_file" || err === "too_large") {
-        const why = err === "binary_file" ? "isn't a text file"
-                                          : "is too big to edit here";
-        if (confirm(baseName(path) + " " + why + ". Download it instead?")) {
-          downloadFile(path, baseName(path));
-        }
-      } else {
-        toast("Couldn't read the file");
-      }
-      return;
-    }
+    const data = await fsReadText(path);
+    if (!data) return;
     content = data.content; hash = data.hash; lossy = !!data.lossy;
   }
   try { await ensureCM(); } catch (e) { toast("Couldn't load the editor"); return; }
@@ -280,7 +266,7 @@ async function openEditor(path, opts) {
 
   $("screen-files").classList.remove("active");
   $("screen-editor").classList.add("active");
-  history.pushState({ editor: true }, "", location.href);
+  if (!(opts && opts.noHistory)) history.pushState({ editor: true }, "", location.href);
   if (lossy) toast("Not valid UTF-8 — opened read-only");
 }
 
