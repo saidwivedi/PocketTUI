@@ -1616,6 +1616,15 @@ def test_real_audio_transcribes_and_resolves(tmp_path, monkeypatch):
         "sai@box:~/work$ ",
     ])
     monkeypatch.setattr(A, "pane_cwd", lambda name: str(tmp_path))
+    # The prompt biases the decode, so leaving these on their real sources would
+    # feed the model whatever this machine's shell history holds that minute —
+    # the transcript then changes between runs of the same test.
+    monkeypatch.setattr(R, "history_vocabulary", lambda deadline=0.0: [])
+    monkeypatch.setattr(R, "ssh_hosts", lambda: [])
+    monkeypatch.setattr(R, "dotfile_names", lambda: [])
+    # The corrections store, not learned_words(): it is what both the prompt and
+    # the ASR rules read, so pinning it settles the whole learned channel.
+    monkeypatch.setattr(R, "learned_corrections", lambda path=None: [])
 
     response = A.transcribe((BENCH_AUDIO / "p01.wav").read_bytes(), "work", "phone")
     assert response.status_code == 200
