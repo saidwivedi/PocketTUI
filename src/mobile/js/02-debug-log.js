@@ -100,8 +100,6 @@ const DEFAULT_BACKEND = SAME_ORIGIN ? "" : BUILD_BACKEND;
 const cfg = {
   get backend() { return localStorage.getItem("pockettui_backend") || DEFAULT_BACKEND; },
   set backend(v) { localStorage.setItem("pockettui_backend", v); },
-  get newdir() { return localStorage.getItem("pockettui_newdir") || ""; },
-  set newdir(v) { localStorage.setItem("pockettui_newdir", v); },
   get token() { return localStorage.getItem("pockettui_token") || ""; },
   set token(v) { localStorage.setItem("pockettui_token", v); },
   // Names this device's own grouped view session (<devname>-<target>), so
