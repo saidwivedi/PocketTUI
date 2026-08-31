@@ -6,7 +6,7 @@
 
 **Your terminal. Any browser. Any device.**
 
-Your actual running terminal, wherever you are. Open a browser, connect to your machine, and pick up exactly where you left off — check on jobs, keep Claude or Codex going, or start something new.
+Your actual running terminal, wherever you are. Connect your machine once, and from then on it's just there — open a browser on any device to check on jobs, keep Claude or Codex going, or start something new.
 
 [**pockettui.com**](https://pockettui.com) · [Open the app](https://pockettui.com/app/) · [Live demo](https://pockettui.com/demo)
 
