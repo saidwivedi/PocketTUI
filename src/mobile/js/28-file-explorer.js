@@ -21,6 +21,9 @@ let filesOrigin = null;    // the screen to restore on close
 // entry and closes the whole view from any depth.
 let filesStack = [];
 let filesSelected = null;  // the entry the action sheet is about
+// The entries currently drawn, so switching list/grid redraws them in place
+// rather than re-listing the folder.
+let filesEntries = [];
 // Set while btn-files-term's multi-entry history.go is in flight, so the one
 // popstate it lands as closes the view instead of climbing one folder.
 let filesClosing = false;
@@ -487,11 +490,19 @@ $("files-path-input").addEventListener("blur", () => {
   }, 150);
 });
 
+// ---- the listing ------------------------------------------------------------
+// Two layouts over one set of entries: rows, or the icon tiles a phone's own
+// file manager shows. Only the drawing differs — both go through wireRow(), so
+// tap, long press and everything they open behave identically either way.
+
 function renderEntries(entries) {
   const list = $("files-list");
+  const grid = cfg.filesView === "grid";
+  filesEntries = entries;
+  list.classList.toggle("files-grid", grid);
   list.innerHTML = "";
   $("files-empty").style.display = entries.length ? "none" : "block";
-  for (const e of entries) list.appendChild(fileRow(e));
+  for (const e of entries) list.appendChild(grid ? fileTile(e) : fileRow(e));
 }
 
 function fileRow(e) {
@@ -506,6 +517,30 @@ function fileRow(e) {
   wireRow(row, e);
   return row;
 }
+
+// The tile the grid draws instead: the same icon at tile size with the name
+// under it. No meta line — a tile has no room for one, and size and age were
+// never why anyone switched to icons.
+function fileTile(e) {
+  const tile = el("div", { class: "file-tile" },
+    el("span", { class: "file-ic " + e.type },
+       svgIcon(e.type === "dir" ? "i-folder" : "i-file")),
+    el("div", { class: "file-name" }, e.name),
+  );
+  wireRow(tile, e);
+  return tile;
+}
+
+// The switch itself. The choice is global, so nothing is re-listed: the entries
+// already on screen are simply drawn the other way, and every later listing —
+// including the ones a rail switch restores from the cache — follows cfg.
+$("files-view").value = cfg.filesView;
+$("files-view").addEventListener("change", (ev) => {
+  cfg.filesView = ev.target.value;
+  // An unreadable folder is showing its error, not a listing; leave it alone
+  // rather than repainting the entries it replaced.
+  if ($("files-error").style.display !== "block") renderEntries(filesEntries);
+});
 
 // Tap opens; a long press (or a desktop right-click) opens the action sheet.
 function wireRow(row, entry) {
