@@ -11,7 +11,15 @@
 let filesPath = "";        // the directory currently listed
 let filesHome = "";        // $HOME as the backend reports it, for ~ crumbs
 let filesOrigin = null;    // the screen to restore on close
-let filesEntryPath = null; // the folder the explorer was opened at — back here closes it
+// The folders listed since the explorer opened, entry folder first — the app's
+// own record of where back lands, and what back at [0] closes. It has to be
+// ours rather than the state objects stored with the history entries: iOS
+// clobbers those (seen after the download flow points the top frame at an
+// attachment URL — downloadViaLink's anchor click — which iOS aborts into its
+// download UI, nulling history.state on the way), after which every pop arrives
+// stateless and a state-reading handler reads each one as the pop past the
+// entry and closes the whole view from any depth.
+let filesStack = [];
 let filesSelected = null;  // the entry the action sheet is about
 // A finished long-press ends in a click the browser synthesizes on the same
 // row; stamping the moment lets that click be ignored (the viewer's
@@ -48,19 +56,20 @@ function openExplorer(path) {
     $(filesOrigin).classList.remove("active");
     $("screen-files").classList.add("active");
     syncChrome();
-    filesEntryPath = null;   // set once loadDir below resolves the real path
+    filesStack = [];         // seeded once loadDir below resolves the real path
     history.pushState({ files: true }, "", location.href);
   }
   loadDir(path);
 }
 
 // The state object for the history entry matching wherever navigation
-// currently sits: bare at the entry folder (so a pop past it closes the
-// explorer, same as the very first push in openExplorer), path-carrying one
-// level in, so a rewritten entry (the address field's pushState-back trick
-// below) still pops the right way afterwards.
+// currently sits: bare at the entry folder (same as the very first push in
+// openExplorer), path-carrying one level in. Nothing reads it back — popstate
+// goes by filesStack — but the address field's pushState-back trick below has
+// to re-push *something*, and keeping the shape uniform with the other pushes
+// costs a line.
 function filesEntryState() {
-  return filesPath === filesEntryPath ? { files: true } : { files: true, path: filesPath };
+  return filesPath === filesStack[0] ? { files: true } : { files: true, path: filesPath };
 }
 
 function closeExplorer() {
@@ -76,7 +85,7 @@ function closeExplorer() {
   $("screen-files").classList.remove("active");
   const back = filesOrigin || "screen-list";
   filesOrigin = null;
-  filesEntryPath = null;
+  filesStack = [];
   $(back).classList.add("active");
   syncChrome();
   // The terminal kept its socket while we were away; it only needs its size
@@ -134,8 +143,10 @@ function applyListing(data) {
   filesHome = data.home || "";
   // The first listing after openExplorer's push is the entry folder — back
   // here is what closes the explorer, however the path the caller asked for
-  // (~, a cwd, a rewritten mount) actually resolved.
-  if (filesEntryPath === null) filesEntryPath = data.path;
+  // (~, a cwd, a rewritten mount) actually resolved. Only the first: this also
+  // runs for same-folder reloads and for the popstate landings below, neither
+  // of which is a new level, so the deeper pushes belong to the navigators.
+  if (filesStack.length === 0) filesStack.push(data.path);
   renderCrumbs(data.path);
   renderEntries(data.entries || []);
   $("files-error").style.display = "none";
@@ -161,10 +172,13 @@ async function loadDir(path) {
 // address bar) as opposed to a same-folder reload after rename/delete/mkdir/
 // upload, which call loadDir(filesPath) directly and must not grow the stack.
 // A failed load leaves filesPath unchanged, so nothing is pushed for it —
-// the error just replaces the current folder's view in place.
+// the error just replaces the current folder's view in place. Every
+// history.pushState of a folder is mirrored by a filesStack push: history
+// reserves the entry back has to consume, the stack is what back reads.
 async function navigateDir(path) {
   if (await loadDir(path)) {
     history.pushState({ files: true, path: filesPath }, "", location.href);
+    filesStack.push(filesPath);
   }
 }
 
@@ -345,6 +359,7 @@ async function submitPathEdit() {
     closePathEdit();
     applyListing(data);
     history.pushState({ files: true, path: filesPath }, "", location.href);
+    filesStack.push(filesPath);
     return;
   } catch (e) {
     if (e.code !== "not_a_directory") {
@@ -657,20 +672,22 @@ $("btn-files-back").addEventListener("click", () => history.back());
 // Explorer and editor sit on the history stack the way the terminal does, so
 // back unwinds them one screen at a time. The terminal's own popstate handler
 // ignores these pops — #screen-term is not active while either screen is up.
-window.addEventListener("popstate", (ev) => {
+window.addEventListener("popstate", () => {
   if ($("screen-editor").classList.contains("active")) { editorPopped(); return; }
   if (!$("screen-files").classList.contains("active")) return;
-  // Any state still flagged `files` is a folder inside the explorer — land on
-  // it in place: the path it carries, or the entry folder for the bare state
-  // openExplorer pushed before the first listing could name it. Only a state
-  // without the flag is the pop past the entry, and only that closes. Two
-  // exceptions fall through to closeExplorer as before: an open address field
-  // (back closes just the field, same as any other back), and an entry folder
-  // that never resolved, which has nowhere to land. No further push otherwise:
-  // the pop already put history where this folder belongs.
-  const st = ev.state;
-  const path = st && st.files ? (st.path || filesEntryPath) : null;
-  if (path && !$("files-path-wrap").classList.contains("editing")) {
+  // An open address field takes the back first — closeExplorer turns that one
+  // into closing just the field, and re-pushes the entry the pop consumed.
+  if ($("files-path-wrap").classList.contains("editing")) { closeExplorer(); return; }
+  // The popped entry's own state is deliberately not consulted: iOS wipes the
+  // stored state objects out from under us (see filesStack above), and a
+  // handler that trusted them read every later pop as the pop past the entry
+  // and closed the explorer from any depth. The stack is ours, so pop it and
+  // land on the folder underneath — in place, with no further push: the pop
+  // already put history where that folder belongs. Anything below the entry
+  // folder — including an entry that never resolved — closes.
+  if (filesStack.length > 1) {
+    filesStack.pop();
+    const path = filesStack[filesStack.length - 1];
     if (filesListCache.has(path)) applyListing(filesListCache.get(path));
     else loadDir(path);
     return;
