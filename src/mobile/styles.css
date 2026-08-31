@@ -2104,6 +2104,23 @@ html.term-open, body.term-open {
   text-align: left;
 }
 .md-body th { background: var(--paper-rec); font-weight: 600; color: var(--ink); }
+/* KaTeX draws in currentColor, so an equation is already the reading colour in
+   either theme. Until the bundle lands — or if it never does — these hold the
+   TeX source, and the mono face says as much; KaTeX's own font shorthand takes
+   the size and the family back inside them once it has rendered. */
+.md-body .md-math, .md-body .md-math-block {
+  font-family: var(--mono);
+  font-size: 0.86em;
+}
+/* A long equation scrolls inside its own box, exactly as the code and table
+   boxes above do; the page itself never goes sideways. */
+.md-body .md-math-block {
+  margin: 1.1em 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+/* The box already carries the spacing KaTeX would add on top of it. */
+.md-body .md-math-block .katex-display { margin: 0; }
 
 /* ============================================================
    WIDE LAYOUT — the session list as a persistent left rail
