@@ -21,6 +21,9 @@ let filesOrigin = null;    // the screen to restore on close
 // entry and closes the whole view from any depth.
 let filesStack = [];
 let filesSelected = null;  // the entry the action sheet is about
+// Set while btn-files-term's multi-entry history.go is in flight, so the one
+// popstate it lands as closes the view instead of climbing one folder.
+let filesClosing = false;
 // A finished long-press ends in a click the browser synthesizes on the same
 // row; stamping the moment lets that click be ignored (the viewer's
 // viewerOpenedAt idea).
@@ -54,6 +57,11 @@ function openExplorer(path) {
     filesOrigin = $("screen-term").classList.contains("active")
       ? "screen-term" : "screen-list";
     $(filesOrigin).classList.remove("active");
+    // Only the terminal is worth a one-tap way back to — the button says
+    // terminal. Set here and nowhere else: filesOrigin outlives a trip through
+    // the editor, which returns to this screen without coming back through
+    // openExplorer.
+    $("btn-files-term").style.display = filesOrigin === "screen-term" ? "" : "none";
     $("screen-files").classList.add("active");
     syncChrome();
     filesStack = [];         // seeded once loadDir below resolves the real path
@@ -691,12 +699,35 @@ async function uploadFile(f, overwrite) {
 $("btn-files").addEventListener("click", () => openExplorer(""));
 $("btn-files-back").addEventListener("click", () => history.back());
 
+// Straight back to the terminal, however deep the browsing went. Not
+// closeExplorer() directly: the explorer's history entries would stay on the
+// stack behind the terminal, and the terminal's own back would then spend them
+// one by one going nowhere. Unwinding through history instead leaves the stack
+// exactly where pressing back at every level would have.
+$("btn-files-term").addEventListener("click", () => {
+  // The field's own back is spent on closing it; take it out of the way first
+  // so the pops below all count as folders.
+  if ($("files-path-wrap").classList.contains("editing")) closePathEdit();
+  // Every entry the explorer owns: openExplorer's push plus one per level
+  // navigated into, which is filesStack.length — one at the entry folder, and
+  // still one if the entry folder never resolved and the stack stayed empty.
+  filesClosing = true;
+  history.go(-(filesStack.length || 1));
+});
+
 // Explorer and editor sit on the history stack the way the terminal does, so
 // back unwinds them one screen at a time. The terminal's own popstate handler
 // ignores these pops — #screen-term is not active while either screen is up.
 window.addEventListener("popstate", () => {
   if ($("screen-editor").classList.contains("active")) { editorPopped(); return; }
   if (!$("screen-files").classList.contains("active")) return;
+  // A go(-n) past several entries arrives as one popstate, not n of them, so
+  // the per-level unwind below would land on the folder one up while history
+  // already sits behind the whole view. The flag is the button saying this pop
+  // is the explorer leaving, whatever depth it left from — and closing here
+  // rather than before the go() keeps #screen-term inactive until the pop is
+  // spent, so the terminal's own popstate handler stays out of it.
+  if (filesClosing) { filesClosing = false; closeExplorer(); return; }
   // An open address field takes the back first — closeExplorer turns that one
   // into closing just the field, and re-pushes the entry the pop consumed.
   if ($("files-path-wrap").classList.contains("editing")) { closeExplorer(); return; }
