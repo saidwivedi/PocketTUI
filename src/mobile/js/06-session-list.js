@@ -96,12 +96,19 @@ function noteUnread(sessions) {
   return m;
 }
 
+// Several things ask for the list at once — the wide layout's 15s poll runs
+// against whatever a create, kill or rename asks for the moment it lands — and
+// a poll fired before that change can resolve after it, painting the list back
+// to how it was until the next tick. Only the newest request may reach the DOM.
+let sessListGen = 0;
+
 // quiet suppresses the failure toast: the wide layout's periodic refresh
 // reloads a list nobody asked about, and a backend that has gone away already
 // reports through the terminal's own banner rather than a toast per tick.
 async function loadSessions(spin=false, quiet=false) {
   // Nothing to query yet — prompt instead of failing against the static host.
   if (needsSetup()) { openSettings(true); return; }
+  const gen = ++sessListGen;
   const btn = $("btn-reload");
   if (spin) btn.classList.add("spin");
   try {
@@ -109,12 +116,14 @@ async function loadSessions(spin=false, quiet=false) {
     if (r.status === 401) { rejectToken(); return; }
     if (!r.ok) throw new Error("HTTP " + r.status);
     const data = await r.json();
+    if (gen !== sessListGen) return;
     renderSessions(data.sessions || []);
     $("list-error").style.display = "none";
     // The fetched list rides back to callers with a session to verify
     // (openSessionByName); everyone else ignores it.
     return data.sessions || [];
   } catch (e) {
+    if (gen !== sessListGen) return;
     $("list").innerHTML = "";
     if (needsSetup()) $("list").appendChild(demoCard());
     $("list-empty").style.display = "none";
