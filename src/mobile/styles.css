@@ -1726,6 +1726,44 @@ html.term-open, body.term-open {
 #files-path-input:focus { border-color: var(--umber); outline: none; }
 #files-path-wrap.editing #files-crumbs { display: none; }
 #files-path-wrap.editing #files-path-input { display: block; }
+/* The list/grid switch, in the path field's own quiet register — a hairline
+   field sized to the two words it ever holds, so it sits beside the bar's icon
+   buttons without competing with them. */
+#files-view-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex; align-items: center;
+  margin-left: 4px;
+}
+/* appearance:none drops the platform's chevron, which is drawn at the OS's
+   size and color rather than the app's; this is its replacement, in the same
+   typographic idiom as .crumb-sep's "›". */
+#files-view-wrap::after {
+  content: "▾";
+  position: absolute;
+  right: 8px;
+  color: var(--tertiary);
+  font-size: 10px;
+  pointer-events: none;
+}
+#files-view {
+  appearance: none; -webkit-appearance: none;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--secondary);
+  background: transparent;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding: 6px 21px 6px 9px;
+  cursor: pointer;
+  /* The option list itself is the platform's to draw, and it takes its light or
+     dark from this rather than from the theme the app happens to be wearing. */
+  color-scheme: light;
+}
+:root[data-theme="dark"] #files-view { color-scheme: dark; }
+/* The address field wants every pixel of the bar it can get, and behind its
+   scrim there is no listing to lay out either way. */
+#files-path-wrap.editing ~ #files-view-wrap { display: none; }
 /* .topbar is position:sticky, which (like position:relative) is itself a
    positioned element — enough of a containing block to anchor this without
    a dedicated wrapper. Full width of the bar rather than just the input, so
@@ -1813,17 +1851,20 @@ html.term-open, body.term-open {
   padding: 0 16px 40px;
   animation: fade-in 0.32s var(--ease-out);
 }
+/* Both layouts of one entry (fileRow/fileTile in 28-file-explorer.js) answer a
+   long press with the action sheet, so iOS must not answer it with the callout
+   menu or a text selection first. */
+.file-row, .file-tile {
+  cursor: pointer;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none; user-select: none;
+}
 /* Denser than the session cards on purpose: a directory is a list to scan,
    not a handful of destinations to present. */
 .file-row {
   display: flex; align-items: center; gap: 12px;
   padding: 12px 6px;
   border-bottom: 1px solid var(--hair);
-  cursor: pointer;
-  /* A long press here opens the action sheet, so iOS must not answer it with
-     the callout menu or a text selection first. */
-  -webkit-touch-callout: none;
-  -webkit-user-select: none; user-select: none;
 }
 .file-row:active { background: var(--umber-tint); }
 .file-ic {
@@ -1846,6 +1887,40 @@ html.term-open, body.term-open {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--tertiary);
+}
+/* The grid view. auto-fill rather than a fixed column count so one rule covers
+   a narrow phone, a landscape tablet and the wide layout's main pane, which is
+   only ever the window less the rail; a short last row stays left-aligned. */
+#files-list.files-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(94px, 1fr));
+  gap: 2px;
+  padding: 8px 0;
+}
+.file-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  padding: 14px 6px 12px;
+  border-radius: 12px;
+}
+.file-tile:active { background: var(--umber-tint); }
+/* Tile-sized, over the row's 19px — the icon is what the eye lands on here,
+   and it keeps the row's colors (dirs in the accent, everything else quiet). */
+.file-tile .file-ic { width: 34px; height: 34px; }
+/* Two lines and then an ellipsis, and always two lines' worth of height so a
+   long name never sets its tile taller than the ones beside it. anywhere,
+   not break-word: a path-ish name can be one unbroken token. */
+.file-tile .file-name {
+  flex: none;
+  width: 100%;
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-height: 2.7em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 #files-empty, #files-error {
   text-align: center;

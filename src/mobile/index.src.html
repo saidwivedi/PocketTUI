@@ -277,6 +277,17 @@
     </div>
     <button class="icon-btn" id="btn-files-edit-path" aria-label="Go to path"><svg><use href="#i-pencil"/></svg></button>
     <button class="icon-btn" id="btn-files-add" aria-label="New file, folder or upload"><svg><use href="#i-plus"/></svg></button>
+    <!-- Rows or icon tiles, remembered across reloads (cfg.filesView) and used
+         for every folder. Last in the bar: the two buttons before it act on the
+         folder, this one only changes how it is drawn. A native select, so the
+         phone's own picker does the choosing; the chevron is the wrapper's,
+         since a select cannot hold one of its own. -->
+    <div id="files-view-wrap">
+      <select id="files-view" aria-label="Folder layout">
+        <option value="list">List</option>
+        <option value="grid">Grid</option>
+      </select>
+    </div>
     <!-- Matching entries for the path segment being typed in files-path-input.
          A child of the topbar rather than files-path-wrap so it can span the
          bar's full width; position:sticky on .topbar still anchors it the

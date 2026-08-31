@@ -180,6 +180,16 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_editor_vim", "1");
     else localStorage.removeItem("pockettui_editor_vim");
   },
+  // How the file explorer lays a folder out: "list" (a row per entry, the
+  // default) or "grid" (icon tiles). One choice for every folder, not one per
+  // folder — a view is how you like to read, not a property of the directory.
+  get filesView() {
+    return localStorage.getItem("pockettui_files_view") === "grid" ? "grid" : "list";
+  },
+  set filesView(v) {
+    if (v === "grid") localStorage.setItem("pockettui_files_view", "grid");
+    else localStorage.removeItem("pockettui_files_view");
+  },
 };
 
 // The name becomes a tmux session name, so it is held to what tmux and the
