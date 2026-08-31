@@ -1961,6 +1961,12 @@ html.term-open, body.term-open {
   color: var(--paper);
 }
 .editor-wrap-toggle:active { transform: scale(0.96); }
+/* Vim mode is only offered where a hardware keyboard is: a touch keyboard has
+   no Escape, so insert mode would be a room with no door out. */
+#btn-editor-vim { display: none; }
+@media (hover: hover) and (pointer: fine) {
+  #btn-editor-vim { display: inline-block; }
+}
 #editor-host { flex: 1 1 auto; min-height: 0; }
 #editor-host .cm-editor { height: 100%; }
 #editor-host .cm-editor.cm-focused { outline: none; }
