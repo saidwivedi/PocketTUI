@@ -739,7 +739,7 @@ $("btn-files-back").addEventListener("click", () => history.back());
 // stack behind the terminal, and the terminal's own back would then spend them
 // one by one going nowhere. Unwinding through history instead leaves the stack
 // exactly where pressing back at every level would have.
-$("btn-files-term").addEventListener("click", () => {
+function jumpToTerminal() {
   // The field's own back is spent on closing it; take it out of the way first
   // so the pops below all count as folders.
   if ($("files-path-wrap").classList.contains("editing")) closePathEdit();
@@ -748,7 +748,29 @@ $("btn-files-term").addEventListener("click", () => {
   // still one if the entry folder never resolved and the stack stayed empty.
   filesClosing = true;
   history.go(-(filesStack.length || 1));
-});
+}
+$("btn-files-term").addEventListener("click", jumpToTerminal);
+
+// A hardware keyboard's Escape does what the button does. No media query and no
+// pointer-type gate: a phone keyboard never sends Escape at all, while an iPad
+// with one is exactly who this is for. Everything else Escape can mean here
+// wins first — the address field's own keydown closes just the field, a sheet
+// or the media viewer is the top thing to dismiss, and the editor and the
+// reader take #screen-files' active class with them while they are up, so the
+// screen check below is what keeps their Escape theirs.
+// On capture, and bailing out without touching the event: bubbling would put
+// this after the field's own handler, which has closed the field by then, and
+// one press would both close the field and jump to the terminal.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("screen-files").classList.contains("active")) return;
+  if (filesOrigin !== "screen-term") return;          // nothing to jump back to
+  if ($("files-path-wrap").classList.contains("editing")) return;
+  if ($("sheet-scrim").classList.contains("show")) return;
+  if ($("viewer").classList.contains("show")) return;
+  e.preventDefault();
+  jumpToTerminal();
+}, true);
 
 // Explorer and editor sit on the history stack the way the terminal does, so
 // back unwinds them one screen at a time. The terminal's own popstate handler
