@@ -251,6 +251,14 @@
 <div class="screen" id="screen-files">
   <div class="topbar files-topbar">
     <button class="icon-btn" id="btn-files-back" aria-label="Back"><svg><use href="#i-back"/></svg></button>
+    <!-- Out of a deep tree in one tap, where back only climbs a folder at a
+         time. Beside back rather than over on the right: both are ways off this
+         screen, and the pair leaves the crumbs one unbroken run to the actions.
+         #i-logo is the sprite's terminal window — already standing for a
+         session rather than for the brand alone in #wide-empty below. Hidden
+         until openExplorer sees the terminal behind the explorer. -->
+    <button class="icon-btn" id="btn-files-term" aria-label="Back to the terminal"
+            style="display:none"><svg><use href="#i-logo"/></svg></button>
     <!-- Wraps crumbs and the address field so only one of the two takes up
          room at a time — the .editing class (toggled by JS) swaps which one
          is display:none. -->
