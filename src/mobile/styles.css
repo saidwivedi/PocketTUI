@@ -1680,6 +1680,10 @@ html.term-open, body.term-open {
   padding-top: var(--safe-top);
   padding-bottom: calc(40px + var(--safe-bot));
 }
+/* Set apart from the back button beside it by more than the 4px the topbar's
+   own button groups sit at: everything else in this bar moves within the
+   explorer, and this one leaves it. */
+#btn-files-term { margin-right: 10px; }
 /* The path bar between back and +. Mono because it is a path, scrolled rather
    than wrapped so a deep tree never buries the controls beside it. */
 #files-crumbs {
