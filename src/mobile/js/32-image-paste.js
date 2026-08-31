@@ -108,9 +108,13 @@ function insertImagePath(path) {
 }
 
 // Desktop Ctrl+V. Capture phase so this is read before xterm's hidden textarea
-// gets the event: once xterm has handled a paste there is no taking it back,
-// and a consumed image must not also arrive as whatever text the clipboard had
-// alongside it.
+// gets the event. Text aimed at that textarea goes through term.paste() here as
+// well as images: xterm leaves the browser's default paste alive after sending
+// the clipboard bytes, so the same text can remain inside its invisible field
+// and be emitted again by a later IME-style key event (space is one route seen
+// in agent TUIs). Owning the event keeps the textarea empty while preserving
+// xterm's newline normalization and bracketed-paste framing. Real app fields
+// are left alone and keep the browser's native paste behavior.
 document.addEventListener("paste", (e) => {
   if (!currentSession) return;              // demo shell: nothing to upload to
   const items = e.clipboardData && e.clipboardData.items;
@@ -121,9 +125,20 @@ document.addEventListener("paste", (e) => {
     if (!image && it.kind === "file" && it.type && it.type.startsWith("image/")) image = it;
     else if (it.kind === "string" && it.type === "text/plain") hasText = true;
   }
-  // No image on the clipboard: this is an ordinary paste and none of our
-  // business. Left alone it reaches xterm or the textarea exactly as before.
-  if (!image) return;
+  if (!image) {
+    // Only take the paste that is actually aimed at xterm's private input.
+    // Compose, search, settings, the file path field and CodeMirror all need
+    // their own selection/caret-aware browser behavior.
+    const terminalInput = term && term.textarea;
+    if (!terminalInput || e.target !== terminalInput) return;
+    const text = e.clipboardData.getData("text/plain");
+    if (!text) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dbg("paste: terminal event chars=" + text.length);
+    term.paste(text);
+    return;
+  }
   // A rich copy from a web page carries both the picture and its text. Which
   // one was meant depends on where the user is typing: in the composer they
   // are writing a sentence, so the text wins; over the terminal there is
