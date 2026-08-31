@@ -259,46 +259,88 @@ let viewerOpenedAt = 0;
 
 const VIDEO_EXT_RE = /\.(?:mp4|webm|mov)$/i;
 
+// What the overlay is showing, and which fill is allowed to land in it. The
+// path rather than the src is the identity: every open mints its own signed
+// URL, so two views of one file never carry the same string.
+let viewerPath = "";
+let viewerFill = 0;
+
+// Dropping the bytes takes the failure handler with it: the handler belongs to
+// the load it was attached for, and left behind it can read a clear as that
+// load failing — closing the overlay the next tap just opened.
+function dropSrc(el) {
+  el.onerror = null;
+  el.removeAttribute("src");
+}
+
 function showImage(path) {
   const isVideo = VIDEO_EXT_RE.test(path);
   const img = $("viewer-img"), video = $("viewer-video");
-  const src = apiURL("api/file?path=" + encodeURIComponent(path));
+  // Re-opening the same path (mouse users get both the link and the tap path)
+  // would otherwise reload and re-decode it.
+  const fresh = viewerPath !== path;
+  viewerPath = path;
   viewerOpenedAt = Date.now();
   resetZoom();
   if (isVideo) {
     img.style.display = "none";
-    img.removeAttribute("src");
+    dropSrc(img);
     video.style.display = "block";
-    // Re-opening the same path would otherwise reload and re-decode it.
-    if (video.getAttribute("src") !== src) {
-      video.onerror = () => { hideImage(); toast("Couldn't load video"); };
-      video.src = src;
-    }
+    if (fresh) { video.pause(); dropSrc(video); }
   } else {
     video.style.display = "none";
     video.pause();
-    video.removeAttribute("src");
+    dropSrc(video);
     img.style.display = "";
-    // Re-opening the same path (mouse users get both the link and the tap path)
-    // would otherwise reload and re-decode the image.
-    if (img.getAttribute("src") !== src) {
-      img.onerror = () => { hideImage(); toast("Couldn't load image"); };
-      img.src = src;
-    }
+    if (fresh) dropSrc(img);
   }
   $("viewer").classList.add("show");
+  if (fresh) fillViewer(path, isVideo);
+}
+
+// The tag fetches the bytes itself and a tag carries no pairing header, so the
+// src is a signed URL an authenticated mint hands back — the explorer's
+// download takes the same route, for the same reason. Started rather than
+// awaited so showImage() stays the synchronous call its callers make; opening
+// something else while a mint is in flight wins, and the late answer is
+// dropped instead of overwriting what is now on screen.
+async function fillViewer(path, isVideo) {
+  const fill = ++viewerFill;
+  const fail = () => {
+    hideImage();
+    toast(isVideo ? "Couldn't load video" : "Couldn't load image");
+  };
+  let url;
+  try {
+    const r = await fetch(apiURL("api/file_link?path=" + encodeURIComponent(path)),
+                          { cache: "no-store", headers: authHeaders() });
+    // rejectToken() says what happened and asks for the code, so no toast here.
+    if (r.status === 401) { if (fill === viewerFill) hideImage(); rejectToken(); return; }
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    url = apiURL((await r.json()).url);
+  } catch (e) {
+    if (fill === viewerFill) fail();
+    return;
+  }
+  if (fill !== viewerFill) return;
+  const el = isVideo ? $("viewer-video") : $("viewer-img");
+  el.onerror = fail;
+  el.src = url;
 }
 
 function hideImage() {
   $("viewer").classList.remove("show");
+  viewerPath = "";
+  // Anything still on its way to the overlay is no longer wanted.
+  viewerFill++;
   resetZoom();
   // Drop the decoded image rather than hold a screenshot's worth of memory for
   // the rest of the session.
-  $("viewer-img").removeAttribute("src");
+  dropSrc($("viewer-img"));
   // Pause and release the video decoder too, or it keeps running off-screen.
   const video = $("viewer-video");
   video.pause();
-  video.removeAttribute("src");
+  dropSrc(video);
 }
 
 $("btn-viewer-close").addEventListener("click", hideImage);
