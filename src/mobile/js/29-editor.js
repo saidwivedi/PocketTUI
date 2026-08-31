@@ -13,6 +13,7 @@ let edDirty = false;
 let edReadOnly = false;   // a lossy (non-UTF-8) read must never be written back
 let edThemeComp = null;   // swapped when the app theme flips
 let edWrapComp = null;    // swapped when the Wrap button is tapped
+let edVimComp = null;     // swapped when the Vim button is tapped
 
 let cmLoading = null;
 function ensureCM() {
@@ -60,6 +61,10 @@ function edWrapExt() {
   return (edWraps(edPath) || cfg.editorWrapOn) ? CM.EditorView.lineWrapping : [];
 }
 
+function edVimExt() {
+  return cfg.editorVimOn ? window.CM6.vim() : [];
+}
+
 function edThemeExt() {
   const CM = window.CM6;
   // The terminal's stored font size is the user's one stated preference about
@@ -95,6 +100,103 @@ function edSetDirty(on) {
 function edSyncWrapButton() {
   $("btn-editor-wrap").setAttribute("aria-pressed",
     edWraps(edPath) || cfg.editorWrapOn ? "true" : "false");
+}
+
+function edSyncVimButton() {
+  $("btn-editor-vim").setAttribute("aria-pressed",
+    cfg.editorVimOn ? "true" : "false");
+}
+
+// ~/.vimrc, the useful subset of it. A desktop vimrc is mostly plugins,
+// autocmds and functions that mean nothing in a browser buffer, so this reads
+// the two kinds of line that do carry over — options and key mappings — and
+// steps over everything else rather than approximating it.
+const ED_VIM_MODES = { n: "normal", v: "visual", i: "insert", o: "operatorPending" };
+
+// "\<Space>" and friends: a quoted vimscript string as a mapleader.
+function edVimStr(s) {
+  return s.trim().replace(/^["']|["']$/g, "").replace(/\\<Space>/gi, " ");
+}
+
+function edParseVimrc(text) {
+  const rules = [];
+  let leader = "\\";
+  let inFunc = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line[0] === '"') continue;
+    // A function body is arbitrary vimscript; nothing inside it is a mapping.
+    if (/^fu(n|nc|nction)?!?\s/.test(line)) { inFunc = true; continue; }
+    if (/^endf/.test(line)) { inFunc = false; continue; }
+    if (inFunc) continue;
+
+    let m = line.match(/^let\s+mapleader\s*=\s*(.+)$/);
+    if (m) { leader = edVimStr(m[1]); continue; }
+
+    m = line.match(/^set\s+(\S+)/);
+    if (m) {
+      // Only the first word: `set list listchars=...` sets two options, and
+      // the second is a display detail CodeMirror has no say in anyway.
+      const eq = m[1].indexOf("=");
+      rules.push({
+        kind: "set",
+        name: eq < 0 ? m[1] : m[1].slice(0, eq),
+        value: eq < 0 ? undefined : m[1].slice(eq + 1),
+      });
+      continue;
+    }
+
+    m = line.match(/^([nvio])?(nore)?map\s+(.+)$/);
+    if (m) {
+      const parts = m[3].split(/\s+/);
+      // Anything else is a mapping with arguments (<silent>, <buffer>) or an
+      // ex command carrying spaces — neither survives a naive translation.
+      if (parts.length !== 2) continue;
+      // <Plug> targets and :call both name something only the plugin defines.
+      if (/<Plug>/i.test(parts[1]) || /^:call\b/i.test(parts[1])) continue;
+      rules.push({
+        kind: "map",
+        nore: !!m[2],
+        mode: m[1] ? ED_VIM_MODES[m[1]] : undefined,
+        lhs: parts[0].replace(/<leader>/gi, leader),
+        rhs: parts[1],
+      });
+    }
+  }
+  return rules;
+}
+
+function edApplyVimrc(rules) {
+  const V = window.CM6.Vim;
+  for (const r of rules) {
+    // Per rule: an option this build has never heard of must not cost the
+    // mappings that follow it.
+    try {
+      if (r.kind === "set") V.setOption(r.name, r.value);
+      else if (r.nore) V.noremap(r.lhs, r.rhs, r.mode);
+      else V.map(r.lhs, r.rhs, r.mode);
+    } catch (e) { /* unsupported line, skipped */ }
+  }
+}
+
+// Once per page load — the mappings land in vim's global state, not the view's,
+// so re-reading on every open would only re-apply them. Not having a ~/.vimrc
+// is the normal case, so a failed read says nothing.
+let edVimrcRead = null;
+function edLoadVimrc() {
+  if (edVimrcRead) return edVimrcRead;
+  edVimrcRead = (async () => {
+    try {
+      const r = await fetch(apiURL("api/fs/read?path=" + encodeURIComponent("~/.vimrc")),
+                            { cache: "no-store", headers: authHeaders() });
+      if (!r.ok) return;
+      const data = await r.json();
+      if (data && typeof data.content === "string") {
+        edApplyVimrc(edParseVimrc(data.content));
+      }
+    } catch (e) { /* no vimrc, or unreadable — vim mode works without one */ }
+  })();
+  return edVimrcRead;
 }
 
 async function openEditor(path, opts) {
@@ -135,6 +237,8 @@ async function openEditor(path, opts) {
   edBuild(content, path);
   edSetDirty(false);
   edSyncWrapButton();
+  edSyncVimButton();
+  if (cfg.editorVimOn) edLoadVimrc();
 
   $("screen-files").classList.remove("active");
   $("screen-editor").classList.add("active");
@@ -147,10 +251,14 @@ function edBuild(content, path) {
   if (edView) edView.destroy();
   edThemeComp = new CM.Compartment();
   edWrapComp = new CM.Compartment();
+  edVimComp = new CM.Compartment();
   edView = new CM.EditorView({
     state: CM.EditorState.create({
       doc: content,
       extensions: [
+        // First, before every other keymap: vim reads keys ahead of the
+        // default bindings or it never sees the ones they already claim.
+        edVimComp.of(edVimExt()),
         CM.lineNumbers(),
         CM.highlightActiveLineGutter(),
         CM.highlightSpecialChars(),
@@ -262,4 +370,10 @@ $("btn-editor-wrap").addEventListener("click", () => {
   cfg.editorWrapOn = !cfg.editorWrapOn;
   if (edView) edView.dispatch({ effects: edWrapComp.reconfigure(edWrapExt()) });
   edSyncWrapButton();
+});
+$("btn-editor-vim").addEventListener("click", () => {
+  cfg.editorVimOn = !cfg.editorVimOn;
+  if (edView) edView.dispatch({ effects: edVimComp.reconfigure(edVimExt()) });
+  edSyncVimButton();
+  if (cfg.editorVimOn) edLoadVimrc();
 });
