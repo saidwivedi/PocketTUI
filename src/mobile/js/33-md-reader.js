@@ -23,6 +23,9 @@ const MD_BULLET = /^([ \t]*)([-*+])([ \t]+)(.*)$/;
 const MD_ORDERED = /^([ \t]*)(\d{1,9})([.)])([ \t]+)(.*)$/;
 const MD_CODE_INDENT = /^(?: {4}|\t)/;
 const MD_TASK = /^\[([ xX])\][ \t]+/;
+// A "$$" at the head of a line opens display math, however far down the
+// closing "$$" turns out to be.
+const MD_MATH_OPEN = /^ {0,3}\$\$/;
 // A fence's info string ends up in a class name and nowhere else, but the
 // class is still built from file bytes, so only a plain word is taken.
 const MD_LANG = /^[\w.+-]+$/;
@@ -67,6 +70,7 @@ function mdBlocks(lines, parent) {
     if (MD_QUOTE.test(line)) { i = mdQuote(lines, i, parent); continue; }
     if (mdMarker(line)) { i = mdList(lines, i, parent); continue; }
     if (mdIsTable(lines, i)) { i = mdTable(lines, i, parent); continue; }
+    if (MD_MATH_OPEN.test(line)) { i = mdMathBlock(lines, i, parent); continue; }
     if (MD_CODE_INDENT.test(line)) { i = mdCodeIndent(lines, i, parent); continue; }
 
     i = mdParagraph(lines, i, parent);
@@ -79,7 +83,8 @@ function mdBlocks(lines, parent) {
 function mdStartsBlock(lines, i) {
   const line = lines[i];
   return MD_FENCE.test(line) || MD_HEADING.test(line) || MD_RULE.test(line)
-      || MD_QUOTE.test(line) || !!mdMarker(line) || mdIsTable(lines, i);
+      || MD_QUOTE.test(line) || !!mdMarker(line) || mdIsTable(lines, i)
+      || MD_MATH_OPEN.test(line);
 }
 
 function mdCodeBlock(text, lang) {
@@ -277,6 +282,36 @@ function mdTable(lines, i, parent) {
   return j;
 }
 
+// ---- math ------------------------------------------------------------------
+
+// Math is parsed, never typeset, here: the node carries its TeX as text and
+// mdTypeset hands it to KaTeX once the document is on screen. That makes the
+// unrendered node the fallback too — if the vendor bundle never arrives the
+// reader shows the source the file actually contains, which is a good deal
+// better than the mangled emphasis it used to show.
+function mdMathNode(tex, block) {
+  const node = el(block ? "div" : "span", { class: block ? "md-math-block" : "md-math" });
+  node.textContent = tex;
+  return node;
+}
+
+// The closing "$$" may sit on the opening line, on a line of its own, or at
+// the end of the last line of the equation. A run that never closes ends the
+// document, the way an unclosed fence does.
+function mdMathBlock(lines, i, parent) {
+  const body = [];
+  let j = i, rest = lines[i].replace(MD_MATH_OPEN, "");
+  for (;;) {
+    const end = rest.indexOf("$$");
+    if (end >= 0) { body.push(rest.slice(0, end)); j++; break; }
+    body.push(rest);
+    if (++j >= lines.length) break;
+    rest = lines[j];
+  }
+  parent.appendChild(mdMathNode(body.join("\n").trim(), true));
+  return j;
+}
+
 function mdParagraph(lines, i, parent) {
   const buf = [];
   let j = i;
@@ -301,6 +336,9 @@ function mdWordSafe(m, text, i) {
 
 // Tried in this order at each position, first match wins. Code comes first
 // because its content is literal, so nothing inside a span of it is markup.
+// Math comes straight after it, ahead of everything that reads punctuation as
+// markup: a subscript-heavy equation is nothing but the "_" and "*" the
+// emphasis rules would otherwise eat.
 // A label's bracket alternative is listed ahead of the plain-character one so
 // that the badge shape a README opens with — an image inside a link — keeps
 // its inner [..] together instead of ending the label at the first "]".
@@ -314,6 +352,14 @@ const MD_SPANS = [
       code.textContent = m[2];
       return { node: code, len: m[0].length };
     } },
+  { re: /\$\$(?=[^\s$])([^\n$]*[^\s$])\$\$/y,
+    build: (m) => ({ node: mdMathNode(m[1], true), len: m[0].length }) },
+  // Pandoc's guards, and they earn their keep in prose: the opening "$" has to
+  // be against its content and the closing one has to be too, and a closer
+  // followed by a digit is a second price rather than the end of an equation.
+  // That is what keeps "costs $5 and $10 total" a sentence.
+  { re: /\$(?=[^\s$])([^\n$]*[^\s$])\$(?!\d)/y,
+    build: (m) => ({ node: mdMathNode(m[1], false), len: m[0].length }) },
   { re: /!\[((?:\[[^\]]*\]|[^\]])*)\]\([ \t]*([^()\s]*(?:\([^()]*\)[^()\s]*)*)(?:[ \t]+"[^"]*")?[ \t]*\)/y,
     build: (m) => ({ node: mdImage(m[1], m[2]), len: m[0].length }) },
   { re: /\[((?:\[[^\]]*\]|[^\]])*)\]\([ \t]*([^()\s]*(?:\([^()]*\)[^()\s]*)*)(?:[ \t]+"[^"]*")?[ \t]*\)/y,
@@ -356,7 +402,7 @@ function mdInline(text, parent) {
   };
   let i = 0;
   while (i < text.length) {
-    if (text[i] === "\\" && /[\\`*_~[\]()#+\-.!|>]/.test(text[i + 1] || "")) {
+    if (text[i] === "\\" && /[\\`*_~[\]()#+\-.!|>$]/.test(text[i + 1] || "")) {
       plain += text[i + 1];
       i += 2;
       continue;
@@ -439,6 +485,54 @@ async function mdSignImage(img, src) {
   } catch (e) { /* the alt text is what a missing image says */ }
 }
 
+// ---- typesetting -----------------------------------------------------------
+
+let katexLoading = null;
+
+// The same lazy-vendor arrangement the editor makes for CodeMirror: script and
+// stylesheet go in once, on the first document that has an equation in it, and
+// a README with no math never asks for either.
+function ensureKaTeX() {
+  if (window.katex) return Promise.resolve();
+  if (katexLoading) return katexLoading;
+  katexLoading = new Promise((resolve, reject) => {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "vendor/katex/katex.min.css?v=" + buildVersion();
+    document.head.appendChild(css);
+    const s = document.createElement("script");
+    s.src = "vendor/katex/katex.min.js?v=" + buildVersion();
+    s.onload = resolve;
+    s.onerror = () => {
+      katexLoading = null;
+      s.remove();
+      css.remove();
+      reject(new Error("vendor load failed"));
+    };
+    document.head.appendChild(s);
+  });
+  return katexLoading;
+}
+
+// Started rather than awaited, like the images: the document is already
+// readable and each equation replaces its own source when KaTeX is here.
+// This is the one place markup the file influenced is written as markup, and
+// it is KaTeX that writes it — from TeX it has parsed itself, with the default
+// trust:false, so a \href or \htmlClass in someone's notes is refused rather
+// than honoured. throwOnError:false keeps a typo to its own red equation
+// instead of losing the rest of the document to it.
+async function mdTypeset(root) {
+  const nodes = root.querySelectorAll(".md-math, .md-math-block");
+  if (!nodes.length) return;
+  try { await ensureKaTeX(); } catch (e) { return; }
+  nodes.forEach((node) => {
+    katex.render(node.textContent, node, {
+      throwOnError: false,
+      displayMode: node.classList.contains("md-math-block"),
+    });
+  });
+}
+
 // ---- the reader screen -----------------------------------------------------
 
 async function openReader(path) {
@@ -451,6 +545,7 @@ async function openReader(path) {
   // one byte of the file ever goes through it.
   body.innerHTML = "";
   body.appendChild(mdRender(data.content));
+  mdTypeset(body);
   $("reader-scroll").scrollTop = 0;
   $("screen-files").classList.remove("active");
   $("screen-reader").classList.add("active");
