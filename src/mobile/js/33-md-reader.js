@@ -560,6 +560,42 @@ function closeReader() {
   readerPath = "";
 }
 
+// ---- putting the page away (see fileViews in 09-image-viewer.js) -----------
+// A rail switch stashes the rendered document itself rather than the path to
+// re-read: the file may be rewritten while the session is away, and a view put
+// away and brought back has to be the page that was left — down to where it
+// was scrolled to. Keeping the nodes also keeps whatever typesetting ran over
+// them, which a re-render would have to do again.
+
+function readerStash() {
+  const body = $("reader-body");
+  // Where the reader is scrolled to, read before the nodes move: taking them
+  // out collapses the box, and the offset would already be back at zero.
+  const scroll = $("reader-scroll").scrollTop;
+  const page = document.createDocumentFragment();
+  while (body.firstChild) page.appendChild(body.firstChild);
+  const s = { path: readerPath, scroll: scroll, page: page };
+  readerPath = "";
+  $("screen-reader").classList.remove("active");
+  return s;
+}
+
+function readerRestore(s) {
+  readerPath = s.path;
+  $("reader-filename").textContent = baseName(readerPath);
+  const body = $("reader-body");
+  body.innerHTML = "";
+  body.appendChild(s.page);
+  $("screen-files").classList.remove("active");
+  $("screen-reader").classList.add("active");
+  // After the class, and after a layout has actually been computed from it: the
+  // screen was display:none a statement ago, and a scrollTop set against a box
+  // that has no height yet is silently dropped.
+  const box = $("reader-scroll");
+  void box.scrollHeight;
+  box.scrollTop = s.scroll;
+}
+
 $("btn-reader-back").addEventListener("click", () => history.back());
 
 // The editor takes the screen the reader is holding, and its history entry

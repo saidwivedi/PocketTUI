@@ -308,6 +308,62 @@ function edBuild(content, path) {
   });
 }
 
+// ---- putting the buffer away (see fileViews in 09-image-viewer.js) ---------
+// A rail switch takes the editor off screen without asking about unsaved work,
+// because nothing is discarded: CodeMirror's EditorState is an immutable value
+// holding the document, the selection and the undo history, so keeping a
+// reference to it is the whole capture — no serialization, and what comes back
+// is the buffer itself rather than a copy of its text.
+
+function edStash() {
+  const s = {
+    state: edView.state, path: edPath, hash: edHash,
+    dirty: edDirty, readOnly: edReadOnly,
+    // The compartments travel with the state they live in. They are handles
+    // identified by object, so the toggles and the theme observer must
+    // reconfigure these ones or they would address a compartment the rebuilt
+    // view's state has never heard of.
+    comps: { theme: edThemeComp, wrap: edWrapComp, vim: edVimComp },
+  };
+  // Only the view goes; the state above outlives it.
+  edView.destroy();
+  edView = null;
+  edPath = "";
+  edSetDirty(false);
+  $("screen-editor").classList.remove("active");
+  return s;
+}
+
+function edRestore(s) {
+  edPath = s.path;
+  edHash = s.hash;
+  edReadOnly = s.readOnly;
+  edThemeComp = s.comps.theme;
+  edWrapComp = s.comps.wrap;
+  edVimComp = s.comps.vim;
+  $("editor-filename").textContent = baseName(edPath);
+  $("btn-editor-save").style.display = edReadOnly ? "none" : "";
+  if (edView) edView.destroy();
+  edView = new window.CM6.EditorView({ state: s.state, parent: $("editor-host") });
+  // The theme, the wrap setting and vim can all have moved while the buffer was
+  // away: the observer above only reaches a live view, and the buttons only
+  // reconfigure the one that is up. Reconfiguring is not a document change, so
+  // the dirty flag below is still the buffer's own.
+  edView.dispatch({ effects: [
+    edThemeComp.reconfigure(edThemeExt()),
+    edWrapComp.reconfigure(edWrapExt()),
+    edVimComp.reconfigure(edVimExt()),
+  ] });
+  edSetDirty(s.dirty);
+  edSyncWrapButton();
+  edSyncVimButton();
+  $("screen-files").classList.remove("active");
+  $("screen-editor").classList.add("active");
+  // Deliberately not focused: a freshly opened editor is not either, and a
+  // restore that raised the soft keyboard would be a tablet's rude surprise.
+  // The caret is in the state, so it is already back where it was left.
+}
+
 async function editorSave(baseHash) {
   if (!edView || edReadOnly) return;
   const btn = $("btn-editor-save");
