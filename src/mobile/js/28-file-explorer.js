@@ -699,6 +699,11 @@ window.addEventListener("popstate", () => {
 // screens this feature adds. A copy rather than a share: the terminal's
 // binding also feeds the global edgeSwipe flag its scroll code reads, and
 // entangling that is a worse trade than repeating two dozen lines.
+// The preventDefault in touchmove is load-bearing, not cosmetic: iOS 18+ home
+// screen web apps run their own system edge-swipe-back that pops history, so a
+// passive listener leaves the swipe firing both that and onBack() — one gesture,
+// two backs. Cancelling the move once the drag is armed and horizontal-rightward
+// suppresses the system gesture and leaves onBack() the only navigation.
 function attachEdgeSwipe(scr, onBack) {
   let sx = 0, sy = 0, armed = false, committed = false;
   scr.addEventListener("touchstart", (e) => {
@@ -715,8 +720,9 @@ function attachEdgeSwipe(scr, onBack) {
       if (Math.abs(dy) > 12) armed = false;
       return;
     }
+    e.preventDefault();
     committed = dx >= EDGE_TRIGGER;
-  }, { passive: true, capture: true });
+  }, { passive: false, capture: true });
   const finish = () => {
     const go = armed && committed;
     armed = false; committed = false;
