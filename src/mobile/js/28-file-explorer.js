@@ -105,6 +105,45 @@ function closeExplorer() {
   if (back === "screen-term") refit(0);
 }
 
+// ---- putting the whole view away (see fileViews in 09-image-viewer.js) ------
+// A rail switch stashes the reader or the editor for the session it is leaving,
+// and the browsing underneath goes with it: coming back to a file view that
+// landed on the session list would say the switch had lost the folder.
+
+// History entries the explorer owns: openExplorer's push plus one per level
+// navigated into — filesStack.length, and still one if the entry folder never
+// resolved and the stack stayed empty. The same count jumpToTerminal spends.
+function filesEntryCount() { return filesStack.length || 1; }
+
+function filesStash() {
+  return { stack: filesStack.slice(), path: filesPath, origin: filesOrigin };
+}
+
+// Drops the view without putting anything back: the caller is replacing every
+// screen at once, so closeExplorer's return-to-origin (and its refit, which
+// would fit a terminal that is about to change session) is not what it wants.
+function filesTeardown() {
+  $("screen-files").classList.remove("active");
+  filesOrigin = null;
+  filesStack = [];
+}
+
+// The mirror of openExplorer's screen work, minus the history push — the
+// caller re-pushes every entry the stashed view owned, in one place.
+function filesRestore(s) {
+  filesStack = s.stack.slice();
+  filesPath = s.path;
+  filesOrigin = s.origin;
+  $("btn-files-term").style.display = filesOrigin === "screen-term" ? "" : "none";
+  $(filesOrigin || "screen-list").classList.remove("active");
+  $("screen-files").classList.add("active");
+  syncChrome();
+  // The rows on screen are whichever folder the session we were away in left
+  // there; the cache spares a round trip for a folder already listed.
+  if (filesListCache.has(filesPath)) applyListing(filesListCache.get(filesPath));
+  else loadDir(filesPath);
+}
+
 // The terminal entry point. The pane's cwd is asked for at tap time — it moves
 // with every cd — and $HOME quietly stands in when tmux cannot say.
 async function openFilesAtCwd() {

@@ -77,6 +77,11 @@ function noteUnread(sessions) {
   for (const n of Object.keys(m)) {
     if (!names.has(n)) { delete m[n]; changed = true; }
   }
+  // The other per-session thing this client holds: a stashed reader or editor
+  // (fileViews, 09-image-viewer.js). Pruned against the same payload and for
+  // the same reason — a session that is gone takes its marks and its file view
+  // with it, however it went.
+  keepFileViews(names);
   if (lastStates) {
     for (const s of sessions) {
       if (s.state === "waiting" && lastStates.get(s.name) !== "waiting"
@@ -243,6 +248,11 @@ async function saveSessionSheet() {
       const data = await r.json().catch(() => null);
       if (!r.ok) { toast(data && data.error ? data.error : "Couldn't rename the session"); return; }
       target = data.session;
+      // The session is the same one, under a new name: its stashed file view
+      // moves with it. Before the reload below, whose prune would otherwise
+      // read the old name's disappearance as the session being gone and throw
+      // an unsaved buffer away.
+      renameFileView(s.name, target);
     }
     if (alias !== (s.alias || "")) {
       const r = await fetch(apiURL("api/alias"), {
@@ -274,6 +284,10 @@ async function killSession(name) {
     });
     const data = await r.json().catch(() => null);
     if (!r.ok) { toast(data && data.error ? data.error : "Couldn't kill the session"); return false; }
+    // The name is free again the moment the kill lands, so a stashed file view
+    // for it is dropped here rather than left to the refresh below: the next
+    // session created under this name must not open onto this one's buffer.
+    dropFileView(name);
     loadSessions();
     return true;
   } catch (e) {
