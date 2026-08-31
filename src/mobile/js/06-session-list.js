@@ -350,6 +350,10 @@ async function createSession() {
     showSheet(false);
     $("new-name").value = "";
     openTerminal(data.session);
+    // The new session has to show up in the wide layout's rail now, not on the
+    // next 15s poll — quiet like that poll, since the user is looking at the
+    // terminal and a refresh hiccup shouldn't toast over it.
+    loadSessions(false, true);
   } catch (e) {
     toast("Couldn't create the session");
   }
