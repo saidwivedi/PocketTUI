@@ -279,14 +279,23 @@
     <button class="icon-btn" id="btn-files-add" aria-label="New file, folder or upload"><svg><use href="#i-plus"/></svg></button>
     <!-- Rows or icon tiles, remembered across reloads (cfg.filesView) and used
          for every folder. Last in the bar: the two buttons before it act on the
-         folder, this one only changes how it is drawn. A native select, so the
-         phone's own picker does the choosing; the chevron is the wrapper's,
-         since a select cannot hold one of its own. -->
+         folder, this one only changes how it is drawn. Its own menu rather than
+         a <select>: a phone answers one of those with the OS's full-screen
+         picker, drawn in the OS's colors and shape, for a choice between two
+         words. The panel below is #files-suggest's instead — the same floating
+         layer this bar already drops. -->
     <div id="files-view-wrap">
-      <select id="files-view" aria-label="Folder layout">
-        <option value="list">List</option>
-        <option value="grid">Grid</option>
-      </select>
+      <button type="button" id="btn-files-view" aria-label="Folder layout"
+              aria-haspopup="true" aria-expanded="false"><span id="files-view-label">List</span></button>
+      <!-- menuitemradio, not menuitem: the tick is a painted glyph, and this is
+           what says which row it is on to anything not looking at the screen —
+           the one thing the <select> gave for free. -->
+      <div id="files-view-menu" role="menu">
+        <button type="button" class="view-row" role="menuitemradio" aria-checked="true" data-view="list">
+          <span class="view-check" aria-hidden="true">✓</span>List</button>
+        <button type="button" class="view-row" role="menuitemradio" aria-checked="false" data-view="grid">
+          <span class="view-check" aria-hidden="true">✓</span>Grid</button>
+      </div>
     </div>
     <!-- Matching entries for the path segment being typed in files-path-input.
          A child of the topbar rather than files-path-wrap so it can span the
@@ -302,6 +311,13 @@
        to stay fully readable rather than dimming along with the list.
        Tapping it closes the field without navigating, same as Escape. -->
   <div id="files-suggest-scrim"></div>
+  <!-- The same scrim for the layout menu, and for the same two jobs: tapping
+       it closes the menu, and while it is up the rows underneath cannot take a
+       tap or a long press meant for the menu. A sibling rather than a child of
+       #files-view-wrap because .topbar's backdrop-filter would make the bar the
+       containing block for a position:fixed descendant; inside #screen-files,
+       so putting the whole view away takes the scrim with it. -->
+  <div id="files-view-scrim"></div>
   <div class="files-wrap">
     <div id="files-list"></div>
     <div id="files-empty">Empty folder</div>

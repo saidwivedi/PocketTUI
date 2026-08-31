@@ -88,6 +88,9 @@ function filesEntryState() {
 }
 
 function closeExplorer() {
+  // Before the address-field branch below, which returns without closing the
+  // screen: either way the layout menu is going, scrim and all.
+  showViewMenu(false);
   // Back (popstate or the edge swipe) while the address field is open closes
   // just the field, same as Escape — same pushState-back trick editorPopped()
   // uses for a dirty buffer, since the pop has already happened by the time
@@ -223,6 +226,10 @@ async function fsReadText(path) {
 // inspect the failure first (a "not a directory" error there still might be
 // a file to open, where loadDir's callers always mean a directory).
 function applyListing(data) {
+  // A folder landing here is a navigation, and the layout menu does not survive
+  // one. Not in renderEntries below: the menu's own redraw goes straight there,
+  // and closing itself again on the way would read as a loop.
+  showViewMenu(false);
   filesPath = data.path;
   filesHome = data.home || "";
   // The first listing after openExplorer's push is the entry folder — back
@@ -319,6 +326,10 @@ function splitTyped(v) {
 }
 
 function openPathEdit() {
+  // The field takes the bar over and the stylesheet hides the layout button
+  // with it — so close the menu here, or its scrim would be left dimming the
+  // screen with nothing to tap it away.
+  showViewMenu(false);
   $("files-path-wrap").classList.add("editing");
   $("files-suggest-scrim").classList.add("show");
   const input = $("files-path-input");
@@ -531,16 +542,46 @@ function fileTile(e) {
   return tile;
 }
 
-// The switch itself. The choice is global, so nothing is re-listed: the entries
-// already on screen are simply drawn the other way, and every later listing —
-// including the ones a rail switch restores from the cache — follows cfg.
-$("files-view").value = cfg.filesView;
-$("files-view").addEventListener("change", (ev) => {
-  cfg.filesView = ev.target.value;
-  // An unreadable folder is showing its error, not a listing; leave it alone
-  // rather than repainting the entries it replaced.
-  if ($("files-error").style.display !== "block") renderEntries(filesEntries);
+// The switch itself, a button and a menu rather than a <select> — see the
+// markup for why. Open and closed are one class on the wrap; the scrim rides
+// along, so tapping anywhere off the menu closes it and nothing underneath
+// takes that tap as a row press.
+function showViewMenu(on) {
+  $("files-view-wrap").classList.toggle("open", on);
+  $("files-view-scrim").classList.toggle("show", on);
+  $("btn-files-view").setAttribute("aria-expanded", on ? "true" : "false");
+}
+
+// The button wears the current view and the menu ticks it, both from cfg — so
+// this is also what a fresh load calls to catch up with what was remembered.
+function syncViewMenu() {
+  const v = cfg.filesView;
+  $("files-view-label").textContent = v === "grid" ? "Grid" : "List";
+  for (const row of $("files-view-menu").querySelectorAll(".view-row")) {
+    const on = row.dataset.view === v;
+    row.classList.toggle("on", on);
+    row.setAttribute("aria-checked", on ? "true" : "false");
+  }
+}
+syncViewMenu();
+
+$("btn-files-view").addEventListener("click", () => {
+  showViewMenu(!$("files-view-wrap").classList.contains("open"));
 });
+$("files-view-scrim").addEventListener("click", () => showViewMenu(false));
+for (const row of $("files-view-menu").querySelectorAll(".view-row")) {
+  // The choice is global, so nothing is re-listed: the entries already on
+  // screen are simply drawn the other way, and every later listing — including
+  // the ones a rail switch restores from the cache — follows cfg.
+  row.addEventListener("click", () => {
+    showViewMenu(false);
+    cfg.filesView = row.dataset.view;
+    syncViewMenu();
+    // An unreadable folder is showing its error, not a listing; leave it alone
+    // rather than repainting the entries it replaced.
+    if ($("files-error").style.display !== "block") renderEntries(filesEntries);
+  });
+}
 
 // Tap opens; a long press (or a desktop right-click) opens the action sheet.
 function wireRow(row, entry) {
@@ -838,6 +879,13 @@ $("btn-files-term").addEventListener("click", jumpToTerminal);
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!$("screen-files").classList.contains("active")) return;
+  // Ahead of the origin check: an open layout menu is the top thing to
+  // dismiss, and it is there to dismiss whether or not a terminal is behind.
+  if ($("files-view-wrap").classList.contains("open")) {
+    e.preventDefault();
+    showViewMenu(false);
+    return;
+  }
   if (filesOrigin !== "screen-term") return;          // nothing to jump back to
   if ($("files-path-wrap").classList.contains("editing")) return;
   if ($("sheet-scrim").classList.contains("show")) return;

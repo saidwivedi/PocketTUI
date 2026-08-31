@@ -1735,32 +1735,74 @@ html.term-open, body.term-open {
   display: flex; align-items: center;
   margin-left: 4px;
 }
-/* appearance:none drops the platform's chevron, which is drawn at the OS's
-   size and color rather than the app's; this is its replacement, in the same
-   typographic idiom as .crumb-sep's "›". */
-#files-view-wrap::after {
-  content: "▾";
-  position: absolute;
-  right: 8px;
-  color: var(--tertiary);
-  font-size: 10px;
-  pointer-events: none;
-}
-#files-view {
-  appearance: none; -webkit-appearance: none;
+#btn-files-view {
+  display: flex; align-items: center; gap: 5px;
   font-family: var(--sans);
   font-size: 12.5px;
   color: var(--secondary);
   background: transparent;
   border: 1px solid var(--hair);
   border-radius: 10px;
-  padding: 6px 21px 6px 9px;
+  padding: 6px 9px;
   cursor: pointer;
-  /* The option list itself is the platform's to draw, and it takes its light or
-     dark from this rather than from the theme the app happens to be wearing. */
-  color-scheme: light;
 }
-:root[data-theme="dark"] #files-view { color-scheme: dark; }
+#btn-files-view:active { background: var(--umber-tint); }
+/* The chevron a <select> would have drawn for itself, at the app's size and
+   color rather than the OS's, in the same typographic idiom as .crumb-sep's
+   "›". Flips while the menu is open, so the button says which way it goes. */
+#btn-files-view::after {
+  content: "▾";
+  color: var(--tertiary);
+  font-size: 10px;
+}
+#files-view-wrap.open #btn-files-view::after { content: "▴"; }
+/* The menu itself, on #files-suggest's floating-panel recipe below (--card,
+   --hair-strong, that shadow, z-index 60): the bar's two dropdowns are one
+   layer, not two ideas. Anchored under the button rather than spanning the bar
+   — it holds two words, not a folder's worth of names — and a child of the
+   wrap, which the .editing rule below then hides along with the button. */
+#files-view-menu {
+  display: none;
+  position: absolute;
+  top: 100%; right: 0;
+  margin-top: 6px;
+  min-width: 148px;
+  overflow: hidden;
+  background: var(--card);
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
+  z-index: 60;
+}
+#files-view-wrap.open #files-view-menu { display: block; }
+/* Taller than the .suggest-row above and set in the sans face, not the mono:
+   these are two names to tap with a thumb, not paths to read. */
+.view-row {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+  height: 44px;
+  padding: 0 14px 0 11px;
+  border: none; border-bottom: 1px solid var(--hair);
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--secondary);
+  text-align: left;
+  cursor: pointer;
+}
+.view-row:last-child { border-bottom: none; }
+.view-row:active { background: var(--umber-tint); }
+.view-row.on { color: var(--ink); font-weight: 600; }
+/* Marks the view already in force, in the accent .suggest-slash uses for its
+   own one-glyph job — a text tick, since the sprite has no check. Hidden
+   rather than absent on the other row, so both names start at the same x. */
+.view-check {
+  flex: 0 0 13px;
+  color: var(--umber);
+  font-size: 12px;
+  visibility: hidden;
+}
+.view-row.on .view-check { visibility: visible; }
 /* The address field wants every pixel of the bar it can get, and behind its
    scrim there is no listing to lay out either way. */
 #files-path-wrap.editing ~ #files-view-wrap { display: none; }
@@ -1792,14 +1834,14 @@ html.term-open, body.term-open {
   box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
   z-index: 60;
 }
-/* Same recipe as .sheet-scrim (ink at low opacity, fixed, faded in/out) but
-   lighter — 0.34 there is tuned for dimming a whole screen behind a sheet
-   that covers half of it; this only needs to separate one small dropdown
-   from the plain rows still visible around it. Sits under .topbar's z-index
-   (50) so the field and its buttons stay fully interactive and undimmed;
-   above the plain file-list content (no z-index of its own) so the dimming
-   actually reads. */
-#files-suggest-scrim {
+/* One recipe for both of the bar's dropdown scrims. Same as .sheet-scrim
+   (ink at low opacity, fixed, faded in/out) but lighter — 0.34 there is tuned
+   for dimming a whole screen behind a sheet that covers half of it; this only
+   needs to separate one small dropdown from the plain rows still visible
+   around it. Sits under .topbar's z-index (50) so the field and its buttons
+   stay fully interactive and undimmed; above the plain file-list content (no
+   z-index of its own) so the dimming actually reads. */
+#files-suggest-scrim, #files-view-scrim {
   position: fixed; inset: 0;
   background: rgba(20, 16, 10, 0.16);
   opacity: 0;
@@ -1807,7 +1849,7 @@ html.term-open, body.term-open {
   transition: opacity 0.2s var(--ease-out);
   z-index: 45;
 }
-#files-suggest-scrim.show { opacity: 1; pointer-events: auto; }
+#files-suggest-scrim.show, #files-view-scrim.show { opacity: 1; pointer-events: auto; }
 #files-suggest.show { display: block; }
 /* Compact and icon-free on purpose — see suggestRow() in 28-file-explorer.js.
    Shorter than a .file-row (8px vs 12px vertical padding, no icon column) so
