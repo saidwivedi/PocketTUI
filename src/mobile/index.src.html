@@ -94,8 +94,8 @@
       <path d="M15 5l-7 7 7 7"/>
     </symbol>
     <!-- Drawn at the pill's pin size rather than scaled down from a larger
-         thumbtack, the way #i-mic-code is: at 11px the plate, the shoulder and
-         the needle are all the shape has room to say. -->
+         thumbtack, the way #i-mic-code is: the plate, the shoulder and the
+         needle are all the shape has room to say this small. -->
     <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
       <path d="M9 3.5h6"/>
       <path d="M10.3 3.5v5.5L7.8 12.4h8.4l-2.5-3.4V3.5"/>
@@ -253,10 +253,10 @@
   <div class="keybar" id="keybar"></div>
   <!-- The pin that holds the key pill open — the pill being what the bar above
        becomes where a hardware keyboard makes most of its keys redundant (see
-       KEY PILL in styles.css). Drawn inside the pill's top-right corner but a
-       sibling rather than a child of the bar: buildKeybar() empties #keybar on
-       every rebuild, and this is not one of its keys. display:none everywhere
-       but pill mode. -->
+       KEY PILL in styles.css). It sits in the pill as the row's last slot but
+       is a sibling rather than a child of the bar: buildKeybar() empties
+       #keybar on every rebuild, and this is not one of its keys. display:none
+       everywhere but pill mode. -->
   <button type="button" id="keybar-pin" aria-pressed="true"
           aria-label="Unpin the key pill"><svg aria-hidden="true"><use href="#i-pin"/></svg></button>
 </div>

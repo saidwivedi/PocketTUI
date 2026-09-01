@@ -1181,21 +1181,22 @@ html.term-open, body.term-open {
    query string is mirrored in 31-wide-layout.js (pillQuery); change both
    together. */
 @media (min-width: 768px) and (min-height: 500px) and (hover: hover) and (pointer: fine) {
-  /* Pill and pin are placed from this one set of offsets — the pin sits in
-     the pill's own corner, measured from the same two edges — so the two can
-     never drift apart. */
+  /* Pill and pin are placed from this one set of offsets — the pin is the
+     row's last slot, measured in from the same two edges the pill is placed
+     from — so the two can never drift apart. */
   #keybar, #keybar-pin {
-    --pill-top: calc(var(--safe-top) + 10px);
-    --pill-right: 10px;
-    /* The pill's right inset, which is the column the pin sits in: 3px of
-       corner inset, the pin's own 16px box, and 7px of air between it and the
+    --pill-top: calc(var(--safe-top) + 16px);
+    --pill-right: 16px;
+    /* The pill's right padding is the pin's slot: the 5px the other keys get
+       at their end, the pin's own 32px, and the 3px gap it keeps from the
        microphone. Shared so the pill and the pin can never disagree about
-       where that column starts. */
-    --pill-pin-col: 26px;
+       where that slot is. */
+    --pill-pin-col: 40px;
   }
   /* Three things share this corner and every one of them outranks the pill:
      search spans the pane's whole top edge, the unreachable-backend banner
-     floats just under it, and the demo badge sits exactly where the pin does.
+     floats just under it, and the demo badge sits exactly where the pill's
+     own right end does.
      Stacking z-indexes would leave a half-covered pill with half-clickable
      keys, so the pill steps down below whichever is up instead — all three are
      earlier siblings, which says it without a line of script. One step for all
@@ -1204,7 +1205,7 @@ html.term-open, body.term-open {
   #demo-badge.show ~ #keybar,  #demo-badge.show ~ #keybar-pin,
   #search-bar.open ~ #keybar,  #search-bar.open ~ #keybar-pin,
   #conn-banner.show ~ #keybar, #conn-banner.show ~ #keybar-pin {
-    --pill-top: calc(var(--safe-top) + 62px);
+    --pill-top: calc(var(--safe-top) + 70px);
   }
 
   /* Leaving the flex column is what hands the rows back to the grid — the bar
@@ -1212,28 +1213,70 @@ html.term-open, body.term-open {
      over it. With the dock goes all of the dock's chrome: the soft-keyboard
      inset, the horizontal scroll ten keys needed on a 390px screen, and the
      seam it drew against that edge — which closes into a hairline all the way
-     round, the app's own floating-surface border. The surface itself stays —
-     same translucent paper and blur as the bar, both themes with it. */
+     round, the app's own floating-surface border. The translucency and the
+     backdrop blur stay; the colour underneath them does not (see the surface
+     below). */
   #keybar {
     position: absolute;
     top: var(--pill-top);
     right: var(--pill-right);
     left: auto;
     width: auto;
-    /* Laid out to read as a pill rather than a box: the keys sit far enough
-       apart, and far enough in from the ends, that the shape is plainly wider
-       than it is tall — and shallow enough not to read as a slab. The vertical
-       inset is the tight one on purpose: height here is terminal the pill is
-       covering. The right inset is the wide one because the pin lives in it
-       (see --pill-pin-col above), which keeps the pin a column of its own
-       rather than a badge stuck on the microphone. */
-    gap: 10px;
-    padding: 3px var(--pill-pin-col) 3px 10px;
+    /* One container, not two. The docked bar is chips-in-a-tray because a
+       thumb needs to see where each target ends; a pointer does not, so here
+       the glyphs sit straight on the pill's own surface and only the container
+       is drawn. Even padding all round — the right side is wider only because
+       the pin's slot is reserved there (see --pill-pin-col above), and the pin
+       takes the same 5px at its end that the folder key takes at its own. */
+    gap: 3px;
+    padding: 5px var(--pill-pin-col) 5px 5px;
     overflow: visible;
     border: 1px solid var(--hair);
-    border-radius: 13px;
-    box-shadow: 0 4px 18px rgba(20, 16, 10, 0.16);
+    /* Concentric with the keys, and a true capsule at the same time: a 16px
+       key radius plus 5px of padding plus the hairline is 22, which is also
+       half the 44px the box comes out at. Those two rules only agree because
+       the hairline is counted. */
+    border-radius: 22px;
+    /* Two layers: a tight contact shadow so the pill sits on the grid rather
+       than floats over it, and a wide soft one for the lift. A single deep
+       drop reads as weight this shallow a shape has not got. */
+    box-shadow: 0 1px 2px rgba(20, 16, 10, 0.06),
+                0 10px 24px rgba(20, 16, 10, 0.10);
     transition: opacity 0.13s var(--ease-out), transform 0.13s var(--ease-out);
+  }
+  /* The docked bar borrows the app's paper because it is furniture along the
+     edge of the screen. The pill is an object lying on the terminal, and paper
+     on paper made it read as a panel cut out of the grid rather than something
+     resting on it — so the surface takes a measure of the accent, in both
+     themes, and separates itself by warmth instead of by outline.
+     How far it can go is set from the other end: the microphone's listening
+     state is a solid --umber fill, and it is the only thing on screen that
+     says the microphone is open. The surface has to stop far enough short of
+     that fill for the step between them to be unmistakable, which is what puts
+     the mix at a seventh rather than a third.
+     Light only needs the warmth — its base is already a shade above the
+     terminal's paper. */
+  #keybar { background: color-mix(in srgb, var(--umber) 14%, rgba(255, 253, 247, 0.94)); }
+  /* Dark needs the other half of the same idea. The docked bar's dark material
+     sits at the depth of the grid it docks against, which is right for
+     furniture and wrong for an object lying on top: unlit, it reads as a hole
+     cut in the terminal rather than something raised off it. So the dark
+     surface is built from the top of the app's own dark ladder — --hair-strong,
+     the lightest tone in it — made translucent and then warmed by the same
+     14%. Light catching a raised thing, not a panel at the grid's own depth.
+     Both moves push toward --umber at once, so this is the theme where the
+     step to the listening fill is worth measuring; at this lift it is still a
+     long way short of it.
+     The hairline goes here, though. Light needs it — a warm translucent
+     surface over pale terminal paper has no edge of its own — but against a
+     dark grid the same line reads as a drawn outline rather than the lip of a
+     raised surface, and a surface this much lighter than its background is
+     edge enough on its own. Kept as a transparent border rather than none so
+     the box measures the same in both themes. */
+  :root[data-theme="dark"] #keybar {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--umber) 14%,
+                          color-mix(in srgb, var(--hair-strong) 94%, transparent));
   }
   /* The arrows toggle is one of the keys that goes, so nothing in here can
      expand the bar — but a window dragged wide while it was open would
@@ -1250,29 +1293,66 @@ html.term-open, body.term-open {
     /* The docked row shares its slack from a basis of 0; in a pill that is
        auto-width it would collapse every key to nothing. */
     flex: 0 0 auto;
-    /* Wider and a little shallower than the docked bar's chips: the pill is a
-       lozenge, and a key that is nearly square inside it makes it read chunky.
-       The glyphs keep their 15px either way — this is the box around them. */
-    min-width: 44px; min-height: 29px;
+    /* Square and equal, sized by the box rather than by a label — there are no
+       word keys left here. 16px is half of it, so the hover highlight is a
+       circle and the concentric arithmetic above closes. */
+    min-width: 32px; min-height: 32px;
+    padding: 0;
+    border-radius: 16px;
   }
+  /* Bigger glyphs than the docked bar's, because they are now the whole key:
+     with the chip gone there is nothing else carrying the target. */
+  #keybar > button svg { width: 20px; height: 20px; }
+  /* Scaled with them, keeping the ratio the docked bar chose: a filled square
+     reads heavier than an outlined mic at the same box. */
+  #keybar > .k-compose .stop svg { width: 16px; height: 16px; }
+  /* The chip itself goes. Deliberately at class specificity, not #keybar's:
+     every state the mic can enter — listening, uploading, and :active — paints
+     a background from a `.keybar button.<state>` rule, and those must go on
+     outranking this one. An ID selector here would silently swallow all three,
+     and the listening fill is the only thing on screen saying the microphone
+     is open. Transparent rather than none so nothing reflows on a state that
+     paints the border back in. */
+  .keybar > .k-files,
+  .keybar > .k-search,
+  .keybar > .k-compose {
+    background: transparent;
+    border-color: transparent;
+  }
+  /* The only thing at rest is the glyph, so the pointer needs an answer when
+     it arrives: the app's own accent wash, at the key's radius. --umber-soft
+     rather than the --umber-tint the flat chrome uses, because the ground it
+     has to show up against is now itself umber-mixed — the rail's drag handle
+     reaches for the same step for the same reason. Held off the states that
+     are already painting one — hover must not talk over a live recording —
+     which is also what lets this outrank them safely. */
+  #keybar > button:hover:not(.listening):not(.busy):not(.sticky-on) {
+    background: var(--umber-soft);
+  }
+  /* The dot marking a fallback engine rings itself against the key's own
+     background; with the chip gone that is the pill's surface. */
+  .keybar > .k-compose.forced-phone::after { box-shadow: 0 0 0 1.5px var(--paper); }
 
-  /* The pin, tucked into the pill's own top-right corner and drawn as one —
-     a thumbtack, deliberately a third of a key rather than a third key, so it
-     reads as a property of the pill rather than something else to press. It
-     sits in the inset the pill reserves for it, clear of both glyphs, and
-     above the bar in z-order so a rebuilt keybar can never paint over it.
-     Pinned it takes the accent; unpinned it goes as quiet as the search
-     field's own icon without leaving the corner. */
+  /* The pin is the row's third slot, wearing exactly what the other two wear —
+     32px, the same 16px hover wash, the same 20px glyph. It reads as one of
+     the pill's controls because it is one; only its colour says anything
+     different. Still a sibling of the bar rather than a child, because
+     buildKeybar() empties #keybar on every rebuild — so the slot is reserved
+     by the container's right padding and the pin is dropped into it from the
+     same two edges the pill is placed from, 5px of padding plus the hairline
+     in from each. Above the bar in z-order so a rebuild can never paint over
+     it. Pinned it takes the accent; unpinned it goes as quiet as the search
+     field's own icon without leaving the row. */
   #keybar-pin {
     display: inline-flex;
     align-items: center; justify-content: center;
     position: absolute;
-    top: calc(var(--pill-top) + 3px);
-    right: calc(var(--pill-right) + 3px);
-    width: 16px; height: 16px;
+    top: calc(var(--pill-top) + 6px);
+    right: calc(var(--pill-right) + 6px);
+    width: 32px; height: 32px;
     padding: 0;
     border: none;
-    border-radius: 5px;
+    border-radius: 16px;
     background: transparent;
     color: var(--umber);
     cursor: pointer;
@@ -1281,15 +1361,15 @@ html.term-open, body.term-open {
     transition: opacity 0.13s var(--ease-out), transform 0.13s var(--ease-out),
                 color 0.14s var(--ease-out), background 0.14s var(--ease-out);
   }
-  #keybar-pin svg { width: 11px; height: 11px; }
+  #keybar-pin svg { width: 20px; height: 20px; }
   #keybar-pin[aria-pressed="false"] { color: var(--tertiary); }
   /* Halfway to the accent: pointing at an unpinned pin offers the pin without
      claiming it is already set. */
   #keybar-pin[aria-pressed="false"]:hover {
     color: color-mix(in srgb, var(--umber) 60%, var(--tertiary));
   }
-  #keybar-pin:hover { background: var(--umber-tint); }
-  #keybar-pin:active { transform: scale(0.9); }
+  #keybar-pin:hover { background: var(--umber-soft); }
+  #keybar-pin:active { transform: scale(0.92); }
 
   /* Unpinned with the pointer elsewhere: the corner clears completely and the
      grid is unbroken. Pill and pin go together — the pin is part of the thing,
