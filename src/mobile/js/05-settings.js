@@ -3,7 +3,8 @@
 // ============================================================
 // One scrim serves every sheet, so closing means closing whichever is open.
 const SHEET_IDS = ["sheet-settings", "sheet-new", "sheet-session",
-                   "sheet-file-actions", "sheet-files-add", "sheet-confirm"];
+                   "sheet-file-actions", "sheet-files-add", "sheet-confirm",
+                   "sheet-shortcuts"];
 function showSheet(on, id="sheet-settings") {
   // Closing the settings sheet ends the first-run voice step however it was
   // closed — Confirm, Cancel or the scrim. The device is paired by then, so
@@ -18,6 +19,34 @@ function showSheet(on, id="sheet-settings") {
   for (const s of SHEET_IDS) $(s).classList.toggle("show", on && id === s);
   $("sheet-scrim").classList.toggle("show", on);
 }
+
+// A hardware keyboard's Escape puts away whichever sheet is open, and it does
+// it through showSheet(false) — the same one close the scrim tap uses, so a
+// dismissed Settings saves nothing and an unanswered question still answers no
+// rather than needing a teardown of its own. The scrim is the "a sheet is open"
+// test because it is the one every sheet shares. A field inside the sheet
+// holding focus is no reason to decline: the settings sheet is mostly fields,
+// and putting the dialog away is what the key means in any of them.
+// This claims the key ahead of the image viewer's and the file explorer's
+// handlers — a sheet floats over both, and both already stand aside while the
+// scrim is up — and with no sheet open it does nothing at all, because the
+// terminal underneath is owed its Escape.
+// On capture, and stopping the event there: xterm reads keydown off its hidden
+// textarea and never consults defaultPrevented, so letting this one bubble
+// would close the sheet and send an ESC into the shell in the same press.
+// Immediate, unlike the viewer's: the other two Escape handlers are capture
+// listeners on this same document, and stopPropagation() only keeps an event
+// from the next node, not from the listeners beside it. Both of them stand
+// aside while the scrim is up — but the scrim is down by the time they are
+// asked, because the line above is what took it down, so the same press would
+// close the sheet and jump out of the file explorer.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("sheet-scrim").classList.contains("show")) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  showSheet(false);
+}, true);
 
 // Turn what someone actually types ("my-host", "my-host:5560/pockettui",
 // "https://my-host/pockettui/") into a URL the app can use.
@@ -85,7 +114,6 @@ function openSettings(firstRun) {
   fetchVoiceStatus(true).then(syncVoicePicker);
   refreshLearned();
   $("dbg-toggle").checked = cfg.debug;
-  $("search-toggle").checked = cfg.scrollbackSearchOn;
   $("alt-toggle").checked = cfg.altKeyOn;
   $("snip-toggle").checked = cfg.snippetsOn;
   $("snip-text").value = cfg.snippets;
@@ -350,11 +378,6 @@ $("dbg-toggle").addEventListener("change", (e) => {
 // Applies on the tap, same as the switches above: the key it adds or drops is
 // this sheet's scrim sitting over the key bar, so nothing can be mid-press
 // underneath when the rebuild lands.
-$("search-toggle").addEventListener("change", (e) => {
-  cfg.scrollbackSearchOn = e.target.checked;
-  if (!e.target.checked) closeSearch();
-  buildKeybar();
-});
 $("alt-toggle").addEventListener("change", (e) => {
   cfg.altKeyOn = e.target.checked;
   buildKeybar();

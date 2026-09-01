@@ -79,7 +79,7 @@ function syncChrome() {
   $("meta-theme-color").content = bg;
 }
 
-let term = null, fitAddon = null, searchAddon = null, sock = null;
+let term = null, fitAddon = null, sock = null;
 let currentSession = null, retries = 0, retryTimer = null;
 
 // Pinch-to-zoom sets this and it survives the session. Bounds are the same ones
@@ -92,6 +92,20 @@ function storedFontSize() {
     if (Number.isFinite(v)) return Math.min(FONT_MAX, Math.max(FONT_MIN, v));
   } catch (e) {}
   return FONT_DEFAULT;
+}
+
+// The one way a chosen size reaches the live terminal: onto xterm, then a
+// forced refit so the grid and the backend end up agreeing with what is
+// rendered, then remembered. The pinch settles through here and the shortcuts
+// sheet's stepper presses through here, so the touch and the keyboard route to
+// the same size can never drift apart. Returns what was actually applied — the
+// clamp is here rather than at each caller.
+function applyFontSize(px) {
+  const size = Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round(px)));
+  if (term) term.options.fontSize = size;
+  refit(0);
+  try { localStorage.setItem("pockettui_fontsize", String(size)); } catch (e) {}
+  return size;
 }
 
 // Shift+Enter sends a bare line feed instead of xterm's carriage return. The
@@ -130,7 +144,6 @@ function ensureTerm() {
   term.loadAddon(fitAddon);
   term.open($("term-host"));
   useWebgl();
-  useSearch();
   term.onData(d => send(d));
   term.attachCustomKeyEventHandler(shiftEnterIsNewline);
   term.registerLinkProvider({ provideLinks: provideImageLinks });
@@ -150,16 +163,5 @@ function useWebgl() {
     addon.onContextLoss(() => { try { addon.dispose(); } catch (e) {} });
     term.loadAddon(addon);
   } catch (e) {}
-}
-
-// Scrollback search. Same defensive shape as useWebgl() above: missing or
-// failing addon leaves searchAddon null and the search key's handlers no-op,
-// nothing else in the terminal depends on it.
-function useSearch() {
-  if (typeof SearchAddon === "undefined") return;
-  try {
-    searchAddon = new SearchAddon.SearchAddon();
-    term.loadAddon(searchAddon);
-  } catch (e) { searchAddon = null; }
 }
 

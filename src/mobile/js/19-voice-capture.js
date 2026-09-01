@@ -1385,7 +1385,6 @@ function buildKeybar() {
   // release it, so every one-shot modifier is cleared rather than left stuck.
   releaseMods();
   for (const k of KEYS) {
-    if (k.search && !cfg.scrollbackSearchOn) continue;
     // Two icons means a key that swaps face with its state (the mic becoming a
     // stop square while a local take runs). Each face gets its own span so CSS
     // can do the swapping, rather than the state machine rewriting the DOM
@@ -1504,7 +1503,6 @@ function buildKeybar() {
       if (k.files) { openFilesAtCwd(); return; }
       if (k.arrows) { setArrows(true); return; }
       if (k.collapse) { setArrows(false); return; }
-      if (k.search) { openSearch(); return; }
       if (k.mod) { setMod(k.mod, !mods[k.mod]); return; }
       sendKey(k.seq);
     });

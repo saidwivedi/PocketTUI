@@ -56,7 +56,4 @@ function settleConfirm(answer) {
 }
 $("btn-confirm-ok").addEventListener("click", () => settleConfirm(true));
 $("btn-confirm-cancel").addEventListener("click", () => settleConfirm(false));
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && confirmResolve) { e.preventDefault(); settleConfirm(false); }
-});
 
