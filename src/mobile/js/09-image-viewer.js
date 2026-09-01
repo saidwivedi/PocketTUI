@@ -159,6 +159,31 @@
   });
 })();
 
+// A hardware keyboard's Escape puts the overlay away, and it does it by calling
+// hideImage() — which is the close button's own handler, not a second teardown
+// beside it. The overlay pushes no history entry (its back is whatever screen it
+// opened over), so there is nothing here to unwind: one function is the whole
+// close, and the key and the button share it rather than drift apart. It stands
+// aside whenever something sits above the overlay — a sheet or a confirm is the
+// top thing to dismiss and answers Escape itself, and a focused field is owed the
+// key too. The terminal's own textarea is the one exception: the viewer opens
+// over a live terminal with it still focused, which is exactly the case this is
+// for. No media query and no pointer-type gate, for the reason the explorer's
+// Escape gives: a phone keyboard never sends the key at all, and an iPad with one
+// is who this is for.
+// On capture, and stopping the event there: xterm reads keydown off its textarea
+// and never consults defaultPrevented, so letting this one bubble would close the
+// overlay and send an ESC into the shell underneath it in the same press.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("viewer").classList.contains("show")) return;
+  if ($("sheet-scrim").classList.contains("show")) return;
+  if (document.activeElement !== termInput() && typingFocus()) return;
+  e.preventDefault();
+  e.stopPropagation();
+  hideImage();
+}, true);
+
 // The single choke point for every source of input — xterm's onData, the key bar
 // and the physical-keyboard handler all arrive here, so the demo only has to
 // intercept this one function to receive all of them.
