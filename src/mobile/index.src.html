@@ -243,6 +243,13 @@
        chip or otherwise — puts it away. -->
   <div class="chipbar" id="chips" role="toolbar" aria-label="Prompt answers"></div>
   <div class="keybar" id="keybar"></div>
+  <!-- The grip that pins the key pill, which is what the bar above becomes
+       where a hardware keyboard makes most of its keys redundant (see KEY PILL
+       in styles.css). A sibling rather than a child of the bar: buildKeybar()
+       empties #keybar on every rebuild, and this control is not one of its
+       keys. display:none everywhere but pill mode. -->
+  <button type="button" id="keybar-pin" aria-pressed="true"
+          aria-label="Unpin the key pill"></button>
 </div>
 
 <!-- ============================================================
