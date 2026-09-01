@@ -80,16 +80,6 @@
     <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 5v14M5 12h14"/>
     </symbol>
-    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="10.5" cy="10.5" r="6.5"/>
-      <path d="M20 20l-4.8-4.8"/>
-    </symbol>
-    <symbol id="i-chev-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M5 15l7-7 7 7"/>
-    </symbol>
-    <symbol id="i-chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M5 9l7 7 7-7"/>
-    </symbol>
     <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M15 5l-7 7 7 7"/>
     </symbol>
@@ -163,20 +153,6 @@
 <div class="screen" id="screen-term">
   <div class="term-safetop"></div>
   <button type="button" id="demo-badge" aria-label="Leave the demo">DEMO</button>
-  <!-- Pinned to the top of the terminal screen, below the safe-area strip. Opened
-       by the key bar's magnifier key; Enter in the field repeats the last find,
-       the arrows step through matches, and × (or Esc) closes and clears
-       highlights. Hidden by default — display toggled by JS, never covers the
-       key bar since it docks at the opposite edge. -->
-  <div id="search-bar" role="search">
-    <svg class="search-icon" aria-hidden="true"><use href="#i-search"/></svg>
-    <input type="text" id="search-input" inputmode="search" enterkeyhint="search"
-           autocapitalize="off" autocorrect="off" spellcheck="false"
-           placeholder="Find in scrollback" aria-label="Find in scrollback">
-    <button type="button" id="search-prev" aria-label="Previous match"><svg><use href="#i-chev-up"/></svg></button>
-    <button type="button" id="search-next" aria-label="Next match"><svg><use href="#i-chev-down"/></svg></button>
-    <button type="button" id="search-close" aria-label="Close search"><svg><use href="#i-close"/></svg></button>
-  </div>
   <!-- Shown after repeated reconnect failures (see scheduleReconnect); the retry
        loop keeps running while it is up, and a successful open takes it down. -->
   <div id="conn-banner" role="status">
@@ -498,15 +474,18 @@
               spellcheck="false" autocomplete="off"
               placeholder="git status"></textarea>
   </div>
-  <!-- Key-bar slots most sessions never reach for, so both stay out of the bar
+  <!-- A key-bar slot most sessions never reach for, so it stays out of the bar
        until asked for. -->
-  <div class="toggle-row">
-    <label for="search-toggle">Scrollback search</label>
-    <input id="search-toggle" type="checkbox">
-  </div>
   <div class="toggle-row">
     <label for="alt-toggle">Alt key</label>
     <input id="alt-toggle" type="checkbox">
+  </div>
+  <!-- Only where a hardware keyboard is, the same gate the editor's Vim button
+       wears: everything the sheet lists is a chord, and the two sizes it carries
+       are the ones a laptop has no gesture for. -->
+  <div class="toggle-row" id="shortcuts-row">
+    <label>Keyboard shortcuts</label>
+    <button type="button" id="btn-shortcuts">Open</button>
   </div>
   <!-- Last in the sheet because it is a diagnostic, not part of connecting. -->
   <div class="toggle-row">
@@ -593,6 +572,71 @@
   </div>
 </div>
 
+<!-- ============================================================
+     KEYBOARD SHORTCUTS
+     ============================================================ -->
+<!-- Reached from the row at the foot of Settings, and only where a pointer and
+     a hover say there is a keyboard to use it with. No Done button: nothing in
+     here is committed on the way out — both steppers apply as they are pressed
+     — so it closes on the scrim or on Escape, the way the file-action sheets do.
+     The two sizes lead because they are the reason a laptop needs this sheet at
+     all: pinch-to-zoom is the terminal's, and it is touch-only. -->
+<div class="sheet" id="sheet-shortcuts">
+  <h2>Keyboard shortcuts</h2>
+  <label>Text size</label>
+  <div class="toggle-row">
+    <label>Terminal</label>
+    <div class="stepper">
+      <button type="button" id="btn-termfont-down" aria-label="Smaller terminal text">&minus;</button>
+      <span class="value" id="termfont-value" aria-live="polite"></span>
+      <button type="button" id="btn-termfont-up" aria-label="Larger terminal text">+</button>
+    </div>
+  </div>
+  <div class="toggle-row">
+    <label>Sidebar</label>
+    <div class="stepper">
+      <button type="button" id="btn-railfont-down" aria-label="Smaller sidebar text">&minus;</button>
+      <span class="value" id="railfont-value" aria-live="polite"></span>
+      <button type="button" id="btn-railfont-up" aria-label="Larger sidebar text">+</button>
+    </div>
+  </div>
+  <label>Sessions</label>
+  <div class="list-rows key-list">
+    <div class="list-row">
+      <kbd>Ctrl+Shift+1&hellip;9</kbd><span>Switch to that session in the sidebar</span>
+    </div>
+  </div>
+  <label>Terminal</label>
+  <div class="list-rows key-list">
+    <div class="list-row">
+      <kbd>Shift+Enter</kbd><span>Newline without submitting</span>
+    </div>
+    <div class="list-row">
+      <kbd>Ctrl+V or Cmd+V</kbd><span>Paste &mdash; an image uploads and inserts its path</span>
+    </div>
+  </div>
+  <label>Everywhere</label>
+  <div class="list-rows key-list">
+    <div class="list-row">
+      <kbd>Escape</kbd><span>Close a sheet or the image viewer, or leave the file
+        explorer for the terminal</span>
+    </div>
+  </div>
+  <label>Files</label>
+  <div class="list-rows key-list">
+    <div class="list-row">
+      <kbd>Enter</kbd><span>Open the typed path in the explorer's address field</span>
+    </div>
+  </div>
+  <label>Editor</label>
+  <div class="list-rows key-list">
+    <div class="list-row">
+      <kbd>:w :q :wq :x</kbd><span>In Vim mode &mdash; the Vim button in the editor's
+        toolbar &mdash; along with your ~/.vimrc mappings</span>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- Offered after a long press. Copy and Paste both have to run inside the tap
@@ -618,7 +662,6 @@
 <script src="vendor/xterm.js?v=__CACHE_VERSION__"></script>
 <script src="vendor/addon-fit.js?v=__CACHE_VERSION__"></script>
 <script src="vendor/addon-webgl.js?v=__CACHE_VERSION__"></script>
-<script src="vendor/addon-search.js?v=__CACHE_VERSION__"></script>
 <script>
 @include js
 </script>

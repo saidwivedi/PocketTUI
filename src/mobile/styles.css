@@ -571,64 +571,6 @@ html.term-open, body.term-open {
 #conn-banner button:active { background: color-mix(in srgb, var(--paper) 26%, transparent); }
 
 /* ============================================================
-   SEARCH BAR — scrollback find, pinned to the top of the terminal
-   ============================================================ */
-/* The key bar and compose strip already dock the bottom edge, so search takes
-   the only edge left instead of covering either — same docked material as
-   both (blur backdrop, hairline seam), just anchored to the opposite side and
-   floating over the grid rather than pushing it, since it never has to share
-   its row with anything the way the bottom strips share the keyboard. */
-#search-bar {
-  display: none;
-  position: absolute;
-  left: 0; right: 0;
-  top: var(--safe-top);
-  z-index: 25;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  background: rgba(255, 253, 247, 0.94);
-  backdrop-filter: saturate(1.4) blur(14px);
-  -webkit-backdrop-filter: saturate(1.4) blur(14px);
-  border-bottom: 1px solid var(--hair);
-}
-:root[data-theme="dark"] #search-bar { background: rgba(31, 28, 22, 0.94); }
-#search-bar.open { display: flex; }
-.search-icon {
-  flex: 0 0 auto;
-  width: 15px; height: 15px;
-  color: var(--tertiary);
-  margin-left: 4px;
-}
-#search-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 13px;
-  color: var(--ink);
-  background: var(--paper-rec);
-  border: 1px solid var(--hair);
-  border-radius: 10px;
-  padding: 7px 10px;
-  transition: border-color 0.18s var(--ease-out);
-}
-#search-input:focus { border-color: var(--umber); outline: none; }
-#search-bar button {
-  flex: 0 0 auto;
-  background: transparent;
-  border: none;
-  color: var(--secondary);
-  padding: 6px;
-  border-radius: 8px;
-  cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: color 0.18s var(--ease-out), background 0.18s var(--ease-out);
-}
-#search-bar button svg { width: 16px; height: 16px; }
-#search-bar button:hover { color: var(--ink); background: var(--umber-tint); }
-#search-bar button:active { transform: scale(0.94); }
-
-/* ============================================================
    COMPOSE STRIP — dictation staging, above the key bar
    ============================================================ */
 /* Dictating straight into xterm's hidden textarea duplicates the text: xterm's
@@ -1173,13 +1115,12 @@ html.term-open, body.term-open {
 /* Two-pane width plus a real pointer to aim with. Esc, tab, ctrl, shift, alt,
    the arrows, enter and backspace are all already under the user's fingers
    here, so a full-width row of them is terminal rows spent on keys nobody
-   presses. What is left has no keyboard equivalent — the folder, the
-   microphone, and scrollback find where it is switched on — and it floats over
-   the grid's top-right corner instead of docking, so the terminal keeps every
-   row and stays readable to either side of it. A touch-only tablet in
-   landscape clears the width but fails hover/pointer, and keeps the bar. The
-   query string is mirrored in 31-wide-layout.js (pillQuery); change both
-   together. */
+   presses. What is left has no keyboard equivalent — the folder and the
+   microphone — and it floats over the grid's top-right corner instead of
+   docking, so the terminal keeps every row and stays readable to either side
+   of it. A touch-only tablet in landscape clears the width but fails
+   hover/pointer, and keeps the bar. The query string is mirrored in
+   31-wide-layout.js (pillQuery); change both together. */
 @media (min-width: 768px) and (min-height: 500px) and (hover: hover) and (pointer: fine) {
   /* Pill and pin are placed from this one set of offsets — the pin is the
      row's last slot, measured in from the same two edges the pill is placed
@@ -1193,17 +1134,15 @@ html.term-open, body.term-open {
        where that slot is. */
     --pill-pin-col: 40px;
   }
-  /* Three things share this corner and every one of them outranks the pill:
-     search spans the pane's whole top edge, the unreachable-backend banner
-     floats just under it, and the demo badge sits exactly where the pill's
-     own right end does.
+  /* Two things share this corner and both of them outrank the pill: the
+     unreachable-backend banner floats across the pane's top edge, and the demo
+     badge sits exactly where the pill's own right end does.
      Stacking z-indexes would leave a half-covered pill with half-clickable
-     keys, so the pill steps down below whichever is up instead — all three are
-     earlier siblings, which says it without a line of script. One step for all
-     three: it clears the tallest of them, the banner, which reaches ~54px into
+     keys, so the pill steps down below whichever is up instead — both are
+     earlier siblings, which says it without a line of script. One step for
+     both: it clears the taller of them, the banner, which reaches ~54px into
      the pane. */
   #demo-badge.show ~ #keybar,  #demo-badge.show ~ #keybar-pin,
-  #search-bar.open ~ #keybar,  #search-bar.open ~ #keybar-pin,
   #conn-banner.show ~ #keybar, #conn-banner.show ~ #keybar-pin {
     --pill-top: calc(var(--safe-top) + 70px);
   }
@@ -1287,7 +1226,6 @@ html.term-open, body.term-open {
      keep working without knowing which layout they are in. */
   #keybar > button { display: none; }
   #keybar > .k-files,
-  #keybar > .k-search,
   #keybar > .k-compose {
     display: inline-flex;
     /* The docked row shares its slack from a basis of 0; in a pill that is
@@ -1314,7 +1252,6 @@ html.term-open, body.term-open {
      is open. Transparent rather than none so nothing reflows on a state that
      paints the border back in. */
   .keybar > .k-files,
-  .keybar > .k-search,
   .keybar > .k-compose {
     background: transparent;
     border-color: transparent;
@@ -1581,6 +1518,28 @@ html.term-open, body.term-open {
   accent-color: var(--umber);
   transform: scale(1.1);
 }
+/* The row that opens the shortcuts sheet, gated on a real keyboard by the same
+   test the editor's Vim button wears (see #btn-editor-vim): a touch device has
+   no chords to be told about, and it already pinches the terminal's size. The
+   button borrows .sheet-install's small-button recipe verbatim — it is the
+   sheet's quiet secondary action, same as Copy up there. */
+#shortcuts-row { display: none; }
+@media (hover: hover) and (pointer: fine) {
+  #shortcuts-row { display: flex; }
+}
+#btn-shortcuts {
+  flex-shrink: 0;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+#btn-shortcuts:active { transform: scale(0.96); }
 /* Three stacked rows rather than a segmented control: the names are words of
    unequal length and each carries a second line of its own, which a segment
    cannot hold. Same recessed well and hairline rim as the fields above, so the
@@ -1670,6 +1629,73 @@ html.term-open, body.term-open {
   cursor: pointer;
 }
 .list-row-del:active { transform: scale(0.9); }
+/* The shortcuts sheet. Its section headings are .sheet label like every other
+   section's, and they need the gap the rule above only hands to a label after
+   an input; between the two steppers a shorter one, because they are two halves
+   of one heading rather than two sections. */
+#sheet-shortcuts .toggle-row + label,
+#sheet-shortcuts .key-list + label { margin-top: 18px; }
+#sheet-shortcuts label + .toggle-row { margin-top: 0; }
+#sheet-shortcuts .toggle-row + .toggle-row { margin-top: 10px; }
+/* A stepper rather than a slider or a typed field: the range is a handful of
+   whole pixels and every press applies to the live terminal or rail underneath
+   the sheet, so the two buttons and the number between them are the whole
+   control. Same recessed well and hairline rim as the fields above. */
+.sheet .stepper {
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--paper-rec);
+  overflow: hidden;
+}
+.sheet .stepper button {
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1;
+  padding: 7px 12px;
+  border: none;
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+.sheet .stepper button:active { background: var(--card-2); }
+/* At either end of the range. Dimmed and inert rather than removed: a stepper
+   that loses a button changes width under the thumb still pressing it. */
+.sheet .stepper button[disabled] { color: var(--whisper); cursor: default; }
+.sheet .stepper .value {
+  min-width: 48px;
+  padding: 7px 0;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  border-left: 1px solid var(--hair);
+  border-right: 1px solid var(--hair);
+}
+/* Chord then meaning, reading as one line, rather than the row's two ends
+   pushed apart the way the learned-corrections rows are: inside a sheet capped
+   at 480px there is no room for a second column, and a key and what it does are
+   one sentence anyway. */
+.sheet .key-list .list-row { justify-content: flex-start; align-items: baseline; }
+.sheet .key-list kbd {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--secondary);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+  padding: 2.5px 6px;
+  white-space: nowrap;
+}
+.sheet .key-list span {
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--tertiary);
+}
 #learned-empty {
   display: none;
   margin: 4px 0 0;
@@ -2486,7 +2512,10 @@ html.term-open, body.term-open {
    rail. The query string is mirrored in 31-wide-layout.js (isWideLayout);
    change both together. */
 @media (min-width: 768px) and (min-height: 500px) {
-  :root { --sidebar-w: 320px; --rail-gutter: 7px; }
+  /* --rail-title is the rail row title's size, set live from JS the way
+     --sidebar-w is; the default here is what an install with nothing stored
+     renders at. */
+  :root { --sidebar-w: 320px; --rail-gutter: 7px; --rail-title: 14px; }
 
   /* Visible regardless of .active — the screen classes keep governing only
      the main pane, and the ID selector outweighs .screen's display:none.
@@ -2550,7 +2579,7 @@ html.term-open, body.term-open {
   #screen-list .item .item-head { gap: 7px; align-items: center; }
   #screen-list .item .item-dot { width: 7px; height: 7px; margin-top: 0; }
   #screen-list .item .title {
-    font-size: 14px;
+    font-size: var(--rail-title);
     line-height: 1.3;
     white-space: nowrap;
     overflow: hidden;
@@ -2565,7 +2594,10 @@ html.term-open, body.term-open {
     flex-wrap: nowrap;
     white-space: nowrap;
     overflow: hidden;
-    font-size: 10px;
+    /* Derived rather than set: the meta line holds its 10-to-14 proportion
+       against the title however far the scale is taken, so a bigger rail is
+       the same rail, larger. */
+    font-size: calc(var(--rail-title) * 10 / 14);
   }
   /* The classless spans are the window count and age; the dots between are
      .sep. A session with neither command nor state keeps a one-line row —

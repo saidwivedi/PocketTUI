@@ -150,15 +150,8 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_debug", "1");
     else localStorage.removeItem("pockettui_debug");
   },
-  // Whether the magnifier key and the scrollback search UI it opens appear at
-  // all. Off by default: it is a key-bar slot most sessions never reach for.
-  get scrollbackSearchOn() { return localStorage.getItem("pockettui_search_on") === "1"; },
-  set scrollbackSearchOn(v) {
-    if (v) localStorage.setItem("pockettui_search_on", "1");
-    else localStorage.removeItem("pockettui_search_on");
-  },
-  // Whether the alt modifier key appears in the key bar. Off by default, like
-  // the search key: another slot most sessions never reach for.
+  // Whether the alt modifier key appears in the key bar. Off by default: it is
+  // a key-bar slot most sessions never reach for.
   get altKeyOn() { return localStorage.getItem("pockettui_alt_on") === "1"; },
   set altKeyOn(v) {
     if (v) localStorage.setItem("pockettui_alt_on", "1");

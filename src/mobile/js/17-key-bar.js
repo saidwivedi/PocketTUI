@@ -34,15 +34,6 @@ const KEYS = [
   { label: "⌫",     seq: "\x7f",  narrow: true, repeat: true, cls: "span-2 k-bs", aria: "Backspace",
     swipe: { seq: "\x1b[3~" } },
   { icon: "i-arrows", arrows: true, narrow: true, only: "collapsed", aria: "Show arrow keys" },
-  // Collapsed-only, like the arrows toggle above: the expanded row is a full
-  // grid with every cell already spoken for (see .keybar.expanded below), and
-  // search is a scrollback errand rather than something the arrow-editing
-  // workflow needs beside it. focusing for the same reason the compose key is:
-  // opening search means putting the caret in its field. Also gated on
-  // cfg.scrollbackSearchOn in buildKeybar() (19-voice-capture.js) — off by
-  // default, since it is a slot most sessions never reach for.
-  { icon: "i-search", search: true, focusing: true, narrow: true, only: "collapsed",
-    cls: "k-search", aria: "Find in scrollback" },
   // The terminal's way into the file explorer, at the pane's own cwd.
   // Collapsed-row only, so the expanded grid's hand-placed columns stay as
   // they are — arrow work and file browsing are different errands anyway.

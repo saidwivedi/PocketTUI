@@ -82,10 +82,11 @@
     termGesture = null;
     startDist = 0;
     if (frame !== null) { cancelAnimationFrame(frame); frame = null; }
-    // Forced: the throttle above may have skipped the last refit, and the grid
-    // and the backend have to end the gesture agreeing with the rendered size.
-    applySize(true);
-    try { localStorage.setItem("pockettui_fontsize", String(pendingSize)); } catch (err) {}
+    // Through the shared apply rather than one more applySize(true): the
+    // throttle above may have skipped the last refit, and the size the gesture
+    // leaves on screen is the one to remember, which is exactly what that
+    // function does for every other way of choosing a size.
+    applyFontSize(pendingSize);
     dbg("pinch: fontSize=" + pendingSize);
   }
   host.addEventListener("touchend", finish, { passive: true });
