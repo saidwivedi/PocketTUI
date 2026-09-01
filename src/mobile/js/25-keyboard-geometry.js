@@ -167,3 +167,38 @@ window.addEventListener("orientationchange", () => setTimeout(() => {
 // re-sizing, not just a refit of what is inside it.
 window.addEventListener("resize", settleViewport);
 
+// A viewport event says the keyboard moved. It does not say the geometry that
+// implies has finished moving, and on iOS one part of it is reliably late:
+// env(safe-area-inset-bottom) reads 0 while the keyboard is covering the home
+// indicator and only returns to its real value some frames after the viewport is
+// already back at full height. The key bar's bottom padding is built on that
+// inset, so the refit above measures a #term-host that is still a home indicator
+// too tall, hands xterm a row more than the box will end up showing, and then the
+// inset lands, the bar grows into the grid, and nothing asks again — the bottom
+// row, which is where an agent TUI keeps its status line, is left under the bar.
+//
+// Guessing that delay with another timer only moves the guess. The box itself is
+// watched instead, so whatever moves it — the safe area settling, the key bar
+// expanding, a rotation, the compose strip opening — arrives as the same one
+// correction rather than as a list of events each carrying its own delay.
+// refit()'s existing debounce is what collapses a burst of settling layout into a
+// single fit, and it is the only fit path either way.
+//
+// This cannot chase its own tail. #term-host is the flex column's one growable
+// child, so its height is whatever the screen has left over after the key bar and
+// never what xterm renders inside it: a fit resizes the grid within the box and
+// leaves the box exactly where it was. (Beside the desktop pill the bar is out of
+// the column altogether and the host simply fills the pane.) The remembered size
+// is the second lock — an observation that reports the size already fitted at is
+// dropped before it can reach the timer.
+if (typeof ResizeObserver !== "undefined") {
+  const host = $("term-host");
+  let seenW = 0, seenH = 0;
+  new ResizeObserver(() => {
+    if (!term || demoMode || !$("screen-term").classList.contains("active")) return;
+    const w = Math.round(host.clientWidth), h = Math.round(host.clientHeight);
+    if (w === seenW && h === seenH) return;
+    seenW = w; seenH = h;
+    refit();
+  }).observe(host);
+}
