@@ -42,12 +42,12 @@ const KEYS = [
   // cfg.scrollbackSearchOn in buildKeybar() (19-voice-capture.js) — off by
   // default, since it is a slot most sessions never reach for.
   { icon: "i-search", search: true, focusing: true, narrow: true, only: "collapsed",
-    aria: "Find in scrollback" },
+    cls: "k-search", aria: "Find in scrollback" },
   // The terminal's way into the file explorer, at the pane's own cwd.
   // Collapsed-row only, so the expanded grid's hand-placed columns stay as
   // they are — arrow work and file browsing are different errands anyway.
   { icon: "i-folder", files: true, narrow: true, only: "collapsed",
-    aria: "Browse files in the session's folder" },
+    cls: "k-files", aria: "Browse files in the session's folder" },
   // The arrows' alternates are the nav keys that live beside them on a real
   // keyboard: Home/End across, PgUp/PgDn along.
   { label: "←",     seq: "\x1b[D", narrow: true, repeat: true, cls: "k-left",  only: "expanded",
