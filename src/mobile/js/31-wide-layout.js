@@ -284,10 +284,17 @@ syncPill();
 // Shift is what makes the rest safe: the control codes the shell is owed come
 // out of xterm's no-shift branch — Ctrl+3 is Escape, Ctrl+8 is Delete — so a
 // shifted digit takes nothing away from the terminal. The listener sits on the
-// document rather than on the rail — xterm lets a combination it has no binding
-// for bubble, so one listener covers a focused terminal and a focused rail
-// alike — and a chord pointing at a row that is not there is left alone rather
-// than swallowed.
+// document rather than on the rail, so one listener covers a focused terminal
+// and a focused rail alike, and on capture, because xterm does not let every
+// chord it has no use for go past: Ctrl+Shift+2 is Ctrl+@ on a US layout, which
+// it reads as NUL, and a key it claims it also cancels — preventDefault and
+// stopPropagation together — at its own textarea, so a bubble listener here was
+// never told that key had been pressed at all. Claiming a chord stops it
+// immediately for the reason the sheet's Escape gives: stopPropagation only
+// keeps an event from the next node, not from the listeners beside it on this
+// one. A chord pointing at a row that is not there is left alone rather than
+// swallowed — nothing prevented and nothing stopped — so capture costs the
+// terminal and the browser none of the keys this does not use.
 document.addEventListener("keydown", (e) => {
   if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
   if (!isWideLayout() || $("sheet-scrim").classList.contains("show")) return;
@@ -303,5 +310,6 @@ document.addEventListener("keydown", (e) => {
   const row = $("list").querySelectorAll(".item[data-name]")[n - 1];
   if (!row) return;
   e.preventDefault();
+  e.stopImmediatePropagation();
   if (row.dataset.name !== currentSession) openTerminal(row.dataset.name);
-});
+}, true);
