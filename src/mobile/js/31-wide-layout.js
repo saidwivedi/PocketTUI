@@ -29,6 +29,33 @@ function storedRailW() {
 let railW = storedRailW();
 document.documentElement.style.setProperty("--sidebar-w", railW + "px");
 
+// The rail's rows carry their own type scale, and on a laptop nothing else can
+// reach it — the pinch that sizes the terminal is a touch gesture. Stored,
+// clamped on read and set as a variable exactly like the width above, and the
+// number is the row title's size in px: the meta line beneath it derives from
+// the same variable in the stylesheet, so the two keep the proportion the rail
+// was drawn with however far the scale is taken. Inert on the phone, where the
+// rail does not exist and nothing outside the wide media query reads it.
+const RAIL_FONT_MIN = 11, RAIL_FONT_MAX = 20, RAIL_FONT_DEFAULT = 14;
+function storedRailFont() {
+  try {
+    const v = parseInt(localStorage.getItem("pockettui_sidebar_font"), 10);
+    if (Number.isFinite(v)) return Math.min(RAIL_FONT_MAX, Math.max(RAIL_FONT_MIN, v));
+  } catch (e) {}
+  return RAIL_FONT_DEFAULT;
+}
+let railFont = storedRailFont();
+document.documentElement.style.setProperty("--rail-title", railFont + "px");
+
+// The one way a chosen rail size lands, the way applyFontSize() is for the
+// terminal: clamped, applied live, remembered. Returns what was applied.
+function applyRailFont(px) {
+  railFont = Math.min(RAIL_FONT_MAX, Math.max(RAIL_FONT_MIN, Math.round(px)));
+  document.documentElement.style.setProperty("--rail-title", railFont + "px");
+  try { localStorage.setItem("pockettui_sidebar_font", String(railFont)); } catch (e) {}
+  return railFont;
+}
+
 // Dragging the rail's edge resizes it live: every pane border derives from
 // the variable, so the panes track the pointer for free, while the grid
 // refit rides its own debounce — landing on pauses and once, forced, at
@@ -244,3 +271,37 @@ pillQuery.addEventListener("change", () => {
 
 pillListeners(pillQuery.matches);
 syncPill();
+
+// ============================================================
+// Rail shortcuts — Control and Shift and a digit
+// ============================================================
+// Only beside the rail: the number means a row on screen, and the phone never
+// shows the list and a terminal together. Three keys rather than two, because
+// a plain Command or Control digit goes to the browser's tab strip, which takes
+// it before the page sees it and does not hand it back for a preventDefault,
+// and because Ctrl+Alt+digit is what GNOME, KDE and Xfce switch workspaces
+// with — the window manager wins that one long before a keydown reaches here.
+// Shift is what makes the rest safe: the control codes the shell is owed come
+// out of xterm's no-shift branch — Ctrl+3 is Escape, Ctrl+8 is Delete — so a
+// shifted digit takes nothing away from the terminal. The listener sits on the
+// document rather than on the rail — xterm lets a combination it has no binding
+// for bubble, so one listener covers a focused terminal and a focused rail
+// alike — and a chord pointing at a row that is not there is left alone rather
+// than swallowed.
+document.addEventListener("keydown", (e) => {
+  if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
+  if (!isWideLayout() || $("sheet-scrim").classList.contains("show")) return;
+  // The digit row's code is fixed where its key is not: with Shift down a US
+  // layout puts !@#$%^&*( in e.key, and other layouts put their own symbols
+  // there. Where a remapped or soft keyboard sends no code at all, the old
+  // keyCode still carries the digit — deprecated, but implemented everywhere,
+  // and moved by neither Shift nor the layout.
+  const m = /^Digit([1-9])$/.exec(e.code || "");
+  const n = m ? +m[1] : (e.keyCode >= 49 && e.keyCode <= 57 ? e.keyCode - 48 : 0);
+  if (!n) return;
+  // Rows only — the demo card carries no data-name.
+  const row = $("list").querySelectorAll(".item[data-name]")[n - 1];
+  if (!row) return;
+  e.preventDefault();
+  if (row.dataset.name !== currentSession) openTerminal(row.dataset.name);
+});
