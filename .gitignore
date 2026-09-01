@@ -36,3 +36,5 @@ explore/
 /sw.js
 /icon-192.png
 /icon-512.png
+# Local working notes for this checkout, not part of the shipped project.
+/CLAUDE.md
