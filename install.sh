@@ -1553,38 +1553,6 @@ ts_try() {
     fi
 }
 
-# `tailscale serve` is the one call in this section whose failure has to be
-# explained rather than guessed at, so it does not go through ts_try: three
-# seconds is short enough that provisioning an HTTPS cert looks like a refusal,
-# and 2>/dev/null throws away the only sentence that says what went wrong.
-# stdin is nailed to /dev/null on purpose. Under `curl | bash` the inherited
-# stdin is the rest of this script — a command that reads it eats the install —
-# and pointing it at the terminal instead is the other half of the hang: some
-# tailscale versions ask their own question here, and a question whose output
-# was discarded is a blank line the user waits at forever.
-# Combined output lands in $TS_SERVE_OUT; exit 124 means the bound ran out.
-TS_SERVE_OUT=""
-ts_serve_run() {
-    local rc=0
-    if command -v timeout >/dev/null 2>&1; then
-        TS_SERVE_OUT="$(timeout 15 "$@" </dev/null 2>&1)" || rc=$?
-    else
-        TS_SERVE_OUT="$("$@" </dev/null 2>&1)" || rc=$?
-    fi
-    return "$rc"
-}
-
-# tailscale's own words, indented into the surrounding block. A bare timeout
-# says nothing, and an empty quote is worse than none.
-ts_serve_say_out() {
-    local line
-    [[ -n "$TS_SERVE_OUT" ]] || return 0
-    while IFS= read -r line; do
-        say "      $line"
-    done <<< "$TS_SERVE_OUT"
-    say ""
-}
-
 if [[ "$HAVE_TAILSCALE" == "1" ]]; then
     # `status --json` carries Self.DNSName, the fully-qualified name with a
     # trailing dot. Parsed with sed rather than jq, which is not a dependency
@@ -1602,141 +1570,29 @@ fi
 
 SERVE_CMD="tailscale serve --bg --set-path /pockettui $PORT"
 
-# Publishing the port is what turns the tailnet name into a working address, and
-# it is the step users were most often left to discover on their own. The offer
-# is skipped when `serve status` already lists this port under /pockettui, so a
-# re-run neither re-asks nor disturbs an existing config.
+# Publishing the port is what turns the tailnet name into a working address, but
+# the installer only ever prints the command — it never runs it. Running it from
+# here was three failure modes wearing one coat: a sudo password prompt in the
+# middle of an install for everyone who is not the Tailscale operator, a wedged
+# tailscaled that swallowed the run until a timeout fired, and cert provisioning
+# that hangs behind a question the user cannot see. One line the user pastes has
+# none of those. The `serve status` gate is kept so a re-run on an already
+# published machine stays silent.
 if [[ "$HAVE_TAILSCALE" == "1" ]] \
    && ! ts_try tailscale serve status \
         | grep -q "^|-- /pockettui .*:$PORT\$"; then
-    step_quiet "Optional: publish port $PORT on your tailnet"
-    vsay "  Without this the tailnet name resolves but /pockettui returns 404."
-    vsay "  It would run:"
+    step_quiet "Publish port $PORT on your tailnet yourself"
+    vsay "  Not published yet — the tailnet name resolves but /pockettui 404s."
+    if [[ -n "$TS_HOST" ]]; then
+        vsay "  This makes it https://$TS_HOST/pockettui:"
+    else
+        vsay "  This publishes it:"
+    fi
     vsay ""
     vsay "      $SERVE_CMD"
     vsay ""
-    if [[ "$INTERACTIVE" != "1" ]]; then
-        # Nobody to ask, and this changes state outside the install dir, so it
-        # is described rather than done. The summary repeats the command.
-        vsay "  Non-interactive (piped) run — skipping."
-        note "skipped tailscale serve (non-interactive)"
-    elif confirm "  Publish port $PORT at /pockettui on your tailnet now?"; then
-        # `tailscale serve` only runs unprivileged for the tailscale operator
-        # (OperatorUser in `tailscale debug prefs`); for everyone else it needs
-        # root. Escalating is still the user's call, not this script's, so it is
-        # a second question with the exact sudo command shown before it is asked.
-        TS_SERVE_RC=0
-        ts_serve_run tailscale serve --bg --set-path /pockettui "$PORT" || TS_SERVE_RC=$?
-        if [[ "$TS_SERVE_RC" == "0" ]]; then
-            say "  Published. To undo it later:"
-            say "      tailscale serve --set-path /pockettui off"
-            say ""
-            touched_outside
-            note "published port $PORT at /pockettui with tailscale serve"
-        elif [[ "$TS_SERVE_RC" == "124" ]]; then
-            # A clock that ran out is not a refusal. Offering sudo here would
-            # walk the user into the same stuck daemon with a password prompt
-            # in front of it, so the command is printed and the offer skipped.
-            say "  ${C_WARN}Tailscale did not answer within 15s$C_RESET — tailscaled may be"
-            say "  stuck or waiting on something. Nothing was changed. To publish it later:"
-            say "      $SERVE_CMD"
-            say ""
-            note "tailscale serve timed out (command printed)"
-        else
-            # Whatever tailscale said is the diagnosis; the operator check is
-            # only the most common one. Quoting it first keeps a different
-            # failure (HTTPS not enabled in the admin console is the usual
-            # runner-up) from being filed under "you need root".
-            ts_serve_say_out
-            case "$TS_SERVE_OUT" in
-                ""|*"ccess denied"*|*"perator"*|*"must be run as root"*)
-                    say "  ${C_WARN}That needs root on this machine — you are not the"
-                    say "  Tailscale operator.$C_RESET It would run:"
-                    ;;
-                *)
-                    say "  ${C_WARN}That did not go through.$C_RESET Running it as root may help:"
-                    ;;
-            esac
-            say ""
-            say "      sudo $SERVE_CMD"
-            say ""
-            # Reaching here means a terminal exists and was answered yes, so
-            # sudo has somewhere to ask for a password; the branch above skips
-            # this whole offer when there is nobody to ask.
-            SUDO_OK=0
-            if ! command -v sudo >/dev/null 2>&1; then
-                say "  No sudo on this machine. Run that as root to publish it."
-                say ""
-                note "could not run tailscale serve unprivileged (no sudo; command printed)"
-            else
-                # `sudo -n true` fails silently when a password would be needed,
-                # which is the only way to tell "already cached" from "will
-                # prompt" without prompting.
-                if sudo -n true 2>/dev/null; then
-                    SUDO_PROMPT="  Run it with sudo now?"
-                else
-                    SUDO_PROMPT="  Run it with sudo now? (you will be asked for your password)"
-                fi
-                if confirm "$SUDO_PROMPT"; then
-                    # Two runs on purpose. The password prompt is the only part
-                    # that wants a terminal, so `sudo -v` takes it alone with
-                    # nothing redirected away; the serve run that follows is
-                    # then non-interactive (`sudo -n`), bounded, and reads from
-                    # nowhere. Doing both in one command is what hung: sudo got
-                    # the tty, tailscale's own question went to /dev/null, and
-                    # the user waited at a blank line for a prompt they could
-                    # not see.
-                    TS_SERVE_RC=0
-                    TS_SERVE_OUT=""
-                    if sudo -v </dev/tty; then
-                        ts_serve_run sudo -n tailscale serve --bg \
-                            --set-path /pockettui "$PORT" || TS_SERVE_RC=$?
-                        if [[ "$TS_SERVE_RC" == "0" ]]; then
-                            SUDO_OK=1
-                        fi
-                    else
-                        TS_SERVE_RC=1
-                    fi
-                    if [[ "$SUDO_OK" == "1" ]]; then
-                        say "  Published. To undo it later:"
-                        say "      sudo tailscale serve --set-path /pockettui off"
-                        say ""
-                        touched_outside
-                        note "published port $PORT at /pockettui with sudo tailscale serve"
-                    else
-                        # Wrong password, a sudoers refusal, ctrl-C at the
-                        # prompt, or tailscale itself saying no. None of that is
-                        # a reason to fail the install, and tailscale's own
-                        # words are the only thing that tells the last case
-                        # apart from the rest, so they are printed.
-                        ts_serve_say_out
-                        if [[ "$TS_SERVE_RC" == "124" ]]; then
-                            say "  ${C_WARN}Tailscale did not answer within 15s$C_RESET — tailscaled may be"
-                            say "  stuck or waiting on something, not refusing you."
-                            say "  Run this yourself once it answers again:"
-                            say "      sudo $SERVE_CMD"
-                            say ""
-                            note "sudo tailscale serve timed out (command printed)"
-                        else
-                            say "  ${C_WARN}That did not go through.$C_RESET Run this yourself to publish it:"
-                            say "      sudo $SERVE_CMD"
-                            say ""
-                            note "sudo tailscale serve failed (command printed)"
-                        fi
-                    fi
-                else
-                    say "  Skipped — no serve config was touched. To do it yourself:"
-                    say "      sudo $SERVE_CMD"
-                    say ""
-                    note "declined sudo tailscale serve (command printed)"
-                fi
-            fi
-        fi
-    else
-        vsay "  Skipped — no serve config was touched. To do it yourself:"
-        vsay "      $SERVE_CMD"
-        note "skipped tailscale serve (declined)"
-    fi
+    vsay "  ${C_DIM}(prefix it with sudo if you are not the Tailscale operator)$C_RESET"
+    note "tailscale serve left to the user (command printed)"
 fi
 
 # A tailnet name that resolves says nothing about whether /pockettui is actually
@@ -1919,13 +1775,11 @@ way, and puts it on your own tailnet rather than the public internet.
 
        tailscale serve --bg --set-path /pockettui $PORT
 
-   install.sh offers to run this for you when Tailscale is present and the
-   path is not published yet, so it may already be done. It only runs
-   without \`sudo\` for the machine's Tailscale operator (the user in
+   install.sh does not run this for you — it prints it when Tailscale is
+   present and the path is not published yet, and leaves it to you. It only
+   runs without \`sudo\` for the machine's Tailscale operator (the user in
    \`tailscale debug prefs\`, under \`OperatorUser\`); for anyone else the
-   command needs \`sudo\` in front, so the installer asks a second time
-   before running it that way, and prints it for you to run later if you
-   say no.
+   command needs \`sudo\` in front.
 
    To undo it:
 
@@ -2195,8 +2049,8 @@ fi
 if [[ "$TS_SERVED" != "1" ]]; then
     say ""
     if [[ -n "$TS_HOST" ]]; then
-        say "  ${C_WARN}Your tailnet name is $TS_HOST, but /pockettui is not"
-        say "  published yet — that address 404s until you run:$C_RESET"
+        say "  ${C_WARN}Your tailnet address will be https://$TS_HOST/pockettui,"
+        say "  but it is not published yet — it 404s until you run:$C_RESET"
         say "      $SERVE_CMD"
         say "  ${C_DIM}(prefix it with sudo if you are not the Tailscale operator)$C_RESET"
     elif [[ "$HAVE_TAILSCALE" == "1" ]]; then
