@@ -1102,6 +1102,14 @@ html.term-open, body.term-open {
    earns its place only in the expanded state, where `grid-row: span 2` says
    "esc is one key two rows tall" outright — the thing flexbox cannot say. */
 .keybar > .expanded-only { display: none; }
+/* The newline key earns its place on a touch keyboard, which has no shift+enter
+   to press. A hardware one does, and shiftEnterIsNewline() already sends the
+   bare \n for it — so there the key is clutter. Specificity beats
+   `.keybar button`'s display; the expanded row hides it anyway as
+   collapsed-only. */
+@media (hover: hover) and (pointer: fine) {
+  .keybar > .k-nl { display: none; }
+}
 .keybar.expanded {
   display: grid;
   /* Eleven tracks: five word keys, backspace, enter, the three-wide arrow
@@ -1670,8 +1678,15 @@ html.term-open, body.term-open {
   font-size: 24px;
   line-height: 1;
   padding: 10px 14px;
+  /* The X is pale, and the media it sits over is not always dark — white
+     footage or a bright photo edge would swallow it. Its own scrim in the
+     backdrop's colour keeps it readable whatever is behind it. */
+  background: rgba(12, 10, 7, 0.6);
+  border-radius: 8px;
 }
-.viewer .viewer-close:hover { color: #f3ede0; background: rgba(243, 237, 224, 0.12); }
+/* Hover deepens the scrim rather than lightening it: a pale wash would undo
+   the contrast the resting state exists for. */
+.viewer .viewer-close:hover { color: #f3ede0; background: rgba(12, 10, 7, 0.75); }
 
 /* ============================================================
    FILE EXPLORER

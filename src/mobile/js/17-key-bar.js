@@ -37,8 +37,11 @@ const KEYS = [
   // shift plus ⏎ sends the same byte (see seqWithMods), this is the one tap.
   // No repeat, for the ⏎ key's reason. Collapsed-only, like the folder and
   // search keys: every column of the expanded grid is placed by absolute
-  // number, so a key added there would mean renumbering the whole row.
-  { label: "⇧⏎",    seq: "\n",    narrow: true, only: "collapsed", aria: "Newline (Shift+Enter)" },
+  // number, so a key added there would mean renumbering the whole row. And
+  // .k-nl is hidden where a hardware keyboard is (see styles.css): there the
+  // real shift+enter already sends the byte, so the key is only clutter.
+  { label: "⇧⏎",    seq: "\n",    narrow: true, cls: "k-nl", only: "collapsed",
+    aria: "Newline (Shift+Enter)" },
   { label: "⌫",     seq: "\x7f",  narrow: true, repeat: true, cls: "span-2 k-bs", aria: "Backspace",
     swipe: { seq: "\x1b[3~" } },
   { icon: "i-arrows", arrows: true, narrow: true, only: "collapsed", aria: "Show arrow keys" },
