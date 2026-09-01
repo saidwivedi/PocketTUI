@@ -107,7 +107,10 @@ const pillQuery = window.matchMedia(
 // nowhere on screen that says they exist. Anything else stored — absent,
 // hand-edited, half-written — reads as the default rather than as "off".
 const PILL_PIN_KEY = "pockettui_keypill_pinned";
-const PILL_HIDE_MS = 2000;
+// Short on purpose: the pointer has already left, and an unpinned pill is a
+// thing the user asked to be out of the way. Long enough to survive a pointer
+// clipping the corner on its way somewhere else, no longer.
+const PILL_HIDE_MS = 800;
 // How far outside the pill still counts as reaching for it. Generous on
 // purpose: the target is a corner, not a control, and the pointer is aiming at
 // something it cannot currently see.
@@ -128,7 +131,7 @@ let pillHover = false;
 let pillHideTimer = null;
 
 // The one write path — every change of pin or reveal lands here, so the class,
-// the grip's face and what a screen reader is told can never disagree.
+// the pin's face and what a screen reader is told can never disagree.
 function syncPill() {
   const pin = $("keybar-pin");
   pin.setAttribute("aria-pressed", pillPinned ? "true" : "false");
@@ -176,14 +179,13 @@ function pillPointer(e) {
   const r = $("keybar").getBoundingClientRect();
   const near = e.clientX >= r.left - PILL_REVEAL_PAD && e.clientX <= r.right + PILL_REVEAL_PAD
             && e.clientY >= r.top - PILL_REVEAL_PAD && e.clientY <= r.bottom + PILL_REVEAL_PAD;
-  // Inside the zone keeps it up for as long as the pointer stays — the grip
-  // sits inside the grown box too, so reaching for the pin never races the
-  // fade. Outside starts the clock, and a pointer that leaves the window
-  // simply stops sending moves after its last one out here.
+  // Inside the zone keeps it up for as long as the pointer stays. Outside
+  // starts the clock, and a pointer that leaves the window simply stops
+  // sending moves after its last one out here.
   if (near) pillReveal(); else pillScheduleHide();
 }
 
-// The moves land on the document, but crossing into the pill or the grip is
+// The moves land on the document, but crossing into the pill or its pin is
 // worth knowing exactly: a still pointer sends nothing, and the pill must not
 // fade out from under one that has stopped on it. buildKeybar() empties the bar
 // rather than replacing it, so a listener bound here outlives every rebuild.
