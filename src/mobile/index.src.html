@@ -93,6 +93,14 @@
     <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M15 5l-7 7 7 7"/>
     </symbol>
+    <!-- Drawn at the pill's pin size rather than scaled down from a larger
+         thumbtack, the way #i-mic-code is: at 11px the plate, the shoulder and
+         the needle are all the shape has room to say. -->
+    <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 3.5h6"/>
+      <path d="M10.3 3.5v5.5L7.8 12.4h8.4l-2.5-3.4V3.5"/>
+      <path d="M12 12.4v7"/>
+    </symbol>
     <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M3.5 7a2 2 0 0 1 2-2h3.8l2 2.3h7.2a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>
     </symbol>
@@ -243,13 +251,14 @@
        chip or otherwise — puts it away. -->
   <div class="chipbar" id="chips" role="toolbar" aria-label="Prompt answers"></div>
   <div class="keybar" id="keybar"></div>
-  <!-- The grip that pins the key pill, which is what the bar above becomes
-       where a hardware keyboard makes most of its keys redundant (see KEY PILL
-       in styles.css). A sibling rather than a child of the bar: buildKeybar()
-       empties #keybar on every rebuild, and this control is not one of its
-       keys. display:none everywhere but pill mode. -->
+  <!-- The pin that holds the key pill open — the pill being what the bar above
+       becomes where a hardware keyboard makes most of its keys redundant (see
+       KEY PILL in styles.css). Drawn inside the pill's top-right corner but a
+       sibling rather than a child of the bar: buildKeybar() empties #keybar on
+       every rebuild, and this is not one of its keys. display:none everywhere
+       but pill mode. -->
   <button type="button" id="keybar-pin" aria-pressed="true"
-          aria-label="Unpin the key pill"></button>
+          aria-label="Unpin the key pill"><svg aria-hidden="true"><use href="#i-pin"/></svg></button>
 </div>
 
 <!-- ============================================================
