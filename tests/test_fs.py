@@ -536,6 +536,135 @@ def test_signed_file_of_a_vanished_file_is_404(client, shot):
 
 
 # ---------------------------------------------------------------------------
+# signed rendered pages
+# ---------------------------------------------------------------------------
+# What a tapped .html opens as: the page itself plus whatever it references,
+# all under one signature over the folder they share.
+
+@pytest.fixture
+def site(tree):
+    """A page with a sibling stylesheet, and a secret one folder up from both."""
+    d = tree / "report"
+    d.mkdir()
+    (d / "index.html").write_text(
+        "<link rel=stylesheet href=style.css><h1>hi</h1>\n")
+    (d / "style.css").write_text("h1 { color: red }\n")
+    (tree / "secret.txt").write_text("secret\n")
+    return d / "index.html"
+
+
+def mint_site(client, path):
+    r = client.get("/api/fs/render_link", params={"path": str(path)})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["url"].startswith("api/fs/site/")
+    return "/" + data["url"], data
+
+
+def test_render_link_round_trip_serves_the_page_sandboxed(client, site):
+    url, data = mint_site(client, site)
+    assert data["expires_in"] == A.SITE_TTL
+
+    r = client.get(url)
+    assert r.status_code == 200
+    assert "<h1>hi</h1>" in r.text
+    assert r.headers["content-type"] == "text/html; charset=utf-8"
+    # The whole reason this route exists and .html stays out of MEDIA_TYPES:
+    # no allow-same-origin, so the page cannot read the app's stored token.
+    assert r.headers["content-security-policy"] == "sandbox allow-scripts"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["content-disposition"] == "inline"
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_render_link_serves_a_sibling_under_the_same_signature(client, site):
+    """A relative href in the page, resolved by the browser against its URL."""
+    url, _ = mint_site(client, site)
+    r = client.get(url.rsplit("/", 1)[0] + "/style.css")
+    assert r.status_code == 200
+    assert r.text == "h1 { color: red }\n"
+    assert r.headers["content-type"] == "text/css; charset=utf-8"
+    assert r.headers["content-security-policy"] == "sandbox allow-scripts"
+
+
+def test_render_link_needs_no_token_header(client, site, monkeypatch):
+    """The whole point: a bare navigation into a new tab, which carries none."""
+    monkeypatch.setattr(A, "LIMITER", A.AuthLimiter())
+    url, _ = mint_site(client, site)
+    monkeypatch.setattr(A, "AUTH_TOKEN", "ABCDEFGHIJ")
+
+    assert client.get(url).status_code == 200
+    # The mint it comes from is still gated — the exemption is the signed
+    # path's alone, and it is a prefix match rather than the exact one its
+    # neighbours get.
+    assert client.get("/api/fs/render_link",
+                      params={"path": str(site)}).status_code == 401
+
+
+def test_render_link_refuses_to_leave_the_signed_folder(client, tree, site):
+    """The signature buys one folder for an hour, not the disk."""
+    base = mint_site(client, site)[0].rsplit("/", 1)[0]
+    # Percent-encoded, because a literal ../ is collapsed away by the client
+    # before it is ever sent — this is the form that reaches the check.
+    for rest in ("%2e%2e/secret.txt", "sub/%2e%2e/%2e%2e/secret.txt", ""):
+        assert client.get(base + "/" + rest).status_code == 404, rest
+    # A symlink is followed and then judged by where it lands, which is why the
+    # resolve() is on both sides.
+    (site.parent / "out.txt").symlink_to(tree / "secret.txt")
+    assert client.get(base + "/out.txt").status_code == 404
+
+
+def test_signed_site_expired_is_rejected(client, site):
+    directory = str(site.parent)
+    stale = int(time.time()) - 1
+    r = client.get(f"/api/fs/site/{stale}/{A.site_sig(directory, stale)}"
+                   f"/{A.site_root(directory)}/index.html")
+    assert r.status_code == 403
+    assert r.json()["error"] == "expired"
+
+
+def test_signed_site_tampered_or_unsigned_is_rejected(client, tree, site):
+    url, _ = mint_site(client, site)
+    exp, sig, root, name = url[len("/api/fs/site/"):].split("/")
+    for bad in (f"/api/fs/site/{exp}/{'0' * 64}/{root}/{name}",
+                # A different folder needs a signature of its own, and only the
+                # gated mint hands those out.
+                f"/api/fs/site/{exp}/{sig}/{A.site_root(str(tree))}/secret.txt",
+                # The expiry is covered by the signature too.
+                f"/api/fs/site/{int(exp) + 86400}/{sig}/{root}/{name}",
+                f"/api/fs/site/soon/{sig}/{root}/{name}",
+                # Not base64 at all, so there is no folder to have signed.
+                f"/api/fs/site/{exp}/{sig}/not-base64!!/{name}"):
+        r = client.get(bad)
+        assert r.status_code == 403, bad
+        assert r.json()["error"] == "bad_signature"
+    assert client.get(url).status_code == 200
+
+
+def test_a_viewer_link_is_not_a_site_link(client, site):
+    """Each purpose signs under its own tag, on the one shared key."""
+    directory = str(site.parent)
+    expires = int(time.time()) + 60
+    r = client.get(f"/api/fs/site/{expires}/{A.file_sig(directory, expires)}"
+                   f"/{A.site_root(directory)}/index.html")
+    assert r.status_code == 403
+    assert r.json()["error"] == "bad_signature"
+
+
+def test_render_link_refuses_a_path_it_cannot_resolve(client, tree):
+    for bad in ("relative/page.html", "", str(tree / "absent.html"),
+                str(tree / "sub")):
+        assert client.get("/api/fs/render_link",
+                          params={"path": bad}).status_code == 404
+
+
+def test_signed_site_of_a_vanished_page_is_404(client, site):
+    url, _ = mint_site(client, site)
+    site.unlink()
+    assert client.get(url).status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # session cwd
 # ---------------------------------------------------------------------------
 

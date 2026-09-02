@@ -40,6 +40,10 @@ const FILES_MEDIA_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|mp4|webm|mov)$/i;
 // editor — Edit there is one tap away.
 const FILES_MD_RE = /\.(?:md|markdown)$/i;
 
+// A page opens as a page, in a tab of its own — seeing the source of a report
+// is not what anyone taps it for. Editing is the long-press sheet's Edit.
+const FILES_HTML_RE = /\.(?:html?|xhtml)$/i;
+
 function joinPath(dir, name) {
   return (dir === "/" ? "" : dir) + "/" + name;
 }
@@ -513,7 +517,24 @@ function renderEntries(entries) {
   list.classList.toggle("files-grid", grid);
   list.innerHTML = "";
   $("files-empty").style.display = entries.length ? "none" : "block";
-  for (const e of entries) list.appendChild(grid ? fileTile(e) : fileRow(e));
+  for (const e of sortedEntries()) list.appendChild(grid ? fileTile(e) : fileRow(e));
+}
+
+// The order the rows are drawn in, over the arrival order filesEntries keeps.
+// Directories stay above files in every mode — an ordering is about reading a
+// folder's contents, not about mixing its shelves into them. "name" is the
+// backend's own order, so it is the array untouched.
+function sortedEntries() {
+  const mode = cfg.filesSort;
+  if (mode === "name") return filesEntries;
+  // Ranked high-to-low below, so oldest-first is newest-first on a flipped key.
+  const key = mode === "size" ? (e) => e.size
+            : mode === "oldest" ? (e) => -e.mtime
+            : (e) => e.mtime;
+  // sort() is stable, so whatever the key ties — every directory under "size",
+  // files written in the same second — falls back to the server's name order.
+  return filesEntries.slice().sort((a, b) =>
+    (a.type === "dir" ? 0 : 1) - (b.type === "dir" ? 0 : 1) || key(b) - key(a));
 }
 
 function fileRow(e) {
@@ -552,13 +573,12 @@ function showViewMenu(on) {
   $("btn-files-view").setAttribute("aria-expanded", on ? "true" : "false");
 }
 
-// The button wears the current view and the menu ticks it, both from cfg — so
-// this is also what a fresh load calls to catch up with what was remembered.
+// Both groups tick from cfg — so this is also what a fresh load calls to catch
+// up with what was remembered.
 function syncViewMenu() {
-  const v = cfg.filesView;
-  $("files-view-label").textContent = v === "grid" ? "Grid" : "List";
+  const v = cfg.filesView, s = cfg.filesSort;
   for (const row of $("files-view-menu").querySelectorAll(".view-row")) {
-    const on = row.dataset.view === v;
+    const on = row.dataset.view ? row.dataset.view === v : row.dataset.sort === s;
     row.classList.toggle("on", on);
     row.setAttribute("aria-checked", on ? "true" : "false");
   }
@@ -570,12 +590,13 @@ $("btn-files-view").addEventListener("click", () => {
 });
 $("files-view-scrim").addEventListener("click", () => showViewMenu(false));
 for (const row of $("files-view-menu").querySelectorAll(".view-row")) {
-  // The choice is global, so nothing is re-listed: the entries already on
+  // Either choice is global, so nothing is re-listed: the entries already on
   // screen are simply drawn the other way, and every later listing — including
   // the ones a rail switch restores from the cache — follows cfg.
   row.addEventListener("click", () => {
     showViewMenu(false);
-    cfg.filesView = row.dataset.view;
+    if (row.dataset.view) cfg.filesView = row.dataset.view;
+    else cfg.filesSort = row.dataset.sort;
     syncViewMenu();
     // An unreadable folder is showing its error, not a listing; leave it alone
     // rather than repainting the entries it replaced.
@@ -622,13 +643,51 @@ function openEntry(e, dir=filesPath) {
   if (e.type === "link") { openFileActions(e); return; }
   if (FILES_MEDIA_RE.test(e.name)) { showImage(full); return; }
   if (FILES_MD_RE.test(e.name)) { openReader(full); return; }
+  if (FILES_HTML_RE.test(e.name)) { openRendered(full); return; }
   openEditor(full);
+}
+
+// A page renders in a tab of the browser's, not in ours: it is served
+// sandboxed into an origin of its own (see app.py's api_fs_site), which is
+// what keeps a report's scripts away from the token this page holds — and an
+// <iframe> here would put it back inside our document instead.
+//
+// Same shape as downloadViaLink: the token header buys a short-lived signed
+// link, and the browser fetches the page and everything it references with
+// that. The mint has to finish before there is a URL to open, so on iOS the
+// click is no longer synchronous with the tap that started it and Safari can
+// hold the tab back — the anchor is still the best of the options, window.open
+// there returns null outright.
+async function openRendered(path) {
+  let url;
+  try {
+    const r = await fetch(apiURL("api/fs/render_link?path=" + encodeURIComponent(path)),
+                          { cache: "no-store", headers: authHeaders() });
+    if (r.status === 401) { rejectToken(); return; }
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    url = apiURL((await r.json()).url);
+  } catch (e) {
+    toast("Couldn't open " + baseName(path));
+    return;
+  }
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 function openFileActions(entry) {
   filesSelected = entry;
   $("file-actions-title").textContent = entry.name;
   $("btn-file-download").style.display = entry.type === "dir" ? "none" : "";
+  // Only where the tap itself no longer reaches the editor. Every other text
+  // file already opens there, so an Edit row would say nothing.
+  $("btn-file-edit").style.display =
+    entry.type === "file" && FILES_HTML_RE.test(entry.name) ? "" : "none";
   showSheet(true, "sheet-file-actions");
 }
 
@@ -644,6 +703,13 @@ async function fsPost(route, body) {
   const data = await r.json().catch(() => null);
   return { ok: r.ok, status: r.status, data };
 }
+
+$("btn-file-edit").addEventListener("click", () => {
+  const e = filesSelected;
+  if (!e) return;
+  showSheet(false);
+  openEditor(joinPath(filesPath, e.name));
+});
 
 $("btn-file-rename").addEventListener("click", async () => {
   const e = filesSelected;

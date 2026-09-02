@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import json
 import math
+import mimetypes
 import os
 import pty
 import re
@@ -123,6 +124,11 @@ GATED_PREFIXES = ("/api/",)
 # load — and neither can carry one. Their query string is the credential
 # instead — see api_fs_signed_download and api_signed_file.
 SIGNED_PATHS = ("/api/fs/signed_download", "/api/signed_file")
+
+# The same exemption for the rendered-page route, which cannot be an exact
+# match: the file it serves is spelled out in the URL path so that a relative
+# link inside the page resolves to its sibling here — see api_fs_render_link.
+SIGNED_PREFIXES = ("/api/fs/site/",)
 
 
 def normalize_token(raw: str) -> str:
@@ -374,7 +380,7 @@ async def require_token(request: Request, call_next):
         return await call_next(request)
     if not request.url.path.startswith(GATED_PREFIXES):
         return await call_next(request)
-    if request.url.path in SIGNED_PATHS:
+    if request.url.path in SIGNED_PATHS or request.url.path.startswith(SIGNED_PREFIXES):
         return await call_next(request)
 
     ok, reason = check_auth(
@@ -2961,6 +2967,128 @@ def api_signed_file(request: Request, path: str = "", exp: str = "",
         return Response(status_code=404)
     p, kind = found
     return no_store(FileResponse(p, media_type=kind))
+
+
+# ---------------------------------------------------------------------------
+# Rendered pages
+# ---------------------------------------------------------------------------
+# The third of the signed-link family, for the one kind of text file the
+# explorer has to hand to the browser rather than to the editor: an .html the
+# user wants to *see*, not read the source of.
+#
+# What sets it apart from api_signed_file is the blast radius. The page is the
+# user's own file, but anything served from this origin can read the token out
+# of localStorage and open the shell's WebSocket with it — so every response
+# here carries `Content-Security-Policy: sandbox allow-scripts`, which hands
+# the document an opaque origin even when it is opened directly in a tab.
+# Scripts still run (a plotly report is nothing without them) but they have no
+# storage, no cookies and no token, and /api/* still wants a header or a
+# signature they cannot produce. .html stays out of MEDIA_TYPES deliberately:
+# api_signed_file sends no such header, and listing it there would serve the
+# same bytes bare.
+#
+# What sets it apart from both neighbours is that a page is not one file. A
+# report pulls in its stylesheet, its images, its scripts by *relative* URL,
+# and the browser resolves those against the page's own address. So the
+# signature covers the file's directory and the URL spells the file out
+# underneath it: `style.css` beside the page lands back here under the same
+# signature, with nothing further to mint.
+SITE_TTL = FILE_TTL
+
+
+def site_sig(directory: str, expires: int) -> str:
+    return hmac.new(LINK_KEY, f"site\n{expires}\n{directory}".encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def site_root(directory: str) -> str:
+    """`directory` as one URL path segment, base64url.
+
+    Percent-encoding would be one segment too, but only until something on the
+    way normalised the %2F back into a separator and split it. base64url has no
+    character the URL grammar cares about, so the prefix the browser resolves a
+    relative link against stays exactly the prefix that was signed.
+    """
+    raw = base64.urlsafe_b64encode(directory.encode("utf-8")).decode("ascii")
+    return raw.rstrip("=")
+
+
+def site_unroot(token: str) -> str | None:
+    try:
+        return base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+@app.get("/api/fs/render_link")
+def api_fs_render_link(path: str = "") -> Response:
+    """Mint a short-lived signed URL that renders `path`, siblings and all.
+
+    Answered relative for api_fs_download_link's reason. What is signed is the
+    directory of the path fs_path() resolved — expanded and rewritten — so the
+    signed route reads the folder this one checked and not one that merely
+    spells the same way.
+    """
+    p = fs_path(path)
+    if p is None or not p.is_file():
+        return fs_error("not_found", 404)
+    directory = str(p.parent)
+    expires = int(time.time()) + SITE_TTL
+    url = (f"api/fs/site/{expires}/{site_sig(directory, expires)}"
+           f"/{site_root(directory)}/{urllib.parse.quote(p.name)}")
+    return no_store(JSONResponse({"url": url, "expires_in": SITE_TTL}))
+
+
+@app.get("/api/fs/site/{exp}/{sig}/{root}/{rest:path}")
+def api_fs_site(request: Request, exp: str, sig: str, root: str,
+                rest: str) -> Response:
+    """Serve one file out of a signed directory, sandboxed. Unauthenticated by design.
+
+    Throttled, and the signature checked before the expiry, for
+    api_fs_signed_download's reasons. The signature says which *directory* may
+    be read, which leaves the file itself as the one thing to check: it is
+    resolved with symlinks followed and has to still sit inside that directory,
+    so a `../` in a page's own link — or a link pointing out of the tree —
+    cannot turn an hour's access to one folder into access to the disk.
+    """
+    refusal = throttled("site", RATE_FILE, request)
+    if refusal is not None:
+        return refusal
+    directory = site_unroot(root)
+    try:
+        expires = int(exp)
+    except ValueError:
+        return fs_error("bad_signature", 403)
+    if directory is None or not hmac.compare_digest(sig, site_sig(directory, expires)):
+        return fs_error("bad_signature", 403)
+    if time.time() > expires:
+        return fs_error("expired", 403)
+    base = fs_path(directory)
+    if base is None:
+        return fs_error("not_found", 404)
+    try:
+        root_dir = base.resolve(strict=True)
+        target = (root_dir / rest).resolve(strict=True)
+    except OSError:
+        return fs_error("not_found", 404)
+    if not target.is_relative_to(root_dir) or not target.is_file():
+        return fs_error("not_found", 404)
+    kind = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    # nosniff settles the type but says nothing about the encoding, and a report
+    # written in UTF-8 with no <meta charset> would render its accents as
+    # mojibake without this.
+    if kind.startswith("text/"):
+        kind += "; charset=utf-8"
+    return no_store(FileResponse(target, media_type=kind, headers={
+        # The point of the whole route: an opaque origin, so a page that runs
+        # scripts still cannot reach the token this app keeps in localStorage
+        # on the real one.
+        "Content-Security-Policy": "sandbox allow-scripts",
+        "X-Content-Type-Options": "nosniff",
+        # No filename, so the browser renders the page instead of offering to
+        # save it — the explorer's Download is what saving is for.
+        "Content-Disposition": "inline",
+    }))
 
 
 # ---------------------------------------------------------------------------
