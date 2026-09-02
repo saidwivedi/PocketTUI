@@ -217,12 +217,34 @@ function sendVisibility(visible) {
   if (!visible) missedHidden = false;
 }
 
+// What the row count the terminal just fitted itself to was measured against.
+// A fit that comes out short — the bottom rows missing after the iOS keyboard
+// is dismissed — is only diagnosable from the numbers the phone itself saw, so
+// they go out through dbg(), which costs nothing while debug is off.
+function dbgFit() {
+  const host = $("term-host");
+  const scr = $("screen-term");
+  let cell = "-";
+  try {
+    const h = term._core && term._core._renderService &&
+              term._core._renderService.dimensions.css.cell.height;
+    if (h) cell = Math.round(h * 10) / 10;
+  } catch (e) {}
+  const vv = window.visualViewport
+    ? Math.round(window.visualViewport.height) : "-";
+  dbg("fit", "rows=" + term.rows, "cols=" + term.cols,
+      "host=" + Math.round(host.clientHeight), "cell=" + cell,
+      "inner=" + window.innerHeight, "vv=" + vv,
+      "scr=" + (scr.style.height || "auto"), "top=" + (scr.style.top || "0"));
+}
+
 let fitTimer = null;
 function refit(delay=60) {
   clearTimeout(fitTimer);
   fitTimer = setTimeout(() => {
     if (!term || !$("screen-term").classList.contains("active")) return;
     try { fitAddon.fit(); } catch (e) {}
+    dbgFit();
     sendResize();
   }, delay);
 }
@@ -532,8 +554,9 @@ function connect() {
         // scroll until the next fresh attach). Keep the screen and the
         // scrollback exactly as they are; the server's refresh-client repaint
         // is on its way to bring the visible rows up to date.
-        if (ctl && ctl.type === "adopted") { painted = true; return; }
+        if (ctl && ctl.type === "adopted") { dbg("ws adopted"); painted = true; return; }
         if (ctl && ctl.type === "replay") {
+          dbg("ws replay", "lines=" + String(ctl.data || "").split("\n").length);
           // Scrollback from before the disconnect (and what arrived during
           // it). Paint it from the top, then park the cursor on the bottom row
           // and push the replayed tail up out of the viewport — tmux's repaint
