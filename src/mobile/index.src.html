@@ -269,24 +269,43 @@
     </div>
     <button class="icon-btn" id="btn-files-edit-path" aria-label="Go to path"><svg><use href="#i-pencil"/></svg></button>
     <button class="icon-btn" id="btn-files-add" aria-label="New file, folder or upload"><svg><use href="#i-plus"/></svg></button>
-    <!-- Rows or icon tiles, remembered across reloads (cfg.filesView) and used
-         for every folder. Last in the bar: the two buttons before it act on the
-         folder, this one only changes how it is drawn. Its own menu rather than
-         a <select>: a phone answers one of those with the OS's full-screen
-         picker, drawn in the OS's colors and shape, for a choice between two
-         words. The panel below is #files-suggest's instead — the same floating
-         layer this bar already drops. -->
+    <!-- How the folder is drawn and in what order, both remembered across
+         reloads (cfg.filesView, cfg.filesSort) and both used for every folder.
+         Last in the bar: the two buttons before it act on the folder, this one
+         only changes how it is read. Its own menu rather than a <select>: a
+         phone answers one of those with the OS's full-screen picker, drawn in
+         the OS's colors and shape, for a choice between a few words. The panel
+         below is #files-suggest's instead — the same floating layer this bar
+         already drops. One button for both groups rather than two side by side:
+         a second dropdown wearing "Newest" leaves the crumbs about 40px on a
+         375px phone, which is not a path any more. -->
     <div id="files-view-wrap">
-      <button type="button" id="btn-files-view" aria-label="Folder layout"
-              aria-haspopup="true" aria-expanded="false"><span id="files-view-label">List</span></button>
+      <button type="button" id="btn-files-view" aria-label="Folder layout and order"
+              aria-haspopup="true" aria-expanded="false">View</button>
       <!-- menuitemradio, not menuitem: the tick is a painted glyph, and this is
            what says which row it is on to anything not looking at the screen —
-           the one thing the <select> gave for free. -->
+           the one thing the <select> gave for free. Two radio groups, each
+           named by the caption above it, so neither the eye nor a screen reader
+           has to guess which of the six rows belong together. -->
       <div id="files-view-menu" role="menu">
-        <button type="button" class="view-row" role="menuitemradio" aria-checked="true" data-view="list">
-          <span class="view-check" aria-hidden="true">✓</span>List</button>
-        <button type="button" class="view-row" role="menuitemradio" aria-checked="false" data-view="grid">
-          <span class="view-check" aria-hidden="true">✓</span>Grid</button>
+        <div class="view-group" role="group" aria-labelledby="files-view-cap-layout">
+          <div class="view-cap" id="files-view-cap-layout">Layout</div>
+          <button type="button" class="view-row" role="menuitemradio" aria-checked="true" data-view="list">
+            <span class="view-check" aria-hidden="true">✓</span>List</button>
+          <button type="button" class="view-row" role="menuitemradio" aria-checked="false" data-view="grid">
+            <span class="view-check" aria-hidden="true">✓</span>Grid</button>
+        </div>
+        <div class="view-group" role="group" aria-labelledby="files-view-cap-sort">
+          <div class="view-cap" id="files-view-cap-sort">Sort</div>
+          <button type="button" class="view-row" role="menuitemradio" aria-checked="true" data-sort="name">
+            <span class="view-check" aria-hidden="true">✓</span>Name</button>
+          <button type="button" class="view-row" role="menuitemradio" aria-checked="false" data-sort="newest">
+            <span class="view-check" aria-hidden="true">✓</span>Newest</button>
+          <button type="button" class="view-row" role="menuitemradio" aria-checked="false" data-sort="oldest">
+            <span class="view-check" aria-hidden="true">✓</span>Oldest</button>
+          <button type="button" class="view-row" role="menuitemradio" aria-checked="false" data-sort="size">
+            <span class="view-check" aria-hidden="true">✓</span>Size</button>
+        </div>
       </div>
     </div>
     <!-- Matching entries for the path segment being typed in files-path-input.
@@ -303,7 +322,7 @@
        to stay fully readable rather than dimming along with the list.
        Tapping it closes the field without navigating, same as Escape. -->
   <div id="files-suggest-scrim"></div>
-  <!-- The same scrim for the layout menu, and for the same two jobs: tapping
+  <!-- The same scrim for the view menu, and for the same two jobs: tapping
        it closes the menu, and while it is up the rows underneath cannot take a
        tap or a long press meant for the menu. A sibling rather than a child of
        #files-view-wrap because .topbar's backdrop-filter would make the bar the
@@ -511,10 +530,12 @@
 <!-- ============================================================
      FILE ACTION SHEETS
      ============================================================ -->
-<!-- Long-press on an explorer row. Download hides itself for folders. -->
+<!-- Long-press on an explorer row. Download hides itself for folders, and Edit
+     shows itself only for the pages a tap opens rendered instead. -->
 <div class="sheet" id="sheet-file-actions">
   <h2 id="file-actions-title"></h2>
   <div class="sheet-menu">
+    <button type="button" id="btn-file-edit">Edit</button>
     <button type="button" id="btn-file-rename">Rename</button>
     <button type="button" id="btn-file-download">Download</button>
     <button type="button" class="danger" id="btn-file-delete">Delete</button>
@@ -613,6 +634,15 @@
     </div>
     <div class="list-row">
       <kbd>Ctrl+V or Cmd+V</kbd><span>Paste &mdash; an image uploads and inserts its path</span>
+    </div>
+    <div class="list-row">
+      <kbd>Shift+drag or Option+drag</kbd><span>Select text &mdash; it is copied as soon as you let go</span>
+    </div>
+    <div class="list-row">
+      <kbd>Ctrl+Shift+C or Cmd+Shift+C</kbd><span>Copy the selection</span>
+    </div>
+    <div class="list-row">
+      <kbd>Ctrl+C</kbd><span>Copy the selection when there is one &mdash; otherwise interrupt (not on a Mac)</span>
     </div>
   </div>
   <label>Everywhere</label>

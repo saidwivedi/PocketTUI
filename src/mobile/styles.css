@@ -1984,9 +1984,9 @@ html.term-open, body.term-open {
 #files-path-input:focus { border-color: var(--umber); outline: none; }
 #files-path-wrap.editing #files-crumbs { display: none; }
 #files-path-wrap.editing #files-path-input { display: block; }
-/* The list/grid switch, in the path field's own quiet register — a hairline
-   field sized to the two words it ever holds, so it sits beside the bar's icon
-   buttons without competing with them. */
+/* The layout-and-order menu's button, in the path field's own quiet register —
+   a hairline field sized to the one word it holds, so it sits beside the bar's
+   icon buttons without competing with them. */
 #files-view-wrap {
   position: relative;
   flex: 0 0 auto;
@@ -2017,8 +2017,9 @@ html.term-open, body.term-open {
 /* The menu itself, on #files-suggest's floating-panel recipe below (--card,
    --hair-strong, that shadow, z-index 60): the bar's two dropdowns are one
    layer, not two ideas. Anchored under the button rather than spanning the bar
-   — it holds two words, not a folder's worth of names — and a child of the
-   wrap, which the .editing rule below then hides along with the button. */
+   — it holds a handful of short words, not a folder's worth of names — and a
+   child of the wrap, which the .editing rule below then hides along with the
+   button. */
 #files-view-menu {
   display: none;
   position: absolute;
@@ -2049,6 +2050,20 @@ html.term-open, body.term-open {
   cursor: pointer;
 }
 .view-row:last-child { border-bottom: none; }
+/* The menu's two radio groups. The caption is the divider between them, so the
+   rule above already clears the hairline under the row it follows and only the
+   second group draws its own line. Sized like .eyebrow a size down: this labels
+   a menu group, not a section of the page. */
+.view-group:last-child { border-top: 1px solid var(--hair); }
+.view-cap {
+  padding: 9px 14px 4px 11px;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tertiary);
+}
 .view-row:active { background: var(--umber-tint); }
 .view-row.on { color: var(--ink); font-weight: 600; }
 /* Marks the view already in force, in the accent .suggest-slash uses for its

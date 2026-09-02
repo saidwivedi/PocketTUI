@@ -128,6 +128,51 @@ function shiftEnterIsNewline(ev) {
   return false;
 }
 
+// One route to the clipboard for both desktop copy paths. writeText is the real
+// one; where it is missing, xterm's own hidden textarea is borrowed for a legacy
+// execCommand copy — the same field its native copy handler seeds — and then put
+// back as it was, since anything left sitting in there can be emitted as input
+// later.
+function writeClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  const ta = term && term.textarea;
+  if (!ta) return Promise.reject(new Error("no clipboard"));
+  const keep = ta.value;
+  ta.value = text;
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) {}
+  ta.value = keep;
+  return ok ? Promise.resolve() : Promise.reject(new Error("copy refused"));
+}
+
+// Ctrl/Cmd+Shift+C copies the selection outright. Off a Mac, Ctrl+C copies it
+// too and then drops it, the way VS Code's terminal does, so the very next
+// Ctrl+C is the SIGINT it has always been; with nothing selected neither key is
+// anything but what it was. A Mac has Cmd+C for that, which the browser's own
+// copy event already answers, and keeps Ctrl+C as the interrupt.
+//
+// The write happens inside the keydown, which is the user gesture the clipboard
+// wants, and false is returned for keypress and keyup as well so xterm cannot
+// send its own ETX on top.
+function copyKeyBinding(ev) {
+  const isC = ev.key === "c" || ev.key === "C";
+  const explicit = isC && ev.shiftKey && (ev.ctrlKey || ev.metaKey) && !ev.altKey;
+  const interrupt = isC && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey &&
+    !/Mac/.test(navigator.userAgent);
+  if (!explicit && !interrupt) return true;
+  if (!term || !term.hasSelection()) return true;
+  if (ev.type === "keydown") {
+    ev.preventDefault();
+    const text = term.getSelection();
+    if (interrupt) term.clearSelection();
+    writeClipboard(text).then(() => toast("Copied")).catch(() => toast("Clipboard blocked"));
+  }
+  return false;
+}
+
 function ensureTerm() {
   if (term) return;
   term = new Terminal({
@@ -139,13 +184,18 @@ function ensureTerm() {
     scrollback: 2000,
     theme: currentTermTheme(),
     allowProposedApi: true,
+    // tmux owns the mouse, so a drag is a mouse report unless a modifier holds
+    // it back: Shift elsewhere, Option on a Mac -- and only if this is on.
+    macOptionClickForcesSelection: true,
   });
   fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
   term.open($("term-host"));
   useWebgl();
   term.onData(d => send(d));
-  term.attachCustomKeyEventHandler(shiftEnterIsNewline);
+  // Both handlers have to agree before xterm sees the key: the first one to
+  // claim it returns false and the chain stops there.
+  term.attachCustomKeyEventHandler(ev => copyKeyBinding(ev) && shiftEnterIsNewline(ev));
   term.registerLinkProvider({ provideLinks: provideImageLinks });
   // A selection can go away without the gesture asking — a reset, or xterm
   // dropping it on a repaint — and the Copy pill must not outlive it.
@@ -164,4 +214,53 @@ function useWebgl() {
     term.loadAddon(addon);
   } catch (e) {}
 }
+
+// ============================================================
+// Mouse copy
+// ============================================================
+// tmux runs with its own mouse mode on, so xterm reports every click to it and
+// only a Shift+drag makes a selection at all. Every one of those reports also
+// counts as user input, and xterm answers user input by dropping the selection —
+// which is what left the OS clipboard holding whatever was on it before.
+(function mouseCopy() {
+  const host = $("term-host");
+
+  // Select-to-copy, the way X11 terminals have always done it: the text is on
+  // the clipboard the moment the mouse lets go of it, before anything else can
+  // clear the selection. Pointer events are the discriminator — the long-press
+  // gesture selects through the same terminal and does its own copy from the
+  // pill, and its pointers are touch ones.
+  let fromMouse = false;
+  host.addEventListener("pointerdown", (e) => { fromMouse = e.pointerType === "mouse"; }, true);
+  document.addEventListener("pointerup", () => {
+    if (!fromMouse) return;
+    fromMouse = false;
+    if (!term || !term.hasSelection()) return;
+    // Nothing was asked for out loud, so a browser that withholds the clipboard
+    // here says nothing either.
+    writeClipboard(term.getSelection()).catch(() => {});
+  });
+
+  // A right-click is a mouse report like any other, so the selection is gone
+  // before xterm's own right-click handler can seed the hidden textarea from it,
+  // and the native Copy in the context menu comes up empty. Keep the report to
+  // ourselves whenever there is a selection to protect, and seed the textarea
+  // here instead — the menu then opens on the selected text. Only mousedown is
+  // stopped: contextmenu still fires, so xterm's handler does the same thing
+  // again on the browsers that use that route.
+  host.addEventListener("mousedown", (e) => {
+    if (e.button !== 2 || !term || !term.textarea || !term.hasSelection()) return;
+    e.stopPropagation();
+    const ta = term.textarea;
+    const box = (host.querySelector(".xterm-screen") || host).getBoundingClientRect();
+    ta.style.width = "20px";
+    ta.style.height = "20px";
+    ta.style.left = (e.clientX - box.left - 10) + "px";
+    ta.style.top = (e.clientY - box.top - 10) + "px";
+    ta.style.zIndex = "1000";
+    ta.focus();
+    ta.value = term.getSelection();
+    ta.select();
+  }, true);
+})();
 
