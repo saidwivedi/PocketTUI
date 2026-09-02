@@ -289,6 +289,28 @@ def test_session_endpoints_refuse_without_a_token(client, monkeypatch):
         assert r.status_code == 401, route
 
 
+def test_dbg_logs_every_line_and_answers_with_no_body(client, monkeypatch, capsys):
+    """The phone's debug tail reaches the journal and nothing comes back."""
+    monkeypatch.setattr(A, "AUTH_TOKEN", TOKEN)
+    r = client.post(
+        "/api/dbg",
+        json={"dev": "phone", "lines": ["fit rows=20 cols=52", "x" * 400]},
+        headers={A.TOKEN_HEADER: TOKEN},
+    )
+    assert r.status_code == 204
+    assert not r.content
+    out = capsys.readouterr().out
+    assert "dbg[phone] fit rows=20 cols=52\n" in out
+    # Over-long lines are truncated rather than dropped.
+    assert "dbg[phone] " + "x" * A.DBG_LINE_CHARS + "\n" in out
+
+
+def test_dbg_refuses_without_a_token(client, monkeypatch):
+    monkeypatch.setattr(A, "AUTH_TOKEN", TOKEN)
+    r = client.post("/api/dbg", json={"dev": "phone", "lines": ["fit rows=20"]})
+    assert r.status_code == 401
+
+
 def test_session_mutation_throttles_at_the_limit(client, monkeypatch):
     fake(monkeypatch, ())
     # Kills of a missing session: they 404, but they passed auth, so each one

@@ -28,14 +28,56 @@ function dbg(...parts) {
   const stamp = String(d.getMinutes()).padStart(2, "0") + ":" +
                 String(d.getSeconds()).padStart(2, "0") + "." +
                 String(d.getMilliseconds()).padStart(3, "0");
-  dbgBuf.push(stamp + "  " + parts.map(dbgFormat).join(" "));
+  const line = stamp + "  " + parts.map(dbgFormat).join(" ");
+  dbgBuf.push(line);
   if (dbgBuf.length > DBG_MAX) dbgBuf.shift();
+  dbgSend(line);
   const p = $("dbg-panel");
   if (!p) return;
   p.textContent = dbgBuf.join("\n");
   // Newest at the bottom, so the tail is what stays in view.
   p.scrollTop = p.scrollHeight;
 }
+
+// The panel is on the device, and the device is where the bug is: a measurement
+// that exists only on that screen cannot be read from the machine running the
+// server. So every line the panel gets is also queued for the server's journal,
+// batched to at most one request a second — dbg() sits on per-keystroke paths,
+// and a fetch per keystroke is not a debug aid. Both the queue and the timer
+// only ever exist while the setting is on, because dbg() returns before this on
+// the way in.
+const dbgQueue = [];
+const DBG_SEND_MAX = 50;
+let dbgFlushTimer = null;
+
+function dbgSend(line) {
+  dbgQueue.push(line);
+  // The server takes 50 lines per request; anything past that is dropped here
+  // rather than sent to be dropped there.
+  if (dbgQueue.length > DBG_SEND_MAX) dbgQueue.shift();
+  if (dbgFlushTimer === null) dbgFlushTimer = setTimeout(dbgFlush, 1000);
+}
+
+function dbgFlush() {
+  clearTimeout(dbgFlushTimer);
+  dbgFlushTimer = null;
+  if (!dbgQueue.length) return;
+  const lines = dbgQueue.splice(0, dbgQueue.length);
+  // Swallowed whole: no toast, and above all no dbg() — a line about a failed
+  // flush would refill the queue that just failed to flush.
+  try {
+    fetch(apiURL("api/dbg"), {
+      method: "POST",
+      keepalive: true,
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ dev: cfg.devname, lines }),
+    }).catch(() => {});
+  } catch (e) {}
+}
+
+// The last second of lines is the interesting one when a phone is being put
+// away or reloaded; keepalive is what lets the request outlive the page.
+window.addEventListener("pagehide", dbgFlush);
 
 // Built on first enable and then kept — toggling off hides it rather than tearing
 // it down, since the only cost while hidden is one detached-from-view element.
@@ -71,6 +113,9 @@ function setDebug(on) {
     const p = $("dbg-panel");
     if (p) { p.style.display = "none"; p.textContent = ""; }
     dbgBuf.length = 0;
+    dbgQueue.length = 0;
+    clearTimeout(dbgFlushTimer);
+    dbgFlushTimer = null;
   }
 }
 function buildVersion() {

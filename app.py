@@ -3202,6 +3202,34 @@ async def api_image(request: Request) -> Response:
         store_image, raw, session, dev if DEV_RE.match(dev) else "")
 
 
+# How much of one flush this server will take. The client batches a second of
+# its debug tail per request; both caps are there so a runaway loop on the
+# phone cannot fill the journal from the other end of the wire.
+DBG_LINES_MAX = 50
+DBG_LINE_CHARS = 300
+
+
+@app.post("/api/dbg")
+def api_dbg(request: Request, body: dict = Body(...)) -> Response:
+    """Copy a device's on-screen debug tail into this server's journal.
+
+    The panel those lines come from lives on the device holding the bug, which
+    is exactly where they cannot be read from. Nothing is stored and nothing is
+    echoed back: the lines go to the log and no further.
+    """
+    refusal = throttled("dbg", RATE_FILE, request)
+    if refusal is not None:
+        return refusal
+    dev = str(body.get("dev", ""))
+    dev = dev if DEV_RE.match(dev) else "?"
+    lines = body.get("lines")
+    if not isinstance(lines, list):
+        return JSONResponse({"error": "bad_lines"}, status_code=400)
+    for line in lines[:DBG_LINES_MAX]:
+        log(f"dbg[{dev}] {str(line)[:DBG_LINE_CHARS]}")
+    return no_store(Response(status_code=204))
+
+
 # ---------------------------------------------------------------------------
 # PTY <-> WebSocket bridge
 # ---------------------------------------------------------------------------
@@ -3735,7 +3763,9 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         # re-sends its size on every connect, and a size tmux already has must
         # not be written (see set_winsize) — but a real change, a rotation say,
         # is a resize the user asked for.
-        set_winsize(fd, cols, rows)
+        changed = set_winsize(fd, cols, rows)
+        log(f"conn {cid} adopt size {cols}x{rows}"
+            + ("" if changed else " (unchanged)"))
         asyncio.create_task(asyncio.to_thread(redraw_view, view))
     else:
         # A real attach: tmux re-initialises the client, so the terminal is
@@ -3814,7 +3844,11 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                 except json.JSONDecodeError:
                     ctl = None
                 if ctl and ctl.get("type") == "resize":
-                    set_winsize(fd, ctl.get("cols", 80), ctl.get("rows", 24))
+                    rcols = ctl.get("cols", 80)
+                    rrows = ctl.get("rows", 24)
+                    changed = set_winsize(fd, rcols, rrows)
+                    log(f"conn {cid} resize {rcols}x{rrows}"
+                        + ("" if changed else " (unchanged)"))
                     continue
                 if ctl and ctl.get("type") == "visibility":
                     was = me.visible
