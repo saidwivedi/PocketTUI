@@ -1883,6 +1883,13 @@ html.term-open, body.term-open {
   z-index: 500;
   pointer-events: none;
 }
+/* Over the terminal it is a ticker, not a log: the newest few lines stay in
+   view so a transition can be caught as it happens, and the rest of the grid
+   stays readable. The full tail is on the server anyway once the switch is on. */
+html.term-open #dbg-panel {
+  max-height: 4.6em;
+  opacity: 0.85;
+}
 
 /* ============================================================
    IMAGE VIEWER
