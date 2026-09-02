@@ -24,6 +24,27 @@ const KB_NOISE_PX = (() => {
   const lh = parseFloat(getComputedStyle(document.documentElement).lineHeight);
   return Number.isFinite(lh) ? Math.ceil(lh) : 24;
 })();
+// iOS never raises a keyboard by itself: something has to ask for it, and the ask
+// is always a touch, a pointer press, a key, or focus moving into a field, a
+// moment or two before the viewport moves. That is the one fact the viewport
+// cannot forge — the stuck-short reading arrives on its own, with nothing behind
+// it — so a recent gesture is what tells a keyboard that just opened from a
+// viewport that is simply lying. Programmatic focus counts, because openTerminal
+// and ws.onopen focus the terminal and that is what raises the keyboard when a
+// session opens.
+let lastGestureAt = 0;
+const GESTURE_WINDOW_MS = 1500;
+for (const ev of ["touchstart", "pointerdown", "keydown", "focusin"]) {
+  document.addEventListener(ev, () => {
+    lastGestureAt = performance.now();
+    // A refused shrink leaves the viewport already short, so a keyboard this
+    // gesture really raises would arrive with no resize event to announce it.
+    // Look once the animation has had time to land; with the keyboard down this
+    // costs one fit, and refit's debounce absorbs a burst.
+    if (!kbWasUp) setTimeout(applyViewport, 350);
+  }, { capture: true, passive: true });
+}
+
 // The tallest the visible viewport has been, which is what "no keyboard" looks
 // like. Focus is not the test — xterm keeps its hidden textarea focused for the
 // whole session with no keyboard up — so the only frames rejected are the ones a
@@ -110,8 +131,26 @@ function applyViewport() {
   // why shrink still has to agree) but as proof one CANNOT be: nothing focused,
   // nothing to type into, so the shrink is the viewport lying and the geometry
   // belongs back with the stylesheet. That is a fact about keyboards rather than
-  // about any device.
-  const up = measured ? (shrunk && keyboardUp()) : keyboardUp();
+  // about any device. Focus alone cannot close the gap, though: xterm's textarea
+  // is focused for the whole session, so four seconds after a real dismissal a
+  // stuck reading still looks shrunken and focused, and the screen was pinned to
+  // it with the keyboard down. The gesture is what settles that case, and it is
+  // asked for only on the way up: a keyboard can stay up for minutes with nobody
+  // touching anything, so staying up and going down are decided as before, while
+  // a stuck reading only ever arrives, and it never has a tap behind it.
+  const sinceGesture = performance.now() - lastGestureAt;
+  const gesture = sinceGesture < GESTURE_WINDOW_MS;
+  const up = measured ? (shrunk && keyboardUp() && (kbWasUp || gesture)) : keyboardUp();
+  // One line per refusal episode: the poll and the viewport events would otherwise
+  // repeat it for as long as the stuck reading lasts.
+  if (measured && shrunk && keyboardUp() && !kbWasUp && !gesture) {
+    if (!kbRefusedLogged) {
+      kbRefusedLogged = true;
+      dbg("kb ignored", "shrink without gesture", "vv=" + Math.round(vv.height), "gesture=" + Math.round(sinceGesture) + "ms");
+    }
+  } else {
+    kbRefusedLogged = false;
+  }
   // The explicit size exists solely to hold the screen above the keyboard. With
   // no keyboard there is nothing to hold it above, and vv.height is then a
   // liability: in the installed PWA it reports short of what is actually visible,
@@ -141,11 +180,13 @@ function applyViewport() {
   if (up !== kbWasUp) {
     kbWasUp = up;
     if (up) startKbPoll(); else stopKbPoll();
-    dbg("kb", up ? "up" : "down", "full=" + fullViewH, "vv=" + Math.round(vv.height), "inset=" + inset);
+    dbg("kb", up ? "up" : "down", "full=" + fullViewH, "vv=" + Math.round(vv.height), "inset=" + inset, "gesture=" + Math.round(sinceGesture) + "ms");
   }
   refit();
 }
 let kbWasUp = false;
+// Whether the current refusal has already said so in the log.
+let kbRefusedLogged = false;
 // What the screen is currently pinned to, kept beside the styles that set it.
 let pinnedH = 0, pinnedTop = 0;
 // The dismissal iOS does not announce. Every other path back through
