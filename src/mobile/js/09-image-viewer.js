@@ -416,6 +416,10 @@ function openTerminal(name, resumed) {
   $("screen-term").classList.add("active");
   syncChrome();
   ensureTerm();
+  // The screen comes on view here, so its keyboard geometry is decided now
+  // rather than at the next viewport event: a keyboard already up, or a pin
+  // left over from a previous visit, must not wait for one.
+  applyViewport();
   term.reset();
   $("demo-badge").classList.toggle("show", demoMode);
   // Whether the strip's mic is offered depends on this session: the demo has no
