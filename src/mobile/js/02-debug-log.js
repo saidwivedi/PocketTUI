@@ -181,6 +181,21 @@ const cfg = {
     if (v === "grid") localStorage.setItem("pockettui_files_view", "grid");
     else localStorage.removeItem("pockettui_files_view");
   },
+  // What order the file explorer lists a folder in: "name" (the backend's own
+  // dirs-first, alphabetical order, the default), "newest", "oldest" or
+  // "size". Global for the same reason filesView is — an outputs folder read
+  // newest-first stays that way wherever you open it.
+  get filesSort() {
+    const v = localStorage.getItem("pockettui_files_sort");
+    return v === "newest" || v === "oldest" || v === "size" ? v : "name";
+  },
+  set filesSort(v) {
+    if (v === "newest" || v === "oldest" || v === "size") {
+      localStorage.setItem("pockettui_files_sort", v);
+    } else {
+      localStorage.removeItem("pockettui_files_sort");
+    }
+  },
 };
 
 // The name becomes a tmux session name, so it is held to what tmux and the
