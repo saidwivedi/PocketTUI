@@ -111,6 +111,10 @@ function applyViewport() {
     // offsetTop is what is left of the pan after the reset above; adding it keeps
     // the screen aligned with the visible rectangle either way.
     scr.style.top = vv.offsetTop + "px";
+    // Remembered so the poll below can tell what the screen is pinned to from what
+    // the viewport currently reads.
+    pinnedH = Math.round(vv.height);
+    pinnedTop = Math.round(vv.offsetTop);
   } else {
     scr.style.height = "";
     scr.style.top = "";
@@ -123,11 +127,40 @@ function applyViewport() {
   // would bury everything else in the panel within seconds.
   if (up !== kbWasUp) {
     kbWasUp = up;
+    if (up) startKbPoll(); else stopKbPoll();
     dbg("kb", up ? "up" : "down", "full=" + fullViewH, "vv=" + Math.round(vv.height), "inset=" + inset);
   }
   refit();
 }
 let kbWasUp = false;
+// What the screen is currently pinned to, kept beside the styles that set it.
+let pinnedH = 0, pinnedTop = 0;
+// The dismissal iOS does not announce. Every other path back through
+// applyViewport is an event — a viewport resize or scroll, a focusout, a
+// visibility change, a window resize — and iOS can restore the viewport with none
+// of them firing. Focus cannot fill the gap either: xterm holds its hidden
+// textarea focused for the whole session. So while the keyboard is believed up
+// the viewport is read rather than waited for, and the screen is only unpinned
+// when the two disagree. The interval is cadence, not geometry, and it exists
+// only between the keyboard arriving and leaving, so an idle session runs
+// nothing. The comparison is what keeps it cheap: applyViewport ends in refit(),
+// which fits xterm and sends a resize frame to the host, so a tick that sees the
+// geometry it pinned does nothing at all.
+let kbPollTimer = null;
+function startKbPoll() {
+  if (kbPollTimer) return;
+  kbPollTimer = setInterval(() => {
+    const vv = window.visualViewport;
+    const scr = $("screen-term");
+    if (!vv || !scr || !scr.classList.contains("active")) { stopKbPoll(); return; }
+    if (Math.round(vv.height) !== pinnedH || Math.round(vv.offsetTop) !== pinnedTop) applyViewport();
+  }, 250);
+}
+function stopKbPoll() {
+  if (!kbPollTimer) return;
+  clearInterval(kbPollTimer);
+  kbPollTimer = null;
+}
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", applyViewport);
   window.visualViewport.addEventListener("scroll", applyViewport);
