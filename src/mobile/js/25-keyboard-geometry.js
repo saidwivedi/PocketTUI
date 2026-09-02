@@ -62,6 +62,19 @@ function applyViewport() {
   const scr = $("screen-term");
   if (!vv) return;
   if (!scr.classList.contains("active")) {
+    // A hidden terminal screen has no keyboard geometry to hold. Anything left
+    // pinned here outlives the trip to the session list and comes back as half
+    // a terminal with the key bar mid-screen, because nothing re-evaluates
+    // until the next keyboard event. So the pin is dropped on the way out and
+    // the next time the screen is on view its geometry is decided fresh. The
+    // list screen's own keyboard, if any, is the stylesheet's business through
+    // --kb-inset, which is why that one write stays.
+    scr.style.height = "";
+    scr.style.top = "";
+    scr.style.setProperty("--kb-safe", "");
+    kbWasUp = false;
+    stopKbPoll();
+    pinnedH = pinnedTop = 0;
     setKbInset(typingFocus() ? occludedBottom(vv) : 0);
     return;
   }
