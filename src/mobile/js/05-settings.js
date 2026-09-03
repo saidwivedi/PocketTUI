@@ -171,6 +171,12 @@ function syncVoiceConfirm() {
 // The address was reachable but the code was wrong — send them straight back
 // to re-enter it rather than showing the generic can't-connect toast.
 function rejectToken() {
+  // With the sheet already open the user is where a rejection would send them,
+  // and re-opening would rewrite every field from stored cfg — wiping a code
+  // they are part-way through typing over a stale token's 401. Leave it alone.
+  // The voice step is the exception: a Save just sent the code, so its 401 is
+  // an answer about what was entered and has to reach the user.
+  if ($("sheet-settings").classList.contains("show") && !voiceStep) return;
   openSettings(needsSetup());
   $("backend-token").value = "";
   $("backend-token").focus();
@@ -465,6 +471,19 @@ $("btn-learned-clear").addEventListener("click", async () => {
     });
   } catch (e) { /* the row is refetched either way; a stale one just persists */ }
   refreshLearned();
+});
+// A pasted whole code replaces the field rather than merging with it: the input
+// handler below appends and truncates to 10, so pasting over a couple of typed
+// characters would keep those and lose the tail of the real code.
+$("backend-token").addEventListener("paste", (e) => {
+  const pasted = (e.clipboardData || window.clipboardData);
+  if (!pasted) return;
+  const raw = normalizeToken(pasted.getData("text"));
+  if (!isValidToken(raw)) return;   // partial or junk: let the input handler have it
+  e.preventDefault();
+  const input = e.target;
+  input.value = formatTokenDisplay(raw);
+  input.setSelectionRange(input.value.length, input.value.length);
 });
 $("backend-token").addEventListener("input", (e) => {
   const input = e.target;
