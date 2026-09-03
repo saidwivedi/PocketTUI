@@ -21,6 +21,10 @@ StartLimitIntervalSec=0
 Type=simple
 Restart=always
 RestartSec=10
+# The tmux server holding your sessions is a child of app.py and so lives in
+# this unit's cgroup; the default KillMode=control-group would take it, and
+# every session, down on each restart. Only app.py itself should be stopped.
+KillMode=process
 WorkingDirectory=%h/work/pockettui
 ExecStart=/bin/bash %h/work/pockettui/run.sh
 StandardOutput=append:%h/.cache/pockettui.log
