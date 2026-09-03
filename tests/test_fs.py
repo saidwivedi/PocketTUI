@@ -8,6 +8,7 @@ the auth path itself is covered by the transcribe suite's server-level tests.
 
 import os
 import sys
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -211,6 +212,64 @@ def test_write_missing_parent_is_404(client, tree):
     r = client.post("/api/fs/write", json={
         "path": str(tree / "nodir" / "f.txt"), "content": "x", "hash": ""})
     assert r.status_code == 404
+
+
+def test_write_conflict_check_is_atomic_against_a_concurrent_writer(client, tree,
+                                                                   monkeypatch):
+    """Two writers off the same base hash: one wins, the other gets a 409.
+
+    The second request is forced to attempt its compare while the first is
+    parked between compare and write, which is exactly the window a
+    check-then-write endpoint loses — without the lock both would answer 200
+    and the later write would silently discard the earlier one.
+    """
+    target = tree / "beta.txt"
+    base = A.fs_hash(b"beta\n")
+
+    real_write = A.atomic_write
+    entered = threading.Event()
+    proceed = threading.Event()
+    seen = []
+    seen_lock = threading.Lock()
+
+    def slow_first_write(p, data, mode):
+        with seen_lock:
+            seen.append(data)
+            first = len(seen) == 1
+        if first:
+            entered.set()
+            proceed.wait(5.0)
+        return real_write(p, data, mode)
+
+    monkeypatch.setattr(A, "atomic_write", slow_first_write)
+
+    results = {}
+
+    def save(name):
+        results[name] = client.post("/api/fs/write", json={
+            "path": str(target), "content": name + "\n", "hash": base})
+
+    first = threading.Thread(target=save, args=("one",))
+    first.start()
+    assert entered.wait(5.0), "first writer never reached atomic_write"
+
+    second = threading.Thread(target=save, args=("two",))
+    second.start()
+    # Long enough for the second request to reach the compare (or block on the
+    # lock) while the first is still parked inside the critical section.
+    time.sleep(0.2)
+    proceed.set()
+    first.join(10.0)
+    second.join(10.0)
+    assert not first.is_alive() and not second.is_alive()
+
+    codes = sorted(r.status_code for r in results.values())
+    assert codes == [200, 409], codes
+    winner = next(n for n, r in results.items() if r.status_code == 200)
+    loser = next(r for r in results.values() if r.status_code == 409)
+    assert loser.json()["error"] == "conflict"
+    assert target.read_text() == winner + "\n"
+    assert loser.json()["hash"] == A.fs_hash(target.read_bytes())
 
 
 # ---------------------------------------------------------------------------
