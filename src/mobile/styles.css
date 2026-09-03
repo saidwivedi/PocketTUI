@@ -1535,7 +1535,7 @@ html.term-open, body.term-open {
 @media (hover: hover) and (pointer: fine) {
   #shortcuts-row { display: flex; }
 }
-#btn-shortcuts, #btn-report {
+#btn-shortcuts, #btn-report, #btn-update-server {
   flex-shrink: 0;
   font-family: var(--sans);
   font-size: 12px;
@@ -1547,7 +1547,8 @@ html.term-open, body.term-open {
   color: var(--secondary);
   cursor: pointer;
 }
-#btn-shortcuts:active, #btn-report:active { transform: scale(0.96); }
+#btn-shortcuts:active, #btn-report:active,
+#btn-update-server:active { transform: scale(0.96); }
 /* Three stacked rows rather than a segmented control: the names are words of
    unequal length and each carries a second line of its own, which a segment
    cannot hold. Same recessed well and hairline rim as the fields above, so the
@@ -1745,6 +1746,20 @@ html.term-open, body.term-open {
   margin: 0;
 }
 .sheet-version p + p { margin-top: 6px; }
+/* The line and, on a server that can update itself, the button that starts it —
+   laid out like the sheet's toggle rows above, text left and the small button
+   held to the right. The explicit none is what keeps `hidden` working against
+   the display:flex here. */
+#sheet-version-update {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+}
+#sheet-version-update[hidden] { display: none; }
+#sheet-version-update p { margin: 0; }
+#btn-update-server:disabled { opacity: 0.55; }
 .sheet-version code {
   font-family: var(--mono);
   font-size: 12px;

@@ -32,6 +32,7 @@ import os
 import pty
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import stat
@@ -943,6 +944,27 @@ def vendor(name: str) -> Response:
     return FileResponse(path, media_type=kind)
 
 
+# The session an update runs in, and the name the shell tells the user to open.
+UPDATE_SESSION = "pockettui-update"
+
+
+def update_command() -> str | None:
+    """The `pockettui` wrapper this install can update itself with, or None.
+
+    install.sh writes the wrapper next to the install (usually ~/.local/bin);
+    `pockettui update` re-fetches install.sh and runs it with --update. Without
+    that command there is nothing to drive, and without tmux there is nowhere to
+    run it that would outlive the restart it triggers — so both are the answer
+    to "can this server update itself".
+    """
+    path = shutil.which("pockettui") or os.path.expanduser("~/.local/bin/pockettui")
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        return None
+    if shutil.which(TMUX_BIN[0]) is None:
+        return None
+    return path
+
+
 def server_capabilities() -> dict:
     """What this server can do, as feature name -> bool.
 
@@ -966,10 +988,11 @@ def server_capabilities() -> dict:
         "learned": True,        # /api/learned
         "push": push_available(),
         "dbg": True,            # /api/dbg
-        # No server-side self-update yet. The flag ships false rather than
-        # absent so a shell that grows an update button never offers it against
-        # a server that cannot honour it.
-        "update": False,
+        # /api/update — false on an install with no `pockettui` wrapper (or no
+        # tmux) to drive, so the shell offers the button only where pressing it
+        # would do something. Frozen at import like everything else here, which
+        # is fine: the wrapper is written by the same run that writes app.py.
+        "update": update_command() is not None,
     }
 
 
@@ -2447,6 +2470,47 @@ def api_new_session(request: Request, body: dict = Body(...)) -> Response:
         return JSONResponse({"error": f"tmux could not create '{name}'."},
                             status_code=500)
     return no_store(JSONResponse({"session": name}))
+
+
+@app.post("/api/update")
+def api_update() -> Response:
+    """Run `pockettui update` in a detached tmux session named pockettui-update.
+
+    A tmux session and not a subprocess of this server: the update restarts the
+    service, which would kill anything running under it, and a session is
+    something the phone can open and watch the install scroll past in.
+    """
+    wrapper = update_command()
+    if wrapper is None:
+        return JSONResponse({"error": "update_unavailable"}, status_code=501)
+    if session_exists(UPDATE_SESSION):
+        return JSONResponse({"error": "already_running"}, status_code=409)
+
+    # os.setsid() before the exec is what keeps the installer non-interactive:
+    # it drops the controlling terminal, so install.sh's `(exec 3<>/dev/tty)`
+    # probe fails, INTERACTIVE=0, and nothing can sit waiting on a prompt in a
+    # session nobody is looking at — while stdout and stderr still point at the
+    # pane, so the output is there to read. Python rather than the setsid(1)
+    # binary because macOS does not ship one. Unguarded on purpose: a setsid
+    # that failed would mean a controlling terminal is still attached, and the
+    # traceback in the pane is a better outcome than a silent prompt.
+    helper = ("import os, sys; os.setsid(); "
+              "os.execvp(sys.argv[1], [sys.argv[1], 'update'])")
+    run = shlex.join([sys.executable or "python3", "-c", helper, wrapper])
+    # execvp replaces the interpreter, so the status python exits with is the
+    # wrapper's own — but it has to be caught on the very next command, before
+    # the blank echo overwrites it. The sleep keeps the pane, and whatever the
+    # installer printed, readable instead of closing the session the moment it
+    # finishes.
+    command = (f"{run}; ec=$?; echo; "
+               'echo "[pockettui] update finished with status $ec"; sleep 90')
+
+    rc, _ = tmux("new-session", "-d", "-s", UPDATE_SESSION,
+                 "-c", os.path.expanduser("~"), command)
+    if rc != 0:
+        return JSONResponse({"error": "tmux could not start the update."},
+                            status_code=500)
+    return no_store(JSONResponse({"session": UPDATE_SESSION}))
 
 
 # Paths printed by a remote session may name storage under a mount point that
