@@ -1522,12 +1522,13 @@ html.term-open, body.term-open {
    test the editor's Vim button wears (see #btn-editor-vim): a touch device has
    no chords to be told about, and it already pinches the terminal's size. The
    button borrows .sheet-install's small-button recipe verbatim — it is the
-   sheet's quiet secondary action, same as Copy up there. */
+   sheet's quiet secondary action, same as Copy up there, and the report row
+   below wears it too. */
 #shortcuts-row { display: none; }
 @media (hover: hover) and (pointer: fine) {
   #shortcuts-row { display: flex; }
 }
-#btn-shortcuts {
+#btn-shortcuts, #btn-report {
   flex-shrink: 0;
   font-family: var(--sans);
   font-size: 12px;
@@ -1539,7 +1540,7 @@ html.term-open, body.term-open {
   color: var(--secondary);
   cursor: pointer;
 }
-#btn-shortcuts:active { transform: scale(0.96); }
+#btn-shortcuts:active, #btn-report:active { transform: scale(0.96); }
 /* Three stacked rows rather than a segmented control: the names are words of
    unequal length and each carries a second line of its own, which a segment
    cannot hold. Same recessed well and hairline rim as the fields above, so the
@@ -1718,6 +1719,74 @@ html.term-open, body.term-open {
 }
 #btn-learned-clear.show { display: inline-block; }
 #btn-learned-clear:active { transform: scale(0.96); }
+/* The report sheet. Both ways in stay out of sight until the app has reached a
+   backend — see reportAvailable() — so a shell that never connects never offers
+   to file a report about one. */
+#report-row { display: none; }
+#report-row.show { display: flex; }
+/* The top bar's ring is desktop-only: on a phone that bar is four buttons on a
+   360px screen and the Settings row already covers this, so it appears only
+   where the bar becomes the rail's header (see the WIDE LAYOUT block). */
+#btn-report-top { display: none; }
+/* Room for a couple of sentences without a scroll — the field is the report. */
+#report-msg { min-height: 100px; }
+/* The gap `.sheet input + label` hands every other section heading; this is the
+   app's only label that follows a textarea. */
+#sheet-report textarea + label { margin-top: 16px; }
+/* Bait for a bot filling every field it can find. Off screen rather than
+   display:none or hidden, which is what a bot would look for; out of the tab
+   order and out of the pointer's reach, so nobody working through the sheet can
+   land in it by accident. */
+.sheet input.honeypot {
+  position: absolute;
+  left: -9999px;
+  width: 1px; height: 1px;
+  padding: 0;
+  border: none;
+  opacity: 0;
+  pointer-events: none;
+}
+#sheet-report .hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tertiary);
+}
+#sheet-report .hint a { color: var(--umber); text-decoration: underline; }
+/* Under the action row, aligned with it: it is the way out when the send is
+   what failed, so it sits where the eye already is. */
+#report-fallback { margin-top: 12px; text-align: right; }
+#report-diag-details { margin-top: 12px; }
+#report-diag-details summary {
+  font-size: 12px;
+  color: var(--tertiary);
+  cursor: pointer;
+}
+/* The exact bytes the send will carry, in the terminal's own face. Capped and
+   scrolling: the debug tail alone is thirty lines. */
+#report-diag-details pre {
+  margin: 8px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 10px 11px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--paper-rec);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#report-error {
+  display: none;
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--bad);
+}
+#report-error.show { display: block; }
 .sheet .actions {
   display: flex; gap: 10px; justify-content: flex-end;
   margin-top: 18px;
@@ -2578,6 +2647,8 @@ html.term-open #dbg-panel {
   #screen-list .brand .glyph { width: 18px; height: 18px; }
   #screen-list .icon-btn { padding: 6px; }
   #screen-list .icon-btn svg { width: 17px; height: 17px; }
+  /* Only here, and only once there is a backend to report about. */
+  #screen-list #btn-report-top.show { display: inline-flex; }
   #screen-list .list-wrap { padding: 0 14px 24px; }
   #screen-list .list-new { margin: 8px 0 10px; }
   #screen-list .pill-btn { font-size: 12px; padding: 7px 10px 7px 8px; }

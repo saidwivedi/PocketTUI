@@ -45,6 +45,7 @@ function demoStop() {
   demoPending = "";
   demoInterrupt = () => {};
   demoMode = false;
+  syncReportEntry();
   $("demo-badge").classList.remove("show");
 }
 

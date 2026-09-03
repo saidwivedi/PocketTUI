@@ -8,6 +8,8 @@ cloudflare_build/
 .cloudflare_token
 .cloudflare_token_email
 .resend_api_key
+.dev.vars
+.turnstile_secret
 node_modules/
 .wrangler/
 assets/landing_assets/
