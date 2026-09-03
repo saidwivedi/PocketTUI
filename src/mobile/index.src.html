@@ -113,6 +113,11 @@
       <path d="M6.5 7l1 12.5a2 2 0 0 0 2 1.8h5a2 2 0 0 0 2-1.8l1-12.5"/>
       <path d="M10 11v6M14 11v6"/>
     </symbol>
+    <symbol id="i-life-ring" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/>
+      <circle cx="12" cy="12" r="3.5"/>
+      <path d="M14.47 9.53l3.89-3.89M9.53 9.53L5.64 5.64M9.53 14.47l-3.89 3.89M14.47 14.47l3.89 3.89"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -131,6 +136,7 @@
       <button class="icon-btn" id="btn-files" aria-label="Browse files"><svg><use href="#i-folder"/></svg></button>
       <button class="icon-btn" id="btn-reload" aria-label="Reload sessions"><svg><use href="#i-reload"/></svg></button>
       <button class="icon-btn" id="btn-theme" aria-label="Toggle theme"><svg><use href="#i-theme"/></svg></button>
+      <button class="icon-btn" id="btn-report-top" aria-label="Report a problem"><svg><use href="#i-life-ring"/></svg></button>
       <button class="icon-btn" id="btn-settings" aria-label="Settings"><svg><use href="#i-gear"/></svg></button>
     </div>
   </div>
@@ -511,6 +517,14 @@
     <label for="dbg-toggle">Debug log</label>
     <input id="dbg-toggle" type="checkbox">
   </div>
+  <!-- Below the debug toggle because that is what a report is usually carrying.
+       Shown only once the app has actually reached a backend — see
+       reportAvailable(); a shell still asking for an address has nothing to
+       report but the sheet in front of it. -->
+  <div class="toggle-row" id="report-row">
+    <label>Report a problem</label>
+    <button type="button" id="btn-report">Open</button>
+  </div>
 </div>
 
 <!-- ============================================================
@@ -665,6 +679,48 @@
         toolbar &mdash; along with your ~/.vimrc mappings</span>
     </div>
   </div>
+</div>
+
+<!-- ============================================================
+     REPORT A PROBLEM
+     ============================================================ -->
+<!-- Reached from the row at the foot of Settings, and on a wide layout from the
+     rail's own header. The only thing in the app that posts anywhere but the
+     user's computer: it goes to pockettui.com, which mails support@, so a
+     report about an unreachable backend does not need that backend to send it.
+     Everything it will send is on screen before Send is pressed — the message,
+     the address it may be answered at, and the diagnostics block in full. -->
+<div class="sheet" id="sheet-report">
+  <h2>Report a problem</h2>
+  <label for="report-msg">What happened</label>
+  <textarea id="report-msg" rows="5" maxlength="2000" required
+            placeholder="What went wrong? What did you expect?"></textarea>
+  <label for="report-email" class="opt">Email <span>optional</span></label>
+  <input id="report-email" type="email" inputmode="email" autocapitalize="off"
+         autocorrect="off" spellcheck="false" placeholder="you@example.com">
+  <p class="hint">Optional. Leave blank to report anonymously &mdash; a reply is
+    only possible if you fill this in.</p>
+  <!-- Bait. Off-screen rather than hidden, because a field a bot skips is one
+       it could see was hidden; see .honeypot in the stylesheet. -->
+  <input id="report-website" name="website" class="honeypot" autocomplete="off"
+         tabindex="-1" aria-hidden="true">
+  <div class="toggle-row">
+    <label for="report-diag">Include diagnostics</label>
+    <input id="report-diag" type="checkbox" checked>
+  </div>
+  <details id="report-diag-details">
+    <summary>What&rsquo;s included</summary>
+    <pre id="report-diag-text"></pre>
+  </details>
+  <p class="report-error" id="report-error"></p>
+  <div class="actions">
+    <button type="button" id="btn-report-cancel">Cancel</button>
+    <button type="button" class="primary" id="btn-report-send">Send</button>
+  </div>
+  <!-- The way out when the POST itself is what failed, so it stays on screen
+       whether or not a send has been tried. -->
+  <p class="hint" id="report-fallback">Or email
+    <a href="mailto:support@pockettui.com">support@pockettui.com</a></p>
 </div>
 
 <div class="toast" id="toast"></div>

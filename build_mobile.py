@@ -90,6 +90,7 @@ JS_FRAGMENTS = (
     "32-image-paste.js",
     "33-md-reader.js",
     "34-shortcuts.js",
+    "35-report.js",
     "27-boot.js",
 )
 

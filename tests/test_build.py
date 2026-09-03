@@ -110,6 +110,13 @@ def test_placeholders_survive_assembly(doc):
     assert doc.count("__CACHE_VERSION__") >= 2
 
 
+def test_report_dialog_is_wired(doc):
+    """The report sheet, its Settings row, and the endpoint it posts to."""
+    assert 'id="sheet-report"' in doc
+    assert 'id="btn-report"' in doc
+    assert "https://pockettui.com/api/report" in doc
+
+
 def test_vendor_script_tags_survive(doc):
     for name in ("xterm.js", "addon-fit.js", "addon-webgl.js"):
         assert f'src="vendor/{name}?v=__CACHE_VERSION__"' in doc

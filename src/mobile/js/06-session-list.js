@@ -119,6 +119,8 @@ async function loadSessions(spin=false, quiet=false) {
     if (gen !== sessListGen) return;
     renderSessions(data.sessions || []);
     $("list-error").style.display = "none";
+    sessionsEverLoaded = true;
+    syncReportEntry();
     // The fetched list rides back to callers with a session to verify
     // (openSessionByName); everyone else ignores it.
     return data.sessions || [];
