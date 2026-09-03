@@ -1399,6 +1399,11 @@ function buildKeybar() {
     if (k.icon) b.classList.add("glyph-key");
     if (k.cls) b.classList.add(...k.cls.split(" "));
     if (k.only) b.classList.add(k.only + "-only");
+    // The one key whose presence is a runtime answer rather than a setting.
+    // Taken from the settings row, which syncReportEntry() keeps in step with
+    // it: reportAvailable() cannot be asked on the first build, which runs
+    // before 35-report.js does.
+    if (k.report) b.classList.toggle("show", $("report-row").classList.contains("show"));
     if (k.mod) modButtons[k.mod] = b;
     // Every key but the focusing ones must leave focus exactly where it is:
     // stealing it would drop the soft keyboard, and handing it back would raise
@@ -1501,6 +1506,7 @@ function buildKeybar() {
       if (swiped) { swiped = false; return; }   // the swipe already sent its alternate
       if (k.compose) { toggleCompose(); return; }
       if (k.files) { openFilesAtCwd(); return; }
+      if (k.report) { openReport(); return; }
       if (k.arrows) { setArrows(true); return; }
       if (k.collapse) { setArrows(false); return; }
       if (k.mod) { setMod(k.mod, !mods[k.mod]); return; }
