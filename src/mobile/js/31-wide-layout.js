@@ -110,6 +110,9 @@ wideQuery.addEventListener("change", () => {
 const WIDE_REFRESH_MS = 15000;
 setInterval(() => {
   if (!isWideLayout() || document.hidden || demoMode || needsSetup()) return;
+  // A sheet covers the badges anyway, and a stale token would otherwise keep
+  // firing 401s at the server while the user re-pairs underneath it.
+  if ($("sheet-scrim").classList.contains("show")) return;
   loadSessions(false, true);
 }, WIDE_REFRESH_MS);
 
