@@ -1111,15 +1111,18 @@ html.term-open, body.term-open {
    ============================================================ */
 /* The pin has no job on a phone: there the bar is docked and always there. */
 #keybar-pin { display: none; }
+/* Nor has the report key: the docked row is already ten keys on a 390px screen,
+   and the Settings row is the phone's way into the same sheet. */
+.keybar > .k-report { display: none; }
 
 /* Two-pane width plus a real pointer to aim with. Esc, tab, ctrl, shift, alt,
    the arrows, enter and backspace are all already under the user's fingers
    here, so a full-width row of them is terminal rows spent on keys nobody
-   presses. What is left has no keyboard equivalent — the folder and the
-   microphone — and it floats over the grid's top-right corner instead of
-   docking, so the terminal keeps every row and stays readable to either side
-   of it. A touch-only tablet in landscape clears the width but fails
-   hover/pointer, and keeps the bar. The query string is mirrored in
+   presses. What is left has no keyboard equivalent — the folder, the report
+   ring and the microphone — and it floats over the grid's top-right corner
+   instead of docking, so the terminal keeps every row and stays readable to
+   either side of it. A touch-only tablet in landscape clears the width but
+   fails hover/pointer, and keeps the bar. The query string is mirrored in
    31-wide-layout.js (pillQuery); change both together. */
 @media (min-width: 768px) and (min-height: 500px) and (hover: hover) and (pointer: fine) {
   /* Pill and pin are placed from this one set of offsets — the pin is the
@@ -1225,7 +1228,10 @@ html.term-open, body.term-open {
      so every modifier, every swipe alternate and the mic's whole state machine
      keep working without knowing which layout they are in. */
   #keybar > button { display: none; }
+  /* The report key on the same terms as the other two, plus the one thing they
+     do not carry: it is here only while there is a backend to report about. */
   #keybar > .k-files,
+  #keybar > .k-report.show,
   #keybar > .k-compose {
     display: inline-flex;
     /* The docked row shares its slack from a basis of 0; in a pill that is
@@ -1252,6 +1258,7 @@ html.term-open, body.term-open {
      is open. Transparent rather than none so nothing reflows on a state that
      paints the border back in. */
   .keybar > .k-files,
+  .keybar > .k-report,
   .keybar > .k-compose {
     background: transparent;
     border-color: transparent;
@@ -1724,10 +1731,6 @@ html.term-open, body.term-open {
    to file a report about one. */
 #report-row { display: none; }
 #report-row.show { display: flex; }
-/* The top bar's ring is desktop-only: on a phone that bar is four buttons on a
-   360px screen and the Settings row already covers this, so it appears only
-   where the bar becomes the rail's header (see the WIDE LAYOUT block). */
-#btn-report-top { display: none; }
 /* Room for a couple of sentences without a scroll — the field is the report. */
 #report-msg { min-height: 100px; }
 /* The gap `.sheet input + label` hands every other section heading; this is the
@@ -2647,8 +2650,6 @@ html.term-open #dbg-panel {
   #screen-list .brand .glyph { width: 18px; height: 18px; }
   #screen-list .icon-btn { padding: 6px; }
   #screen-list .icon-btn svg { width: 17px; height: 17px; }
-  /* Only here, and only once there is a backend to report about. */
-  #screen-list #btn-report-top.show { display: inline-flex; }
   #screen-list .list-wrap { padding: 0 14px 24px; }
   #screen-list .list-new { margin: 8px 0 10px; }
   #screen-list .pill-btn { font-size: 12px; padding: 7px 10px 7px 8px; }

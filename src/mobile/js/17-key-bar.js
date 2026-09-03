@@ -39,6 +39,12 @@ const KEYS = [
   // they are — arrow work and file browsing are different errands anyway.
   { icon: "i-folder", files: true, narrow: true, only: "collapsed",
     cls: "k-files", aria: "Browse files in the session's folder" },
+  // Pill only, and only once there is a backend to report about — the phone
+  // never shows this key, because the Settings row is its way in and the
+  // docked row has no width to spare. Collapsed-row only for the reason the
+  // folder key is.
+  { icon: "i-life-ring", report: true, narrow: true, only: "collapsed",
+    cls: "k-report", aria: "Report a problem" },
   // The arrows' alternates are the nav keys that live beside them on a real
   // keyboard: Home/End across, PgUp/PgDn along.
   { label: "←",     seq: "\x1b[D", narrow: true, repeat: true, cls: "k-left",  only: "expanded",

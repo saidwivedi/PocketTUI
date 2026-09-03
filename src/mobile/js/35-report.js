@@ -30,11 +30,14 @@ function reportAvailable() {
 
 // Both entry points at once, so neither can be showing while the other is not.
 // Called wherever that answer can have changed — a list that loaded, the demo
-// starting or ending, Settings opening — never on a timer.
+// starting or ending, Settings opening — never on a timer. The key pill's ring
+// is looked up rather than held: buildKeybar() replaces that button whenever
+// Settings touches the bar, and on the very first call there may be no bar yet.
 function syncReportEntry() {
   const on = reportAvailable();
   $("report-row").classList.toggle("show", on);
-  $("btn-report-top").classList.toggle("show", on);
+  const key = $("keybar").querySelector(".k-report");
+  if (key) key.classList.toggle("show", on);
 }
 
 // The public shell names itself; anything else says only that it is one of the
@@ -78,7 +81,6 @@ function openReport() {
 }
 
 $("btn-report").addEventListener("click", openReport);
-$("btn-report-top").addEventListener("click", openReport);
 $("btn-report-cancel").addEventListener("click", () => showSheet(false));
 
 let reportSending = false;
