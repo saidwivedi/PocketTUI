@@ -7,6 +7,7 @@ __pycache__/
 cloudflare_build/
 .cloudflare_token
 .cloudflare_token_email
+.resend_api_key
 node_modules/
 .wrangler/
 assets/landing_assets/
