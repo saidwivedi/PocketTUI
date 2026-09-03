@@ -2260,14 +2260,14 @@ def test_an_unstamped_install_reports_an_empty_version(tmp_path, monkeypatch):
 def test_version_carries_a_capability_map():
     """What the shell reads to stop offering what an older server cannot serve.
 
-    Only the shape and the two flags with a fixed answer are pinned: the rest
-    of the map is the feature list, and a test restating it would only ever be
-    updated to match.
+    Only the shape and the one flag with a fixed answer are pinned: the rest of
+    the map is the feature list, and a test restating it would only ever be
+    updated to match. "update" is not fixed — it depends on whether the machine
+    running the suite has a `pockettui` wrapper installed — so it is checked
+    against the same question the map asks (see tests/test_update.py).
     """
     caps = body(A.api_version())["capabilities"]
     assert isinstance(caps, dict) and caps
     assert all(isinstance(v, bool) for v in caps.values()), caps
     assert caps["fs"] is True
-    # No server-side self-update exists yet, and the flag says so rather than
-    # leaving a newer shell to guess from its absence.
-    assert caps["update"] is False
+    assert caps["update"] == (A.update_command() is not None)

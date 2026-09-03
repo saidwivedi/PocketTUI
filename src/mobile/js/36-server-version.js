@@ -99,7 +99,42 @@ function syncVersionRow() {
   const stale = versionNewer(latestVersion, serverVersion);
   $("sheet-version-latest").textContent = latestVersion;
   $("sheet-version-update").hidden = !stale;
+  // The button only where the server said it can honour it; everywhere else the
+  // row keeps the line telling the user what to run on the computer, which is
+  // the only way an older server gets updated.
+  const canUpdate = hasCap("update");
+  $("btn-update-server").hidden = !canUpdate;
+  $("sheet-version-manual").hidden = canUpdate;
 }
+
+// Start the update the server offered. The install restarts the service part
+// way through, which drops this app's socket; the shell's own reconnect is what
+// brings it back, so there is nothing to wait for here — the session named in
+// the toast is where the install can actually be watched.
+async function startServerUpdate() {
+  const btn = $("btn-update-server");
+  btn.disabled = true;
+  try {
+    const r = await fetch(apiURL("api/update"), {
+      method: "POST", headers: authHeaders(),
+    });
+    if (r.status === 409) {
+      btn.disabled = false;
+      toast("An update is already running");
+      return;
+    }
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    showSheet(false);
+    toast("Updating. Open the pockettui-update session to watch.");
+    loadSessions();
+  } catch (e) {
+    dbg("update: start failed", e);
+    btn.disabled = false;
+    toast("Could not start the update");
+  }
+}
+
+$("btn-update-server").addEventListener("click", startServerUpdate);
 
 // The same boot moment the push status is fetched at: a paired app, before the
 // user has asked for anything.

@@ -530,8 +530,16 @@
        is worth stating once where it can be looked up, never worth a toast. -->
   <div class="sheet-version" id="sheet-version" hidden>
     <p id="sheet-version-line">Server version unknown</p>
-    <p id="sheet-version-update" hidden>Update to <span id="sheet-version-latest"></span>
-      available. On the computer, run: <code>pockettui update</code></p>
+    <!-- Two ways to take the update, and which one shows is the server's to
+         say: a server carrying the "update" capability can start it itself, so
+         the row offers the button and drops the command. Anything older is
+         still told what to type on the computer. -->
+    <div id="sheet-version-update" hidden>
+      <p>Update to <span id="sheet-version-latest"></span> available.<span
+         id="sheet-version-manual"> On the computer, run:
+        <code>pockettui update</code></span></p>
+      <button type="button" id="btn-update-server" hidden>Update server</button>
+    </div>
   </div>
 </div>
 
