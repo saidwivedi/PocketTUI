@@ -1131,11 +1131,11 @@ html.term-open, body.term-open {
   #keybar, #keybar-pin {
     --pill-top: calc(var(--safe-top) + 16px);
     --pill-right: 16px;
-    /* The pill's right padding is the pin's slot: the 5px the other keys get
+    /* The pill's right padding is the pin's slot: the 3px the other keys get
        at their end, the pin's own 32px, and the 3px gap it keeps from the
        report ring. Shared so the pill and the pin can never disagree about
        where that slot is. */
-    --pill-pin-col: 40px;
+    --pill-pin-col: 38px;
   }
   /* Two things share this corner and both of them outrank the pill: the
      unreachable-backend banner floats across the pane's top edge, and the demo
@@ -1169,16 +1169,16 @@ html.term-open, body.term-open {
        the glyphs sit straight on the pill's own surface and only the container
        is drawn. Even padding all round — the right side is wider only because
        the pin's slot is reserved there (see --pill-pin-col above), and the pin
-       takes the same 5px at its end that the folder key takes at its own. */
+       takes the same 3px at its end that the folder key takes at its own. */
     gap: 3px;
-    padding: 5px var(--pill-pin-col) 5px 5px;
+    padding: 3px var(--pill-pin-col) 3px 3px;
     overflow: visible;
     border: 1px solid var(--hair);
     /* Concentric with the keys, and a true capsule at the same time: a 16px
-       key radius plus 5px of padding plus the hairline is 22, which is also
-       half the 44px the box comes out at. Those two rules only agree because
+       key radius plus 3px of padding plus the hairline is 20, which is also
+       half the 40px the box comes out at. Those two rules only agree because
        the hairline is counted. */
-    border-radius: 22px;
+    border-radius: 20px;
     /* Two layers: a tight contact shadow so the pill sits on the grid rather
        than floats over it, and a wide soft one for the lift. A single deep
        drop reads as weight this shallow a shape has not got. */
@@ -1283,7 +1283,7 @@ html.term-open, body.term-open {
      different. Still a sibling of the bar rather than a child, because
      buildKeybar() empties #keybar on every rebuild — so the slot is reserved
      by the container's right padding and the pin is dropped into it from the
-     same two edges the pill is placed from, 5px of padding plus the hairline
+     same two edges the pill is placed from, 3px of padding plus the hairline
      in from each. Above the bar in z-order so a rebuild can never paint over
      it. Pinned it takes the accent; unpinned it goes as quiet as the search
      field's own icon without leaving the row. */
@@ -1291,8 +1291,8 @@ html.term-open, body.term-open {
     display: inline-flex;
     align-items: center; justify-content: center;
     position: absolute;
-    top: calc(var(--pill-top) + 6px);
-    right: calc(var(--pill-right) + 6px);
+    top: calc(var(--pill-top) + 4px);
+    right: calc(var(--pill-right) + 4px);
     width: 32px; height: 32px;
     padding: 0;
     border: none;
