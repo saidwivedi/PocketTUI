@@ -943,6 +943,36 @@ def vendor(name: str) -> Response:
     return FileResponse(path, media_type=kind)
 
 
+def server_capabilities() -> dict:
+    """What this server can do, as feature name -> bool.
+
+    The shell is redeployed on every release while the server is updated only
+    when its owner runs `pockettui update`, so the two drift apart and a newer
+    shell must be able to tell what the older server on the other end has. The
+    contract is deliberately one-sided: a server that sends the map lists every
+    feature it has, so a name that is absent or false means "not here". A
+    server that sends no map at all is older than the map itself, and the shell
+    treats it as having everything the shell already had at that time.
+
+    Checks are cheap and static — nothing here may touch tmux or load a model,
+    because the answer is frozen once at import.
+    """
+    return {
+        "fs": True,             # /api/fs/* — the explorer and the editor
+        "image_paste": True,    # /api/image
+        "voice": True,          # /api/transcribe + /api/voice_status; which
+                                # engine is live is still /api/voice_status's
+                                # answer, not this map's
+        "learned": True,        # /api/learned
+        "push": push_available(),
+        "dbg": True,            # /api/dbg
+        # No server-side self-update yet. The flag ships false rather than
+        # absent so a shell that grows an update button never offers it against
+        # a server that cannot honour it.
+        "update": False,
+    }
+
+
 @app.get("/api/version")
 def api_version() -> Response:
     """Which build this install is running, or "" when it cannot say.
@@ -951,12 +981,16 @@ def api_version() -> Response:
     stamp, so an empty string is a normal answer rather than an error — the
     caller compares it against $BASE_URL/version.txt and treats a blank as
     "unknown", exactly as install.sh does.
+
+    `capabilities` rides along so the same one round-trip that answers "how old
+    is this server" also answers "what can it do" — see server_capabilities().
     """
     try:
         version = VERSION_PATH.read_text(encoding="utf-8").strip()
     except OSError:
         version = ""
-    return no_store(JSONResponse({"version": version}))
+    return no_store(JSONResponse({"version": version,
+                                  "capabilities": CAPABILITIES}))
 
 
 @app.get("/api/sessions")
@@ -4513,6 +4547,13 @@ def _webpush_module():
 
 def push_available() -> bool:
     return _webpush_module() is not None
+
+
+# The capability map is frozen here rather than beside server_capabilities(),
+# because push_available() is the one input it has that is defined this far
+# down: an installed-or-not import cannot change while the process runs, so
+# asking once is asking enough.
+CAPABILITIES = server_capabilities()
 
 
 def _b64url(raw: bytes) -> str:
