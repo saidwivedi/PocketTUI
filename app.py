@@ -40,6 +40,7 @@ import subprocess
 import sys
 import tempfile
 import termios
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -2567,6 +2568,12 @@ def fs_current_hash(p: Path) -> str:
         return ""
 
 
+# One lock for every write, not one per path: the compare-then-write window is
+# a hash of a file the editor already holds in memory plus a rename, so the
+# contention a path table would buy back is not measurable against its bookkeeping.
+FS_WRITE_LOCK = threading.Lock()
+
+
 def atomic_write(p: Path, data: bytes, mode: int | None) -> None:
     """Write `data` to `p` whole-or-not-at-all.
 
@@ -2684,27 +2691,32 @@ def api_fs_write(body: dict = Body(...)) -> Response:
         return fs_error("bad_content", 400)
     base = str(body.get("hash", "") or "")
 
-    try:
-        st = os.stat(p)
-    except OSError:
-        st = None
-    if st is not None and not stat.S_ISREG(st.st_mode):
-        return fs_error("not_a_file", 400)
-    current = fs_current_hash(p) if st is not None else ""
-    if current != base:
-        return fs_error("conflict", 409, hash=current,
-                        mtime=int(st.st_mtime) if st is not None else None)
-    if not p.parent.is_dir():
-        return fs_error("not_found", 404)
-
     data = content.encode("utf-8")
-    try:
-        atomic_write(p, data, st.st_mode if st is not None else None)
-    except OSError:
-        return fs_error("not_writable", 403)
-    # The new token, so the editor keeps saving without a round-trip re-read.
-    return no_store(JSONResponse({"hash": fs_hash(data),
-                                  "mtime": int(os.stat(p).st_mtime)}))
+
+    # Compare, write and re-read under one lock: two clients that both pass the
+    # hash check before either writes would otherwise both get a 200 and the
+    # later save would silently discard the earlier one.
+    with FS_WRITE_LOCK:
+        try:
+            st = os.stat(p)
+        except OSError:
+            st = None
+        if st is not None and not stat.S_ISREG(st.st_mode):
+            return fs_error("not_a_file", 400)
+        current = fs_current_hash(p) if st is not None else ""
+        if current != base:
+            return fs_error("conflict", 409, hash=current,
+                            mtime=int(st.st_mtime) if st is not None else None)
+        if not p.parent.is_dir():
+            return fs_error("not_found", 404)
+
+        try:
+            atomic_write(p, data, st.st_mode if st is not None else None)
+        except OSError:
+            return fs_error("not_writable", 403)
+        # The new token, so the editor keeps saving without a round-trip re-read.
+        return no_store(JSONResponse({"hash": fs_hash(data),
+                                      "mtime": int(os.stat(p).st_mtime)}))
 
 
 @app.post("/api/fs/mkdir")
