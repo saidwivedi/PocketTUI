@@ -91,6 +91,7 @@ JS_FRAGMENTS = (
     "33-md-reader.js",
     "34-shortcuts.js",
     "35-report.js",
+    "36-server-version.js",
     "27-boot.js",
 )
 

@@ -2246,7 +2246,7 @@ def test_version_is_read_from_the_stamped_file(tmp_path, monkeypatch):
     stamp = tmp_path / "VERSION"
     stamp.write_text("0.1.123\n")
     monkeypatch.setattr(A, "VERSION_PATH", stamp)
-    assert body(A.api_version()) == {"version": "0.1.123"}
+    assert body(A.api_version())["version"] == "0.1.123"
 
 
 def test_an_unstamped_install_reports_an_empty_version(tmp_path, monkeypatch):
@@ -2254,4 +2254,20 @@ def test_an_unstamped_install_reports_an_empty_version(tmp_path, monkeypatch):
     monkeypatch.setattr(A, "VERSION_PATH", tmp_path / "absent" / "VERSION")
     response = A.api_version()
     assert response.status_code == 200
-    assert body(response) == {"version": ""}
+    assert body(response)["version"] == ""
+
+
+def test_version_carries_a_capability_map():
+    """What the shell reads to stop offering what an older server cannot serve.
+
+    Only the shape and the two flags with a fixed answer are pinned: the rest
+    of the map is the feature list, and a test restating it would only ever be
+    updated to match.
+    """
+    caps = body(A.api_version())["capabilities"]
+    assert isinstance(caps, dict) and caps
+    assert all(isinstance(v, bool) for v in caps.values()), caps
+    assert caps["fs"] is True
+    # No server-side self-update exists yet, and the flag says so rather than
+    # leaving a newer shell to guess from its absence.
+    assert caps["update"] is False

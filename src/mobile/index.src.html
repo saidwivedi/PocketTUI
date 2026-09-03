@@ -524,6 +524,15 @@
     <label>Report a problem</label>
     <button type="button" id="btn-report">Open</button>
   </div>
+  <!-- Which build the computer is running. The foot of the sheet because it is
+       the answer to "why is this button missing" rather than anything to set,
+       and it is the only place the shell mentions the update at all — the skew
+       is worth stating once where it can be looked up, never worth a toast. -->
+  <div class="sheet-version" id="sheet-version" hidden>
+    <p id="sheet-version-line">Server version unknown</p>
+    <p id="sheet-version-update" hidden>Update to <span id="sheet-version-latest"></span>
+      available. On the computer, run: <code>pockettui update</code></p>
+  </div>
 </div>
 
 <!-- ============================================================

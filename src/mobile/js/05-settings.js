@@ -115,6 +115,11 @@ function openSettings(firstRun) {
   refreshLearned();
   $("dbg-toggle").checked = cfg.debug;
   syncReportEntry();
+  // Same lazy reason as voice status above: an update run on the computer while
+  // this app sat in the background should show up the next time the sheet is
+  // opened, without a reload.
+  syncVersionRow();
+  fetchServerVersion();
   $("alt-toggle").checked = cfg.altKeyOn;
   $("snip-toggle").checked = cfg.snippetsOn;
   $("snip-text").value = cfg.snippets;

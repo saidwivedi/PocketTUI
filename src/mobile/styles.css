@@ -1731,6 +1731,25 @@ html.term-open, body.term-open {
    to file a report about one. */
 #report-row { display: none; }
 #report-row.show { display: flex; }
+/* The build line under everything else: .sheet-faq's quiet register, since it
+   is the same kind of thing — something to read, not something to set. */
+.sheet-version {
+  border-top: 1px solid var(--hair);
+  margin-top: 18px;
+  padding-top: 14px;
+}
+.sheet-version p {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--tertiary);
+  margin: 0;
+}
+.sheet-version p + p { margin-top: 6px; }
+.sheet-version code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
 /* Room for a couple of sentences without a scroll — the field is the report. */
 #report-msg { min-height: 100px; }
 /* The gap `.sheet input + label` hands every other section heading; this is the
