@@ -39,12 +39,6 @@ const KEYS = [
   // they are — arrow work and file browsing are different errands anyway.
   { icon: "i-folder", files: true, narrow: true, only: "collapsed",
     cls: "k-files", aria: "Browse files in the session's folder" },
-  // Pill only, and only once there is a backend to report about — the phone
-  // never shows this key, because the Settings row is its way in and the
-  // docked row has no width to spare. Collapsed-row only for the reason the
-  // folder key is.
-  { icon: "i-life-ring", report: true, narrow: true, only: "collapsed",
-    cls: "k-report", aria: "Report a problem" },
   // The arrows' alternates are the nav keys that live beside them on a real
   // keyboard: Home/End across, PgUp/PgDn along.
   { label: "←",     seq: "\x1b[D", narrow: true, repeat: true, cls: "k-left",  only: "expanded",
@@ -62,6 +56,12 @@ const KEYS = [
   // names, so it has to be able to say "stop" as well as "speak".
   { icon: "i-mic", icon2: "i-stop", compose: true, focusing: true, narrow: true,
     cls: "k-compose", aria: "Show or hide compose bar" },
+  // Pill only, and only once there is a backend to report about — the phone
+  // never shows this key, because the Settings row is its way in and the
+  // docked row has no width to spare. Collapsed-row only for the reason the
+  // folder key is.
+  { icon: "i-life-ring", report: true, narrow: true, only: "collapsed",
+    cls: "k-report", aria: "Report a problem" },
   { icon: "i-close", collapse: true, narrow: true, cls: "k-close", only: "expanded", aria: "Hide arrow keys" },
 ];
 

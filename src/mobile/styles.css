@@ -1118,8 +1118,8 @@ html.term-open, body.term-open {
 /* Two-pane width plus a real pointer to aim with. Esc, tab, ctrl, shift, alt,
    the arrows, enter and backspace are all already under the user's fingers
    here, so a full-width row of them is terminal rows spent on keys nobody
-   presses. What is left has no keyboard equivalent — the folder, the report
-   ring and the microphone — and it floats over the grid's top-right corner
+   presses. What is left has no keyboard equivalent — the folder, the
+   microphone and the report ring — and it floats over the grid's top-right corner
    instead of docking, so the terminal keeps every row and stays readable to
    either side of it. A touch-only tablet in landscape clears the width but
    fails hover/pointer, and keeps the bar. The query string is mirrored in
@@ -1133,7 +1133,7 @@ html.term-open, body.term-open {
     --pill-right: 16px;
     /* The pill's right padding is the pin's slot: the 5px the other keys get
        at their end, the pin's own 32px, and the 3px gap it keeps from the
-       microphone. Shared so the pill and the pin can never disagree about
+       report ring. Shared so the pill and the pin can never disagree about
        where that slot is. */
     --pill-pin-col: 40px;
   }
