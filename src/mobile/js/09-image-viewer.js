@@ -258,6 +258,7 @@ const DEMO_INTENT = "pockettui_demo_intent";
 
 function openDemo() {
   demoMode = true;
+  syncReportEntry();
   openTerminal(DEMO_SESSION);
 }
 

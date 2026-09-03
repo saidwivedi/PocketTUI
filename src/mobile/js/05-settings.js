@@ -4,7 +4,7 @@
 // One scrim serves every sheet, so closing means closing whichever is open.
 const SHEET_IDS = ["sheet-settings", "sheet-new", "sheet-session",
                    "sheet-file-actions", "sheet-files-add", "sheet-confirm",
-                   "sheet-shortcuts"];
+                   "sheet-shortcuts", "sheet-report"];
 function showSheet(on, id="sheet-settings") {
   // Closing the settings sheet ends the first-run voice step however it was
   // closed — Confirm, Cancel or the scrim. The device is paired by then, so
@@ -114,6 +114,7 @@ function openSettings(firstRun) {
   fetchVoiceStatus(true).then(syncVoicePicker);
   refreshLearned();
   $("dbg-toggle").checked = cfg.debug;
+  syncReportEntry();
   $("alt-toggle").checked = cfg.altKeyOn;
   $("snip-toggle").checked = cfg.snippetsOn;
   $("snip-text").value = cfg.snippets;
