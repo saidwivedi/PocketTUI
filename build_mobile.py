@@ -92,6 +92,7 @@ JS_FRAGMENTS = (
     "34-shortcuts.js",
     "35-report.js",
     "36-server-version.js",
+    "37-git-diff.js",
     "27-boot.js",
 )
 

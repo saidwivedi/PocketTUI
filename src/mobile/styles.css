@@ -28,6 +28,25 @@
   --warn: #a86a3a;
   --bad: #9c4439;
 
+  /* Diff — the one place the app needs a green/red pair and a cool hue, none
+     of which its single-accent palette has. Warmed towards the paper so a diff
+     reads as part of this app rather than as a window from another one.
+     Opaque rather than tinted on purpose: the line-number gutter is sticky
+     over its own row and takes the row's background, and two translucent
+     layers over the pane would land a shade off it. */
+  --diff-add-bg: #E9F1E1;
+  --diff-add-ink: #4a6b39;
+  --diff-del-bg: #F7E5E0;
+  --diff-del-ink: #9c4439;
+  --diff-hunk-bg: #E7ECF1;
+  --diff-hunk-ink: #4f6478;
+  --diff-blue: #4f6478;
+  /* The diff pane's accept and reject. Saturated rather than the inks above:
+     these are two 14px marks on a tinted line, and the ink that reads well as
+     a page of text disappears at that size. */
+  --diff-yes: #2ea043;
+  --diff-no: #d1242f;
+
   /* System */
   --safe-top: env(safe-area-inset-top);
   --safe-bot: env(safe-area-inset-bottom);
@@ -68,6 +87,16 @@
   --good: #7a8e6a;
   --warn: #c98a5a;
   --bad: #c46a5e;
+
+  --diff-add-bg: #1b2519;
+  --diff-add-ink: #9dc286;
+  --diff-del-bg: #2a1b18;
+  --diff-del-ink: #d9877c;
+  --diff-hunk-bg: #1a2027;
+  --diff-hunk-ink: #94aec5;
+  --diff-blue: #94aec5;
+  --diff-yes: #3fb950;
+  --diff-no: #f85149;
 
   --grain: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.035 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
@@ -169,8 +198,53 @@ body {
   transition: background 0.18s var(--ease-out), color 0.18s var(--ease-out);
 }
 .pill-btn svg { width: 15px; height: 15px; flex: 0 0 auto; }
+/* The display above outranks the hidden attribute, which would otherwise
+   leave a hidden pill on screen as an empty outline — same rule the Settings
+   update row needs. */
+.pill-btn[hidden] { display: none; }
 .pill-btn:hover { background: var(--umber-tint); }
 .pill-btn:active { transform: scale(0.96); }
+
+/* The update notice that shares the row with New session. Filled rather than
+   outlined so the pair reads as one action and one piece of news, and it names
+   the version it would install — a bare "Update" says nothing about what is
+   waiting. The dot is drawn here rather than carried in the markup because the
+   button's label is written from script. */
+.pill-btn.pill-alert {
+  /* Outlined like New session beside it, in the diff's own green so "newer
+     is available" reads as good news rather than as another umber control;
+     both themes carry the pair. The fill is kept for the hover. */
+  background: transparent;
+  color: var(--diff-add-ink);
+  border-color: var(--diff-add-ink);
+  font-variant-numeric: tabular-nums;
+}
+.pill-btn.pill-alert::before {
+  content: "";
+  width: 6px; height: 6px; flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--good);
+}
+.pill-btn.pill-alert:hover { background: var(--diff-add-bg); }
+
+/* The same notice once the install is running. It keeps its place and its
+   colour — it is the same piece of news — and only stops being a button: there
+   is nothing left to ask for until the server comes back. The dot breathes so a
+   screen glanced at across the room says the wait is still alive, which the
+   label alone cannot. */
+.pill-btn.pill-alert:disabled { opacity: 0.72; cursor: default; }
+.pill-btn.pill-alert:disabled:hover { background: transparent; }
+.pill-btn.pill-alert:disabled:active { transform: none; }
+.pill-btn.pill-working::before { animation: pill-pulse 1.4s var(--ease-out) infinite; }
+@keyframes pill-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+/* The pulse is decoration; "Updating…" is the signal. Reduced motion keeps the
+   dot lit rather than swapping in some other movement. */
+@media (prefers-reduced-motion: reduce) {
+  .pill-btn.pill-working::before { animation: none; }
+}
 
 /* ============================================================
    SESSION LIST
@@ -202,6 +276,11 @@ body {
    down to the label the button introduces. */
 .list-new {
   display: flex; justify-content: flex-end;
+  /* The update notice sits to the left of New session when there is one. At a
+     narrow phone width the pair is allowed to stack rather than push the row
+     past the screen edge, since neither label can be shortened. */
+  flex-wrap: wrap;
+  gap: 8px;
   margin: 14px 0 14px;
 }
 
@@ -2942,5 +3021,478 @@ html.term-open #dbg-panel {
     cursor: pointer;
   }
   #btn-rail-keys-all:hover { text-decoration: underline; }
+}
+
+/* ============================================================
+   GIT DIFF PANE
+   ============================================================ */
+/* Ctrl+Shift+D splits the terminal screen in two: terminal on the left, the
+   git changes of the folder the visible pane is sitting in on the right. Wide
+   layouts only — a phone has neither the width for two columns nor a keyboard
+   to press the chord on — so everything below is behind the same query the
+   rail is, and dropping under it hides the split without forgetting it (the
+   .diff-open class stays on; only these rules stop applying). */
+#diff-pane, #diff-gutter { display: none; }
+
+@media (min-width: 768px) and (min-height: 500px) {
+  /* The pane's own width, dragged and remembered (37-git-diff.js), and the
+     seam between it and the terminal — the rail's gutter by another name and
+     the same 7px, because it is the same seam read from the other side. */
+  :root { --diff-w: 460px; --diff-gutter: 7px; }
+
+  /* The split is the terminal screen's right edge moving in. Nothing inside
+     the flex column has to know: #term-host, the compose strip and the key bar
+     all narrow with it, and the key pill — placed from this box's own right
+     edge — comes along. */
+  #screen-term.diff-open { right: calc(var(--diff-w) + var(--diff-gutter)); }
+
+  /* Fixed to the window rather than laid out in the column above it, so the
+     terminal's own flex arithmetic is untouched. Its own paper and grain for
+     the reason the rail paints its own: while a terminal is open syncChrome
+     puts the terminal's background on html/body, and that must not bleed in
+     here. */
+  #screen-term.diff-open > #diff-pane {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: var(--diff-w);
+    padding-top: var(--safe-top);
+    padding-bottom: var(--safe-bot);
+    background-color: var(--paper);
+    background-image: var(--grain);
+    background-size: 200px 200px;
+    z-index: 55;
+  }
+
+  /* The rail's gutter recipe verbatim (see #rail-resize), mirrored: it is the
+     same recessed seam, and the two edges of the terminal should not read as
+     two different kinds of edge. */
+  #screen-term.diff-open > #diff-gutter {
+    display: block;
+    position: fixed;
+    top: 0; bottom: 0;
+    right: var(--diff-w);
+    width: var(--diff-gutter);
+    cursor: col-resize;
+    touch-action: none;
+    z-index: 60;
+    -webkit-user-select: none; user-select: none;
+    background: var(--paper-rec);
+    border-left: 1px solid var(--hair);
+    border-right: 1px solid var(--hair);
+    box-shadow: inset 1px 0 2px rgba(20, 16, 10, 0.05),
+                inset -1px 0 2px rgba(20, 16, 10, 0.05);
+    transition: background 0.18s var(--ease-out);
+  }
+  #diff-gutter::before {
+    content: "";
+    position: absolute;
+    top: 0; bottom: 0;
+    left: -5px; right: -5px;
+  }
+  #diff-gutter::after {
+    content: "";
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 3px; height: 36px;
+    margin: -18px 0 0 -1.5px;
+    border-radius: 2px;
+    background: var(--hair-strong);
+    transition: background 0.18s var(--ease-out);
+  }
+  #diff-gutter:hover, #diff-gutter.dragging { background: var(--umber-soft); }
+  #diff-gutter:hover::after, #diff-gutter.dragging::after { background: var(--umber); }
+
+  /* Header: the repo's name, the poll's dot, the way out. The rail's eyebrow
+     scale, since the pane is the rail's opposite number. */
+  #diff-head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 8px 8px 14px;
+    border-bottom: 1px solid var(--hair);
+  }
+  #diff-root {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Present at all times, lit only while a fetch is out: a dot that appeared
+     and vanished every two seconds would be a flicker in the corner of the eye.
+     Dim rather than absent says the pane is watching. */
+  #diff-busy {
+    flex: 0 0 auto;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--hair-strong);
+    transition: background 0.2s var(--ease-out);
+  }
+  #diff-busy.on { background: var(--umber); }
+  /* How often this repo is being asked, beside its name and in the same
+     eyebrow voice — present only when that is no longer every two seconds, so
+     the header stays two words on every repo that answers quickly. */
+  #diff-every {
+    flex: 0 0 auto;
+    font-family: var(--sans);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--whisper);
+    white-space: nowrap;
+  }
+  #btn-diff-close { flex: 0 0 auto; padding: 5px; }
+  #btn-diff-close svg { width: 15px; height: 15px; }
+
+  /* Tracked / Untracked: two chips in the eyebrow's own type, in the header
+     beside the repo's name, so they take no row from the list and never
+     scroll away with the files. The pressed one is filled the way a selected
+     row is — the same tint, because it is the same "this is what you are
+     looking at". */
+  #diff-tabs {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 4px;
+  }
+  .diff-tab {
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 3px 9px;
+    background: transparent;
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    line-height: 1.5;
+    color: var(--tertiary);
+    cursor: pointer;
+  }
+  .diff-tab:hover { background: var(--paper-rec); }
+  .diff-tab.on {
+    background: var(--umber-tint);
+    border-color: var(--hair-strong);
+    color: var(--ink);
+  }
+
+  /* The changed files, capped at a third of the pane so the diff below always
+     has the larger half, and scrolling inside that cap. Unshrinkable: the diff
+     underneath is arbitrarily long, and a flexible list would be squeezed to a
+     couple of rows by it however few files there are. The hairline under it is
+     the seam's, below. */
+  #diff-files {
+    flex: 0 0 auto;
+    max-height: 34%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 6px 8px;
+  }
+  /* Once the seam has been dragged the list is that tall and nothing else: the
+     content cap is what sizes a list nobody has had an opinion about, and it
+     would otherwise quietly overrule the drag past a third of the pane. The
+     bounds it is replaced by are the drag's own, standing: three rows at the
+     bottom, and at the top the pane less its header, its tabs, the seam and
+     the diff's floor. The drag clamps to the same numbers live
+     (37-git-diff.js); these are what hold a height the window has since shrunk
+     under, or one restored at boot with no pane on screen to measure. */
+  #diff-pane.list-sized > #diff-files {
+    height: var(--diff-list-h);
+    min-height: 72px;
+    max-height: calc(100% - 171px);
+  }
+
+  /* The gutter above turned on its side — same recess, same grip, same 7px,
+     because it is the same seam read the other way, and the two splits of one
+     pane should not read as two kinds of edge. */
+  #diff-vsplit {
+    flex: 0 0 auto;
+    position: relative;
+    height: var(--diff-gutter);
+    cursor: row-resize;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    background: var(--paper-rec);
+    border-top: 1px solid var(--hair);
+    border-bottom: 1px solid var(--hair);
+    box-shadow: inset 0 1px 2px rgba(20, 16, 10, 0.05),
+                inset 0 -1px 2px rgba(20, 16, 10, 0.05);
+    transition: background 0.18s var(--ease-out);
+  }
+  /* 7px is a line to look at and too little to hit; the pointer gets 5px more
+     on each side of it. */
+  #diff-vsplit::before {
+    content: "";
+    position: absolute;
+    left: 0; right: 0;
+    top: -5px; bottom: -5px;
+  }
+  #diff-vsplit::after {
+    content: "";
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 36px; height: 3px;
+    margin: -1.5px 0 0 -18px;
+    border-radius: 2px;
+    background: var(--hair-strong);
+    transition: background 0.18s var(--ease-out);
+  }
+  #diff-vsplit:hover, #diff-vsplit.dragging { background: var(--umber-soft); }
+  #diff-vsplit:hover::after, #diff-vsplit.dragging::after { background: var(--umber); }
+  /* The list's two halves, each with its own eyebrow and count. A file that is
+     part staged sits in both, which is the point of splitting them. */
+  .diff-section + .diff-section { margin-top: 8px; }
+  .diff-eyebrow {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 2px 6px 3px;
+    font-family: var(--sans);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--tertiary);
+  }
+  .diff-eyebrow .n { color: var(--whisper); letter-spacing: 0; }
+
+  /* The row is the label and its actions side by side. The label stays a
+     button and the actions are buttons beside it rather than inside it — the
+     DOM should not be asked to hold a button within a button — so the hover
+     tint is the row's to hand down. */
+  .diff-row { display: flex; align-items: baseline; }
+  .diff-row:hover .diff-file { background: var(--paper-rec); }
+  .diff-file {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 3px 6px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    text-align: left;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .diff-file.selected { background: var(--umber-tint); color: var(--ink); }
+  /* One letter, fixed width, so the paths below it line up into a column. */
+  .diff-file .badge {
+    flex: 0 0 auto;
+    width: 1.1em;
+    text-align: center;
+    font-weight: 700;
+    color: var(--tertiary);
+  }
+  /* The diff's own greens and reds rather than the app's status palette, so a
+     row and the lines it opens are the same colour. */
+  .diff-file .badge.new { color: var(--diff-add-ink); }
+  .diff-file .badge.mod { color: var(--warn); }
+  .diff-file .badge.del { color: var(--diff-del-ink); }
+  .diff-file .badge.ren { color: var(--diff-blue); }
+  /* The name is what is being read; the folders it sits in are context, so
+     they step back rather than compete with it. The full path is on the row's
+     title for the one it does not fit. */
+  .diff-file .path {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .diff-file .dir { color: var(--whisper); }
+
+  /* The diff itself. Scrolls down through the file only: a line longer than
+     the pane wraps under its own line numbers rather than running off to the
+     side, so the whole diff is read without a sideways scroll. */
+  #diff-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    /* The terminal's own stack, so a diff and the code beside it are set in
+       one face (see 07-terminal.js's fontFamily). */
+    font-family: Menlo, ui-monospace, "SF Mono", monospace;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  /* A row spans the pane, so a line's tint reaches the right edge however
+     short its text. */
+  .diff-line {
+    display: flex;
+    background: var(--paper);
+  }
+  /* Old and new line numbers, kept on the first row of a wrapped line: the
+     numbers are what tells you where you are. */
+  .diff-line .nos {
+    flex: 0 0 auto;
+    align-self: flex-start;
+    display: flex;
+    color: var(--whisper);
+    -webkit-user-select: none; user-select: none;
+  }
+  .diff-line .nos > span {
+    width: 3.6em;
+    padding-right: 0.7em;
+    text-align: right;
+  }
+  /* Wraps at any point, since code has long runs with no space to break at;
+     `pre-wrap` keeps the indentation a diff line leads with. */
+  .diff-line .tx {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-right: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .diff-line.add { background: var(--diff-add-bg); color: var(--diff-add-ink); }
+  .diff-line.del { background: var(--diff-del-bg); color: var(--diff-del-ink); }
+  .diff-line.hunk {
+    background: var(--diff-hunk-bg);
+    color: var(--diff-hunk-ink);
+  }
+  /* The `diff --git`, `index` and `---`/`+++` lines: true but not read. Small
+     and dim, so the eye starts at the first hunk. */
+  .diff-line.meta {
+    color: var(--whisper);
+    font-size: 11px;
+  }
+  .diff-line.ctx { color: var(--ink-2); }
+
+  /* Nothing to show, or a reason there is nothing — including the wait for a
+     repo's first answer, which on a network checkout is seconds long: one
+     voice for all of them, in the app's own quiet-hint idiom. */
+  .diff-note {
+    padding: 22px 16px;
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--tertiary);
+    text-align: center;
+  }
+  /* A notice about the diff above it rather than instead of it — binary, or a
+     megabyte reached — so it sits in the body's own type, not the hint's. */
+  .diff-notice {
+    padding: 10px 14px;
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--tertiary);
+  }
+
+  /* Stage, Revert, Unstage, Discard. Dim at rest and full strength once the
+     row or block they belong to is under the pointer or holds the focus —
+     never absent, because a button that only exists under a pointer cannot be
+     tabbed to at all, and this pane is opened by a chord. */
+  .diff-acts {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0.4;
+    transition: opacity 0.15s var(--ease-out);
+  }
+  .diff-row .diff-acts { align-self: center; padding-right: 4px; }
+  .diff-row:hover .diff-acts,
+  .diff-row:focus-within .diff-acts { opacity: 1; }
+  .diff-act {
+    border: none;
+    border-radius: 5px;
+    padding: 2px 6px;
+    background: transparent;
+    font-family: var(--sans);
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: nowrap;
+    color: var(--tertiary);
+    cursor: pointer;
+  }
+  .diff-act:hover { background: var(--umber-soft); color: var(--umber); }
+
+  /* A tick, a cross and a curved arrow rather than the words — VS Code's
+     inline accept and reject, which is where these three have been met before.
+     The word rides the button's title and aria-label instead of its face, so
+     the tooltip still says it and a screen reader still reads it. 22px of box
+     around 14px of drawing: a pointer needs something to hit. */
+  .diff-acts .diff-act {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+  }
+  .diff-acts .diff-act svg { width: 14px; height: 14px; }
+  /* Green for yes and red for no, in the saturated pair rather than the diff's
+     own inks: over an already tinted line a muted mark is one the eye passes
+     straight over. Unstage is neither answer, so it stays the pane's grey.
+     Hover tints the box and leaves the ink alone — at this size a colour that
+     also shifts reads as a different icon. */
+  .diff-acts .diff-act.ok { color: var(--diff-yes); }
+  .diff-acts .diff-act.danger { color: var(--diff-no); }
+  .diff-acts .diff-act.ok:hover { background: var(--diff-add-bg); }
+  .diff-acts .diff-act.danger:hover { background: var(--diff-del-bg); }
+  .diff-acts .diff-act.undo:hover { background: var(--umber-soft); color: var(--ink); }
+
+  /* One block — a run of removed and added lines with no context between them
+     — is what the actions act on, so it is a box of its own: the group sits in
+     its top right corner, over the first line rather than on a row of its own.
+     Always at full strength, unlike the file rows: a block's two answers are
+     the pane's own offer, and one that has to be hunted for with the pointer
+     is one nobody finds. The pill is what keeps them legible over a red or
+     green line — opaque, so the text under it never shows through. */
+  .diff-block { position: relative; }
+  .diff-block .diff-acts {
+    position: absolute;
+    top: -1px;
+    right: 12px;
+    z-index: 1;
+    opacity: 1;
+    padding: 0 1px;
+    border: 1px solid var(--hair-strong);
+    border-radius: 6px;
+    background: var(--paper);
+    box-shadow: 0 1px 4px rgba(20, 16, 10, 0.16);
+  }
+
+  /* The pane's own toast, over the foot of the diff: what Revert leaves behind
+     instead of asking first, and where a refused apply says why. Out of the
+     layout entirely, so a message never shortens the diff it is about. */
+  #diff-toast {
+    position: absolute;
+    left: 12px; right: 12px;
+    bottom: calc(12px + var(--safe-bot));
+    display: none;
+    align-items: baseline;
+    gap: 6px;
+    padding: 8px 8px 8px 12px;
+    border: 1px solid var(--hair-strong);
+    border-radius: 8px;
+    background: var(--paper-rec);
+    box-shadow: 0 4px 14px rgba(20, 16, 10, 0.14);
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--ink-2);
+    z-index: 1;
+  }
+  #diff-toast.on { display: flex; }
+  /* One phrase — "Reverted 1 block · Undo" — rather than a message pinned left
+     and a button pinned right: the separator only reads as a separator with
+     the two halves beside it. */
+  #diff-toast .msg { flex: 0 1 auto; min-width: 0; }
+  #diff-toast .sep { flex: 0 0 auto; color: var(--whisper); }
+  #diff-toast .diff-act { flex: 0 0 auto; opacity: 1; color: var(--umber); }
 }
 </style>

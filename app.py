@@ -1071,6 +1071,7 @@ def server_capabilities() -> dict:
         "learned": True,        # /api/learned
         "push": push_available(),
         "dbg": True,            # /api/dbg
+        "git": True,            # /api/git/changes, /api/git/diff, /api/git/apply
         # /api/update — false on an install with no `pockettui` wrapper (or no
         # tmux) to drive, so the shell offers the button only where pressing it
         # would do something. Frozen at import like everything else here, which
@@ -3282,6 +3283,433 @@ def api_fs_site(request: Request, exp: str, sig: str, root: str,
         # save it — the explorer's Download is what saving is for.
         "Content-Disposition": "inline",
     }))
+
+
+# ---------------------------------------------------------------------------
+# Git diff pane
+# ---------------------------------------------------------------------------
+# What the wide layout puts beside the terminal: the changed files of whatever
+# repo the visible pane is sitting in, one file's diff, and the stage, revert
+# and unstage the pane offers on a hunk or a file. Same stance as the
+# file-explorer routes above — this server already bridges a shell that can run
+# `git add -p` itself, so nothing here is a new reach, and the checks exist to
+# give honest errors rather than to hold a boundary.
+#
+# The pane polls, so every call carries a timeout and --no-optional-locks: a
+# refresh must never block on a repo mid-rebase, and a read must never take the
+# index lock out from under the user's own git in the terminal beside it. The
+# writing calls below do take it, for as long as one `git apply` needs it,
+# which is what any staging does.
+
+GIT_TIMEOUT = 20
+# The walk is the slow half. On a network checkout `git status` spends its time
+# in stat calls the mount answers over the wire — measured on a 3600-file CIFS
+# tree, the tracked walk takes seconds and the untracked one tens of seconds —
+# so the two reads that walk get a timeout that is a real ceiling rather than
+# one an ordinary answer trips over. The pane's poll stretches itself to match
+# (see the client's elapsed_ms), so a long read is waited for, not repeated.
+GIT_STATUS_TIMEOUT = 60
+# The diff of a generated file can run to megabytes the pane could not render
+# anyway; past this the answer is truncated and says so.
+GIT_DIFF_MAX = 1024 * 1024
+
+
+def git(cwd: str, *args: str, timeout: float = GIT_TIMEOUT) -> tuple[int, bytes, str]:
+    """Run git in `cwd`, returning (returncode, stdout, a reason on failure).
+
+    Bytes rather than text: paths are whatever the filesystem holds and
+    `status -z` is NUL-separated, so decoding is the caller's, done once and
+    with replacement. Never raises — a missing git or a hung one is an answer,
+    not a 500.
+    """
+    try:
+        p = subprocess.run(
+            ["git", "--no-optional-locks", "-C", cwd, *args],
+            capture_output=True, timeout=timeout,
+        )
+        return p.returncode, p.stdout, ""
+    except FileNotFoundError:
+        return 1, b"", "git is not installed"
+    except subprocess.TimeoutExpired:
+        # With the ceiling in it: the pane shows this sentence, and "git timed
+        # out" alone reads as a hang rather than as a minute genuinely spent.
+        return 1, b"", "git timed out after %g s" % timeout
+    except OSError:
+        return 1, b"", "git could not be run"
+
+
+def porcelain_files(raw: bytes) -> list[dict]:
+    """`status --porcelain=v1 -z` -> one row per path, sorted.
+
+    Each entry is "XY path" and NUL-terminated; a rename or copy spends a
+    second field on the path it came from, which is read past rather than
+    listed — the row names where the file is now, and the diff is asked for by
+    that name.
+
+    X is the index against HEAD and Y is the worktree against the index, which
+    is exactly the pane's two lists, so each row carries both flags rather than
+    the client re-deriving them from the letters. A file edited, staged and
+    then edited again is "MM" and belongs in both. `??` is the exception: git
+    spends both letters there on "I have never seen this", and an untracked
+    file is entirely unstaged.
+    """
+    files = []
+    fields = raw.decode("utf-8", "replace").split("\0")
+    i = 0
+    while i < len(fields):
+        entry = fields[i]
+        i += 1
+        if len(entry) < 4:      # "XY p" is the shortest an entry can be
+            continue
+        code = entry[:2]
+        if code[0] in ("R", "C"):
+            i += 1
+        files.append({
+            "path": entry[3:],
+            "status": code,
+            "staged": code != "??" and code[0] != " ",
+            "unstaged": code == "??" or code[1] != " ",
+        })
+    files.sort(key=lambda f: f["path"])
+    return files
+
+
+def untracked_files(raw: bytes) -> list[dict]:
+    """`ls-files --others --directory -z` -> the same rows the list draws.
+
+    `ls-files` rather than a second `status`: the untracked tab needs only the
+    walk of what git has never seen, and asking `status --untracked-files=normal`
+    for it pays for the whole tracked comparison again — on the CIFS checkout
+    that prompted this, 2-3 s against 6-25 s for the same answer.
+
+    The rows carry the porcelain code the list already knows how to badge, so
+    nothing downstream learns a second shape. `--directory` collapses a folder
+    with nothing tracked in it into one entry ending in "/", which is what
+    keeps a fresh node_modules from arriving as ten thousand rows; the trailing
+    slash is the whole signal that a row is a folder, here and in the discard
+    below. `--no-empty-directory` drops the ones git would never record.
+    """
+    return [{"path": p, "status": "??", "staged": False, "unstaged": True}
+            for p in sorted(raw.decode("utf-8", "replace").split("\0")) if p]
+
+
+# One status walk per (root, scope) at a time. The pane polls, and on a slow
+# mount a walk can outlast several ticks and several devices' ticks at once;
+# without this every one of them would start its own git and they would queue
+# on the same cold cache, each making the next slower. A request that arrives
+# while a walk is running waits for that walk's answer instead. threading
+# rather than asyncio because these routes are plain `def`, which FastAPI runs
+# in its threadpool — the event loop is never the thing waiting here.
+_git_status_lock = threading.Lock()
+_git_status_runs: dict[tuple[str, str], "GitStatusRun"] = {}
+
+
+class GitStatusRun:
+    """One in-flight walk: the answer, and the event that says it has landed."""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: tuple[int, bytes, str] = (1, b"", "git could not be run")
+
+
+def git_status_files(root: str, scope: str) -> tuple[list[dict], str]:
+    """(the rows of one scope, "") or ([], why git could not say).
+
+    Tracked is `status -uno`: the index against HEAD and the worktree against
+    the index, with the untracked walk skipped entirely. Untracked is the walk
+    on its own. Neither can see what the other lists, which is the point — the
+    pane asks for one of them, not for both.
+    """
+    key = (root, scope)
+    with _git_status_lock:
+        run = _git_status_runs.get(key)
+        mine = run is None
+        if mine:
+            run = GitStatusRun()
+            _git_status_runs[key] = run
+    if not mine:
+        run.done.wait(GIT_STATUS_TIMEOUT)
+        rc, out, err = run.result
+    else:
+        try:
+            if scope == "untracked":
+                run.result = git(root, "ls-files", "--others",
+                                 "--exclude-standard", "--directory",
+                                 "--no-empty-directory", "-z",
+                                 timeout=GIT_STATUS_TIMEOUT)
+            else:
+                run.result = git(root, "status", "--porcelain=v1", "-z", "-uno",
+                                 timeout=GIT_STATUS_TIMEOUT)
+        finally:
+            with _git_status_lock:
+                _git_status_runs.pop(key, None)
+            run.done.set()
+        rc, out, err = run.result
+    if rc != 0:
+        return [], err or "git status failed"
+    return (untracked_files(out) if scope == "untracked"
+            else porcelain_files(out)), ""
+
+
+@app.get("/api/git/changes")
+def api_git_changes(session: str = "", dev: str = "",
+                    scope: str = "tracked") -> Response:
+    """The changed files of the repo the visible pane is in, or an honest "".
+
+    The cwd comes the same way the file explorer's does — resolve_target picks
+    the device's own grouped view, so the repo is the one the user is looking
+    at rather than the base session's. Everything that is not a repo answers
+    200 with a reason: the pane shows it as its empty state, and a session in
+    ~/Downloads is not an error.
+
+    One scope per call, because the untracked walk is the expensive one and a
+    tab that is not on screen should cost nothing. `elapsed_ms` is the whole
+    answer's wall time, rev-parse included, and it is what the pane paces its
+    poll by: a repo that takes four seconds to answer is not worth asking every
+    two.
+    """
+    began = time.monotonic()
+    scope = "untracked" if scope == "untracked" else "tracked"
+
+    def answer(body: dict) -> Response:
+        body["elapsed_ms"] = int((time.monotonic() - began) * 1000)
+        return no_store(JSONResponse(body))
+
+    target = resolve_target(session, dev if DEV_RE.match(dev) else "")
+    cwd = pane_cwd(target) if target else ""
+    if not cwd:
+        return answer({"root": "", "files": []})
+    rc, out, err = git(cwd, "rev-parse", "--show-toplevel")
+    root = out.decode("utf-8", "replace").strip()
+    if rc != 0 or not root:
+        return answer(
+            {"root": "", "files": [], "error": err or "Not a git repository"})
+    files, err = git_status_files(root, scope)
+    if err:
+        return answer({"root": root, "files": [], "error": err})
+    return answer({"root": root, "files": files})
+
+
+def git_target(root: str, path: str) -> tuple[str, str]:
+    """(the absolute path root + path names, "") or ("", the error it earned).
+
+    Shared by the diff and the apply routes, which take the same pair and owe
+    the same 400: `root` is the toplevel /api/git/changes answered with and
+    `path` is repo-relative, so a root that is not a directory, or a path that
+    climbs out of it, is a client that has lost track of which repo it is in —
+    refused rather than resolved.
+    """
+    if not root.startswith("/") or not os.path.isdir(root):
+        return "", "bad_root"
+    if not path or path.startswith("/"):
+        return "", "bad_path"
+    full = os.path.normpath(os.path.join(root, path))
+    if not full.startswith(os.path.normpath(root).rstrip("/") + "/"):
+        return "", "bad_path"
+    return full, ""
+
+
+@app.get("/api/git/diff")
+def api_git_diff(root: str = "", path: str = "", scope: str = "unstaged") -> Response:
+    """One file's unified diff, in one of the pane's two scopes.
+
+    The scopes are the split git itself makes and the two lists the pane draws:
+    unstaged is the worktree against the index, staged is the index against
+    HEAD. `--cached` is what answers the staged side even in a repo whose first
+    commit has not been made — with no HEAD it compares against the empty tree
+    rather than failing — so the scope split retires the fallback the single
+    `diff HEAD` call used to need.
+    """
+    _, bad = git_target(root, path)
+    if bad:
+        return fs_error(bad, 400)
+
+    if scope == "staged":
+        rc, out, err = git(root, "diff", "--no-color", "--no-ext-diff",
+                           "--cached", "--", path)
+    else:
+        rc, out, err = git(root, "diff", "--no-color", "--no-ext-diff",
+                           "--", path)
+        if not out and git(root, "ls-files", "--error-unmatch", "--", path)[0] != 0:
+            # Untracked: nothing in the index to diff against, so the file is
+            # diffed against nothing. Exit 1 is --no-index's "differences
+            # found", which is the whole point of asking.
+            rc, alt, err = git(root, "diff", "--no-color", "--no-ext-diff",
+                               "--no-index", "--", "/dev/null", path)
+            if rc in (0, 1):
+                out = alt
+    if not out and err:
+        return no_store(JSONResponse({"diff": "", "error": err}))
+
+    truncated = len(out) > GIT_DIFF_MAX
+    text = out[:GIT_DIFF_MAX].decode("utf-8", "replace")
+    # git says so in one line and prints nothing else it could render; the pane
+    # says the same rather than showing a diff that is only a header.
+    if "\nBinary files " in text or text.startswith("Binary files "):
+        return no_store(JSONResponse({"diff": "", "binary": True}))
+    return no_store(JSONResponse({"diff": text, "truncated": truncated}))
+
+
+# A one-hunk patch is a file header and one hunk; anything the size of a source
+# file is not one, and the pane never sends one.
+GIT_PATCH_MAX = 256 * 1024
+
+# git's stderr on a refusal is a couple of lines; past this it is a wall of
+# rejected-hunk detail the toast could not show anyway.
+GIT_ERR_MAX = 300
+
+# What each hunk action is, as the flags `git apply` takes: where the patch
+# lands and which way round it goes. Staging moves the hunk into the index,
+# reverting takes it back out of the worktree, unstaging is both at once, and
+# the plain forward apply is what Undo on a revert is — the pane keeps the
+# patch it reverted and puts it back rather than asking before reverting.
+GIT_APPLY_FLAGS = {
+    "stage_hunk": ("--cached",),
+    "revert_hunk": ("-R",),
+    "unstage_hunk": ("--cached", "-R"),
+    "apply_hunk": (),
+}
+
+
+def git_write(cwd: str, stdin: bytes, *args: str) -> str:
+    """Run one writing git call; "" when it worked, why it refused when not.
+
+    git()'s counterpart for the half of this section that changes a repo.
+    Failure here is a message the pane shows rather than a code it maps, so
+    what comes back is git's own stderr — "patch does not apply" is the
+    sentence the user needs — with a git that could not be run at all
+    answering in the same slot. Same timeout and same never-raises stance.
+    """
+    try:
+        p = subprocess.run(
+            ["git", "--no-optional-locks", "-C", cwd, *args],
+            input=stdin, capture_output=True, timeout=GIT_TIMEOUT,
+        )
+    except FileNotFoundError:
+        return "git is not installed"
+    except subprocess.TimeoutExpired:
+        return "git timed out"
+    except OSError:
+        return "git could not be run"
+    if p.returncode == 0:
+        return ""
+    why = p.stderr.decode("utf-8", "replace").strip()[:GIT_ERR_MAX]
+    return why or "git refused that change"
+
+
+@app.post("/api/git/apply")
+def api_git_apply(body: dict = Body(...)) -> Response:
+    """Stage, revert or unstage one hunk, or act on one whole file.
+
+    The pane has already parsed the diff it is showing, so a hunk action sends
+    that diff's header block and the one hunk back verbatim and this only
+    checks and pipes them to `git apply`. Rebuilding the header here would mean
+    re-running the diff and matching hunks up by line number — the same patch
+    by a longer road, and one that can disagree with what the user was looking
+    at. --recount is the belt on that: the counts in the header stand or the
+    hunk is recounted from its own lines. A hunk that no longer applies because
+    the file moved under the pane is git's own refusal handed back as a 409,
+    which the pane shows and re-polls on.
+    """
+    root = str(body.get("root", ""))
+    path = str(body.get("path", ""))
+    action = str(body.get("action", ""))
+    full, bad = git_target(root, path)
+    if bad:
+        return fs_error(bad, 400)
+
+    if action in GIT_APPLY_FLAGS:
+        patch = str(body.get("patch", ""))
+        if not patch.strip() or len(patch) > GIT_PATCH_MAX:
+            return fs_error("bad_patch", 400)
+        # One hunk header at least, or this is not a patch — the rest of the
+        # checking is git's, which does it better and says why.
+        if "\n@@" not in "\n" + patch:
+            return fs_error("bad_patch", 400)
+        why = git_write(root, (patch.rstrip("\n") + "\n").encode("utf-8"),
+                        "apply", *GIT_APPLY_FLAGS[action], "--recount",
+                        "--whitespace=nowarn", "-")
+        return fs_error("apply_failed", 409, detail=why) if why else \
+            no_store(JSONResponse({"ok": True}))
+
+    if action == "stage_file":
+        # A pathspec is enough for every case the list can show: since git 2.0
+        # `git add <path>` records a removal as readily as a change, so a
+        # deleted file stages without a second spelling.
+        why = git_write(root, b"", "add", "--", path)
+    elif action == "unstage_file":
+        why = git_write(root, b"", "restore", "--staged", "--", path)
+        if why:
+            # No HEAD to restore the index entry from — a repo whose first
+            # commit has not been made. Emptying the entry is the same answer
+            # there, and `reset` is the only spelling that has it.
+            why = git_write(root, b"", "reset", "-q", "--", path)
+    elif action == "discard_file":
+        if path.endswith("/"):
+            # A folder the untracked list collapsed into one row, which git
+            # holds no copy of either — so discarding it is deleting the tree,
+            # which is what the client's question says it is. The trailing
+            # slash is the only way in here: nothing else the pane can send
+            # names a directory, and a plain path still means one file.
+            why = git_discard_untracked_dir(full, root)
+        elif git(root, "ls-files", "--error-unmatch", "--", path)[0] == 0:
+            # Tracked: the worktree back to the index, which is what Discard
+            # means on this list — a staged hunk of the same file stays staged
+            # and only the unstaged half goes.
+            why = git_write(root, b"", "checkout", "--", path)
+        else:
+            # Untracked: git holds no copy to restore from, so discarding is
+            # deleting, which the client says in the question it asks first.
+            # Only ever a regular file that really sits inside the root — a
+            # symlink fails the lstat test whatever it points at, and a path
+            # reached through a linked directory fails the realpath one.
+            why = git_discard_untracked(full, root)
+    else:
+        return fs_error("bad_action", 400)
+    return fs_error("apply_failed", 409, detail=why) if why else \
+        no_store(JSONResponse({"ok": True}))
+
+
+def git_discard_untracked(full: str, root: str) -> str:
+    """Unlink one untracked regular file inside `root`; "" when it is gone."""
+    try:
+        st = os.lstat(full)
+    except OSError:
+        return "the file is already gone"
+    if not stat.S_ISREG(st.st_mode):
+        return "only a regular file can be discarded"
+    if not os.path.realpath(full).startswith(
+            os.path.realpath(root).rstrip("/") + "/"):
+        return "that file is not inside the repository"
+    try:
+        os.unlink(full)
+    except OSError:
+        return "the file could not be deleted"
+    return ""
+
+
+def git_discard_untracked_dir(full: str, root: str) -> str:
+    """Delete one untracked directory tree inside `root`; "" when it is gone.
+
+    The file's counterpart above, held to the same two tests for the same
+    reason: lstat rather than stat, so a symlink to a directory is refused
+    whatever it points at, and realpath containment, so a folder reached
+    through a linked parent cannot be deleted from here either.
+    """
+    try:
+        st = os.lstat(full)
+    except OSError:
+        return "the folder is already gone"
+    if not stat.S_ISDIR(st.st_mode):
+        return "only a real folder can be discarded"
+    if not os.path.realpath(full).startswith(
+            os.path.realpath(root).rstrip("/") + "/"):
+        return "that folder is not inside the repository"
+    try:
+        shutil.rmtree(full)
+    except OSError:
+        return "the folder could not be deleted"
+    return ""
 
 
 # ---------------------------------------------------------------------------
