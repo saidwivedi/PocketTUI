@@ -25,7 +25,7 @@ class FakeTmux:
     app.py issues, and records every argv so tests can assert on order."""
 
     def __init__(self, sessions=()):
-        # Each: name/created plus optional attached/windows/group/alias.
+        # Each: name/created plus optional attached/windows/group/alias/view.
         # A session carrying "group" is a grouped member of it. Session ids
         # are handed out in listed order, the way tmux numbers creations.
         self.sessions = [dict(s) for s in sessions]
@@ -55,6 +55,8 @@ class FakeTmux:
                     s.get("group", ""),
                     f"${s['sid']}",
                     s.get("alias", ""),
+                    s.get("notify", ""),
+                    "1" if s.get("view") else "",
                 ]))
             return 0, "".join(line + "\n" for line in lines)
         if cmd == "has-session":
@@ -168,6 +170,46 @@ def test_create_makes_a_detached_session(client, monkeypatch):
     assert r.json() == {"session": "fresh"}
     made = next(c for c in tmux.calls if c[0] == "new-session")
     assert "-d" in made and "fresh" in made
+
+
+# ---------------------------------------------------------------------------
+# The start-up sweep
+# ---------------------------------------------------------------------------
+
+def test_sweep_kills_only_this_apps_unattached_views(monkeypatch):
+    tmux = fake(monkeypatch, (
+        {"name": "base", "created": 100, "group": "base"},
+        # Marked by mark_view: ours, nobody on it, goes.
+        {"name": "phone-base", "created": 200, "group": "base", "view": True},
+        # Minted before the marker existed, but named the way view_name names
+        # them — the migration rule catches both spellings.
+        {"name": "mba-base", "created": 210, "group": "base"},
+        {"name": "ptui-base", "created": 220, "group": "base"},
+        # Someone is looking at this one.
+        {"name": "ipad-base", "created": 230, "group": "base",
+         "view": True, "attached": 1},
+        # A grouped clone the user made by hand: no marker, and a name that is
+        # none of ours — even one that ends in "-base", when the prefix is not
+        # a name any device could have sent (see DEV_RE).
+        {"name": "mirror", "created": 240, "group": "base"},
+        {"name": "My_clone-base", "created": 250, "group": "base"},
+        {"name": "solo", "created": 300},
+    ))
+    assert A.sweep_views() == ["phone-base", "mba-base", "ptui-base"]
+    assert [x["name"] for x in tmux.sessions] == [
+        "base", "ipad-base", "mirror", "My_clone-base", "solo"]
+
+
+def test_sweep_spares_the_representative_even_when_it_looks_like_a_view(
+        monkeypatch):
+    # The oldest member is the user's session whatever it is called, and
+    # "work-work" ends with "-work" — the name rule must never outrank it.
+    tmux = fake(monkeypatch, (
+        {"name": "work-work", "created": 100, "group": "work"},
+        {"name": "phone-work", "created": 200, "group": "work"},
+    ))
+    assert A.sweep_views() == ["phone-work"]
+    assert [x["name"] for x in tmux.sessions] == ["work-work"]
 
 
 # ---------------------------------------------------------------------------
