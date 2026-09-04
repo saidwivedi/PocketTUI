@@ -58,10 +58,13 @@ for (const by of [-1, 1]) {
 // ============================================================
 // The sheet above is complete and unread: nobody opens Settings looking for a
 // chord they do not know exists, and the chord they get wrong is Ctrl+C, which
-// off a Mac copies a selection and interrupts when there is none. So the five
+// off a Mac copies a selection and interrupts when there is none. So the four
 // worth knowing sit at the foot of the rail, in the keys of the platform
 // actually in front of the user — the same /Mac/ test the terminal binds copy
-// on, so the card cannot promise a key the terminal does not answer to.
+// on, so the card cannot promise a key the terminal does not answer to. No
+// copy key is among them: a drag is copied the moment it lets go, and on a
+// trackpad the selection rarely survives the reach for the keyboard — any
+// scroll is a mouse report to tmux, and xterm drops the selection on input.
 //
 // Rail-only and keyboard-only: a phone has no chords to press and no room to
 // spare, and both gates are the stylesheet's (see RAIL SHORTCUTS CARD). The
@@ -70,7 +73,6 @@ for (const by of [-1, 1]) {
 const RAIL_KEYS_KEY = "pockettui_rail_keys";
 const railKeysMac = /Mac/.test(navigator.userAgent);
 
-$("rk-copy").textContent = railKeysMac ? "Cmd+C" : "Ctrl+Shift+C";
 $("rk-paste").textContent = railKeysMac ? "Cmd+V" : "Ctrl+V";
 $("rk-interrupt").textContent = railKeysMac
   ? "Interrupt the program"
