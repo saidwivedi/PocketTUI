@@ -12,7 +12,7 @@ cloudflare_build/
 .turnstile_secret
 node_modules/
 .wrangler/
-assets/landing_assets/
+assets/landing_assets*/
 # Composed from the landing screenshots by make_og_image.py.
 assets/og-image.png
 assets/landing.html
