@@ -440,6 +440,9 @@ function openTerminal(name, resumed) {
   }
   markSelectedSession();
   clearUnread(name);   // opening is what marks a session read
+  // The diff pane, if it is open, is showing the repo of the session being
+  // left; its own poll would take up to two seconds to notice.
+  diffPoll();
   // Whatever this session had put away when the rail last left it, back on top
   // of the terminal it was opened over — which is live again underneath it.
   if (fileViews.has(name)) restoreFileView(name);

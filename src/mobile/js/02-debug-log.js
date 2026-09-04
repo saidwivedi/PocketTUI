@@ -202,6 +202,39 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_alt_on", "1");
     else localStorage.removeItem("pockettui_alt_on");
   },
+  // Whether the wide layout's diff pane is split out beside the terminal, and
+  // how wide it was last dragged to. Closed by default: the whole pane is the
+  // terminal's until the chord asks for the split. The width is 0 until one
+  // has been dragged, which reads as "half the main pane" at the next open.
+  get diffPane() { return localStorage.getItem("pockettui_diff_pane") === "1"; },
+  set diffPane(v) {
+    if (v) localStorage.setItem("pockettui_diff_pane", "1");
+    else localStorage.removeItem("pockettui_diff_pane");
+  },
+  get diffWidth() {
+    const v = parseInt(localStorage.getItem("pockettui_diff_w"), 10);
+    return Number.isFinite(v) ? v : 0;
+  },
+  set diffWidth(v) { localStorage.setItem("pockettui_diff_w", String(v)); },
+  // How tall the pane's file list was last dragged to. 0 until one has been
+  // dragged, which leaves the list sized by the files in it under its cap.
+  get diffListHeight() {
+    const v = parseInt(localStorage.getItem("pockettui_diff_list_h"), 10);
+    return Number.isFinite(v) ? v : 0;
+  },
+  set diffListHeight(v) { localStorage.setItem("pockettui_diff_list_h", String(v)); },
+  // Which of the pane's two lists it opens on. Tracked by default: it is the
+  // one git answers without walking everything the repo has never seen, and on
+  // a network checkout that walk is the difference between a second and a
+  // minute.
+  get diffTab() {
+    return localStorage.getItem("pockettui_diff_tab") === "untracked"
+      ? "untracked" : "tracked";
+  },
+  set diffTab(v) {
+    if (v === "untracked") localStorage.setItem("pockettui_diff_tab", "untracked");
+    else localStorage.removeItem("pockettui_diff_tab");
+  },
   // The editor's line-wrap toggle. Off by default: long lines scroll sideways,
   // same as before this existed.
   get editorWrapOn() { return localStorage.getItem("pockettui_editor_wrap") === "1"; },
