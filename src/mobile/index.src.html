@@ -139,7 +139,7 @@
       <button class="icon-btn" id="btn-settings" aria-label="Settings"><svg><use href="#i-gear"/></svg></button>
     </div>
   </div>
-  <div class="list-wrap">
+  <div class="list-wrap" id="list-wrap">
     <div class="a2hs-hint" id="a2hs-hint">
       <span id="a2hs-hint-text"></span>
       <button type="button" id="a2hs-hint-dismiss" aria-label="Dismiss">✕</button>
@@ -149,6 +149,27 @@
     <div id="list"></div>
     <div id="list-empty">No tmux sessions yet — New session starts one.</div>
     <div id="list-error">Couldn't reach your computer.</div>
+  </div>
+  <!-- Pinned under the list on the wide layout, and only where a pointer says
+       there is a keyboard to press these on — both gates are the stylesheet's.
+       The key names are filled in per platform, and the card's open/closed
+       state kept, by 34-shortcuts.js. -->
+  <div id="rail-keys">
+    <div class="eyebrow" id="rail-keys-head">
+      Shortcuts
+      <button type="button" id="btn-rail-keys" aria-expanded="true"
+              aria-controls="rail-keys-body" aria-label="Collapse the shortcuts">
+        <svg><use href="#i-back"/></svg>
+      </button>
+    </div>
+    <div id="rail-keys-body">
+      <div class="rail-key"><kbd id="rk-copy"></kbd><span>Copy</span></div>
+      <div class="rail-key"><kbd>Ctrl+C</kbd><span id="rk-interrupt"></span></div>
+      <div class="rail-key"><kbd id="rk-paste"></kbd><span>Paste</span></div>
+      <div class="rail-key"><kbd>Shift+drag</kbd><span>Select text</span></div>
+      <div class="rail-key"><kbd>Shift+Enter</kbd><span>Newline</span></div>
+      <button type="button" id="btn-rail-keys-all">All shortcuts</button>
+    </div>
   </div>
 </div>
 
