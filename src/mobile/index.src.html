@@ -53,6 +53,22 @@
     <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
       <path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>
     </symbol>
+    <!-- The diff pane's three: yes, no and put it back. Drawn heavier than the
+         rest of the sprite because they are read at 14px over a line that is
+         already tinted red or green, where #i-close's own weight thins away to
+         nothing — hence a cross of their own rather than that one. -->
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 12.5l4.5 4.5L19 7"/>
+    </symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>
+    </symbol>
+    <!-- Unstage: the arrow that goes back, the head at the near end of the
+         line and the tail curving away under it. -->
+    <symbol id="i-undo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4.5 8.5h9a5.5 5.5 0 0 1 0 11H8"/>
+      <path d="M8 5L4.5 8.5 8 12"/>
+    </symbol>
     <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <rect x="9" y="2.5" width="6" height="11" rx="3"/>
       <path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>
@@ -144,7 +160,7 @@
       <span id="a2hs-hint-text"></span>
       <button type="button" id="a2hs-hint-dismiss" aria-label="Dismiss">✕</button>
     </div>
-    <div class="list-new"><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg>New session</button></div>
+    <div class="list-new"><button class="pill-btn pill-alert" id="btn-update-rail" hidden></button><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg>New session</button></div>
     <div class="eyebrow" id="list-eyebrow">Sessions</div>
     <div id="list"></div>
     <div id="list-empty">No tmux sessions yet — New session starts one.</div>
@@ -167,6 +183,9 @@
       <div class="rail-key"><kbd id="rk-paste"></kbd><span>Paste</span></div>
       <div class="rail-key"><kbd>Ctrl+C</kbd><span id="rk-interrupt"></span></div>
       <div class="rail-key"><kbd>Shift+Enter</kbd><span>Newline</span></div>
+      <!-- Hidden when the computer's server is too old to have the routes the
+           pane reads (37-git-diff.js). -->
+      <div class="rail-key" id="rk-diff"><kbd>Ctrl+Shift+D</kbd><span>Git diff</span></div>
       <button type="button" id="btn-rail-keys-all">All shortcuts</button>
     </div>
   </div>
@@ -260,6 +279,49 @@
        everywhere but pill mode. -->
   <button type="button" id="keybar-pin" aria-pressed="true"
           aria-label="Unpin the key pill"><svg aria-hidden="true"><use href="#i-pin"/></svg></button>
+  <!-- The diff pane and the seam that resizes it (Ctrl+Shift+D; see
+       37-git-diff.js). Children of the terminal screen rather than siblings of
+       it, so they need no visibility rule of their own: opening the explorer,
+       the reader or the editor swaps .active off this screen and takes the
+       split down with it, and coming back brings it up again. Both are fixed
+       to the window's right edge, which is why they sit outside the flex
+       column above without disturbing it — the column simply ends earlier
+       (#screen-term.diff-open moves its right edge in). -->
+  <div id="diff-gutter"></div>
+  <div id="diff-pane">
+    <div id="diff-head">
+      <span id="diff-root"></span>
+      <!-- The two lists, one git command each and only the shown one run: the
+           walk over everything git has never seen is what costs seconds on a
+           network checkout, so it happens when this asks for it and not
+           before (37-git-diff.js). In the header beside the repo's name
+           rather than on a row of their own, which the list can use. -->
+      <div id="diff-tabs" role="group" aria-label="Which changes to list">
+        <button type="button" class="diff-tab" id="btn-diff-tracked"
+                aria-pressed="true">Tracked</button>
+        <button type="button" class="diff-tab" id="btn-diff-untracked"
+                aria-pressed="false">Untracked</button>
+      </div>
+      <!-- How often this repo is being asked, when that is no longer every
+           two seconds because the repo takes longer than that to answer
+           (37-git-diff.js). Empty at the usual pace. -->
+      <span id="diff-every"></span>
+      <!-- Lit while a poll is in flight. Decoration to a screen reader: the
+           list and the diff underneath already announce their own changes. -->
+      <span id="diff-busy" aria-hidden="true"></span>
+      <button type="button" class="icon-btn" id="btn-diff-close"
+              aria-label="Close the diff pane"><svg><use href="#i-close"/></svg></button>
+    </div>
+    <div id="diff-files"></div>
+    <!-- The seam between the list and the diff, laid out between the two so it
+         is always on their border, and dragged to trade height between them
+         (37-git-diff.js). -->
+    <div id="diff-vsplit"></div>
+    <div id="diff-body"></div>
+    <!-- The pane's own toast: what Revert leaves behind instead of asking
+         first, and where a refused apply says why (37-git-diff.js). -->
+    <div id="diff-toast" role="status"></div>
+  </div>
 </div>
 
 <!-- ============================================================
@@ -695,6 +757,10 @@
     </div>
     <div class="list-row">
       <kbd>Ctrl+C</kbd><span>Copy the highlighted text when there is one &mdash; otherwise interrupt (not on a Mac)</span>
+    </div>
+    <div class="list-row">
+      <kbd>Ctrl+Shift+D</kbd><span>Split the git changes of the session's folder out beside the
+        terminal &mdash; a file list and its diff, refreshed while it is open</span>
     </div>
   </div>
   <label>Everywhere</label>

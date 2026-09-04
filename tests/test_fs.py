@@ -7,6 +7,8 @@ the auth path itself is covered by the transcribe suite's server-level tests.
 """
 
 import os
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -740,3 +742,447 @@ def test_session_cwd_empty_without_a_session(client, monkeypatch):
     r = client.get("/api/session_cwd", params={"session": "gone"})
     assert r.status_code == 200
     assert r.json()["cwd"] == ""
+
+
+# ---------------------------------------------------------------------------
+# git diff pane
+# ---------------------------------------------------------------------------
+# Against a real repo built in tmp_path, because what is being tested is the
+# parsing of git's own output — a stubbed `git` would only test the stub.
+
+HAVE_GIT = shutil.which("git") is not None
+needs_git = pytest.mark.skipif(not HAVE_GIT, reason="git is not installed")
+
+
+def run_git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+@pytest.fixture
+def repo(tmp_path):
+    """A committed repo with one modified file, one untracked, one staged."""
+    root = tmp_path / "proj"
+    (root / "sub").mkdir(parents=True)
+    (root / "tracked.txt").write_text("one\ntwo\nthree\n")
+    run_git(root, "init", "-q", ".")
+    run_git(root, "add", "tracked.txt")
+    run_git(root, "-c", "user.email=t@example.com", "-c", "user.name=T",
+            "commit", "-qm", "init")
+    (root / "tracked.txt").write_text("one\nTWO\nthree\n")
+    (root / "sub" / "fresh.txt").write_text("brand new\n")
+    (root / "staged.txt").write_text("staged\n")
+    run_git(root, "add", "staged.txt")
+    return root
+
+
+@pytest.fixture
+def in_repo(repo, monkeypatch):
+    """A session whose visible pane sits in the repo's subdirectory."""
+    monkeypatch.setattr(A, "resolve_target", lambda s, d: "work" if s else "")
+    monkeypatch.setattr(A, "pane_cwd", lambda name: str(repo / "sub"))
+    return repo
+
+
+@needs_git
+def test_tracked_scope_lists_both_index_and_worktree_and_nothing_new(client, in_repo):
+    """The default list: what git already knows, staged and not, and not one
+    row of the walk over what it has never seen — that is the other tab, and
+    the whole point of the split is that this call does not pay for it."""
+    r = client.get("/api/git/changes", params={"session": "work"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["root"] == str(in_repo)
+    assert [f["path"] for f in data["files"]] == ["staged.txt", "tracked.txt"]
+    by_path = {f["path"]: f for f in data["files"]}
+    assert by_path["staged.txt"]["status"] == "A "
+    assert by_path["tracked.txt"]["status"] == " M"
+    # X is the index and Y the worktree, which is the pane's two lists.
+    assert (by_path["staged.txt"]["staged"],
+            by_path["staged.txt"]["unstaged"]) == (True, False)
+    assert (by_path["tracked.txt"]["staged"],
+            by_path["tracked.txt"]["unstaged"]) == (False, True)
+
+
+@needs_git
+def test_untracked_scope_lists_new_files_and_collapses_a_new_folder(client, in_repo):
+    """The other list: only what git has never seen, and a folder with nothing
+    tracked in it as one row ending in a slash rather than as its contents."""
+    (in_repo / "notes.txt").write_text("notes\n")
+    (in_repo / "scratch").mkdir()
+    (in_repo / "scratch" / "a.txt").write_text("a\n")
+    (in_repo / "scratch" / "b.txt").write_text("b\n")
+    r = client.get("/api/git/changes",
+                   params={"session": "work", "scope": "untracked"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["root"] == str(in_repo)
+    # sub/ holds one untracked file and nothing tracked, so it collapses too.
+    assert [f["path"] for f in data["files"]] == [
+        "notes.txt", "scratch/", "sub/"]
+    for f in data["files"]:
+        assert (f["status"], f["staged"], f["unstaged"]) == ("??", False, True)
+
+
+@needs_git
+def test_untracked_scope_leaves_out_an_ignored_folder(client, in_repo):
+    (in_repo / ".gitignore").write_text("build/\n")
+    (in_repo / "build").mkdir()
+    (in_repo / "build" / "out.o").write_text("o\n")
+    files = client.get("/api/git/changes",
+                       params={"session": "work", "scope": "untracked"}).json()["files"]
+    assert [f["path"] for f in files] == [".gitignore", "sub/"]
+
+
+@needs_git
+def test_changes_says_how_long_it_took(client, in_repo):
+    """The pane paces its poll by this, so every answer carries it — including
+    the ones that never reached git at all."""
+    for params in ({"session": "work"},
+                   {"session": "work", "scope": "untracked"},
+                   {"session": ""}):
+        data = client.get("/api/git/changes", params=params).json()
+        assert isinstance(data["elapsed_ms"], int)
+        assert data["elapsed_ms"] >= 0
+
+
+@needs_git
+def test_changes_names_the_new_path_of_a_rename_once(client, in_repo):
+    run_git(in_repo, "mv", "tracked.txt", "renamed.txt")
+    r = client.get("/api/git/changes", params={"session": "work"})
+    files = r.json()["files"]
+    # The old path rides in a field of its own; it must not become a row.
+    assert [f["path"] for f in files] == ["renamed.txt", "staged.txt"]
+    assert files[0]["status"][0] == "R"
+
+
+@needs_git
+def test_changes_outside_a_repo_says_so_at_200(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "resolve_target", lambda s, d: "work")
+    monkeypatch.setattr(A, "pane_cwd", lambda name: str(tmp_path))
+    r = client.get("/api/git/changes", params={"session": "work"})
+    assert r.status_code == 200
+    data = r.json()
+    data.pop("elapsed_ms")
+    assert data == {"root": "", "files": [], "error": "Not a git repository"}
+
+
+def test_changes_without_a_session_is_empty(client, monkeypatch):
+    monkeypatch.setattr(A, "resolve_target", lambda s, d: "")
+    r = client.get("/api/git/changes", params={"session": ""})
+    assert r.status_code == 200
+    data = r.json()
+    data.pop("elapsed_ms")
+    assert data == {"root": "", "files": []}
+
+
+@needs_git
+def test_diff_of_a_tracked_file_is_the_worktree_against_the_index(client, in_repo):
+    r = client.get("/api/git/diff",
+                   params={"root": str(in_repo), "path": "tracked.txt"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["truncated"] is False
+    assert "@@ -1,3 +1,3 @@" in data["diff"]
+    assert "-two" in data["diff"] and "+TWO" in data["diff"]
+
+
+@needs_git
+def test_diff_of_a_staged_file_needs_the_staged_scope(client, in_repo):
+    """A staged add is in the index and not in the worktree's own diff."""
+    unstaged = client.get("/api/git/diff",
+                          params={"root": str(in_repo), "path": "staged.txt"})
+    assert unstaged.json()["diff"] == ""
+    staged = client.get("/api/git/diff", params={
+        "root": str(in_repo), "path": "staged.txt", "scope": "staged"})
+    assert "+staged" in staged.json()["diff"]
+
+
+@needs_git
+def test_diff_of_an_untracked_file_is_the_whole_file_added(client, in_repo):
+    r = client.get("/api/git/diff",
+                   params={"root": str(in_repo), "path": "sub/fresh.txt"})
+    data = r.json()
+    assert "+brand new" in data["diff"]
+    assert data["truncated"] is False
+
+
+@needs_git
+def test_diff_of_a_binary_file_says_binary_rather_than_nothing(client, in_repo):
+    (in_repo / "blob.bin").write_bytes(b"\x00\x01\x02\xff" * 64)
+    run_git(in_repo, "add", "blob.bin")
+    # Staged, so the staged scope is the list it is in and the one asked.
+    r = client.get("/api/git/diff", params={
+        "root": str(in_repo), "path": "blob.bin", "scope": "staged"})
+    assert r.json() == {"diff": "", "binary": True}
+
+
+@needs_git
+def test_diff_truncates_at_the_cap_and_says_so(client, in_repo, monkeypatch):
+    monkeypatch.setattr(A, "GIT_DIFF_MAX", 60)
+    r = client.get("/api/git/diff",
+                   params={"root": str(in_repo), "path": "tracked.txt"})
+    data = r.json()
+    assert data["truncated"] is True
+    assert len(data["diff"]) == 60
+
+
+@needs_git
+def test_diff_refuses_a_path_that_climbs_out_of_the_root(client, in_repo):
+    for bad in ("../outside.txt", "sub/../../outside.txt", "/etc/passwd", ""):
+        r = client.get("/api/git/diff",
+                       params={"root": str(in_repo), "path": bad})
+        assert r.status_code == 400, bad
+
+
+def test_diff_refuses_a_root_that_is_not_a_directory(client, tmp_path):
+    for bad in ("relative/path", str(tmp_path / "absent"), ""):
+        r = client.get("/api/git/diff", params={"root": bad, "path": "a.txt"})
+        assert r.status_code == 400, bad
+
+
+# ---------------------------------------------------------------------------
+# git apply — the pane's stage, revert, unstage and discard
+# ---------------------------------------------------------------------------
+# Against the same real repo, and through the same two GETs the pane uses to
+# decide what to send: a hunk action is only correct if the hunk the diff route
+# handed out is the one the apply route takes back.
+
+
+def split_patch(text):
+    """(header block, list of hunks) of one file's diff, as the pane splits it.
+
+    Everything before the first `@@` is the header every one-hunk patch is
+    rebuilt with; each `@@` starts a hunk that runs to the next one.
+    """
+    header, hunks = [], []
+    for line in text.rstrip("\n").split("\n"):
+        if line.startswith("@@"):
+            hunks.append([line])
+        elif hunks:
+            hunks[-1].append(line)
+        else:
+            header.append(line)
+    return header, hunks
+
+
+def one_hunk(text, i):
+    """The one-hunk patch the client sends for hunk `i` of `text`."""
+    header, hunks = split_patch(text)
+    return "\n".join(header + hunks[i]) + "\n"
+
+
+def git_diff(client, root, path, scope="unstaged"):
+    return client.get("/api/git/diff", params={
+        "root": str(root), "path": path, "scope": scope}).json()["diff"]
+
+
+def git_apply(client, root, path, action, patch=None):
+    body = {"root": str(root), "path": path, "action": action}
+    if patch is not None:
+        body["patch"] = patch
+    return client.post("/api/git/apply", json=body)
+
+
+def git_row(client, path, scope="tracked"):
+    files = client.get("/api/git/changes",
+                       params={"session": "work", "scope": scope}).json()["files"]
+    return next((f for f in files if f["path"] == path), None)
+
+
+def wide_text(first="1", last="20"):
+    """A 20-line file with swappable ends — far enough apart that a change at
+    each is two hunks rather than one."""
+    lines = [str(n) for n in range(1, 21)]
+    lines[0], lines[-1] = first, last
+    return "".join(line + "\n" for line in lines)
+
+
+@pytest.fixture
+def wide(in_repo):
+    """A committed 20-line file changed at both ends, neither change staged."""
+    (in_repo / "wide.txt").write_text(wide_text())
+    run_git(in_repo, "add", "wide.txt")
+    run_git(in_repo, "-c", "user.email=t@example.com", "-c", "user.name=T",
+            "commit", "-qm", "wide")
+    (in_repo / "wide.txt").write_text(wide_text("A", "Z"))
+    return in_repo
+
+
+@needs_git
+def test_a_partly_staged_file_is_in_both_lists_with_a_diff_each(client, wide):
+    (wide / "wide.txt").write_text(wide_text("A"))
+    run_git(wide, "add", "wide.txt")
+    (wide / "wide.txt").write_text(wide_text("A", "Z"))
+    row = git_row(client, "wide.txt")
+    assert row["status"] == "MM"
+    assert row["staged"] is True and row["unstaged"] is True
+    staged = git_diff(client, wide, "wide.txt", "staged")
+    unstaged = git_diff(client, wide, "wide.txt")
+    assert "+A" in staged and "+Z" not in staged
+    assert "+Z" in unstaged and "+A" not in unstaged
+
+
+@needs_git
+def test_stage_hunk_leaves_one_hunk_in_each_scope(client, wide):
+    text = git_diff(client, wide, "wide.txt")
+    assert len(split_patch(text)[1]) == 2
+    assert git_apply(client, wide, "wide.txt", "stage_hunk",
+                     one_hunk(text, 0)).status_code == 200
+    staged = git_diff(client, wide, "wide.txt", "staged")
+    unstaged = git_diff(client, wide, "wide.txt")
+    assert "+A" in staged and "+Z" not in staged
+    assert "+Z" in unstaged and "+A" not in unstaged
+    assert (wide / "wide.txt").read_text() == wide_text("A", "Z")
+
+
+@needs_git
+def test_unstage_hunk_takes_it_back_out_of_the_index(client, wide):
+    git_apply(client, wide, "wide.txt", "stage_hunk",
+              one_hunk(git_diff(client, wide, "wide.txt"), 0))
+    staged = git_diff(client, wide, "wide.txt", "staged")
+    assert git_apply(client, wide, "wide.txt", "unstage_hunk",
+                     one_hunk(staged, 0)).status_code == 200
+    assert git_diff(client, wide, "wide.txt", "staged") == ""
+    assert git_row(client, "wide.txt")["staged"] is False
+    # Unstaging is an index move only; the worktree keeps both changes.
+    assert (wide / "wide.txt").read_text() == wide_text("A", "Z")
+
+
+@needs_git
+def test_revert_hunk_drops_it_and_applying_it_forward_is_the_undo(client, wide):
+    patch = one_hunk(git_diff(client, wide, "wide.txt"), 1)
+    assert git_apply(client, wide, "wide.txt", "revert_hunk",
+                     patch).status_code == 200
+    # Only the block that was reverted: the change at the other end stands.
+    assert (wide / "wide.txt").read_text() == wide_text("A")
+    assert git_apply(client, wide, "wide.txt", "apply_hunk",
+                     patch).status_code == 200
+    assert (wide / "wide.txt").read_text() == wide_text("A", "Z")
+
+
+@needs_git
+def test_a_hunk_that_no_longer_applies_is_a_409_saying_so(client, wide):
+    patch = one_hunk(git_diff(client, wide, "wide.txt"), 1)
+    (wide / "wide.txt").write_text(wide_text("A", "Q"))
+    r = git_apply(client, wide, "wide.txt", "revert_hunk", patch)
+    assert r.status_code == 409
+    assert "does not apply" in r.json()["detail"]
+
+
+@needs_git
+def test_stage_file_stages_an_untracked_file_whole(client, in_repo):
+    assert git_apply(client, in_repo, "sub/fresh.txt",
+                     "stage_file").status_code == 200
+    row = git_row(client, "sub/fresh.txt")
+    assert row["status"] == "A "
+    assert row["staged"] is True and row["unstaged"] is False
+
+
+@needs_git
+def test_stage_file_records_a_deletion_too(client, in_repo):
+    (in_repo / "tracked.txt").unlink()
+    assert git_apply(client, in_repo, "tracked.txt",
+                     "stage_file").status_code == 200
+    assert git_row(client, "tracked.txt")["status"] == "D "
+
+
+@needs_git
+def test_discard_file_restores_a_tracked_file_from_the_index(client, in_repo):
+    assert git_apply(client, in_repo, "tracked.txt",
+                     "discard_file").status_code == 200
+    assert (in_repo / "tracked.txt").read_text() == "one\ntwo\nthree\n"
+    assert git_row(client, "tracked.txt") is None
+
+
+@needs_git
+def test_discard_file_deletes_an_untracked_file(client, in_repo):
+    assert git_apply(client, in_repo, "sub/fresh.txt",
+                     "discard_file").status_code == 200
+    assert not (in_repo / "sub" / "fresh.txt").exists()
+    assert git_row(client, "sub/fresh.txt", "untracked") is None
+
+
+@needs_git
+def test_discard_deletes_an_untracked_folder_whole(client, in_repo):
+    """A row the untracked list collapsed is a tree, and git holds no copy of
+    any of it — so discarding one is deleting it, trailing slash and all."""
+    (in_repo / "scratch").mkdir()
+    (in_repo / "scratch" / "deep").mkdir()
+    (in_repo / "scratch" / "deep" / "a.txt").write_text("a\n")
+    assert git_apply(client, in_repo, "scratch/",
+                     "discard_file").status_code == 200
+    assert not (in_repo / "scratch").exists()
+    assert git_row(client, "scratch/", "untracked") is None
+
+
+@needs_git
+def test_discard_refuses_a_symlinked_folder(client, in_repo):
+    """lstat, not stat: the link is what the row named, and following it would
+    empty whatever it points at."""
+    (in_repo / "elsewhere").mkdir()
+    (in_repo / "elsewhere" / "keep.txt").write_text("keep\n")
+    (in_repo / "link").symlink_to(in_repo / "elsewhere")
+    r = git_apply(client, in_repo, "link/", "discard_file")
+    assert r.status_code == 409
+    assert (in_repo / "link").is_symlink()
+    assert (in_repo / "elsewhere" / "keep.txt").exists()
+
+
+@needs_git
+def test_discard_refuses_an_untracked_path_that_is_not_a_regular_file(client, in_repo):
+    (in_repo / "link").symlink_to("/etc/passwd")
+    r = git_apply(client, in_repo, "link", "discard_file")
+    assert r.status_code == 409
+    assert (in_repo / "link").is_symlink()
+
+
+@needs_git
+def test_unstage_file_puts_a_staged_add_back_to_untracked(client, in_repo):
+    assert git_apply(client, in_repo, "staged.txt",
+                     "unstage_file").status_code == 200
+    assert git_row(client, "staged.txt", "untracked")["status"] == "??"
+
+
+@needs_git
+def test_the_staged_scope_works_before_the_first_commit(client, tmp_path,
+                                                        monkeypatch):
+    """No HEAD to compare against: --cached uses the empty tree, and it is
+    `reset` rather than `restore --staged` that can empty an index entry."""
+    root = tmp_path / "fresh"
+    root.mkdir()
+    run_git(root, "init", "-q", ".")
+    (root / "a.txt").write_text("a\n")
+    run_git(root, "add", "a.txt")
+    monkeypatch.setattr(A, "resolve_target", lambda s, d: "work")
+    monkeypatch.setattr(A, "pane_cwd", lambda name: str(root))
+    assert "+a" in git_diff(client, root, "a.txt", "staged")
+    assert git_apply(client, root, "a.txt", "unstage_file").status_code == 200
+    assert git_row(client, "a.txt", "untracked")["status"] == "??"
+
+
+@needs_git
+def test_apply_refuses_a_path_that_climbs_out_of_the_root(client, in_repo):
+    for bad in ("../outside.txt", "sub/../../outside.txt", "/etc/passwd", ""):
+        assert git_apply(client, in_repo, bad,
+                         "stage_file").status_code == 400, bad
+
+
+def test_apply_refuses_a_root_that_is_not_a_directory(client, tmp_path):
+    for bad in ("relative/path", str(tmp_path / "absent"), ""):
+        assert git_apply(client, bad, "a.txt", "stage_file").status_code == 400
+
+
+def test_version_names_the_git_routes_as_a_capability(client):
+    """A shell newer than the server must be able to tell that these three
+    routes are there before it opens a pane that would 404 on all of them."""
+    assert client.get("/api/version").json()["capabilities"]["git"] is True
+
+
+@needs_git
+def test_apply_refuses_an_unknown_action_and_a_patch_with_no_hunk(client, in_repo):
+    assert git_apply(client, in_repo, "tracked.txt",
+                     "commit_everything").status_code == 400
+    assert git_apply(client, in_repo, "tracked.txt", "stage_hunk",
+                     "not a patch at all\n").status_code == 400
+    assert git_apply(client, in_repo, "tracked.txt", "stage_hunk",
+                     "   ").status_code == 400
