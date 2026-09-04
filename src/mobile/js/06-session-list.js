@@ -380,9 +380,12 @@ $("btn-reload").addEventListener("click", () => loadSessions(true));
 (function() {
   let startY = null;
   const scr = $("screen-list");
+  const wrap = $("list-wrap");
   scr.addEventListener("touchstart", (e) => {
-    // In the wide layout the rail scrolls itself rather than the page.
-    const top = isWideLayout() ? scr.scrollTop : window.scrollY;
+    // In the wide layout the list scrolls inside the rail rather than the page
+    // — the rail itself is a fixed column with the shortcuts card pinned under
+    // the scrolling part, so it has no scrollTop of its own.
+    const top = isWideLayout() ? wrap.scrollTop : window.scrollY;
     startY = top <= 0 ? e.touches[0].clientY : null;
   }, { passive: true });
   scr.addEventListener("touchend", (e) => {
