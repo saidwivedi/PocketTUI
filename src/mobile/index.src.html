@@ -163,10 +163,9 @@
       </button>
     </div>
     <div id="rail-keys-body">
-      <div class="rail-key"><kbd id="rk-copy"></kbd><span>Copy</span></div>
-      <div class="rail-key"><kbd>Ctrl+C</kbd><span id="rk-interrupt"></span></div>
+      <div class="rail-key"><kbd>Shift+drag</kbd><span>Select and copy &mdash; copied as you let go</span></div>
       <div class="rail-key"><kbd id="rk-paste"></kbd><span>Paste</span></div>
-      <div class="rail-key"><kbd>Shift+drag</kbd><span>Select text</span></div>
+      <div class="rail-key"><kbd>Ctrl+C</kbd><span id="rk-interrupt"></span></div>
       <div class="rail-key"><kbd>Shift+Enter</kbd><span>Newline</span></div>
       <button type="button" id="btn-rail-keys-all">All shortcuts</button>
     </div>
@@ -687,13 +686,15 @@
       <kbd>Ctrl+V or Cmd+V</kbd><span>Paste &mdash; an image uploads and inserts its path</span>
     </div>
     <div class="list-row">
-      <kbd>Shift+drag or Option+drag</kbd><span>Select text &mdash; it is copied as soon as you let go</span>
+      <kbd>Shift+drag or Option+drag</kbd><span>Select and copy &mdash; the text is on the clipboard
+        the moment you let go, so just paste it</span>
     </div>
     <div class="list-row">
-      <kbd>Ctrl+Shift+C or Cmd+Shift+C</kbd><span>Copy the selection</span>
+      <kbd>Cmd+C, Ctrl+Shift+C or Cmd+Shift+C</kbd><span>Copy the highlighted text again &mdash; only
+        while it is still highlighted; on a trackpad a scroll hands the mouse to tmux and drops it</span>
     </div>
     <div class="list-row">
-      <kbd>Ctrl+C</kbd><span>Copy the selection when there is one &mdash; otherwise interrupt (not on a Mac)</span>
+      <kbd>Ctrl+C</kbd><span>Copy the highlighted text when there is one &mdash; otherwise interrupt (not on a Mac)</span>
     </div>
   </div>
   <label>Everywhere</label>
