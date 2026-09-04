@@ -225,6 +225,21 @@ function useWebgl() {
 (function mouseCopy() {
   const host = $("term-host");
 
+  // The modifier that holds a drag back is not the same one everywhere: xterm
+  // asks for Shift, except on a Mac, where it asks for Option and lets Shift
+  // through to tmux — which then runs its own copy mode, so the highlight looks
+  // right while xterm has no selection at all and every copy path here comes up
+  // empty. Shadow altKey on the mousedown so a Mac Shift+drag arrives as the
+  // Option+drag xterm is waiting for, and the pointerup copy and the copy keys
+  // see a selection. Only mousedown: mouseup keeps its real altKey, so a
+  // Shift+click never reaches altClickMovesCursor and sends arrow keys.
+  const isMac = ["Macintosh", "MacIntel", "MacPPC", "Mac68K"]
+    .includes(navigator.platform);
+  host.addEventListener("mousedown", (e) => {
+    if (!isMac || e.button !== 0 || !e.shiftKey || e.altKey) return;
+    Object.defineProperty(e, "altKey", { value: true });
+  }, true);
+
   // Select-to-copy, the way X11 terminals have always done it: the text is on
   // the clipboard the moment the mouse lets go of it, before anything else can
   // clear the selection. Pointer events are the discriminator — the long-press

@@ -2650,14 +2650,19 @@ html.term-open #dbg-panel {
      Its own paper and grain rather than showing the body through: while a
      terminal is open, syncChrome paints html/body in the terminal's
      background, which must not bleed into the rail. No border of its own:
-     the gutter (#rail-resize below) is the seam. */
+     the gutter (#rail-resize below) is the seam.
+     A column rather than a block, so the shortcuts card at its foot keeps the
+     rail's bottom edge whatever the list does above it: .list-wrap below takes
+     the scrolling the rail itself used to do. The phone's 40px of bottom
+     padding goes with it — under a pinned footer that is dead space, not
+     scroll slack — leaving only the home indicator's clearance. */
   #screen-list {
-    display: block;
+    display: flex;
+    flex-direction: column;
     position: fixed;
     top: 0; left: 0; bottom: 0;
     width: var(--sidebar-w);
-    overflow-y: auto;
-    overscroll-behavior: contain;
+    padding-bottom: var(--safe-bot);
     background-color: var(--paper);
     background-image: var(--grain);
     background-size: 200px 200px;
@@ -2684,7 +2689,13 @@ html.term-open #dbg-panel {
   #screen-list .brand .glyph { width: 18px; height: 18px; }
   #screen-list .icon-btn { padding: 6px; }
   #screen-list .icon-btn svg { width: 17px; height: 17px; }
-  #screen-list .list-wrap { padding: 0 14px 24px; }
+  #screen-list .list-wrap {
+    padding: 0 14px 24px;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
   #screen-list .list-new { margin: 8px 0 10px; }
   #screen-list .pill-btn { font-size: 12px; padding: 7px 10px 7px 8px; }
   #screen-list .eyebrow { font-size: 10px; margin-bottom: 10px; }
@@ -2842,5 +2853,94 @@ html.term-open #dbg-panel {
     opacity: 1;
     pointer-events: auto;
   }
+}
+
+/* ============================================================
+   RAIL SHORTCUTS CARD
+   ============================================================ */
+/* The chords the terminal answers to, at the foot of the rail. The sheet in
+   Settings holds all of them, but nobody goes looking in Settings for a key
+   they do not know exists — copy and interrupt share Ctrl+C off a Mac, and
+   that is the one people get wrong. Off by default everywhere: it earns its
+   place only where the rail is permanent AND a pointer says there is a
+   hardware keyboard to press these on, which is the same query the sheet's own
+   row in Settings wears. Phones and touch-only tablets never see it. */
+#rail-keys { display: none; }
+
+@media (min-width: 768px) and (min-height: 500px) and (hover: hover) and (pointer: fine) {
+  /* A card in the list's own idiom — the rail's .item recipe, not a new one —
+     held out of the scroll by #screen-list's flex column, and inset to the
+     list's 14px gutter so its edges line up with the session rows above. */
+  #rail-keys {
+    display: block;
+    flex: 0 0 auto;
+    margin: 0 14px 10px;
+    padding: 9px 10px 10px;
+    background: var(--card);
+    border: 1px solid var(--hair);
+    border-radius: 10px;
+  }
+  /* The head is the rail's own eyebrow — label, hairline, then the chevron,
+     which is the ordinary flow with the button moved to the end of the row.
+     The gap under it belongs to the body, so a collapsed card is exactly its
+     header row. */
+  #rail-keys-head { margin-bottom: 0; }
+  #btn-rail-keys {
+    order: 1;
+    flex: 0 0 auto;
+    background: transparent; border: none;
+    color: var(--tertiary);
+    padding: 2px 0 2px 6px;
+    margin: -2px 0;
+    cursor: pointer;
+    display: inline-flex; align-items: center;
+  }
+  #btn-rail-keys:hover { color: var(--ink); }
+  /* #i-back is a chevron; up says the body is showing, down that it is not —
+     the same reading as the explorer's ▴/▾ view button. */
+  #btn-rail-keys svg {
+    width: 13px; height: 13px;
+    transform: rotate(90deg);
+    transition: transform 0.2s var(--ease-out);
+  }
+  #rail-keys.closed #btn-rail-keys svg { transform: rotate(-90deg); }
+
+  #rail-keys-body { margin-top: 8px; }
+  /* Chord then meaning on one line, the shortcuts sheet's key rows scaled to
+     the rail: derived from --rail-title the way the session rows' meta line is,
+     so a resized rail takes the card with it. */
+  .rail-key {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-top: 5px;
+    font-size: calc(var(--rail-title) * 11 / 14);
+    line-height: 1.35;
+  }
+  .rail-key:first-child { margin-top: 0; }
+  .rail-key kbd {
+    flex: 0 0 auto;
+    font-family: var(--mono);
+    font-size: calc(var(--rail-title) * 10 / 14);
+    color: var(--secondary);
+    background: var(--paper-rec);
+    border: 1px solid var(--hair);
+    border-radius: 5px;
+    padding: 1.5px 5px;
+    white-space: nowrap;
+  }
+  .rail-key span { min-width: 0; color: var(--tertiary); }
+  /* A text link, not a button: the card is a hint, and the full list is the
+     footnote to it. */
+  #btn-rail-keys-all {
+    margin-top: 9px;
+    padding: 0;
+    background: transparent; border: none;
+    font-family: var(--sans);
+    font-size: calc(var(--rail-title) * 10.5 / 14);
+    color: var(--umber);
+    cursor: pointer;
+  }
+  #btn-rail-keys-all:hover { text-decoration: underline; }
 }
 </style>

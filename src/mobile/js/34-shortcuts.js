@@ -32,10 +32,12 @@ function syncShortcuts() {
   syncStepper("railfont", railFont, RAIL_FONT_MIN, RAIL_FONT_MAX);
 }
 
-$("btn-shortcuts").addEventListener("click", () => {
+function openShortcuts() {
   syncShortcuts();
   showSheet(true, "sheet-shortcuts");
-});
+}
+
+$("btn-shortcuts").addEventListener("click", openShortcuts);
 
 // A press moves the size by one pixel through the same apply the pinch settles
 // through, then reads back what actually landed — the clamp lives in there, so
@@ -50,3 +52,50 @@ for (const by of [-1, 1]) {
     syncShortcuts();
   });
 }
+
+// ============================================================
+// Shortcuts card in the rail
+// ============================================================
+// The sheet above is complete and unread: nobody opens Settings looking for a
+// chord they do not know exists, and the chord they get wrong is Ctrl+C, which
+// off a Mac copies a selection and interrupts when there is none. So the five
+// worth knowing sit at the foot of the rail, in the keys of the platform
+// actually in front of the user — the same /Mac/ test the terminal binds copy
+// on, so the card cannot promise a key the terminal does not answer to.
+//
+// Rail-only and keyboard-only: a phone has no chords to press and no room to
+// spare, and both gates are the stylesheet's (see RAIL SHORTCUTS CARD). The
+// collapse is remembered because a card you have read is one you want folded
+// away, and a rail is a thing you look at every day.
+const RAIL_KEYS_KEY = "pockettui_rail_keys";
+const railKeysMac = /Mac/.test(navigator.userAgent);
+
+$("rk-copy").textContent = railKeysMac ? "Cmd+C" : "Ctrl+Shift+C";
+$("rk-paste").textContent = railKeysMac ? "Cmd+V" : "Ctrl+V";
+$("rk-interrupt").textContent = railKeysMac
+  ? "Interrupt the program"
+  : "Interrupt — copies instead if text is selected";
+
+// One writer: the chevron's direction, the body's presence and what a screen
+// reader is told are the same fact.
+function syncRailKeys(open) {
+  $("rail-keys").classList.toggle("closed", !open);
+  $("rail-keys-body").hidden = !open;
+  const btn = $("btn-rail-keys");
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  btn.setAttribute("aria-label", open ? "Collapse the shortcuts" : "Expand the shortcuts");
+}
+
+// Open unless it was closed on purpose: anything else stored — absent,
+// hand-edited — reads as the default, the way the key pill's pin does.
+let railKeysOpen = true;
+try { railKeysOpen = localStorage.getItem(RAIL_KEYS_KEY) !== "closed"; } catch (e) {}
+syncRailKeys(railKeysOpen);
+
+$("btn-rail-keys").addEventListener("click", () => {
+  railKeysOpen = !railKeysOpen;
+  syncRailKeys(railKeysOpen);
+  try { localStorage.setItem(RAIL_KEYS_KEY, railKeysOpen ? "open" : "closed"); } catch (e) {}
+});
+
+$("btn-rail-keys-all").addEventListener("click", openShortcuts);
