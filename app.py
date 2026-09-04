@@ -11,7 +11,9 @@ Attach uses a *grouped* session (tmux new-session -t <target>): the phone gets
 an independent view of the same windows, so attaching from the phone never
 resizes or detaches the client already attached on the laptop. Each device gets
 its own view, named <device>-<target>, so two phones can watch one session at
-once; the views hide themselves from the session list by being grouped clones.
+once; the views hide themselves from the session list by being grouped clones,
+are killed when their device lets go, and any left over from an earlier run of
+this server are swept away at start.
 """
 
 import argparse
@@ -464,7 +466,8 @@ def session_rows() -> list[dict]:
         "list-sessions",
         "-F",
         "#{session_name}\t#{session_created}\t#{session_attached}\t#{session_windows}"
-        "\t#{session_grouped}\t#{session_group}\t#{session_id}\t#{@alias}\t#{@notify}",
+        "\t#{session_grouped}\t#{session_group}\t#{session_id}\t#{@alias}\t#{@notify}"
+        "\t#{@ptui_view}",
     )
     if rc != 0:
         return []
@@ -489,6 +492,7 @@ def session_rows() -> list[dict]:
             "sid": _session_sid(sid),
             "alias": alias,
             "notify": _notify_mode(notify),
+            "view": parts[9] == "1" if len(parts) > 9 else False,
         })
 
     # Oldest member per group, ordered by session id: tmux hands ids out in
@@ -785,6 +789,19 @@ def enable_mouse(view: str) -> None:
     tmux("set-option", "-t", view, "mouse", "on")
 
 
+def mark_view(view: str) -> None:
+    """Stamp the view as one this server made.
+
+    A grouped session is not proof of anything by itself — a user can make one
+    by hand (`tmux new-session -t work`) and would not thank us for killing it.
+    The marker is what lets sweep_views tell this app's per-device views from
+    such a clone; it rides on the session, so it survives a rename and dies
+    with the session it names.
+    """
+    # No "=" prefix, for the reason enable_mouse gives.
+    tmux("set-option", "-t", view, "@ptui_view", "1")
+
+
 # Build 0.8.118 tried to stop two clients resizing each other by pinning the
 # shared windows to `window-size smallest` + `aggressive-resize on`, and by
 # hooking `window-linked` on the view so windows opened later got pinned too.
@@ -836,6 +853,7 @@ def prepare_view(view: str) -> None:
     for _ in range(20):
         if session_exists(view):
             enable_mouse(view)
+            mark_view(view)
             heal_size_pins(view)
             return
         time.sleep(0.05)
@@ -853,6 +871,71 @@ def redraw_view(view: str) -> None:
     rc, out = tmux("list-clients", "-t", view, "-F", "#{client_tty}")
     for tty in (out.split() if rc == 0 else []):
         tmux("refresh-client", "-t", tty)
+
+
+def release_view(view: str) -> bool:
+    """Kill this device's view now that nothing is attached to it. Killed?
+
+    A view is a cache, not a session anybody owns: it holds one device's window
+    selection within the group and is worth exactly as long as that device is
+    on it. Left standing it is litter the user sees in their own `tmux ls`
+    forever, since nothing else ever cleans it up. The attached check is what
+    keeps a user who pointed their own terminal at a view from being kicked out
+    of it — and it is also why this is safe to call the moment a PTY goes: a
+    reconnect that beat us here already has a client on the session.
+
+    The cost is honest: a device that comes back after the linger window has to
+    mint a fresh view, so its window selection is not remembered across a long
+    disconnect. Across a short one it still is — that reconnect adopts the
+    lingering PTY (see linger_pty) and never gets here at all.
+    """
+    # One list-sessions rather than has-session + display-message: the latter
+    # answers session formats with nothing when no client is behind it, and a
+    # count that cannot be read must be treated as a client not to kick. A
+    # missing or ungrouped row is not a view; a representative is the user's
+    # own session under whatever name.
+    row = find_row(session_rows(), view)
+    if (row is None or not row["grouped"] or row["representative"]
+            or row["attached"]):
+        return False
+    if tmux("kill-session", "-t", f"={view}")[0] != 0:
+        return False
+    log(f"released view={view}")
+    return True
+
+
+def legacy_view_name(name: str, group: str) -> bool:
+    """Whether `name` is what view_name minted for `group` before mark_view."""
+    if name == "ptui-" + group:
+        return True
+    suffix = "-" + group
+    return name.endswith(suffix) and bool(DEV_RE.match(name[:-len(suffix)]))
+
+
+def sweep_views() -> list[str]:
+    """Kill every app view left over from an earlier run. Names killed.
+
+    Runs once at server start, which is the only moment the question is easy:
+    no Attachment exists yet, and a restart takes every attach child — and so
+    every client this server ever put on a view — down with it, so an
+    unattached app view now is an orphan by definition.
+
+    Marked views are this server's; the name rules are migration, for views
+    minted before mark_view existed and still sitting in the user's tmux. Both
+    spellings view_name has ever produced are covered — the legacy single view
+    and <device>-<group> with a prefix a device could actually have sent — and
+    neither matches a grouped clone the user made under a name of their own.
+    """
+    killed: list[str] = []
+    for row in session_rows():
+        if not row["grouped"] or row["representative"] or row["attached"]:
+            continue
+        if not row["view"] and not legacy_view_name(row["name"], row["group"]):
+            continue
+        if tmux("kill-session", "-t", f"={row['name']}")[0] == 0:
+            killed.append(row["name"])
+            log(f"swept stale view={row['name']}")
+    return killed
 
 
 # ---------------------------------------------------------------------------
@@ -3717,22 +3800,26 @@ async def linger_pty(view: str, me: Attachment,
                 # they took: a reader left off the fd here would be missing
                 # from it for the reconnect that adopts this PTY.
                 me.drained(item)
-        # Leaving is a decision about the dict, so it is made under the lock:
-        # a reconnect that got there first is holding it, and adopt() has
-        # already flipped `live` by the time this can look.
+        # Leaving is a decision about the dict *and* about the tmux session,
+        # so both are made under the lock: a reconnect that got there first is
+        # holding it, and adopt() has already flipped `live` by the time this
+        # can look. Killing the view in here rather than after is what keeps a
+        # reconnect that takes the lock next from attaching to a session this
+        # is about to kill — it finds the view gone and mints a fresh one.
         async with attach_lock(view):
             if me.live:
                 return
             if ATTACHED.get(view) is me:
                 del ATTACHED[view]
+            try:
+                loop.remove_reader(me.fd)
+            except (OSError, ValueError):
+                pass
+            await reap(me.pid, me.fd)
+            await asyncio.to_thread(release_view, view)
     except asyncio.CancelledError:
         # Adopted (or the server is going down and reap_lingering has it).
         raise
-    try:
-        loop.remove_reader(me.fd)
-    except (OSError, ValueError):
-        pass
-    await reap(me.pid, me.fd)
     me.done.set()
     log(f"linger over view={view} pid={me.pid} reason=timeout-or-pty-gone")
 
@@ -4035,6 +4122,18 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
             # Unblocks the newer connection, which is waiting for our PTY to be
             # gone.
             me.done.set()
+            if not me.retired.is_set():
+                # Our PTY is gone for good, so the view has no reason to stay —
+                # unless we were superseded, where the connection that retired
+                # us is about to `attach -d` this very view and needs it there.
+                # Excluding that branch is also what makes taking the lock here
+                # safe: the only holder that ever waits on this handler is that
+                # retiring successor. The dict check keeps the view of a
+                # connection that slipped in between the synchronous removal
+                # above and now.
+                async with attach_lock(view):
+                    if view not in ATTACHED:
+                        await asyncio.to_thread(release_view, view)
         try:
             await ws.close()
         except RuntimeError:
@@ -4973,6 +5072,15 @@ def main() -> None:
                 f"To run without a token, bind to loopback only: --host 127.0.0.1 "
                 f"--no-auth")
         log(f"pairing token loaded from {TOKEN_PATH}")
+
+    # Before the server is up, so nothing this run attaches can be swept. It
+    # lives here rather than in the app's lifespan because the test suite drives
+    # the app through TestClient, and a lifespan hook would run this against the
+    # developer's own tmux server before any fixture could stub it out.
+    swept = sweep_views()
+    if swept:
+        log(f"swept {len(swept)} stale view(s) from an earlier run: "
+            f"{', '.join(swept)}")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
 

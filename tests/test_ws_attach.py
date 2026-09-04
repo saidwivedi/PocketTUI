@@ -402,6 +402,71 @@ def test_linger_expiry_reaps_the_pty_and_the_next_connect_is_fresh(
         assert A.ATTACHED["phone-work"].pid != att.pid
 
 
+@pytest.fixture
+def released(monkeypatch):
+    """release_view as a recorder. The bridge's tmux is a stub with no groups
+    in it, so the real one would refuse every call and prove nothing about
+    *when* the handler asks — which is what these tests are about."""
+    calls = []
+    monkeypatch.setattr(A, "release_view",
+                        lambda view: calls.append(view) or True)
+    return calls
+
+
+def test_linger_expiry_releases_the_view(client, bridge, short_linger, released):
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+    # Nobody came back: the PTY goes, and the view with it — after the slot
+    # is empty, so a reconnect landing now mints a fresh view instead.
+    assert wait_for(lambda: released == ["phone-work"], timeout=5)
+    assert "phone-work" not in A.ATTACHED
+
+
+def test_a_reconnect_inside_the_linger_adopts_and_releases_nothing(
+        client, bridge, short_linger, released):
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+    assert wait_for(lambda: not A.ATTACHED["phone-work"].live)
+    with client.websocket_connect("/ws/attach/work") as ws2:
+        hello(ws2)
+        assert json.loads(ws2.receive()["text"]) == {"type": "adopted"}
+        # Well past where the linger would have expired: adoption cancelled
+        # it, so the view the device is looking at is never touched.
+        time.sleep(A.LINGER_S * 3)
+        assert released == []
+        assert A.ATTACHED["phone-work"].live
+
+
+def test_a_superseded_connection_leaves_the_view_for_its_successor(
+        client, bridge, released):
+    with client.websocket_connect("/ws/attach/work") as first:
+        hello(first)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        original = A.ATTACHED["phone-work"]
+        with client.websocket_connect("/ws/attach/work") as second:
+            hello(second)
+            assert wait_for(lambda: reaped(original.pid))
+            # The successor is about to `attach -d` this very view.
+            assert released == []
+            second.send_bytes(b"mine\n")
+            collect_bytes(second, b"mine")
+            assert released == []
+
+
+def test_a_pty_that_hangs_up_releases_the_view(client, bridge, released):
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        att = A.ATTACHED["phone-work"]
+        # The attach child dying is what tmux hanging up on us looks like:
+        # the one ending that never lingers, so the view goes at once.
+        os.kill(att.pid, signal.SIGTERM)
+        assert wait_for(lambda: "phone-work" not in A.ATTACHED)
+        assert wait_for(lambda: released == ["phone-work"])
+
+
 def test_a_superseding_connection_still_retires_rather_than_adopts(client, bridge):
     # The other takeover: the old socket is still live, so it must be told to
     # go, and the new connection gets its own PTY.
@@ -1005,6 +1070,66 @@ class TestRealTmux:
         # linger ends there rather than at its timeout.
         assert wait_for(lambda: "phone-base" not in A.ATTACHED, timeout=5)
         assert wait_for(lambda: reaped(pid), timeout=5)
+
+    def option(self, session, name):
+        rc, out = A.tmux("show-option", "-v", "-t", session, name)
+        return out.strip() if rc == 0 else ""
+
+    def test_linger_expiry_takes_the_view_and_a_reconnect_mints_a_new_one(
+            self, client, monkeypatch):
+        monkeypatch.setattr(A, "LINGER_S", 0.5)
+        self.new_session("base", cols=200, rows=50)
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            assert wait_for(lambda: self.clients("phone-base") != [])
+            # prepare_view stamped it as ours.
+            assert wait_for(lambda: self.option("phone-base", "@ptui_view")
+                            == "1")
+
+        # Nobody came back: the slot empties first, then the tmux client and
+        # the view go — and the user's own session is untouched.
+        assert wait_for(lambda: "phone-base" not in A.ATTACHED, timeout=5)
+        assert wait_for(lambda: not A.session_exists("phone-base"), timeout=5)
+        assert A.session_exists("base")
+        assert self.width() == "40"   # the shared window is still the base's
+
+        # Picking the phone back up is a fresh view of the same windows.
+        with client.websocket_connect("/ws/attach/base") as ws:
+            hello(ws, cols=40, rows=20)
+            assert wait_for(lambda: self.clients("phone-base") != [])
+            assert A.session_group("phone-base") == "base"
+            assert wait_for(lambda: self.option("phone-base", "@ptui_view")
+                            == "1")
+
+    def test_release_spares_anything_that_is_not_an_idle_view(self):
+        self.new_session("base")
+        rc, _ = A.tmux("new-session", "-d", "-s", "phone-base", "-t", "base")
+        assert rc == 0
+        # Ungrouped: a real session, whatever it is called.
+        assert A.release_view("base") is False
+        # Someone's terminal is on it.
+        self.laptop("phone-base")
+        assert A.release_view("phone-base") is False
+        assert A.session_exists("phone-base") and A.session_exists("base")
+        # Gone already: nothing to do, nothing to fail on.
+        assert A.release_view("nobody-base") is False
+
+    def test_sweep_kills_orphaned_views_and_nothing_else(self):
+        self.new_session("base")
+        for view in ("phone-base", "ipad-base", "mba-base", "mirror"):
+            rc, _ = A.tmux("new-session", "-d", "-s", view, "-t", "base")
+            assert rc == 0
+        A.mark_view("phone-base")        # ours, left behind by an earlier run
+        A.mark_view("mba-base")          # ours, but a client is on it
+        self.laptop("mba-base")
+        # ipad-base: unmarked, from before the marker — the name gives it away.
+        # mirror: the user's own hand-made clone.
+        assert set(A.sweep_views()) == {"phone-base", "ipad-base"}
+        assert A.session_exists("base")
+        assert A.session_exists("mirror")
+        assert A.session_exists("mba-base") and self.clients("mba-base") != []
+        assert not A.session_exists("phone-base")
+        assert not A.session_exists("ipad-base")
 
     def test_attaching_heals_the_0_8_118_size_pins(self, client):
         self.new_session("base", cols=200, rows=50)
