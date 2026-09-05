@@ -78,7 +78,10 @@ function openExplorer(path) {
     filesStack = [];         // seeded once loadDir below resolves the real path
     history.pushState({ files: true }, "", location.href);
   }
-  loadDir(path);
+  // The listing is handed back rather than left running: openPathInExplorer
+  // opens a file on top of this folder, and the folder is only really the
+  // screen underneath once its listing has landed and seeded filesStack.
+  return loadDir(path);
 }
 
 // The state object for the history entry matching wherever navigation
@@ -171,6 +174,27 @@ async function openFilesAtCwd() {
   openExplorer(cwd);
 }
 
+// The other terminal entry point: a path printed in a pane and tapped
+// (activateLink in 08-links.js). A folder is browsed; a file opens the way
+// tapping its row would, over the folder that holds it — closeEditor and
+// closeReader put #screen-files back rather than returning anywhere of their
+// own, so the parent has to be on screen and on the history stack before the
+// file's view goes up. Awaiting the listing is what makes that ordering real:
+// back from the file then lands on the parent, and back again on the terminal.
+async function openPathInExplorer(path) {
+  if (demoMode) { toast("No files in the demo"); return; }
+  let hit;
+  try {
+    hit = await resolveFsPath(path);
+  } catch (e) {
+    dbg("path link failed:", e);
+    toast("Couldn't find " + path);
+    return;
+  }
+  if (hit.kind === "dir") { openExplorer(hit.path); return; }
+  if (await openExplorer(hit.dir)) openEntry(hit.entry, hit.dir);
+}
+
 // Keyed by the server's own normalized path (what data.path comes back as,
 // not necessarily what was requested — ~ resolves, PATH_REWRITES can retarget
 // a mount). The address field's suggestions read this before fetching, so
@@ -193,6 +217,31 @@ async function fsList(path) {
   }
   filesListCache.set(data.path, data);
   return data;
+}
+
+// What a path is on the backend, resolved the only way the client can: list
+// it. A directory answers with its own listing; anything else that exists is
+// found by name in its parent, which is also where its type comes from. Shared
+// by the address bar and by a path tapped in the terminal so the two agree on
+// what a typed-or-printed string means. The error fsList threw is passed on for
+// the caller to phrase — "not_a_directory" reaches the caller only when the
+// leaf is not in its parent either, which means nothing is there at all.
+async function resolveFsPath(path) {
+  let data;
+  try {
+    data = await fsList(path);
+  } catch (e) {
+    if (e.code !== "not_a_directory") throw e;
+    const [dirPart, name] = splitTyped(path);
+    let parent = null;
+    try {
+      parent = dirPart ? (filesListCache.get(dirPart) || await fsList(dirPart)) : null;
+    } catch (e2) {}
+    const entry = parent && (parent.entries || []).find(x => x.name === name);
+    if (!entry) throw e;
+    return { kind: "entry", entry: entry, dir: parent.path };
+  }
+  return { kind: "dir", path: data.path, data: data };
 }
 
 // /api/fs/read, with the answers both readers of a file — the editor and the
@@ -453,29 +502,22 @@ async function submitPathEdit() {
   if (!typed) { closePathEdit(); return; }
   clearTimeout(suggestTimer);
   suggestGen++;
+  let hit;
   try {
-    const data = await fsList(typed);
-    closePathEdit();
-    applyListing(data);
-    history.pushState({ files: true, path: filesPath }, "", location.href);
-    filesStack.push(filesPath);
-    return;
+    hit = await resolveFsPath(typed);
   } catch (e) {
-    if (e.code !== "not_a_directory") {
-      closePathEdit();
-      showListError(e);
-      return;
-    }
+    // A path that is not there at all leaves the field open to be fixed; a
+    // folder that exists and cannot be listed is the explorer's own error.
+    if (e.code === "not_a_directory") { toast("Couldn't find that path"); return; }
+    closePathEdit();
+    showListError(e);
+    return;
   }
-  // Not a directory: it may still be a file. Split off the parent and confirm
-  // the leaf is really there rather than trusting the typed name outright.
-  const [dirPart, name] = splitTyped(typed);
-  try {
-    const data = dirPart ? (filesListCache.get(dirPart) || await fsList(dirPart)) : null;
-    const entry = data && (data.entries || []).find(e => e.name === name);
-    if (entry) { closePathEdit(); openEntry(entry, dirPart); return; }
-  } catch (e2) {}
-  toast("Couldn't find that path");
+  closePathEdit();
+  if (hit.kind !== "dir") { openEntry(hit.entry, hit.dir); return; }
+  applyListing(hit.data);
+  history.pushState({ files: true, path: filesPath }, "", location.href);
+  filesStack.push(filesPath);
 }
 
 $("btn-files-edit-path").addEventListener("click", () => {

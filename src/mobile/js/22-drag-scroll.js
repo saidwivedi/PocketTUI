@@ -138,16 +138,15 @@ let selectEndedAt = 0;
     schedule();
   }, { passive: false });
 
-  // A tap on an image path opens the viewer, a tap on a URL opens the browser.
-  // xterm's own linkifier resolves the link under the pointer from mousemove,
-  // which a touch never delivers, so the tap is read here from the cell the
-  // touch started on.
+  // A tap on a link opens whatever it names — the browser, the viewer, the
+  // explorer. xterm's own linkifier resolves the link under the pointer from
+  // mousemove, which a touch never delivers, so the tap is read here from the
+  // cell the touch started on and handed to the same activateLink().
   host.addEventListener("touchend", () => {
     if (lastY === null || dragScrolled || edgeSwipe || termGesture || !term) return;
     const hit = linkAt(col, row + term.buffer.active.viewportY);
     if (!hit) return;
-    if (hit.url) openUrl(hit.url);
-    else showImage(hit.path);
+    activateLink(hit);
   }, { passive: true });
 
   // Let go mid-flick and the scroll keeps going, decaying, like a native list.
