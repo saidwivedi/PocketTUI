@@ -196,7 +196,7 @@ function ensureTerm() {
   // Both handlers have to agree before xterm sees the key: the first one to
   // claim it returns false and the chain stops there.
   term.attachCustomKeyEventHandler(ev => copyKeyBinding(ev) && shiftEnterIsNewline(ev));
-  term.registerLinkProvider({ provideLinks: provideImageLinks });
+  term.registerLinkProvider({ provideLinks: provideTermLinks });
   // A selection can go away without the gesture asking — a reset, or xterm
   // dropping it on a repaint — and the Copy pill must not outlive it.
   term.onSelectionChange(() => termSelectionCleared());
