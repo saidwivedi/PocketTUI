@@ -585,20 +585,58 @@ def list_sessions() -> list[dict]:
     return sessions
 
 
+def ssh_title_path(title: str) -> str:
+    """The absolute path an ssh pane's terminal title reports, or "".
+
+    Remote shells set the title to `user@host: /the/cwd`, some without the
+    space and some without the user, so the path is everything after the first
+    colon — taken whole rather than split on whitespace, which a path may
+    contain. A ~ path is refused: it names the remote home, and the local home
+    is a different directory belonging to nobody in that session.
+    """
+    _, sep, rest = title.partition(":")
+    if not sep:
+        return ""
+    if rest.startswith(" "):
+        rest = rest[1:]
+    rest = rest.rstrip()
+    return rest if rest.startswith("/") else ""
+
+
 def pane_cwd(name: str) -> str:
     """The working directory of the session's active pane, or "".
 
     list-panes rather than display-message, for the reason given in active_pane:
     display-message resolves its target against the calling client's session,
     and this server has no tty and so no session of its own.
+
+    Inside ssh the pane's process is the ssh client, so pane_current_path is
+    the local directory the user typed ssh in rather than the remote shell's
+    cwd. The remote shell announces that cwd in the terminal title, so an ssh
+    pane's title is tried first and taken when the same path — directly, or
+    through PATH_REWRITES — is a directory on this machine too, which is the
+    case for storage both ends mount. Anything else falls back to
+    pane_current_path, and a pane running something other than ssh never has
+    its title read: a local shell's title can say anything at all.
     """
     rc, out = tmux(
         "list-panes", "-t", f"={name}", "-f", "#{pane_active}",
-        "-F", "#{pane_current_path}",
+        "-F", "#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
     )
     if rc != 0 or not out.strip():
         return ""
-    path = out.strip().splitlines()[0].strip()
+    parts = out.strip().splitlines()[0].split("\t")
+    command = parts[0]
+    path = parts[1].strip() if len(parts) > 1 else ""
+    title = parts[2] if len(parts) > 2 else ""
+    if os.path.basename(command) == "ssh":
+        remote = ssh_title_path(title)
+        if remote:
+            if os.path.isdir(remote):
+                return remote
+            for alt in rewritten_paths(remote):
+                if os.path.isdir(alt):
+                    return alt
     return path if os.path.isdir(path) else ""
 
 
@@ -1117,7 +1155,8 @@ def api_session_cwd(session: str = "", dev: str = "") -> Response:
     /api/sessions row: the list refreshes constantly and would pay one more
     tmux call per session for an answer only this tap uses. resolve_target
     prefers the device's own grouped view, so the cwd is the pane the user is
-    actually looking at rather than the base session's.
+    actually looking at rather than the base session's. A pane sitting in ssh
+    answers with its remote cwd when that path is mounted here as well.
     """
     target = resolve_target(session, dev if DEV_RE.match(dev) else "")
     return no_store(JSONResponse({"cwd": pane_cwd(target) if target else ""}))
@@ -2630,6 +2669,17 @@ def _parse_path_rewrites(raw: str) -> list[tuple[str, str]]:
 PATH_REWRITES = _parse_path_rewrites(os.environ.get("POCKETTUI_PATH_REWRITES", ""))
 
 
+def rewritten_paths(path: str):
+    """Every configured rewrite of `path`, in the order they were configured.
+
+    The mappings alone; whether a rewrite landed on anything is the caller's
+    question, since one wants a path that exists and another a directory.
+    """
+    for src, dst in PATH_REWRITES:
+        if path.startswith(src):
+            yield dst + path[len(src):]
+
+
 MEDIA_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -2729,11 +2779,9 @@ def fs_path(raw: str) -> Path | None:
     if not path.startswith("/"):
         return None
     if not os.path.lexists(path):
-        for src, dst in PATH_REWRITES:
-            if path.startswith(src):
-                alt = dst + path[len(src):]
-                if os.path.lexists(alt):
-                    return Path(alt)
+        for alt in rewritten_paths(path):
+            if os.path.lexists(alt):
+                return Path(alt)
     return Path(path)
 
 
