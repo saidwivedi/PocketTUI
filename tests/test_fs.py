@@ -746,9 +746,10 @@ def test_session_cwd_empty_without_a_session(client, monkeypatch):
 
 # An ssh pane's own path is the local directory the user typed ssh in; the
 # remote cwd only reaches tmux through the title the remote shell sets.
-def fake_panes(monkeypatch, command, path, title):
-    monkeypatch.setattr(A, "tmux",
-                        lambda *a: (0, f"{command}\t{path}\t{title}\n"))
+def fake_panes(monkeypatch, command, path, title, remembered=""):
+    monkeypatch.setattr(
+        A, "tmux",
+        lambda *a: (0, f"{command}\t{path}\t{title}\t{remembered}\n"))
 
 
 def test_pane_cwd_of_an_ssh_pane_takes_the_title_path(tmp_path, monkeypatch):
@@ -793,6 +794,91 @@ def test_pane_cwd_of_a_local_shell_ignores_its_title(tmp_path, monkeypatch):
     other.mkdir()
     fake_panes(monkeypatch, "zsh", str(tmp_path), f"me@box: {other}")
     assert A.pane_cwd("work") == str(tmp_path)
+
+
+# A TUI inside the remote shell overwrites the live title, so the hook's copy
+# of the last shell-shaped one is the only cwd left to read.
+def test_pane_cwd_falls_back_to_the_remembered_title(tmp_path, monkeypatch):
+    remote = tmp_path / "before claude started"
+    remote.mkdir()
+    fake_panes(monkeypatch, "ssh", str(tmp_path), "✳ some claude topic",
+               remembered=f"me@login2: {remote}")
+    assert A.pane_cwd("work") == str(remote)
+
+
+def test_pane_cwd_prefers_the_live_title_over_the_remembered_one(tmp_path,
+                                                                 monkeypatch):
+    now = tmp_path / "now"
+    now.mkdir()
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    fake_panes(monkeypatch, "ssh", str(tmp_path), f"me@login2: {now}",
+               remembered=f"me@login2: {stale}")
+    assert A.pane_cwd("work") == str(now)
+
+
+def test_pane_cwd_refuses_a_remembered_remote_home(tmp_path, monkeypatch):
+    fake_panes(monkeypatch, "ssh", str(tmp_path), "✳ topic",
+               remembered="me@login2: ~/x")
+    assert A.pane_cwd("work") == str(tmp_path)
+
+
+def test_pane_cwd_of_a_local_shell_ignores_the_remembered_title(tmp_path,
+                                                                monkeypatch):
+    other = tmp_path / "remembered"
+    other.mkdir()
+    fake_panes(monkeypatch, "zsh", str(tmp_path), "✳ topic",
+               remembered=f"me@box: {other}")
+    assert A.pane_cwd("work") == str(tmp_path)
+
+
+# The stubs above take the hook's effect on trust; this one makes a real tmux
+# run the real hook, because the whole mechanism is one format string tmux has
+# to accept and expand exactly as written.
+TMUX_CWD_BIN = ["tmux", "-L", f"ptui-cwd-test-{os.getpid()}", "-f", "/dev/null"]
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not installed")
+def test_remembered_title_survives_a_tui_on_a_real_tmux(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "TMUX_BIN", list(TMUX_CWD_BIN))
+    remote = tmp_path / "remote cwd"
+    remote.mkdir()
+    try:
+        # `exec -a ssh` is what makes the pane look like an ssh client to the
+        # hook's condition without needing a host to connect to.
+        rc, _ = A.tmux("new-session", "-d", "-s", "sshpane",
+                       "bash", "-c", "exec -a ssh sleep 30")
+        assert rc == 0
+        A.install_title_hook()
+
+        def pane(fmt):
+            return A.tmux("list-panes", "-t", "=sshpane", "-F", fmt)[1].strip()
+
+        for _ in range(40):
+            if pane("#{pane_current_command}") == "ssh":
+                break
+            time.sleep(0.05)
+        else:
+            pytest.skip("this platform does not report argv[0] as the pane "
+                        "command, so the pane cannot pose as ssh")
+
+        tty = pane("#{pane_tty}")
+        # The shell's title, then the TUI's over the top of it.
+        for title in (f"me@login2: {remote}", "✳ some claude topic"):
+            with open(tty, "w") as term:
+                term.write(f"\033]2;{title}\033\\")
+            for _ in range(40):
+                if pane("#{pane_title}") == title:
+                    break
+                time.sleep(0.05)
+            assert pane("#{pane_title}") == title
+
+        assert pane("#{@ptui_remote_cwd}") == f"me@login2: {remote}"
+        assert A.pane_cwd("sshpane") == str(remote)
+    finally:
+        subprocess.run([*TMUX_CWD_BIN, "kill-server"], capture_output=True,
+                       timeout=10)
 
 
 # ---------------------------------------------------------------------------

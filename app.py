@@ -585,6 +585,43 @@ def list_sessions() -> list[dict]:
     return sessions
 
 
+# The condition and body of the pane-title hook, kept here so the helper below
+# and the tests read the same string. Only ssh panes are recorded: a local
+# shell's own `user@host: /path` title would otherwise be remembered in a pane
+# that later runs ssh, and the explorer would open at a stale local directory.
+TITLE_HOOK = (
+    'if-shell -F '
+    '"#{&&:#{==:#{pane_current_command},ssh},#{m:*@*: /*,#{pane_title}}}" '
+    '"set-option -pF @ptui_remote_cwd \\"#{pane_title}\\""'
+)
+
+
+def install_title_hook() -> None:
+    """Have tmux remember each ssh pane's last shell-shaped title.
+
+    The remote shell announces its cwd in the terminal title, but a TUI started
+    inside that shell — Claude Code, vim, anything that sets its own title —
+    overwrites it, and pane_cwd is left with a title that names no directory.
+    A server hook copies every shell-shaped title into a pane option as it goes
+    past, so the last one the shell set is still there after the TUI has taken
+    the live title over.
+
+    The hook is global and so lives only as long as the tmux server: this is
+    called at startup and again whenever this app may have started a fresh
+    server. Setting it twice is the same as setting it once. tmux before 3.0
+    has no `set-option -F`, and there may be no server running at all, in which
+    case the command simply fails and the explorer keeps its old behaviour.
+    """
+    rc, _ = tmux("set-hook", "-g", "pane-title-changed", TITLE_HOOK)
+    if rc == 0:
+        log("tmux pane-title hook installed: ssh panes remember their cwd")
+    else:
+        # Nothing is wrong yet if this is startup and no tmux server is up:
+        # the first session this app creates installs the hook itself.
+        log("no tmux pane-title hook: set-hook was refused (no server yet, or "
+            "a tmux older than 3.0)")
+
+
 def ssh_title_path(title: str) -> str:
     """The absolute path an ssh pane's terminal title reports, or "".
 
@@ -618,10 +655,19 @@ def pane_cwd(name: str) -> str:
     case for storage both ends mount. Anything else falls back to
     pane_current_path, and a pane running something other than ssh never has
     its title read: a local shell's title can say anything at all.
+
+    A TUI running in the remote shell (Claude Code, vim) sets the title to its
+    own text and the shell's is gone, which is why install_title_hook keeps the
+    last shell-shaped one in @ptui_remote_cwd: the live title is still tried
+    first, being the fresher of the two whenever it parses, and the remembered
+    one covers the pane the TUI has taken over. Its limit is that the shell has
+    to have drawn a prompt in the folder before the TUI started — a session
+    that went straight into a TUI never announced a cwd for tmux to keep.
     """
     rc, out = tmux(
         "list-panes", "-t", f"={name}", "-f", "#{pane_active}",
-        "-F", "#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
+        "-F", "#{pane_current_command}\t#{pane_current_path}\t#{pane_title}"
+              "\t#{@ptui_remote_cwd}",
     )
     if rc != 0 or not out.strip():
         return ""
@@ -629,9 +675,12 @@ def pane_cwd(name: str) -> str:
     command = parts[0]
     path = parts[1].strip() if len(parts) > 1 else ""
     title = parts[2] if len(parts) > 2 else ""
+    remembered = parts[3] if len(parts) > 3 else ""
     if os.path.basename(command) == "ssh":
-        remote = ssh_title_path(title)
-        if remote:
+        for candidate in (title, remembered):
+            remote = ssh_title_path(candidate)
+            if not remote:
+                continue
             if os.path.isdir(remote):
                 return remote
             for alt in rewritten_paths(remote):
@@ -2596,6 +2645,9 @@ def api_new_session(request: Request, body: dict = Body(...)) -> Response:
     if rc != 0:
         return JSONResponse({"error": f"tmux could not create '{name}'."},
                             status_code=500)
+    # This may be the command that started the tmux server, and a global hook
+    # dies with the server it was set on.
+    install_title_hook()
     return no_store(JSONResponse({"session": name}))
 
 
@@ -2642,6 +2694,8 @@ def api_update() -> Response:
     if rc != 0:
         return JSONResponse({"error": "tmux could not start the update."},
                             status_code=500)
+    # As in api_new_session: a server this command started has no hook yet.
+    install_title_hook()
     return no_store(JSONResponse({"session": UPDATE_SESSION}))
 
 
@@ -5566,6 +5620,8 @@ def main() -> None:
     if swept:
         log(f"swept {len(swept)} stale view(s) from an earlier run: "
             f"{', '.join(swept)}")
+
+    install_title_hook()
 
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
 
