@@ -2778,11 +2778,23 @@ html.term-open #dbg-panel {
   /* The rail's own type scale: a dense desktop sidebar, not a phone list
      that happens to be 320px wide. Everything scoped to #screen-list so the
      main pane's screens keep the phone sizes untouched. */
-  #screen-list .topbar { padding: 10px 14px 8px; }
+  #screen-list .topbar {
+    padding: 10px 14px 8px;
+    /* A size container, like .list-wrap below it, so the icons can close
+       ranks as the rail is dragged narrow instead of running off its edge. */
+    container-type: inline-size;
+  }
   #screen-list .brand { font-size: 15px; }
   #screen-list .brand .glyph { width: 18px; height: 18px; }
   #screen-list .icon-btn { padding: 6px; }
   #screen-list .icon-btn svg { width: 17px; height: 17px; }
+  /* No folder button on the rail: the terminal beside it has the key bar's
+     folder key and, since paths in it are links, the folders it prints. The
+     phone's list keeps its button — there the list is a screen of its own. */
+  #screen-list #btn-files { display: none; }
+  @container (max-width: 280px) {
+    #screen-list .right { gap: 0; padding-left: 4px; }
+  }
   #screen-list .list-wrap {
     padding: 0 14px 24px;
     flex: 1;
