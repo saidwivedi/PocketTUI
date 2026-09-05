@@ -744,6 +744,57 @@ def test_session_cwd_empty_without_a_session(client, monkeypatch):
     assert r.json()["cwd"] == ""
 
 
+# An ssh pane's own path is the local directory the user typed ssh in; the
+# remote cwd only reaches tmux through the title the remote shell sets.
+def fake_panes(monkeypatch, command, path, title):
+    monkeypatch.setattr(A, "tmux",
+                        lambda *a: (0, f"{command}\t{path}\t{title}\n"))
+
+
+def test_pane_cwd_of_an_ssh_pane_takes_the_title_path(tmp_path, monkeypatch):
+    remote = tmp_path / "mounted here too"
+    remote.mkdir()
+    fake_panes(monkeypatch, "ssh", str(tmp_path), f"me@login2: {remote}")
+    assert A.pane_cwd("work") == str(remote)
+
+
+def test_pane_cwd_of_an_ssh_pane_takes_a_spaceless_title_path(tmp_path, monkeypatch):
+    remote = tmp_path / "elsewhere"
+    remote.mkdir()
+    fake_panes(monkeypatch, "ssh", str(tmp_path), f"me@login2:{remote}")
+    assert A.pane_cwd("work") == str(remote)
+
+
+def test_pane_cwd_of_an_ssh_pane_rewrites_a_remote_mount_name(tmp_path, monkeypatch):
+    here = tmp_path / "local-mount"
+    here.mkdir()
+    monkeypatch.setattr(A, "PATH_REWRITES", [("/remote/mount", str(here))])
+    fake_panes(monkeypatch, "ssh", str(tmp_path), "me@login2: /remote/mount")
+    assert A.pane_cwd("work") == str(here)
+
+
+def test_pane_cwd_of_an_ssh_pane_falls_back_when_the_path_is_not_here(tmp_path, monkeypatch):
+    fake_panes(monkeypatch, "ssh", str(tmp_path), "me@login2: /nowhere/on/this/box")
+    assert A.pane_cwd("work") == str(tmp_path)
+
+
+def test_pane_cwd_of_an_ssh_pane_refuses_a_remote_home(tmp_path, monkeypatch):
+    fake_panes(monkeypatch, "ssh", str(tmp_path), "me@login2: ~/work")
+    assert A.pane_cwd("work") == str(tmp_path)
+
+
+def test_pane_cwd_of_an_ssh_pane_falls_back_without_a_path_in_the_title(tmp_path, monkeypatch):
+    fake_panes(monkeypatch, "ssh", str(tmp_path), "me@login2")
+    assert A.pane_cwd("work") == str(tmp_path)
+
+
+def test_pane_cwd_of_a_local_shell_ignores_its_title(tmp_path, monkeypatch):
+    other = tmp_path / "titled"
+    other.mkdir()
+    fake_panes(monkeypatch, "zsh", str(tmp_path), f"me@box: {other}")
+    assert A.pane_cwd("work") == str(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # git diff pane
 # ---------------------------------------------------------------------------
