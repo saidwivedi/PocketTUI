@@ -211,10 +211,11 @@ body {
    waiting. The dot is drawn here rather than carried in the markup because the
    button's label is written from script. */
 .pill-btn.pill-alert {
-  /* Outlined like New session beside it, in the diff's own green so "newer
-     is available" reads as good news rather than as another umber control;
-     both themes carry the pair. The fill is kept for the hover. */
-  background: transparent;
+  /* Filled with the diff's own light green, ink and border in its darker
+     one, so "newer is available" reads as good news and as the one thing on
+     the rail that is not an outline — an outlined pill beside New session
+     was too easy to take for another control. Both themes carry the pair. */
+  background: var(--diff-add-bg);
   color: var(--diff-add-ink);
   border-color: var(--diff-add-ink);
   font-variant-numeric: tabular-nums;
@@ -225,7 +226,8 @@ body {
   border-radius: 50%;
   background: var(--good);
 }
-.pill-btn.pill-alert:hover { background: var(--diff-add-bg); }
+/* The fill is the resting state now, so the hover deepens it a step instead. */
+.pill-btn.pill-alert:hover { background: color-mix(in srgb, var(--diff-add-bg) 82%, var(--diff-add-ink)); }
 
 /* The same notice once the install is running. It keeps its place and its
    colour — it is the same piece of news — and only stops being a button: there
@@ -233,7 +235,7 @@ body {
    screen glanced at across the room says the wait is still alive, which the
    label alone cannot. */
 .pill-btn.pill-alert:disabled { opacity: 0.72; cursor: default; }
-.pill-btn.pill-alert:disabled:hover { background: transparent; }
+.pill-btn.pill-alert:disabled:hover { background: var(--diff-add-bg); }
 .pill-btn.pill-alert:disabled:active { transform: none; }
 .pill-btn.pill-working::before { animation: pill-pulse 1.4s var(--ease-out) infinite; }
 @keyframes pill-pulse {
