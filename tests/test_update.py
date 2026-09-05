@@ -153,7 +153,24 @@ def test_pane_reports_the_wrappers_exit_status(client, tmp_path, monkeypatch):
     write_wrapper(tmp_path, monkeypatch, status=7)
     assert client.post("/api/update").status_code == 200
     assert "status 7" in pane_when("update finished")
+    # A failed run keeps its pane: the status line is only useful with the
+    # installer's output still above it.
+    time.sleep(1.5)
+    assert A.session_exists(A.UPDATE_SESSION)
     A.tmux("kill-session", "-t", f"={A.UPDATE_SESSION}")
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
+def test_a_successful_update_lets_its_session_go(client, fake_wrapper, monkeypatch):
+    """Status 0 has nothing left to show, so the session leaves the list on its
+    own rather than sitting there finished until someone kills it."""
+    monkeypatch.setattr(A, "UPDATE_LINGER_OK", 1)
+    assert client.post("/api/update").status_code == 200
+    assert "status 0" in pane_when("update finished")
+    deadline = time.time() + 6
+    while A.session_exists(A.UPDATE_SESSION) and time.time() < deadline:
+        time.sleep(0.2)
+    assert not A.session_exists(A.UPDATE_SESSION)
 
 
 def test_update_command_needs_an_executable(monkeypatch, tmp_path):
