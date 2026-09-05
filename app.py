@@ -1029,6 +1029,10 @@ def vendor(name: str) -> Response:
 
 # The session an update runs in, and the name the shell tells the user to open.
 UPDATE_SESSION = "pockettui-update"
+# How long the pane outlives the wrapper, in seconds: briefly after a success,
+# long enough to be read after a failure. Module-level so a test can shorten it.
+UPDATE_LINGER_OK = 5
+UPDATE_LINGER_FAILED = 90
 
 
 def update_command() -> str | None:
@@ -2583,11 +2587,16 @@ def api_update() -> Response:
     run = shlex.join([sys.executable or "python3", "-c", helper, wrapper])
     # execvp replaces the interpreter, so the status python exits with is the
     # wrapper's own — but it has to be caught on the very next command, before
-    # the blank echo overwrites it. The sleep keeps the pane, and whatever the
-    # installer printed, readable instead of closing the session the moment it
-    # finishes.
+    # the blank echo overwrites it. After a failure the sleep keeps the pane,
+    # and whatever the installer printed, readable instead of closing the
+    # session the moment it finishes. After a success there is nothing to read
+    # and the session is only clutter in the list, so it goes almost at once —
+    # a few seconds, so the restarted server is answering by the time the shell
+    # notices the session is gone and asks it for its version.
     command = (f"{run}; ec=$?; echo; "
-               'echo "[pockettui] update finished with status $ec"; sleep 90')
+               'echo "[pockettui] update finished with status $ec"; '
+               f'if [ "$ec" -eq 0 ]; then sleep {UPDATE_LINGER_OK}; '
+               f'else sleep {UPDATE_LINGER_FAILED}; fi')
 
     rc, _ = tmux("new-session", "-d", "-s", UPDATE_SESSION,
                  "-c", os.path.expanduser("~"), command)
