@@ -1,9 +1,16 @@
 // ============================================================
-// Image paths and URLs as links
+// Local paths and URLs as links
 // ============================================================
-// Anchored at / or ~ so a bare "logo.png" in prose is not a link, and stopped by
-// whitespace and the punctuation that usually brackets a path in output.
-const IMAGE_PATH_RE = /(?:~|\/)[^\s"'`()\[\]{}<>:;,]*\.(?:png|jpe?g|gif|webp|svg|bmp|mp4|webm|mov)\b/gi;
+// Any absolute or tilde-rooted path printed in a pane, not just the media ones:
+// anchored at / or ~/ so a bare "logo.png" in prose is not a link, and stopped
+// by whitespace and the punctuation that usually brackets a path in output.
+//
+// The leading group is what keeps a slash inside a word out of it — and/or,
+// TCP/IP, 09/05/2026 — and it is a group rather than a lookbehind because an
+// unsupported lookbehind is a parse error, not a failed match, and older
+// WebKit would drop the whole script over it. Its width is subtracted back out
+// in matchesOn, so the underline still covers the path alone.
+const LOCAL_PATH_RE = /(?:^|[\s"'`(\[{<=:,])((?:~\/|\/)[^\s"'`()\[\]{}<>:;,]+)/g;
 
 // http(s) only. Everything up to whitespace or a quote/angle is taken, and the
 // trailing junk a terminal wraps around a URL is trimmed off afterwards by
@@ -105,7 +112,10 @@ function stitchedText(text, cols) {
 // ranges and compete: overlapping ones collapse to the longest, so the stitched
 // full path swallows the bare "/000000.mp4" fragment its last row would match on
 // its own, while a row that genuinely holds two paths keeps both.
-function matchesOn(y, re, trim) {
+//
+// `trim` shortens a raw match to the link text; `prefer`, when given, breaks
+// the overlap in favour of a match it accepts however short (see localPathsOn).
+function matchesOn(y, re, trim, prefer) {
   const buf = term.buffer.active, cols = term.cols;
   const logical = logicalLine(buf, y, cols);
   if (!logical) return [];
@@ -119,21 +129,28 @@ function matchesOn(y, re, trim) {
       re.lastIndex = 0;
       let m;
       while ((m = re.exec(text)) !== null) {
-        const path = trim ? trim(m[0]) : m[0];
+        // A regex that captures puts the link text in group 1 and only the
+        // leading boundary ahead of it, so the group's own start is the match's
+        // start less whatever preceded it.
+        const raw = m.length > 1 ? m[1] : m[0];
+        const at = m.index + m[0].length - raw.length;
+        const path = trim ? trim(raw) : raw;
         if (!path) continue;
-        const last = m.index + path.length - 1;
+        const last = at + path.length - 1;
         found.push({
           path: path,
-          from: src.map ? src.map[m.index] : m.index,
+          from: src.map ? src.map[at] : at,
           to: src.map ? src.map[last] : last,
+          prefer: prefer && prefer(path) ? 1 : 0,
         });
       }
     }
   }
 
-  // Longest first (by the cells it covers), then keep a match only where it does
-  // not overlap one already kept.
-  found.sort((a, b) => (b.to - b.from) - (a.to - a.from) || a.from - b.from);
+  // Preferred first, then longest (by the cells it covers), then keep a match
+  // only where it does not overlap one already kept.
+  found.sort((a, b) => (b.prefer - a.prefer)
+    || (b.to - b.from) - (a.to - a.from) || a.from - b.from);
   const kept = [];
   for (const f of found) {
     if (kept.some(k => f.from <= k.to && k.from <= f.to)) continue;
@@ -152,56 +169,94 @@ function matchesOn(y, re, trim) {
     }));
 }
 
-function imagePathsOn(y) {
-  return matchesOn(y, IMAGE_PATH_RE, null);
+// Media outranks the longer match a coincidentally-full row can glue onto it.
+// The old image-only regex ended in \b, which rejected "/x/plot.png" + the next
+// row's first word outright and left the row-boundary pass to find the real
+// path; nothing in a general path regex says where a path stops, so the
+// preference says it instead — and a genuinely wrapped media path is still the
+// longer of the two matches that both end in the extension.
+function localPathsOn(y) {
+  return matchesOn(y, LOCAL_PATH_RE, trimPath, isMediaPath);
 }
 
 function urlsOn(y) {
   return matchesOn(y, URL_RE, trimUrl);
 }
 
-// Closers and sentence punctuation the terminal wrapped around the URL rather
-// than the URL carrying them. Trailing punctuation goes unconditionally; a
-// closing bracket goes only when the URL has no matching opener, so a wiki link
-// like /wiki/Foo_(bar) keeps its paren.
+function isMediaPath(path) {
+  return FILES_MEDIA_RE.test(path);
+}
+
+// Closers and sentence punctuation the terminal wrapped around the link rather
+// than the link carrying them. Trailing punctuation goes unconditionally; a
+// closing bracket goes only when the text has no matching opener, so a wiki
+// link like /wiki/Foo_(bar) keeps its paren.
 const URL_TRAIL_RE = /[.,;:!?'"]+$/;
+// A path's own character class already keeps , ; : and the quotes out of the
+// match, so what is left to shed is sentence punctuation and the glyph a shell
+// prints right after the directory it is sitting in ("~/work/proj$ ").
+const PATH_TRAIL_RE = /[.!?'"$%#]+$/;
 const URL_CLOSERS = { ")": "(", "]": "[", "}": "{" };
 
-function trimUrl(raw) {
-  let url = raw;
+function trimTrailing(raw, trailRe) {
+  let text = raw;
   for (;;) {
-    const trimmed = url.replace(URL_TRAIL_RE, "");
+    const trimmed = text.replace(trailRe, "");
     const closer = URL_CLOSERS[trimmed.slice(-1)];
     if (closer) {
       const open = trimmed.split(closer).length - 1;
       const close = trimmed.split(trimmed.slice(-1)).length - 1;
-      if (close > open) { url = trimmed.slice(0, -1); continue; }
+      if (close > open) { text = trimmed.slice(0, -1); continue; }
     }
-    if (trimmed === url) break;
-    url = trimmed;
+    if (trimmed === text) break;
+    text = trimmed;
   }
+  return text;
+}
+
+function trimUrl(raw) {
+  const url = trimTrailing(raw, URL_TRAIL_RE);
   // Nothing past the scheme is not a link.
   return /^https?:\/\/[^\/]/i.test(url) ? url : "";
 }
 
-// Both kinds of link on a row, URLs first. A URL can hold a slash-anchored
-// substring that IMAGE_PATH_RE also matches (https://x.com/a.png), so an image
-// path inside a URL's cells is dropped and the whole URL wins; a real local path
-// (~ or /) never overlaps one.
+// Trimming can eat a match back to its anchor ("/." -> "/"), and a bare root is
+// not something anyone printed to be opened.
+function trimPath(raw) {
+  const path = trimTrailing(raw, PATH_TRAIL_RE);
+  return /^(?:~\/|\/)./.test(path) ? path : "";
+}
+
+// Both kinds of link on a row, URLs first. A URL holds slash-anchored
+// substrings that LOCAL_PATH_RE also matches (https://x.com/a.png), so a path
+// inside a URL's cells is dropped and the whole URL wins; a real local path
+// (~/ or /) never overlaps one.
 function linksOn(y) {
   const urls = urlsOn(y).map(f => ({ ...f, url: f.path }));
-  const paths = imagePathsOn(y).filter(p => !urls.some(u => p.from <= u.to && u.from <= p.to));
+  const paths = localPathsOn(y).filter(p => !urls.some(u => p.from <= u.to && u.from <= p.to));
   return urls.concat(paths).sort((a, b) => a.from - b.from);
 }
 
-function provideImageLinks(y, callback) {
+// The one place both ways of tapping a link end up: xterm resolves the link
+// under the pointer itself, while a touch never delivers the mousemove it wants
+// and 22-drag-scroll.js hit-tests the tap's own cell instead. Two call sites,
+// one meaning.
+function activateLink(link) {
+  if (link.url) { openUrl(link.url); return; }
+  // Media keeps the viewer it has always opened: the picture is what the tap
+  // was for, not the folder it happens to live in.
+  if (isMediaPath(link.path)) { showImage(link.path); return; }
+  openPathInExplorer(link.path);
+}
+
+function provideTermLinks(y, callback) {
   const links = linksOn(y)
     // xterm asks per row and drops what does not cover the row it asked about.
     .filter(f => f.start.y <= y && f.end.y >= y)
     .map(f => ({
       text: f.path,
       range: { start: f.start, end: f.end },
-      activate: () => (f.url ? openUrl(f.url) : showImage(f.path)),
+      activate: () => activateLink(f),
     }));
   callback(links.length ? links : undefined);
 }
