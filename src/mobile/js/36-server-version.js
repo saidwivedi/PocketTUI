@@ -134,8 +134,8 @@ function syncVersionRow() {
   if (stale && !updating) resumeUpdateIfRunning();
   if (!on) return;
   $("sheet-version-line").textContent =
-    serverVersion ? "Server " + serverVersion : "Server version unknown";
-  $("sheet-version-latest").textContent = latestVersion;
+    serverVersion ? "Server v" + serverVersion : "Server version unknown";
+  $("sheet-version-latest").textContent = "v" + latestVersion;
   $("sheet-version-update").hidden = !stale;
   // The button only where the server said it can honour it; everywhere else the
   // row keeps the line telling the user what to run on the computer, which is
@@ -159,7 +159,7 @@ function syncUpdatePill(stale) {
   // could be a screen that stopped updating an hour ago.
   pill.classList.toggle("pill-working", updating);
   pill.disabled = updating;
-  pill.textContent = updating ? "Updating…" : "Update " + latestVersion;
+  pill.textContent = updating ? "Updating…" : "Update v" + latestVersion;
 }
 
 $("btn-update-rail").addEventListener("click", async () => {
