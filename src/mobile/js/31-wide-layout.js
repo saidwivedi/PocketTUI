@@ -302,11 +302,11 @@ document.addEventListener("keydown", (e) => {
   if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
   if (!isWideLayout() || $("sheet-scrim").classList.contains("show")) return;
   // The diff pane's split, on the same three keys and for the same reason a
-  // digit needs them: a plain Ctrl+D is end-of-file at every shell prompt, and
-  // this must take nothing away from the terminal. Claimed only where there is
+  // digit needs them: a plain Ctrl+G is the bell, and readline's way out of a
+  // history search, and this must take nothing away from the terminal. Claimed only where there is
   // a terminal on screen to split — anywhere else the key falls through
   // untouched, the way a digit pointing at no row does.
-  if ((e.code || "") === "KeyD" && $("screen-term").classList.contains("active")) {
+  if ((e.code || "") === "KeyG" && $("screen-term").classList.contains("active")) {
     e.preventDefault();
     e.stopImmediatePropagation();
     // A held chord auto-repeats, and each repeat would toggle again: the pane
