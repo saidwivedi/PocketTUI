@@ -3026,7 +3026,7 @@ html.term-open #dbg-panel {
 /* ============================================================
    GIT DIFF PANE
    ============================================================ */
-/* Ctrl+Shift+D splits the terminal screen in two: terminal on the left, the
+/* Ctrl+Shift+G splits the terminal screen in two: terminal on the left, the
    git changes of the folder the visible pane is sitting in on the right. Wide
    layouts only — a phone has neither the width for two columns nor a keyboard
    to press the chord on — so everything below is behind the same query the

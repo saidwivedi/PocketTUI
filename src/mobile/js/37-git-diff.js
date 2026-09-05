@@ -1,7 +1,7 @@
 // ============================================================
 // Git diff pane — the changes beside the terminal
 // ============================================================
-// Ctrl+Shift+D splits the terminal screen: terminal on the left, the git
+// Ctrl+Shift+G splits the terminal screen: terminal on the left, the git
 // changes of the folder the visible pane is sitting in on the right. What it
 // answers is the question a session with an agent in it raises every few
 // minutes — what has this actually changed — which otherwise costs the
