@@ -34,6 +34,10 @@ BASE_URL="${POCKETTUI_BASE_URL:-https://pockettui.com}"
 TARBALL_URL="$BASE_URL/pockettui.tar.gz"
 VERSION_URL="$BASE_URL/version.txt"
 INSTALL_DIR="${POCKETTUI_DIR:-$HOME/pockettui}"
+# The install's own conda env, when an earlier run had to build one. Named this
+# far up because preflight has to know whether the tmux it cannot find on PATH
+# is already sitting inside this install.
+MAMBA_PREFIX="$INSTALL_DIR/.micromamba"
 PORT="${PORT:-5560}"
 # Overridable so a second install on another port can have its own unit rather
 # than fighting the first one for the name.
@@ -343,6 +347,13 @@ HAVE_TMUX=0
 if command -v tmux >/dev/null 2>&1; then
     HAVE_TMUX=1
     vsay "  tmux $(tmux -V | awk '{print $2}')"
+elif [[ -x "$MAMBA_PREFIX/bin/tmux" ]]; then
+    # An earlier run already put tmux inside this install's own environment.
+    # It is not on this shell's PATH and does not need to be — it is the tmux
+    # the service is given — so nothing here is missing and nothing has to be
+    # provided a second time.
+    HAVE_TMUX=1
+    vsay "  tmux $("$MAMBA_PREFIX/bin/tmux" -V 2>/dev/null | awk '{print $2}') — this install's own copy, reused"
 else
     vsay "  tmux not found — it will be installed into this install's own"
     vsay "    environment (see below); no system packages are touched."
@@ -561,7 +572,6 @@ ENV_KIND="venv"
 # three routes actually produced the environment. ENV_KIND stays as it was —
 # it selects the installer below and is quoted in the changelog.
 ENV_LABEL="venv"
-MAMBA_PREFIX="$INSTALL_DIR/.micromamba"
 ENV_BIN=""          # non-empty only when the env must be on PATH (its tmux)
 
 # A conda env holding both tmux and python, created with the given micromamba.
@@ -589,8 +599,11 @@ create_mamba_env() {
     fi
 }
 
-# Adopt the micromamba env as the environment for this install.
+# Adopt the micromamba env as the environment for this install. $1 is how it
+# got here — "created" for one this run just built, "reused" for one it found
+# already there — which is the only part of this the changelog line differs on.
 adopt_mamba_env() {
+    local how="${1:-created}"
     [[ -x "$MAMBA_PREFIX/bin/python" ]] \
         || die "could not locate python in the micromamba env at $MAMBA_PREFIX."
     VENV_PY="$MAMBA_PREFIX/bin/python"
@@ -601,7 +614,11 @@ adopt_mamba_env() {
         ENV_BIN="$MAMBA_PREFIX/bin"
         vsay "  tmux $("$MAMBA_PREFIX/bin/tmux" -V 2>/dev/null | awk '{print $2}') from conda-forge"
     fi
-    note "created a micromamba env at $MAMBA_PREFIX"
+    if [[ "$how" == "reused" ]]; then
+        note "reused the micromamba env at $MAMBA_PREFIX"
+    else
+        note "created a micromamba env at $MAMBA_PREFIX"
+    fi
     ENV_LABEL="micromamba"
     vsay "  $ENV_KIND"
 }
@@ -623,10 +640,40 @@ create_uv_venv() {
         || uv venv "$INSTALL_DIR/.venv" >/dev/null 2>&1
 }
 
+# An install that already has an environment keeps it. The chain below reads the
+# PATH of the moment, and an update runs it again from scratch: a machine with no
+# system tmux gets a micromamba env, and the update that runs after tmux has been
+# installed system-wide takes the venv branch instead — a different interpreter,
+# a different Environment=PATH line, and a unit template that no longer matches
+# the file the first install wrote. The environment on disk is the one the
+# running service is using; choosing is a fresh install's job, not an update's.
+ENV_ADOPTED=0
+if [[ -x "$MAMBA_PREFIX/bin/python" ]]; then
+    adopt_mamba_env reused
+    ENV_ADOPTED=1
+elif [[ -x "$INSTALL_DIR/.venv/bin/python" ]]; then
+    # VENV_PY already names this interpreter, so all that is left to work out is
+    # which installer the dependency step below should use — and the venv itself
+    # is the only witness worth trusting, since a uv-made venv has no pip in it.
+    if "$VENV_PY" -m pip --version >/dev/null 2>&1; then
+        ENV_KIND="venv"
+        ENV_LABEL="venv"
+    else
+        command -v uv >/dev/null 2>&1 || install_uv \
+            || die "$INSTALL_DIR/.venv has no pip in it and uv, which is what made it, could not be installed to install into it."
+        ENV_KIND="venv (uv)"
+        ENV_LABEL="uv"
+    fi
+    vsay "  reusing the environment at $INSTALL_DIR/.venv"
+    ENV_ADOPTED=1
+fi
+
 # No system tmux is the one problem a venv cannot solve, so it decides the whole
 # strategy: only a conda env can supply tmux without root. Everything else is
 # the ordinary uv -> venv -> micromamba preference.
-if [[ "$HAVE_TMUX" != "1" ]]; then
+if [[ "$ENV_ADOPTED" == "1" ]]; then
+    :   # already settled above; re-deciding is what this exists to prevent
+elif [[ "$HAVE_TMUX" != "1" ]]; then
     # Said out loud because it overrides the uv preference: with no system tmux,
     # a venv cannot help — only a conda env supplies tmux without root.
     vsay "  no system tmux — using micromamba, which can provide both tmux and python"
@@ -877,6 +924,102 @@ if [[ "$WRAPPER_WRITTEN" == "1" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# The `pockettui` command on PATH
+# ---------------------------------------------------------------------------
+# A command nothing can find is barely a command. zsh does not put ~/.local/bin
+# on PATH at all, so on a zsh machine everything that tells the user to run
+# `pockettui update` — this script's own closing hint, the phone's update
+# button, the README — names something their shell has never heard of. Same
+# discipline as the .tmux.conf line further down: one marked, idempotent line
+# appended to rc files that already exist, only ever with the user's say-so,
+# and never a new rc file created behind their back. An update goes through
+# here too — the wrapper being off PATH is not a thing a fresh install alone
+# can have.
+PATH_LINE_ADDED=0
+
+# Does this rc already put the wrapper's directory on PATH — our line from an
+# earlier run, or one the user wrote themselves? A commented-out line does not
+# count, exactly as in the .tmux.conf check.
+rc_has_user_bin() {
+    local rc="$1" d
+    for d in "$USER_BIN" "$USER_BIN_LITERAL"; do
+        if grep -v '^[[:space:]]*#' "$rc" 2>/dev/null \
+           | grep -F -- "$d" | grep -q 'PATH'; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [[ "$WRAPPER_OFF_PATH" == "1" ]]; then
+    # $HOME left unexpanded when the directory is under it: an rc file is read
+    # by every shell this account ever starts, including ones whose $HOME is
+    # somewhere else (a moved account, a container mount), and the literal is
+    # what a user writing the line by hand would have typed.
+    USER_BIN_LITERAL="$USER_BIN"
+    case "$USER_BIN" in
+        ("$HOME"/*) USER_BIN_LITERAL="\$HOME/${USER_BIN#"$HOME"/}" ;;
+    esac
+    PATH_RC_LINE="export PATH=\"$USER_BIN_LITERAL:\$PATH\""
+
+    # Only files that are already there, and only ones that do not have it yet,
+    # so a second run has nothing left to do and asks nothing.
+    PATH_RCS=()
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+        if [[ -f "$rc" ]] && ! rc_has_user_bin "$rc"; then
+            PATH_RCS+=("$rc")
+        fi
+    done
+
+    if [[ "${#PATH_RCS[@]}" -eq 0 ]]; then
+        # Either every rc file here already has it, or there is no rc file to
+        # append to at all. Both leave the closing hint as the whole answer.
+        vsay "  nothing to add to a shell startup file for $USER_BIN"
+    else
+        step_quiet "Optional: put $USER_BIN on your PATH"
+        vsay "  This would append one line to ${PATH_RCS[*]}:"
+        vsay ""
+        vsay "      $PATH_RC_LINE"
+        vsay ""
+        vsay "  Without it the command only works as $WRAPPER_PATH."
+        if [[ "$INTERACTIVE" != "1" ]]; then
+            # Nobody to ask, and this is a file outside the install dir.
+            vsay ""
+            vsay "  Non-interactive (piped) run — skipping. Add that line yourself"
+            vsay "  to run 'pockettui' by name."
+            note "skipped the PATH line for $USER_BIN (non-interactive)"
+        elif confirm "  Add $USER_BIN to your PATH in ${PATH_RCS[*]}?"; then
+            for rc in "${PATH_RCS[@]}"; do
+                if [[ ! -w "$rc" ]]; then
+                    say "  WARNING: $rc is not writable — leaving it alone."
+                    note "could not write $rc (PATH line not added)"
+                    continue
+                fi
+                # Append, never truncate, and top up a missing final newline
+                # first so our line cannot be glued onto the last one.
+                if [[ -s "$rc" ]] && [[ -n "$(tail -c 1 "$rc")" ]]; then
+                    printf '\n' >> "$rc"
+                fi
+                { printf '\n# --- where the pockettui command lives (added by PocketTUI) ---\n'
+                  printf '%s\n' "$PATH_RC_LINE"; } >> "$rc"
+                touched_outside
+                note "added $USER_BIN to your PATH in $rc"
+                PATH_LINE_ADDED=1
+            done
+            if [[ "$PATH_LINE_ADDED" == "1" ]]; then
+                say "  Added. This shell keeps the PATH it started with; a new one"
+                say "  finds the 'pockettui' command by name."
+                say ""
+            fi
+        else
+            vsay "  Skipped — no shell startup file was touched. To do it yourself:"
+            vsay "      $PATH_RC_LINE"
+            note "skipped the PATH line for $USER_BIN (declined)"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Pairing token
 # ---------------------------------------------------------------------------
 # app.py refuses to start without a token at $INSTALL_DIR/.token, and owns the
@@ -1028,18 +1171,28 @@ WantedBy=default.target
 EOF
 )"
 
-# Is this generated file one of ours, and therefore ours to replace? Two ways
-# to say yes, and the whole point of the first is that it retires the second:
-# the marker line, or a byte-for-byte match with the last shape shipped before
-# the marker existed. Anything else is somebody's own file and is left alone.
-# Whole-line containment rather than "the first line is the marker", because a
-# plist has to open with its XML declaration and the two callers should be
-# asking the same question. A file that has been given our marker by hand is
-# answering the question the marker itself asks.
+# Is this generated file one of ours, and therefore ours to replace? Three ways
+# to say yes, and the whole point of the first is that it retires the others:
+# the marker line, a byte-for-byte match with the last shape shipped before the
+# marker existed, or a file that runs this install's own app.py. Anything else
+# is somebody's own file and is left alone. Whole-line containment rather than
+# "the first line is the marker", because a plist has to open with its XML
+# declaration and the two callers should be asking the same question. A file
+# that has been given our marker by hand is answering the question the marker
+# itself asks.
+#
+# The byte match turned out to be too brittle in the field: a pre-marker unit
+# carries the interpreter and the PATH of the install that wrote it, so an
+# update that lands on a different interpreter no longer matches those frozen
+# bytes, and the installer disowns its own file. Nothing else on the machine
+# runs $4 — an ExecStart (systemd) or a ProgramArguments <string> (plist)
+# naming it is ours whatever has drifted around it.
 generated_by_us() {
-    local path="$1" marker="$2" legacy="$3"
+    local path="$1" marker="$2" legacy="$3" app="$4"
     grep -Fxq -- "$marker" "$path" 2>/dev/null && return 0
-    [[ -n "$legacy" ]] && [[ "$(cat "$path" 2>/dev/null)" == "$legacy" ]]
+    [[ -n "$legacy" ]] && [[ "$(cat "$path" 2>/dev/null)" == "$legacy" ]] && return 0
+    [[ -n "$app" ]] || return 1
+    grep -F -- "$app" "$path" 2>/dev/null | grep -Eq '^[[:space:]]*(ExecStart=|<string>)'
 }
 
 UNIT_BACKUP=""
@@ -1234,7 +1387,7 @@ if [[ "$HAVE_SYSTEMD" == "1" ]]; then
         UNIT_EXISTS=1
         [[ "$(cat "$UNIT_PATH")" == "$UNIT_CONTENT" ]] && UNIT_SAME=1
         generated_by_us "$UNIT_PATH" "$GENERATED_MARKER" "$UNIT_CONTENT_LEGACY" \
-            && UNIT_OURS=1
+            "$INSTALL_DIR/app.py" && UNIT_OURS=1
     fi
 
     if [[ "$UNIT_EXISTS" == "1" ]] && [[ "$UNIT_SAME" == "1" ]]; then
@@ -1272,7 +1425,42 @@ if [[ "$HAVE_SYSTEMD" == "1" ]]; then
         say "      systemctl --user daemon-reload"
         say ""
         note "left the existing $UNIT_PATH alone (differs from ours)"
-        start_service "kept your existing $UNIT_PATH"
+        # A unit without KillMode=process is on systemd's default, which kills
+        # the whole control group — and app.py's tmux server, holding every
+        # session, is in it. The restart below would therefore not be a blip in
+        # the service but the end of the user's work, so it is said out loud
+        # and, when there is somebody to ask, asked about first.
+        UNIT_RESTART=1
+        if ! grep -Eq '^[[:space:]]*KillMode=process[[:space:]]*$' "$UNIT_PATH"; then
+            say "  ${C_WARN}That unit has no 'KillMode=process' line, so restarting"
+            say "  it ends every tmux session the backend is holding. Adding that"
+            say "  line under [Service] is what keeps them across a restart.$C_RESET"
+            say ""
+            if [[ "$INTERACTIVE" == "1" ]]; then
+                confirm "  Restart $SERVICE_NAME anyway (losing those sessions)?" \
+                    || UNIT_RESTART=0
+            else
+                # Nobody to ask, and a backend that is never started is the
+                # worse outcome: carry on as before, with the warning printed
+                # and the changelog saying what the restart may have cost.
+                note "restarted $SERVICE_NAME without KillMode=process (any tmux sessions it held are gone)"
+            fi
+        fi
+        if [[ "$UNIT_RESTART" == "1" ]]; then
+            start_service "kept your existing $UNIT_PATH"
+        else
+            say "  Left it running as it is. The new code is on disk; it takes"
+            say "  effect when you restart the service yourself:"
+            say "      systemctl --user restart $SERVICE_NAME"
+            say ""
+            note "did not restart $SERVICE_NAME (that would have killed its tmux sessions)"
+            if wait_for_server 4; then
+                SERVICE_INSTALLED=1
+                step_done "running (not restarted)" "$C_WARN"
+            else
+                step_done "not restarted" "$C_WARN"
+            fi
+        fi
     else
         # Bare `mkdir -p` here would abort the whole script under `set -e` on an
         # unwritable ~/.config, losing the summary and next steps for an install
@@ -1301,7 +1489,7 @@ elif [[ "$HAVE_LAUNCHD" == "1" ]]; then
         AGENT_EXISTS=1
         [[ "$(cat "$AGENT_PATH")" == "$AGENT_CONTENT" ]] && AGENT_SAME=1
         generated_by_us "$AGENT_PATH" "$GENERATED_MARKER_XML" \
-            "$AGENT_CONTENT_LEGACY" && AGENT_OURS=1
+            "$AGENT_CONTENT_LEGACY" "$INSTALL_DIR/app.py" && AGENT_OURS=1
     fi
 
     if [[ "$AGENT_EXISTS" == "1" ]] && [[ "$AGENT_SAME" == "1" ]]; then
@@ -2219,6 +2407,10 @@ if [[ "$UPDATE" != "1" ]]; then
     say ""
     if [[ "$WRAPPER_WRITTEN" == "1" ]] && [[ "$WRAPPER_OFF_PATH" != "1" ]]; then
         say "  ${C_DIM}To update later:  pockettui update$C_RESET"
+    elif [[ "$WRAPPER_OFF_PATH" == "1" ]] && [[ "$PATH_LINE_ADDED" == "1" ]]; then
+        say "  ${C_DIM}To update later:  pockettui update"
+        say "  ($USER_BIN was just added to your PATH, so that works in a new"
+        say "  shell; in this one it is $WRAPPER_PATH update.)$C_RESET"
     elif [[ "$WRAPPER_OFF_PATH" == "1" ]]; then
         say "  ${C_DIM}To update later:  $WRAPPER_PATH update"
         say "  ($USER_BIN is not on your PATH — add it to use 'pockettui' by name.)$C_RESET"
