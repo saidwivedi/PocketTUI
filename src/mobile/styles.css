@@ -254,6 +254,10 @@ body {
 .list-wrap {
   padding: 0 22px 40px;
   animation: fade-in 0.32s var(--ease-out);
+  /* A size container so the pill row below can ask how wide the list really
+     is — the rail is dragged to any width between its bounds, which no media
+     query can see. */
+  container-type: inline-size;
 }
 @keyframes fade-in {
   from { opacity: 0; transform: translateY(6px); }
@@ -284,6 +288,15 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   margin: 14px 0 14px;
+}
+/* On a rail dragged too narrow for the pair, New session gives up its label
+   and keeps its plus rather than dropping to a second line: the update notice
+   is the news and needs its words, the plus says new on its own. Only while
+   the notice is there — alone, New session has the row to itself. The bound
+   is the pair's own width at the rail's 12px pill size, with a little room for
+   a longer version number. */
+@container (max-width: 232px) {
+  .list-new:has(.pill-alert:not([hidden])) #btn-new .pill-label { display: none; }
 }
 
 /* "Add to Home Screen" hint — a slim strip above the list, shown only to
