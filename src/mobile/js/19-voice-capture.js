@@ -209,13 +209,58 @@ function recording() {
 }
 
 // Whether a tap arriving now is the stop tap's own echo rather than a new
-// instruction. Both taps land on the same key — the one that just stopped the
-// take — so the upload's first moments cannot tell a deliberate cancel from the
-// synthesized click iOS fires after touchend, and the safe reading of an
-// ambiguous tap is the one that does not throw away audio already on the wire.
+// instruction. Both taps land on the same control — the Send button that just
+// stopped the take — so the upload's first moments cannot tell a deliberate
+// cancel from the synthesized click iOS fires after touchend, and the safe
+// reading of an ambiguous tap is the one that does not throw away audio already
+// on the wire.
 function recCancelEcho() {
   return recStoppedAt > 0 &&
     performance.now() - recStoppedAt < REC_CANCEL_GRACE;
+}
+
+// Whether a capture owns the strip right now: the microphone grant is still
+// outstanding, a take is running, or its upload is on the wire.
+function recInFlight() {
+  return recStarting || recording() || recBusy;
+}
+
+// A live take is spread across three controls, and each of these is one of
+// them, so no two can drift apart: Send stops the take and keeps what it heard,
+// the cross throws the take away and leaves the box as it was, the mic key
+// throws it away and puts the strip down with it.
+
+// The mic key's tap, and startLocalRecording()'s own guard against a second
+// start. Returns whether the capture spent the tap.
+function composeDiscardCapture() {
+  if (!recInFlight()) return false;
+  // setCompose(false) is the whole teardown: closing cancels the take, and it
+  // keeps whatever was typed before it, like every other close. A take started
+  // from a closed strip has no close to inherit that from, so it stands down
+  // on its own.
+  if (composeOpen) setCompose(false);
+  else cancelRecording();
+  return true;
+}
+
+// Whether the Send button is wearing the stop face. recStarting counts only
+// once the strip is already showing the recording state — before that the
+// button is still an ordinary Send, and a tap on it means send.
+function composeStopping() {
+  return recording() ||
+    (recStarting && $("compose").classList.contains("recording"));
+}
+
+// The Send button's tap while a capture is in flight: it is the stop control
+// while the take runs and the cancel while the upload does. Returns whether the
+// capture spent the tap.
+function composeStopTap() {
+  if (recBusy) { if (!recCancelEcho()) cancelUpload(); return true; }
+  if (recording()) { stopRecording(); return true; }
+  // Wearing the stop face with the grant still outstanding: there is no
+  // recorder to stop and no audio to transcribe, so the take stands down.
+  if (composeStopping()) { cancelRecording(); return true; }
+  return false;
 }
 
 // Whether the capture path is worth trying at all. The demo has no backend to
@@ -836,7 +881,7 @@ async function uploadRecording(blob) {
     // An answer, which is what the counter was counting the absence of.
     recServerFails = 0;
     recDropPending();
-    codeMicFinish(text, !!(data && data.truncated), (data && data.unsure) || []);
+    codeMicFinish(text, !!(data && data.truncated));
   } catch (e) {
     if (!recBusy) return;      // our own abort unwinding
     // The 30s timer fired. The audio is fine and the server may simply be slow
@@ -1062,7 +1107,7 @@ function recSyncHint() {
 // recorded at the tap — the field has been blurred and hidden behind the
 // indicator ever since, so it cannot have moved, and reading it back off a
 // blurred textarea is not reliable across engines.
-function codeMicFinish(text, truncated, unsure = []) {
+function codeMicFinish(text, truncated) {
   recClearUI();
   if (!text) { toast("Nothing heard"); return; }
   const ta = $("compose-text"), v = ta.value;
@@ -1093,14 +1138,7 @@ function codeMicFinish(text, truncated, unsure = []) {
   // The server cuts the decode at MAX_AUDIO_SECONDS and drops the rest without
   // saying so in the transcript itself — the only way the user learns their
   // recording was cut short is this toast.
-  if (truncated) {
-    toast("Recording was cut at 90 seconds");
-  } else if (unsure && unsure.length) {
-    // toast() keeps one shared element, so a second call overwrites the first —
-    // the truncation warning matters more than a hedge on individual words, and
-    // this only runs when truncation didn't already claim the toast.
-    toast("Unsure about: " + unsure.join(", "), 2500);
-  }
+  if (truncated) toast("Recording was cut at 90 seconds");
 }
 
 // The pre-audio behaviour, kept whole as the fallback: the browser's own
@@ -1115,12 +1153,25 @@ function startDictation() {
   startListening();
 }
 
-// The key bar's mic reflects the capture state machine and nothing else, so
-// every path that changes it — start, stop, cancel, a failure, an engine change
-// in Settings — lands here rather than reaching for the classes itself. The key
-// is never hidden: it is the compose key too, and an engine that cannot record
-// still has the phone's dictation to fall through to.
+// The mic key and the strip's Send button both reflect the capture state
+// machine and nothing else, so every path that changes it — start, stop,
+// cancel, a failure, an engine change in Settings — lands here rather than
+// reaching for their classes itself. The key is never hidden: it is the compose
+// key too, and an engine that cannot record still has the phone's dictation to
+// fall through to.
 function recSyncMic() {
+  // The stop control, and the only one: Send takes the fill and the square
+  // while the take runs, then holds them dimmed while the upload does, where a
+  // tap cancels instead. .armed is composeGrow()'s and left alone — it says
+  // there is text to send, which is still true underneath.
+  const send = $("compose-send");
+  const stopping = composeStopping();
+  send.classList.toggle("stop", stopping);
+  send.classList.toggle("busy", recBusy);
+  send.setAttribute("aria-label",
+    stopping ? "Stop recording and transcribe"
+    : recBusy ? "Cancel transcription"
+    : "Send");
   const btn = $("keybar").querySelector(".k-compose");
   if (!btn) return;
   const live = recording();
@@ -1131,12 +1182,11 @@ function recSyncMic() {
   // only sign the local engine is being skipped is that the transcripts read
   // differently. Settings says the rest — this just says look there.
   btn.classList.toggle("forced-phone", voiceLatchVisible());
-  // The face swaps with the state, so the spoken label has to as well — a key
-  // reading "stop" to the eye and "compose" to a screen reader is worse than
-  // either alone.
+  // Lit, the key is the way out of a take rather than the way to end one: the
+  // transcribing stop is Send's now, and this is what drops the take and the
+  // strip together. The spoken label has to say which of the two it is.
   btn.setAttribute("aria-label",
-    live ? "Stop recording and transcribe"
-    : recBusy ? "Cancel transcription"
+    live || recBusy ? "Discard recording and close"
     : "Show or hide compose bar");
   // Every path that moves the capture state machine already lands here, which
   // makes it the one place the retry hint has to be told the screen got busy or
@@ -1182,10 +1232,9 @@ function recTranscribeURL(engine) {
 // resolved engine is a backend one; everything about the capture itself is the
 // same machinery the strip's old "code" button drove.
 async function startLocalRecording(engine) {
-  // Same reading as toggleCompose(): a tap during the upload cancels it, unless
-  // it is still the stop tap echoing, in which case it means nothing at all.
-  if (recBusy) { if (!recCancelEcho()) cancelUpload(); return; }
-  if (recording()) { stopRecording(); return; }
+  // Same reading as toggleCompose(), through the same helper: a tap that
+  // reaches the mic key with a take already in flight discards it.
+  if (composeDiscardCapture()) return;
   // The phone's recogniser and this one must never run at once — two captures of
   // one sentence, arriving at different times, into the same box. Stopping it
   // keeps what it heard: switching engines mid-sentence is not a discard. The
@@ -1385,15 +1434,7 @@ function buildKeybar() {
   // release it, so every one-shot modifier is cleared rather than left stuck.
   releaseMods();
   for (const k of KEYS) {
-    // Two icons means a key that swaps face with its state (the mic becoming a
-    // stop square while a local take runs). Each face gets its own span so CSS
-    // can do the swapping, rather than the state machine rewriting the DOM
-    // mid-recording.
-    const faces = k.icon2
-      ? [el("span", { class: "idle" }, svgIcon(k.icon)),
-         el("span", { class: "stop" }, svgIcon(k.icon2))]
-      : [k.icon ? svgIcon(k.icon) : k.label];
-    const b = el("button", { type: "button" }, ...faces);
+    const b = el("button", { type: "button" }, k.icon ? svgIcon(k.icon) : k.label);
     if (k.narrow) b.classList.add("narrow");
     if (k.aria) b.setAttribute("aria-label", k.aria);
     if (k.icon) b.classList.add("glyph-key");

@@ -51,10 +51,10 @@ const KEYS = [
     swipe: { seq: "\x1b[F" } },
   // Focus is the point of this key, not a side effect — it opens the compose
   // strip and puts the caret in it, so it shares the keyboard toggle's exemption
-  // from the focus-preserving preventDefault below. icon2 is the face it wears
-  // while a local recording runs: this one key drives whichever engine Settings
-  // names, so it has to be able to say "stop" as well as "speak".
-  { icon: "i-mic", icon2: "i-stop", compose: true, focusing: true, narrow: true,
+  // from the focus-preserving preventDefault below. It keeps the mic face while
+  // a take runs: it is what the microphone being open looks like, while ending
+  // the take belongs to the strip's Send button.
+  { icon: "i-mic", compose: true, focusing: true, narrow: true,
     cls: "k-compose", aria: "Show or hide compose bar" },
   // Pill only, and only once there is a backend to report about — the phone
   // never shows this key, because the Settings row is its way in and the
@@ -141,12 +141,14 @@ function composeGrow() {
 // what keeps a multi-line dictation from executing line by line. No trailing
 // \r — the user reviews it in the terminal and submits with the key bar's ⏎.
 function composeSend() {
+  // A capture in flight owns this button before any of that: while a take runs
+  // it is the stop control, and while its upload runs it is the cancel. Neither
+  // tap sends, and neither closes the strip — the transcript is on its way into
+  // the box the user is looking at.
+  if (composeStopTap()) return;
   // Stop before reading: the recogniser is mid-utterance and whatever is already
   // in the box is what the user meant to send.
   stopListening();
-  // A recording, though, is discarded rather than waited for: Send means "this
-  // text, now", and the audio has not become text yet.
-  if (recording() || recBusy) cancelRecording();
   const ta = $("compose-text");
   const text = ta.value;
   if (!text || !term) return;
@@ -186,13 +188,15 @@ function composeSend() {
 // bar's own empty-box tap at toggleCompose(), so it hands off to setCompose(false)
 // rather than repeating that close logic.
 function composeClear() {
+  // A take in flight is what there is to throw away, and it is all this tap
+  // throws away: the audio goes, the box comes back exactly as it was before
+  // the microphone opened, and the strip stays up to speak or type into again.
+  if (recInFlight()) { cancelRecording(); return; }
   const ta = $("compose-text");
   if (!ta.value.trim()) { setCompose(false); return; }
-  // Same reasons as composeSend(): a live recogniser is mid-utterance and would
-  // write its interim tail back into the field we just emptied, and a recording
-  // has no text yet to keep.
+  // Same reason as composeSend(): a live recogniser is mid-utterance and would
+  // write its interim tail back into the field we just emptied.
   stopListening();
-  if (recording() || recBusy) cancelRecording();
   // Blur before clearing, for the reason spelled out at length in composeSend():
   // iOS holds an open composition on a dictated field, and assigning "" to it
   // does not stick until the blur has ended that composition. Focus is handed
