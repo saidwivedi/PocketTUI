@@ -994,6 +994,65 @@ class TestRealTmux:
                                              "query": "x", "action": "restart"})
         assert r.status_code == 404
 
+    def test_the_apps_match_colours_last_only_as_long_as_its_find(self, client):
+        # The styles are *window* options and a per-device view shares the base
+        # session's windows, so anything left on one is left on the user's own
+        # client too. The find puts them on and the cancel has to take them off.
+        self.new_session("paint")
+        pane = A.active_pane_id("paint")
+        assert pane
+
+        def on_window(name):
+            rc, out = A.tmux("show-options", "-w", "-t", pane, "-v", name)
+            return out.strip() if rc == 0 else None
+
+        rc, inherited = A.tmux("show-options", "-gw", "-v",
+                               "copy-mode-match-style")
+        if rc != 0:
+            pytest.skip("this tmux has no copy-mode match styles to set")
+        # Nothing of ours on the window before a find, and the global the user
+        # would have configured is the one in force.
+        assert [on_window(n) for n in A.SEARCH_STYLES] == ["", ""]
+        assert inherited.strip()
+
+        r = client.post("/api/search", json={"session": "paint", "dev": "",
+                                             "query": "paint", "action": "restart"})
+        assert r.status_code == 200
+        assert r.json()["in_mode"] is True
+        for name, value in A.SEARCH_STYLES.items():
+            assert on_window(name) == value
+
+        r = client.post("/api/search", json={"session": "paint", "dev": "",
+                                             "query": "paint", "action": "cancel"})
+        assert r.status_code == 200
+        assert r.json()["in_mode"] is False
+        # Unset, not set back to a guess: the window inherits the user's global
+        # value again, untouched by any of this.
+        assert [on_window(n) for n in A.SEARCH_STYLES] == ["", ""]
+        assert A.tmux("show-options", "-gw", "-v",
+                      "copy-mode-match-style")[1] == inherited
+
+    def test_a_find_that_ends_from_the_keyboard_takes_its_colours_with_it(
+            self, client):
+        # The user pressing q in copy mode ends the find without telling the
+        # bar. The next call sees a pane out of copy mode and cleans up.
+        self.new_session("keyb")
+        pane = A.active_pane_id("keyb")
+        if A.tmux("show-options", "-gw", "-v", "copy-mode-match-style")[0] != 0:
+            pytest.skip("this tmux has no copy-mode match styles to set")
+
+        r = client.post("/api/search", json={"session": "keyb", "dev": "",
+                                             "query": "keyb", "action": "restart"})
+        assert r.status_code == 200 and r.json()["in_mode"] is True
+        A.tmux("send-keys", "-t", pane, "-X", "cancel")
+
+        r = client.post("/api/search", json={"session": "keyb", "dev": "",
+                                             "query": "", "action": "restart"})
+        assert r.status_code == 200 and r.json()["in_mode"] is False
+        rc, out = A.tmux("show-options", "-w", "-t", pane, "-v",
+                         "copy-mode-match-style")
+        assert (rc, out.strip()) == (0, "")
+
     # -- the pair: a phone and a laptop on one window -----------------------
 
     def test_activity_still_decides_the_shared_window_size(self, client):

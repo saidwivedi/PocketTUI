@@ -3852,6 +3852,18 @@ RATE_SEARCH = 240
 SEARCH_FORMATS = ("pane_in_mode", "search_present", "search_count",
                   "search_count_partial", "search_match")
 
+# The colours a find of the app's own paints in, in place of tmux's defaults
+# (cyan and magenta on black) or whatever the user configured. Both are *window*
+# options, and a per-device view is grouped with the base session, so it shares
+# the base's windows: a style left on one is a style the user's own client sees
+# too, forever. So it cannot go on once at view setup the way enable_mouse()
+# sets the session option `mouse` — it goes on for the length of a find and
+# comes off again the moment the pane is out of copy mode.
+SEARCH_STYLES = {
+    "copy-mode-match-style": "bg=#ffe078,fg=#1a1a1a",
+    "copy-mode-current-match-style": "bg=#ffb43c,fg=#1a1a1a",
+}
+
 
 def active_pane_id(name: str) -> str:
     """The session's active pane, as `%n`, or "".
@@ -3883,6 +3895,28 @@ def search_state(pane: str) -> dict:
         "partial": None if partial is None else partial == 1,
         "match": parts[4] if len(parts) > 4 else "",
     }
+
+
+def search_paint(pane: str) -> None:
+    """Dress the pane's window in the app's match colours for this find."""
+    for name, value in SEARCH_STYLES.items():
+        # A tmux too old for these options refuses them, and its find still
+        # runs and still highlights — in its own colours, which is a fine
+        # thing to be left with. So the failure is not worth a word.
+        tmux("set-option", "-w", "-t", pane, name, value)
+
+
+def search_unpaint(pane: str) -> None:
+    """Give the window its match colours back, once the find is over.
+
+    Unset rather than set back to something: the window then inherits the
+    global value again, whatever the user configured, and this app has no
+    business guessing at it. The accepted limit is a style the user set on this
+    one window rather than globally — that one is gone until they set it again.
+    Per-window match styles are rare; a global one is the norm and survives.
+    """
+    for name in SEARCH_STYLES:
+        tmux("set-option", "-w", "-u", "-t", pane, name)
 
 
 @app.post("/api/search")
@@ -3921,13 +3955,21 @@ def api_search(request: Request, body: dict = Body(...)) -> Response:
         if in_mode:
             tmux("send-keys", "-t", pane, "-X", "cancel")
     else:
+        search_paint(pane)
         if action == "restart" and in_mode:
             tmux("send-keys", "-t", pane, "-X", "cancel")
         if action == "restart" or not in_mode:
             tmux("copy-mode", "-t", pane)
         tmux("send-keys", "-t", pane, "-X",
              "search-forward" if action == "next" else "search-backward", query)
-    return no_store(JSONResponse(search_state(pane)))
+    state = search_state(pane)
+    # One rule for taking the colours down again: the pane is out of copy mode,
+    # so there is nothing of ours left on the screen to colour. That covers the
+    # cancel above, an emptied field, and a user who walked out of copy mode
+    # from their own keyboard between two calls.
+    if not state["in_mode"]:
+        search_unpaint(pane)
+    return no_store(JSONResponse(state))
 
 
 # ---------------------------------------------------------------------------

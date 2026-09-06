@@ -26,6 +26,12 @@ let searchSeq = 0;
 // True once this bar has put the pane into copy mode. A copy mode the user
 // entered themselves in tmux is not this bar's to cancel.
 let searchInMode = false;
+// And which session that pane belongs to. The cancel has to name it rather
+// than read the current one, because the closers that carry the bar out —
+// closing the terminal, switching session — reach here after the app has
+// stopped calling it current, and a cancel with no session cancels nothing:
+// the pane would stay in copy mode wearing this bar's match colours.
+let searchSession = "";
 
 // Long enough that a held-down key is one find rather than one per character,
 // short enough that a pause in typing answers before it is noticed. Every find
@@ -39,12 +45,15 @@ async function searchPost(action) {
   if (demoMode) return;
   const q = $("search-input").value;
   const seq = ++searchSeq;
-  if (action !== "cancel") searchInMode = true;
+  if (action !== "cancel") {
+    searchInMode = true;
+    searchSession = currentSession || "";
+  }
   try {
     const r = await fetch(apiURL("api/search"), {
       method: "POST", cache: "no-store",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ session: currentSession || "", dev: cfg.devname,
+      body: JSON.stringify({ session: searchSession, dev: cfg.devname,
                              query: q, action: action }),
     });
     if (r.status === 401) { rejectToken(); return; }
@@ -73,7 +82,9 @@ function searchShowCount(d, q) {
 }
 
 // Leaving copy mode, which is what puts the pane back under the prompt and
-// takes the highlights down. Only ever sent for a copy mode this bar opened.
+// takes the highlights down — and, on the computer, unsets the match colours
+// the find painted the window in. Only ever sent for a copy mode this bar
+// opened: the user's own is theirs to leave.
 function searchCancel() {
   $("search-count").textContent = "";
   if (!searchInMode) return;
