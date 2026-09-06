@@ -193,9 +193,53 @@ function send(data) {
   if (demoMode) { demoInput(data); return; }
   if (sock && sock.readyState === WebSocket.OPEN) sock.send(data);
 }
+// The size the server was last told about, so a resize that changes nothing
+// does not arm a probe. Separate from rzLastRows, which only moves while the
+// debug log is on.
+let rzSentRows = 0, rzSentCols = 0;
 function sendResize() {
   if (!term || !sock || sock.readyState !== WebSocket.OPEN) return;
   sock.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows, token: cfg.token, dev: cfg.devname }));
+  // A size tmux has not seen before always makes it repaint, so a socket that
+  // answers a real resize with nothing at all is the half-dead one.
+  if (term.rows !== rzSentRows || term.cols !== rzSentCols) {
+    rzSentRows = term.rows;
+    rzSentCols = term.cols;
+    probeSocket("resize");
+  }
+  rzWatchStart();
+}
+// Debug only: what tmux sends back in the seconds after a resize. A grid that
+// grew and shows stale rows at the bottom is either a repaint that never came
+// or one the renderer dropped, and the byte count with the deepest row the
+// repaint addressed tells those apart.
+let rzWatch = null;
+let rzLastRows = 0;
+function rzWatchStart() {
+  if (!dbgOn) return;
+  if (term.rows === rzLastRows) return;
+  rzLastRows = term.rows;
+  rzWatch = { rows: term.rows, bytes: 0, maxrow: 0, chunks: 0 };
+  setTimeout(() => {
+    if (!rzWatch) return;
+    dbg("post-resize", "rows=" + rzWatch.rows, "chunks=" + rzWatch.chunks,
+        "bytes=" + rzWatch.bytes, "maxrow=" + rzWatch.maxrow);
+    rzWatch = null;
+  }, 2500);
+}
+function rzWatchFeed(bytes) {
+  if (!rzWatch) return;
+  rzWatch.chunks++;
+  rzWatch.bytes += bytes.length;
+  try {
+    const text = new TextDecoder().decode(bytes);
+    const re = /\x1b\[(\d+);\d*H/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const row = parseInt(m[1], 10);
+      if (row > rzWatch.maxrow) rzWatch.maxrow = row;
+    }
+  } catch (e) {}
 }
 // Set when a hidden report could not be sent; cleared once one has been.
 let missedHidden = false;
@@ -236,6 +280,29 @@ function dbgFit() {
       "host=" + Math.round(host.clientHeight), "cell=" + cell,
       "inner=" + window.innerHeight, "vv=" + vv,
       "scr=" + (scr.style.height || "auto"), "top=" + (scr.style.top || "0"));
+  // Where the grid actually sits on screen, not just how tall it was told to
+  // be: a fit can be right while the page is panned or the fixed layer is
+  // misplaced, and only the rects say so. Emitted only while debugging.
+  try {
+    const r = el => { const b = el.getBoundingClientRect();
+                      return Math.round(b.top) + ".." + Math.round(b.bottom); };
+    const screen = host.querySelector(".xterm-screen");
+    const bar = $("keybar");
+    dbg("geom", "scr=" + r(scr), "host=" + r(host),
+        "grid=" + (screen ? r(screen) : "-"), "bar=" + (bar ? r(bar) : "-"),
+        "scrollY=" + Math.round(window.scrollY),
+        "vvtop=" + (window.visualViewport ? Math.round(window.visualViewport.offsetTop) : "-"),
+        "vvpage=" + (window.visualViewport ? Math.round(window.visualViewport.pageTop) : "-"));
+    // What xterm holds in its bottom rows, against what the screen shows and
+    // what tmux's pane holds: three views that agree when nothing is wrong.
+    const buf = term.buffer.active;
+    const tail = [];
+    for (let i = Math.max(0, term.rows - 4); i < term.rows; i++) {
+      const line = buf.getLine(buf.viewportY + i);
+      tail.push(i + ":" + (line ? line.translateToString(true).slice(0, 28) : "?"));
+    }
+    dbg("tail", "ybase=" + buf.viewportY + "/" + buf.baseY, tail.join(" | "));
+  } catch (e) {}
 }
 
 let fitTimer = null;
@@ -514,11 +581,50 @@ function socketLive() {
                   sock.readyState === WebSocket.OPEN);
 }
 
+// Liveness the readyState cannot speak for. iOS hands a resumed PWA back a
+// socket that still reads OPEN over a connection that is dead or half-dead:
+// the resize this client sends on resume even reaches the server, but tmux's
+// repaint never comes back, so the rows the terminal just grew by stay blank
+// until the socket admits it is closed half a minute later. So ask the server
+// to say something, and if nothing at all arrives, reconnect on our own terms.
+let probeTimer = null;
+function probeSocket(why) {
+  if (!sock || sock.readyState !== WebSocket.OPEN) return;
+  if (probeTimer) return;   // one already in flight answers for this socket
+  const ws = sock, gen = sockGen;
+  try {
+    ws.send(JSON.stringify({ type: "ping", token: cfg.token, dev: cfg.devname }));
+  } catch (e) { return; }
+  probeTimer = setTimeout(() => {
+    probeTimer = null;
+    if (ws !== sock || gen !== sockGen) return;   // superseded meanwhile
+    // Off screen this client holds its reconnects on purpose (see
+    // scheduleReconnect); the resume probes again on the way back.
+    if (document.hidden) return;
+    dbg("ws dead", why, "gen=" + gen);
+    // Forced the way a session switch forces one: retire the generation so the
+    // zombie's late events are ignored, drop it without letting its close
+    // schedule a backoff, and open a fresh socket now. The server's PTY is
+    // still lingering, so this comes back through the adopt path — screen,
+    // scrollback and terminal modes all kept.
+    sockGen++;
+    ws.onclose = null;
+    try { ws.close(); } catch (e) {}
+    sock = null;
+    retries = 0;
+    connect();
+  }, 2500);
+}
+// Any traffic at all proves the socket carries, so a probe never outlives the
+// frame that answers it — nor the socket it was sent on.
+function probeCancel() { clearTimeout(probeTimer); probeTimer = null; }
+
 function connect() {
   if (!currentSession || demoMode) return;   // the demo has no machine to reach
   // Already connecting or connected to this session — nothing to do.
   if (socketLive()) return;
   clearTimeout(retryTimer);
+  probeCancel();
   const gen = ++sockGen;
   const ws = new WebSocket(wsURL("ws/attach/" + encodeURIComponent(currentSession)));
   ws.binaryType = "arraybuffer";
@@ -547,6 +653,10 @@ function connect() {
   };
   ws.onmessage = (ev) => {
     if (gen !== sockGen) return;
+    // Liveness is proven by traffic, not by pong in particular: a repaint is
+    // just as good an answer, and against a server too old to know ping it is
+    // the only one there is.
+    probeCancel();
     if (typeof ev.data === "string") {
       // Server→client text frames are JSON control messages; binary frames
       // stay raw PTY bytes. Anything unparseable falls through to the
@@ -554,6 +664,9 @@ function connect() {
       if (ev.data.startsWith("{")) {
         let ctl = null;
         try { ctl = JSON.parse(ev.data); } catch (e) {}
+        // The probe's own answer, and nothing more: the cancel above has
+        // already taken what it was worth.
+        if (ctl && ctl.type === "pong") return;
         // This reconnect took over the tmux client the dropped socket left
         // behind, so tmux saw no detach and will not re-initialise us: the
         // modes it turned on once — mouse tracking, bracketed paste,
@@ -594,7 +707,9 @@ function connect() {
     // TUI, old server): the reset that used to happen before the connect
     // happens here instead, so the stale screen survives the retry wait.
     if (!painted) { term.reset(); painted = true; }
-    term.write(new Uint8Array(ev.data));
+    const bytes = new Uint8Array(ev.data);
+    rzWatchFeed(bytes);
+    term.write(bytes);
   };
   ws.onerror = () => { dbg("ws error", "gen=" + gen); };
   ws.onclose = (ev) => {
@@ -602,6 +717,7 @@ function connect() {
     // A superseded socket's close must never trigger a reconnect.
     if (gen !== sockGen) return;
     sock = null;
+    probeCancel();
     // Nothing is listening for wheel reports until the reattach repaints, and a
     // coast still running would resume scrolling a screen the user never flicked.
     cancelCoast();
@@ -696,7 +812,9 @@ document.addEventListener("visibilitychange", () => {
   // The demo's screen is ours, not a repaint from tmux: resetting it would wipe
   // the transcript, and there is nothing to reconnect to.
   if (demoMode) { refit(); return; }
-  if (socketLive()) { refit(); return; }
+  // readyState is not evidence here — this is exactly where iOS hands back a
+  // socket that reads open over a connection that no longer carries.
+  if (socketLive()) { probeSocket("resume"); refit(); return; }
   retries = 0;
   // No reset — the reconnect's first frame replaces the screen; see connect().
   connect();

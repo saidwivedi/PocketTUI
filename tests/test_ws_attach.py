@@ -281,6 +281,31 @@ def test_resize_control_frame_reaches_the_pty(client, bridge):
         assert wait_for(lambda: winsize() == (101, 41)), winsize()
 
 
+def test_ping_is_answered_with_pong_and_never_reaches_the_pty(client, bridge):
+    # The client's liveness probe: a resumed iOS PWA can hold a socket that
+    # still reads open while nothing crosses it, so it asks and reconnects if
+    # nothing comes back. /bin/cat would echo the frame if it fell through.
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        ws.send_text(json.dumps({"type": "ping", "token": TOKEN, "dev": "phone"}))
+        msg = ws.receive()
+        assert msg.get("bytes") is None
+        assert json.loads(msg["text"]) == {"type": "pong"}
+        # The bridge is untouched by it — and the ping is not sitting in the
+        # PTY ahead of this.
+        ws.send_bytes(b"after-ping\n")
+        assert b"ping" not in collect_bytes(ws, b"after-ping").replace(
+            b"after-ping", b"")
+
+
+def test_unknown_control_type_still_reaches_the_pty(client, bridge):
+    # Anything the server has no handler for is keystrokes, as it always was.
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        ws.send_text(json.dumps({"type": "pong"}) + "\n")
+        collect_bytes(ws, b'{"type": "pong"}')
+
+
 def test_second_connect_to_the_same_view_retires_the_first(client, bridge):
     with client.websocket_connect("/ws/attach/work") as first:
         hello(first)
