@@ -127,19 +127,16 @@ function startListening() {
 // chip on the strip for the backend's — and the user had to know which was which
 // before speaking. Now the key is the only one, and Settings says what it talks
 // to. In-flight states come first, because while a capture is running the key is
-// a stop button and nothing else.
+// the way out of it and nothing else.
 function toggleCompose() {
-  // A tap during the upload is a cancel — but only once the stop tap that
-  // started that upload has stopped echoing. Inside the grace window the tap is
-  // this key's own ghost click or the second half of a double-tap, and acting on
-  // it would abort audio the server is already transcribing.
-  if (recBusy) { if (!recCancelEcho()) cancelUpload(); return; }
-  if (recording()) { stopRecording(); return; }
-  // Tapped again while the microphone grant is still outstanding. There is no
-  // recorder yet to stop, and asking for a second grant on top of the first is
-  // what hands iOS back a muted track — so this tap stands the take down and
-  // the acquire that lands after it releases what it was given.
-  if (recStarting) { cancelRecording(); return; }
+  // A tap while a take — or the upload it turned into — is in flight discards
+  // it and puts the strip away. Stopping a take and keeping what it heard is
+  // the Send button's job now, so what is left for this key is the way out of
+  // one the user did not mean to start. It covers the outstanding grant too:
+  // there is no recorder yet to stop, and asking for a second grant on top of
+  // the first is what hands iOS back a muted track, so the tap stands the take
+  // down and the acquire that lands after it releases what it was given.
+  if (composeDiscardCapture()) return;
   if (listening()) {
     if (!$("compose-text").value.trim()) setCompose(false);  // nothing captured: put the strip away
     else stopListening();                                    // keep the transcript up for editing/sending
