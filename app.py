@@ -4586,6 +4586,16 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                     log(f"conn {cid} resize {rcols}x{rrows}"
                         + ("" if changed else " (unchanged)"))
                     continue
+                if ctl and ctl.get("type") == "ping":
+                    # A liveness probe. A resumed iOS PWA can hold a socket
+                    # that still reads open while nothing crosses it: sends
+                    # trickle out, the repaint never comes back, and the client
+                    # sits on a stale screen until the socket finally admits it
+                    # is closed. Answering proves the way back is open — and it
+                    # goes through the same queue as every other control frame,
+                    # so pump_out stays the only writer on this socket.
+                    me.notify(json.dumps({"type": "pong"}))
+                    continue
                 if ctl and ctl.get("type") == "visibility":
                     was = me.visible
                     me.visible = bool(ctl.get("visible"))
