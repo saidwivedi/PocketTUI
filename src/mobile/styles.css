@@ -761,11 +761,42 @@ html.term-open, body.term-open {
               color 0.14s var(--ease-out);
   -webkit-user-select: none; user-select: none;
 }
+#compose-send > span { display: inline-flex; align-items: center; }
 #compose-send svg { width: 17px; height: 17px; }
+/* The square is filled where the arrow is drawn in line, and a filled shape
+   reads heavier at the same box, so it is drawn smaller to match. */
+#compose-send .stop svg { width: 14px; height: 14px; }
 #compose-send.armed {
   background: var(--umber);
   border-color: var(--umber);
   color: var(--paper);
+}
+/* While a local take is running this button IS the stop control — the mic key
+   only says the microphone is open — so it takes the armed fill whether or not
+   there is text, wears the square, and breathes: the slow pulse says live
+   rather than merely lit. One stop on screen, and it is the obvious button.
+   Uploading keeps the fill, since the take is still the app's to finish, but
+   drops the breath and dims, to say the tap now cancels rather than stops. */
+#compose-send > .stop { display: none; }
+#compose-send.stop > .idle,
+#compose-send.busy > .idle { display: none; }
+#compose-send.stop > .stop,
+#compose-send.busy > .stop { display: inline-flex; }
+#compose-send.stop,
+#compose-send.busy {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+}
+#compose-send.stop { animation: mic-pulse 1.6s var(--ease-out) infinite; }
+#compose-send.busy { opacity: 0.5; }
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.62; }
+}
+/* Motion is the decoration, not the signal — the fill still says "recording". */
+@media (prefers-reduced-motion: reduce) {
+  #compose-send.stop { animation: none; }
 }
 #compose-send:active { transform: scale(0.94); }
 
@@ -1061,17 +1092,17 @@ html.term-open, body.term-open {
   font-weight: 700;
 }
 /* Recording: the armed-modifier fill, since it is the same idea — a key that is
-   on and stays on until tapped again — plus a slow breath so it reads as live
-   rather than merely latched. Both capture engines land here now, so it is the
-   one place on screen that says the microphone is open. */
+   on and stays on until tapped again. Both capture engines land here now, so it
+   is the one place on screen that says the microphone is open — and only that:
+   the breath and the stop square live on the strip's Send button, which is what
+   ends the take. Two stop controls meant neither was obviously the one. */
 .keybar button.listening {
   background: var(--umber);
   border-color: var(--umber);
   color: var(--paper);
-  animation: mic-pulse 1.6s var(--ease-out) infinite;
 }
-/* Uploading keeps the fill — the take is still the app's to finish — but drops
-   the breath and dims, to say the tap now cancels rather than stops. No spinner:
+/* Uploading keeps the fill — the take is still the app's to finish — but dims,
+   to say the microphone itself is no longer the thing running. No spinner:
    the strip's own "Transcribing…" is where the wait is reported. */
 .keybar button.busy {
   background: var(--umber);
@@ -1079,23 +1110,9 @@ html.term-open, body.term-open {
   color: var(--paper);
   opacity: 0.5;
 }
-/* While a local take is running the key IS the stop control, so the mic glyph
-   gives way to the square — nothing on screen should still offer to start what
-   is already started. Both faces ship in the markup and CSS swaps them, so the
-   change costs no DOM work mid-recording. */
-.k-compose > span { display: inline-flex; align-items: center; }
-.k-compose .stop { display: none; }
-/* Outweighs `.keybar button.glyph-key svg` above, which would otherwise size
-   the square at the mic glyph's 15px — a filled shape reads heavier than an
-   outlined one at the same box, so it is drawn smaller to match. */
-.keybar button.k-compose .stop svg { width: 12px; height: 12px; }
-.k-compose.listening .idle,
-.k-compose.busy .idle { display: none; }
-.k-compose.listening .stop,
-.k-compose.busy .stop { display: inline-flex; }
 /* The local engine failed and the session is on the phone's recogniser instead.
-   A dot in the corner rather than a changed glyph: the key still records and
-   still stops, so its face must keep saying so — this is a footnote about where
+   A dot in the corner rather than a changed glyph: the key still records, so
+   its face must keep saying so — this is a footnote about where
    the audio goes, and the answer is in Settings. Warm amber, not the umber the
    active states use, so it reads as a caveat beside them rather than another
    one of them. */
@@ -1115,14 +1132,6 @@ html.term-open, body.term-open {
 }
 .k-compose.listening.forced-phone::after,
 .k-compose.busy.forced-phone::after { box-shadow: 0 0 0 1.5px var(--paper); }
-@keyframes mic-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.62; }
-}
-/* Motion is the decoration, not the signal — the fill still says "recording". */
-@media (prefers-reduced-motion: reduce) {
-  .keybar button.listening { animation: none; }
-}
 /* Arrows are single glyphs: they need their own font size to stay legible next
    to the 10.5px words, but a smaller floor and a smaller share of the slack, so
    the row's spare width goes to the labels that actually need it. */
@@ -1341,9 +1350,6 @@ html.term-open, body.term-open {
   /* Bigger glyphs than the docked bar's, because they are now the whole key:
      with the chip gone there is nothing else carrying the target. */
   #keybar > button svg { width: 20px; height: 20px; }
-  /* Scaled with them, keeping the ratio the docked bar chose: a filled square
-     reads heavier than an outlined mic at the same box. */
-  #keybar > .k-compose .stop svg { width: 16px; height: 16px; }
   /* The chip itself goes. Deliberately at class specificity, not #keybar's:
      every state the mic can enter — listening, uploading, and :active — paints
      a background from a `.keybar button.<state>` rule, and those must go on
@@ -2069,7 +2075,9 @@ html.term-open, body.term-open {
 #dbg-panel {
   position: fixed;
   top: calc(8px + var(--safe-top, 0px)); left: 8px; right: 8px;
-  max-height: 35vh;
+  /* Three lines, everywhere: any taller and it covers the thing being
+     debugged. The full tail is on the server once the switch is on. */
+  max-height: 4.6em;
   overflow-y: auto;
   padding: 6px 8px;
   border-radius: 8px;
@@ -2083,13 +2091,9 @@ html.term-open, body.term-open {
   z-index: 500;
   pointer-events: none;
 }
-/* Over the terminal it is a ticker, not a log: the newest few lines stay in
-   view so a transition can be caught as it happens, and the rest of the grid
-   stays readable. The full tail is on the server anyway once the switch is on. */
-html.term-open #dbg-panel {
-  max-height: 4.6em;
-  opacity: 0.85;
-}
+/* Over the terminal it is a ticker, not a log: faded a little further so the
+   grid under it stays readable. */
+html.term-open #dbg-panel { opacity: 0.85; }
 
 /* ============================================================
    IMAGE VIEWER

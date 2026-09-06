@@ -259,7 +259,14 @@
       <button type="button" id="compose-clear" aria-label="Clear composed text">
         <svg aria-hidden="true"><use href="#i-close"/></svg>
       </button>
-      <button type="button" id="compose-send" aria-label="Send"><svg><use href="#i-send"/></svg></button>
+      <!-- Two faces, both shipped here and swapped by CSS: the arrow that sends,
+           and the square this button wears while a local recording runs, when it
+           is the one stop control on screen. Swapping in the markup rather than
+           in the state machine keeps a running take clear of DOM work. -->
+      <button type="button" id="compose-send" aria-label="Send">
+        <span class="idle"><svg aria-hidden="true"><use href="#i-send"/></svg></span>
+        <span class="stop"><svg aria-hidden="true"><use href="#i-stop"/></svg></span>
+      </button>
     </div>
   </div>
   <!-- Optional quick-command chips, built from Settings; hidden until the
