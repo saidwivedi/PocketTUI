@@ -118,7 +118,7 @@ def test_report_dialog_is_wired(doc):
 
 
 def test_vendor_script_tags_survive(doc):
-    for name in ("xterm.js", "addon-fit.js", "addon-webgl.js"):
+    for name in ("xterm.js", "addon-fit.js", "addon-webgl.js", "addon-search.js"):
         assert f'src="vendor/{name}?v=__CACHE_VERSION__"' in doc
     assert 'href="vendor/xterm.css?v=__CACHE_VERSION__"' in doc
 

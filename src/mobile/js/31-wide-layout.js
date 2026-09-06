@@ -304,6 +304,18 @@ syncPill();
 document.addEventListener("keydown", (e) => {
   if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
   if (!isWideLayout() || $("sheet-scrim").classList.contains("show")) return;
+  // Scrollback search, on the same three keys and for the same reason: a plain
+  // Ctrl+F is the shell's own forward-char and the pager's find, and this must
+  // take neither away. Claimed only where there is a terminal to search, and a
+  // second press is not a toggle but a return to the field — the browser's own
+  // find behaves that way, and a find bar is not a thing anyone closes by
+  // pressing the key that opened it.
+  if ((e.code || "") === "KeyF" && $("screen-term").classList.contains("active")) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (!e.repeat) openSearch();
+    return;
+  }
   // The diff pane's split, on the same three keys and for the same reason a
   // digit needs them: a plain Ctrl+G is the bell, and readline's way out of a
   // history search, and this must take nothing away from the terminal. Claimed only where there is

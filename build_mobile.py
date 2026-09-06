@@ -94,6 +94,7 @@ JS_FRAGMENTS = (
     "35-report.js",
     "36-server-version.js",
     "37-git-diff.js",
+    "38-scrollback-search.js",
     "27-boot.js",
 )
 
