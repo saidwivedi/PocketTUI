@@ -489,6 +489,9 @@ function openTerminal(name, resumed) {
   sockGen++;
   cancelCoast();
   cancelTermSelection();
+  // A find is a find in this session's buffer, and the buffer is about to be
+  // reset out from under it.
+  closeSearch();
   if (sock) { sock.onclose = null; try { sock.close(); } catch (e) {} sock = null; }
   currentSession = name;
   retries = 0;
@@ -577,6 +580,7 @@ function closeTerminal(skipReload) {
   releaseMods();
   // Leaving with the strip open would carry its keyboard onto the session list.
   setCompose(false);
+  closeSearch();
   // A rejected pairing code reloads into the same 401; the caller shows the
   // setup sheet itself, so skip the doomed round-trip.
   if (skipReload) return;
