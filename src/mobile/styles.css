@@ -623,6 +623,89 @@ html.term-open, body.term-open {
 #demo-badge.show { display: block; }
 #demo-badge:active { transform: scale(0.94); }
 
+/* ============================================================
+   SEARCH BAR — find in the scrollback, top of the terminal column
+   ============================================================ */
+/* Wide layouts only: the chord that opens it is the rail's (31-wide-layout.js),
+   and the phone has no keyboard to press it on — the .open rule lives inside
+   the same media query the rail does, so a bar left open by a window that has
+   since narrowed goes away with the layout rather than sitting over the grid.
+   Absolutely positioned in #screen-term, which is the terminal's own column:
+   the rail moves that box's left edge and the side pane its right, so the bar
+   follows both for free and never reaches over the diff or the explorer.
+   Docked to the top and to the right, the corner a find bar is looked for in,
+   and floating over the grid rather than pushing it — the terminal must not
+   resize and reflow just because someone is looking for a word in it. Above
+   the demo badge (z-index 30), which shares that corner and is a demo-only
+   ornament; below the connection banner, which is the more urgent thing to
+   read. */
+#search-bar {
+  display: none;
+  position: absolute;
+  top: calc(var(--safe-top) + 6px);
+  right: 8px;
+  z-index: 35;
+  width: min(420px, calc(100% - 16px));
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 12px;
+  background: rgba(255, 253, 247, 0.94);
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  border: 1px solid var(--hair);
+  box-shadow: 0 6px 20px rgba(20, 16, 10, 0.18);
+}
+:root[data-theme="dark"] #search-bar { background: rgba(31, 28, 22, 0.94); }
+.search-icon {
+  flex: 0 0 auto;
+  width: 15px; height: 15px;
+  color: var(--tertiary);
+  margin-left: 4px;
+}
+#search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding: 7px 10px;
+  transition: border-color 0.18s var(--ease-out);
+}
+#search-input:focus { border-color: var(--umber); outline: none; }
+/* Never a reason to reflow the field: the count is as wide as its widest
+   reading and empty until there is one. */
+#search-count {
+  flex: 0 0 auto;
+  min-width: 64px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--tertiary);
+  white-space: nowrap;
+}
+#search-bar button {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--secondary);
+  padding: 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: color 0.18s var(--ease-out), background 0.18s var(--ease-out);
+}
+#search-bar button svg { width: 16px; height: 16px; }
+#search-bar button:hover { color: var(--ink); background: var(--umber-tint); }
+#search-bar button:active { transform: scale(0.94); }
+
+@media (min-width: 768px) and (min-height: 500px) {
+  #search-bar.open { display: flex; }
+}
+
 /* Backend-unreachable banner — the persistent cousin of the "Reconnecting…"
    toast, floated over the grid's top. Same ink-on-paper chip as the toast and
    the selection pill, but it stays up until the socket comes back. */
