@@ -107,6 +107,16 @@
       <path d="M10.3 3.5v5.5L7.8 12.4h8.4l-2.5-3.4V3.5"/>
       <path d="M12 12.4v7"/>
     </symbol>
+    <!-- The docked file pane's two sizes: corners pushed out to the edges of
+         the main pane, and pulled back in to the seam. Corner brackets rather
+         than a box, so the pair reads as a direction at 17px where a rectangle
+         would only ever read as a rectangle. -->
+    <symbol id="i-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9.5 4.5h-5v5M14.5 4.5h5v5M9.5 19.5h-5v-5M14.5 19.5h5v-5"/>
+    </symbol>
+    <symbol id="i-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4.5 9.5h5v-5M19.5 9.5h-5v-5M4.5 14.5h5v5M19.5 14.5h-5v5"/>
+    </symbol>
     <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M3.5 7a2 2 0 0 1 2-2h3.8l2 2.3h7.2a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>
     </symbol>
@@ -286,15 +296,17 @@
        everywhere but pill mode. -->
   <button type="button" id="keybar-pin" aria-pressed="true"
           aria-label="Unpin the key pill"><svg aria-hidden="true"><use href="#i-pin"/></svg></button>
-  <!-- The diff pane and the seam that resizes it (Ctrl+Shift+G; see
-       37-git-diff.js). Children of the terminal screen rather than siblings of
-       it, so they need no visibility rule of their own: opening the explorer,
-       the reader or the editor swaps .active off this screen and takes the
-       split down with it, and coming back brings it up again. Both are fixed
-       to the window's right edge, which is why they sit outside the flex
-       column above without disturbing it — the column simply ends earlier
-       (#screen-term.diff-open moves its right edge in). -->
-  <div id="diff-gutter"></div>
+  <!-- The diff pane, and the seam that resizes whatever is docked beside the
+       terminal — the diff (Ctrl+Shift+G; see 37-git-diff.js) or the file
+       explorer (28-file-explorer.js), which share one slot and one width
+       (26-side-pane.js). Children of the terminal screen rather than siblings
+       of it, so they need no visibility rule of their own: opening the reader
+       or the editor swaps .active off this screen and takes the split down
+       with it, and coming back brings it up again. Both are fixed to the
+       window's right edge, which is why they sit outside the flex column above
+       without disturbing it — the column simply ends earlier
+       (#screen-term.side-open moves its right edge in). -->
+  <div id="side-gutter"></div>
   <div id="diff-pane">
     <div id="diff-head">
       <span id="diff-root"></span>
@@ -402,6 +414,16 @@
         </div>
       </div>
     </div>
+    <!-- The docked pane's own two controls, shown only while the explorer is
+         beside the terminal rather than over it (28-file-explorer.js): the
+         size it is read at, and the way out. Last in the bar, in that order,
+         because the cross is the one that ends the pane and the outermost
+         control is where a window's close always sits. Expand swaps its face
+         for #i-collapse while the pane is filling the main area. -->
+    <button class="icon-btn dock-only" id="btn-files-expand"
+            aria-label="Expand the file pane"><svg><use href="#i-expand"/></svg></button>
+    <button class="icon-btn dock-only" id="btn-files-close"
+            aria-label="Close the file pane"><svg><use href="#i-close"/></svg></button>
     <!-- Matching entries for the path segment being typed in files-path-input.
          A child of the topbar rather than files-path-wrap so it can span the
          bar's full width; position:sticky on .topbar still anchors it the
