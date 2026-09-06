@@ -206,7 +206,9 @@
       <!-- Hidden when the computer's server is too old to have the routes the
            pane reads (37-git-diff.js). -->
       <div class="rail-key" id="rk-diff"><kbd>Ctrl+Shift+G</kbd><span>Git diff</span></div>
-      <div class="rail-key"><kbd>Ctrl+Shift+F</kbd><span>Search scrollback</span></div>
+      <!-- And hidden the same way: the find is tmux's, run through a route an
+           older server does not have (38-scrollback-search.js). -->
+      <div class="rail-key" id="rk-search"><kbd>Ctrl+Shift+F</kbd><span>Search scrollback</span></div>
       <button type="button" id="btn-rail-keys-all">All shortcuts</button>
     </div>
   </div>
@@ -817,9 +819,10 @@
       <kbd>Ctrl+Shift+G</kbd><span>Split the git changes of the session's folder out beside the
         terminal &mdash; a file list and its diff, refreshed while it is open</span>
     </div>
-    <div class="list-row">
-      <kbd>Ctrl+Shift+F</kbd><span>Search the scrollback &mdash; Enter or the up chevron for the
-        next match further up, Shift+Enter or the down chevron back down, Escape to close</span>
+    <div class="list-row" id="key-search">
+      <kbd>Ctrl+Shift+F</kbd><span>Search the session's scrollback with tmux's own find &mdash;
+        Enter or the up chevron for the next match further up, Shift+Enter or the down chevron
+        back down, Escape to leave copy mode and close</span>
     </div>
   </div>
   <label>Everywhere</label>
@@ -911,7 +914,6 @@
 <script src="vendor/xterm.js?v=__CACHE_VERSION__"></script>
 <script src="vendor/addon-fit.js?v=__CACHE_VERSION__"></script>
 <script src="vendor/addon-webgl.js?v=__CACHE_VERSION__"></script>
-<script src="vendor/addon-search.js?v=__CACHE_VERSION__"></script>
 <script>
 @include js
 </script>

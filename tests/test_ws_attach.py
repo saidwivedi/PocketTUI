@@ -965,6 +965,35 @@ class TestRealTmux:
         self.new_session("blank")
         assert A.capture_history("blank") == ""
 
+    def test_search_runs_in_the_panes_own_copy_mode(self, client):
+        # The find bar's whole reason: the match is a line that scrolled off
+        # the 24-row screen, so nothing in the browser's buffer could find it.
+        self.new_session("find")
+        rc, _ = A.tmux("send-keys", "-t", "find", "seq 1 200", "Enter")
+        assert rc == 0
+        assert wait_for(lambda: "150" in A.capture_history("find"))
+
+        r = client.post("/api/search", json={"session": "find", "dev": "",
+                                             "query": "150", "action": "restart"})
+        assert r.status_code == 200
+        d = r.json()
+        assert d["in_mode"] is True
+        # search_present and the counts are tmux 3.2 formats; an older tmux
+        # searches all the same and answers null, which the bar shows as no
+        # count rather than as no matches.
+        if d["count"] is not None:
+            assert d["present"] is True and d["count"] > 0
+
+        r = client.post("/api/search", json={"session": "find", "dev": "",
+                                             "query": "150", "action": "cancel"})
+        assert r.status_code == 200
+        assert r.json()["in_mode"] is False
+
+        # No session, no pane to search.
+        r = client.post("/api/search", json={"session": "gone", "dev": "",
+                                             "query": "x", "action": "restart"})
+        assert r.status_code == 404
+
     # -- the pair: a phone and a laptop on one window -----------------------
 
     def test_activity_still_decides_the_shared_window_size(self, client):
