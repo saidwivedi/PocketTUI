@@ -12,87 +12,97 @@
 // own. It docks at the top because the prompt is at the bottom — scrollback is
 // what a find is looking at anyway.
 //
-// searchAddon (07-terminal.js) is null when the addon failed to load or the
-// terminal has not been built yet; every entry point below is a no-op in that
-// case, the same defensive shape useWebgl()/useSearch() have.
+// The find itself is tmux's, run on the computer through /api/search: this
+// terminal is a tmux client, so xterm's buffer holds only what tmux last
+// painted and a find here would see the visible screen and nothing else, while
+// the history the user is looking for is tmux's. So the pane sits in copy mode
+// for as long as matches are up — tmux draws the highlights and the attach
+// socket carries them like any other repaint — and closing the bar leaves it.
 let searchOpen = false;
 let searchTypeTimer = null;
+// Requests overlap while the field is typed in and answer out of order; only
+// the newest one may write the counter.
+let searchSeq = 0;
+// True once this bar has put the pane into copy mode. A copy mode the user
+// entered themselves in tmux is not this bar's to cancel.
+let searchInMode = false;
 
-// The umber accent already carries the app's light/dark themes (TERM_THEME_*
-// in 07-terminal.js); reading it live rather than hardcoding a second copy of
-// the ramp keeps the highlight colour a single source of truth. Read at every
-// find, so a theme toggled while the bar sits open is honoured by the next one.
-function searchDecorations() {
-  const accent = getComputedStyle(document.documentElement)
-    .getPropertyValue("--umber").trim() || "#b85c38";
-  return {
-    matchBackground: "rgba(255, 224, 120, 0.55)",
-    matchBorder: accent,
-    matchOverviewRuler: accent,
-    activeMatchBackground: "rgba(255, 180, 60, 0.75)",
-    activeMatchBorder: accent,
-    activeMatchColorOverviewRuler: accent,
-  };
-}
+// Long enough that a held-down key is one find rather than one per character,
+// short enough that a pause in typing answers before it is noticed. Every find
+// is a fresh one from the bottom: the query changed, so where the last one
+// walked the cursor to is not where this one starts.
+const SEARCH_TYPE_MS = 250;
 
-// Plain text, either case — a terminal find is looking for a path or a word it
-// just saw scroll past, not writing a pattern. The decorations key is also what
-// turns the addon's result events on, which is where the counter comes from.
-function searchOptions() {
-  return { caseSensitive: false, regex: false, decorations: searchDecorations() };
-}
-
-// The addon's own count, fired on every find and again whenever output or a
-// resize moves the matches (07-terminal.js hands it here). resultIndex is -1
-// while nothing is the active match — after a clear, or when the last active
-// one scrolled out of the buffer.
-function searchResults(r) {
-  if (!searchOpen) return;
-  const count = r ? r.resultCount : 0;
-  const idx = r ? r.resultIndex : -1;
-  if (!$("search-input").value) $("search-count").textContent = "";
-  else if (!count) $("search-count").textContent = "No matches";
-  else $("search-count").textContent = idx >= 0 ? (idx + 1) + " of " + count
-    : count + (count === 1 ? " match" : " matches");
-}
-
-function searchClear() {
-  $("search-count").textContent = "";
-  if (searchAddon) { try { searchAddon.clearDecorations(); } catch (e) {} }
-}
-
-// One find, always upwards for the first one: the prompt is at the bottom, so
-// the match the user means is the nearest one above it. `incremental` is what
-// keeps a growing query from walking that match further up the buffer on every
-// keystroke — the anchor stays where the search started and only the highlight
-// grows, which is what a find field is expected to do while it is typed in.
-function searchRun() {
-  if (!searchAddon) return;
+// One call, and the counter the answer carries. Every path in goes through
+// here, so a stale answer is dropped in exactly one place.
+async function searchPost(action) {
+  if (demoMode) return;
   const q = $("search-input").value;
-  if (!q) { searchClear(); return; }
-  const opts = searchOptions();
-  opts.incremental = true;
-  try { searchAddon.findPrevious(q, opts); } catch (e) {}
+  const seq = ++searchSeq;
+  if (action !== "cancel") searchInMode = true;
+  try {
+    const r = await fetch(apiURL("api/search"), {
+      method: "POST", cache: "no-store",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ session: currentSession || "", dev: cfg.devname,
+                             query: q, action: action }),
+    });
+    if (r.status === 401) { rejectToken(); return; }
+    const d = await r.json().catch(() => null);
+    if (!d || seq !== searchSeq || !searchOpen) return;
+    searchShowCount(d, q);
+  } catch (e) {
+    // Quiet, like the diff pane's poll: an unreachable backend already nags
+    // from the terminal's banner.
+  }
 }
 
-// Typing is not a keypress-per-find: highlighting all matches walks the whole
-// buffer, so a held-down key would run it once per character.
+// tmux counts its matches but does not number the one it is sitting on, so the
+// counter says how many there are rather than which of them this is. `partial`
+// is tmux saying it stopped counting at its own limit, which is what the plus
+// stands for. A count is a tmux 3.2 format: an older computer sends null and
+// the counter stays blank while the search itself still works.
+function searchShowCount(d, q) {
+  const el = $("search-count");
+  if (!q) { el.textContent = ""; return; }
+  if (d.present === false) { el.textContent = "No matches"; return; }
+  const n = d.count;
+  if (typeof n !== "number") { el.textContent = ""; return; }
+  el.textContent = n + (d.partial ? "+" : "")
+    + (n === 1 && !d.partial ? " match" : " matches");
+}
+
+// Leaving copy mode, which is what puts the pane back under the prompt and
+// takes the highlights down. Only ever sent for a copy mode this bar opened.
+function searchCancel() {
+  $("search-count").textContent = "";
+  if (!searchInMode) return;
+  searchInMode = false;
+  searchPost("cancel");
+}
+
+// Typing is not a request per keystroke: each one restarts the find from the
+// bottom of the history, and a held-down key would run the walk once per
+// character.
 function searchLive() {
   clearTimeout(searchTypeTimer);
-  searchTypeTimer = setTimeout(searchRun, 120);
+  searchTypeTimer = setTimeout(() => {
+    if ($("search-input").value) searchPost("restart");
+    else searchCancel();
+  }, SEARCH_TYPE_MS);
 }
 
 function searchStep(back) {
-  if (!searchAddon) return;
   const q = $("search-input").value;
   if (!q) return;
   clearTimeout(searchTypeTimer);
-  const opts = searchOptions();
-  try { back ? searchAddon.findPrevious(q, opts) : searchAddon.findNext(q, opts); } catch (e) {}
+  searchPost(back ? "prev" : "next");
 }
 
 function openSearch() {
-  if (!searchAddon) return;
+  // A computer too old to have the route serves 404s to it, so the chord does
+  // nothing there rather than opening a bar that can never count anything.
+  if (!hasCap("search")) return;
   const input = $("search-input");
   // A second press is a return to the field, not a toggle — the same thing a
   // browser's own find does, and the query is still there to be replaced.
@@ -102,24 +112,36 @@ function openSearch() {
   }
   input.focus();
   input.select();
-  if (input.value) searchRun();
+  if (input.value) searchPost("restart");
 }
 
 // The single close routine, the shape setCompose() has: every path in — Escape,
 // the cross, a window that stopped being wide, a session switch — closes through
-// here, so the highlights and the focus always land the same way. The query
-// survives it: reopening with the last one selected is one keystroke from
-// repeating the find and none from replacing it.
+// here, so copy mode and the focus always land the same way. The query survives
+// it: reopening with the last one selected is one keystroke from repeating the
+// find and none from replacing it.
 function closeSearch() {
   if (!searchOpen) return;
   searchOpen = false;
   clearTimeout(searchTypeTimer);
   $("search-bar").classList.remove("open");
-  searchClear();
+  searchCancel();
   // Focus back to the terminal the way the image viewer and the edge-swipe
   // gesture hand it back — but only while the terminal is still the screen on
   // show, since the two lifecycle callers below reach here on the way off it.
   if (term && $("screen-term").classList.contains("active")) term.focus();
+}
+
+// A computer without the route also stops offering the chord, the way the diff
+// pane's rail row goes. Called when the capability map lands (36-server-version
+// .js) — before that hasCap() answers yes, which is the map's own contract for
+// a server too old to send one.
+function syncSearchCap() {
+  const on = hasCap("search");
+  for (const id of ["rk-search", "key-search"]) {
+    const row = $(id);
+    if (row) row.hidden = !on;
+  }
 }
 
 // Escape is the bar's only while its own field has the focus. The three other
@@ -130,8 +152,8 @@ function closeSearch() {
 // explorer's only answers a press inside its own pane. Claiming it immediately
 // is what stops the same press reaching xterm, which reads keydown off its
 // textarea and never consults defaultPrevented. A press with the focus back in
-// the terminal is the terminal's — vim is owed its Escape — and leaves the bar
-// and its highlights up, which is what makes a highlighted path clickable.
+// the terminal is the terminal's — vim is owed its Escape — and it is also
+// tmux's own way out of copy mode, which is the mode the pane is left in.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape" || !searchOpen) return;
   if (e.target !== $("search-input")) return;
@@ -158,5 +180,5 @@ document.addEventListener("keydown", (e) => {
 })();
 
 // Below the breakpoint the bar's rules stop applying and it would sit open and
-// invisible, with the buffer still highlighted behind it.
+// invisible, with the pane still in copy mode behind it.
 wideQuery.addEventListener("change", () => { if (!wideQuery.matches) closeSearch(); });

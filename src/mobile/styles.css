@@ -1829,6 +1829,9 @@ html.term-open, body.term-open {
 #sheet-shortcuts .key-list + label { margin-top: 18px; }
 #sheet-shortcuts label + .toggle-row { margin-top: 0; }
 #sheet-shortcuts .toggle-row + .toggle-row { margin-top: 10px; }
+/* .list-row is display:flex, which outranks the [hidden] the capability check
+   sets on the search row (38-scrollback-search.js). */
+#key-search[hidden] { display: none; }
 /* A stepper rather than a slider or a typed field: the range is a handful of
    whole pixels and every press applies to the live terminal or rail underneath
    the sheet, so the two buttons and the number between them are the whole

@@ -79,7 +79,7 @@ function syncChrome() {
   $("meta-theme-color").content = bg;
 }
 
-let term = null, fitAddon = null, searchAddon = null, sock = null;
+let term = null, fitAddon = null, sock = null;
 let currentSession = null, retries = 0, retryTimer = null;
 
 // Pinch-to-zoom sets this and it survives the session. Bounds are the same ones
@@ -192,7 +192,6 @@ function ensureTerm() {
   term.loadAddon(fitAddon);
   term.open($("term-host"));
   useWebgl();
-  useSearch();
   term.onData(d => send(d));
   // Both handlers have to agree before xterm sees the key: the first one to
   // claim it returns false and the chain stops there.
@@ -214,20 +213,6 @@ function useWebgl() {
     addon.onContextLoss(() => { try { addon.dispose(); } catch (e) {} });
     term.loadAddon(addon);
   } catch (e) {}
-}
-
-// Scrollback search, loaded the same defensive way: a missing or failing addon
-// leaves searchAddon null, and the chord that opens the bar (31-wide-layout.js)
-// finds nothing to search with and does nothing at all. The result event is the
-// addon counting its own matches, which is where the bar's "3 of 12" comes from
-// (38-scrollback-search.js) rather than a second walk over the buffer.
-function useSearch() {
-  if (typeof SearchAddon === "undefined") return;
-  try {
-    searchAddon = new SearchAddon.SearchAddon();
-    term.loadAddon(searchAddon);
-    searchAddon.onDidChangeResults(r => searchResults(r));
-  } catch (e) { searchAddon = null; }
 }
 
 // ============================================================
