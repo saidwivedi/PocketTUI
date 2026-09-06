@@ -581,6 +581,25 @@ function socketLive() {
                   sock.readyState === WebSocket.OPEN);
 }
 
+// The forced drop, the way a session switch forces one: retire the generation
+// so the zombie's late events are ignored, close it without letting its close
+// schedule a backoff, and open a fresh socket now. While the server's PTY is
+// still lingering this comes back through the adopt path — screen, scrollback
+// and terminal modes all kept. A socket that has already gone is nothing to
+// close, so this is also the plain "connect now" path.
+function dropSocket(why) {
+  const ws = sock;
+  dbg("ws dead", why, "gen=" + sockGen);
+  sockGen++;
+  if (ws) {
+    ws.onclose = null;
+    try { ws.close(); } catch (e) {}
+  }
+  sock = null;
+  retries = 0;
+  connect();
+}
+
 // Liveness the readyState cannot speak for. iOS hands a resumed PWA back a
 // socket that still reads OPEN over a connection that is dead or half-dead:
 // the resize this client sends on resume even reaches the server, but tmux's
@@ -601,18 +620,7 @@ function probeSocket(why) {
     // Off screen this client holds its reconnects on purpose (see
     // scheduleReconnect); the resume probes again on the way back.
     if (document.hidden) return;
-    dbg("ws dead", why, "gen=" + gen);
-    // Forced the way a session switch forces one: retire the generation so the
-    // zombie's late events are ignored, drop it without letting its close
-    // schedule a backoff, and open a fresh socket now. The server's PTY is
-    // still lingering, so this comes back through the adopt path — screen,
-    // scrollback and terminal modes all kept.
-    sockGen++;
-    ws.onclose = null;
-    try { ws.close(); } catch (e) {}
-    sock = null;
-    retries = 0;
-    connect();
+    dropSocket(why);
   }, 2500);
 }
 // Any traffic at all proves the socket carries, so a probe never outlives the
@@ -803,18 +811,47 @@ window.addEventListener("popstate", (e) => {
 // same closeTerminal(), which is what clears demoMode.
 $("demo-badge").addEventListener("click", () => history.back());
 
+// When the app went off screen, so the return can tell a glance at another app
+// from a real background stint. Both the visibility report below and pagehide
+// set it, because a standalone PWA on iOS backgrounds through either one.
+let hiddenAt = 0;
+// The stint past which the connection is presumed gone rather than probed.
+const RESUME_DROP_MS = 5000;
+
 // A backgrounded PWA gets its socket killed; wake it back up on return.
 // iOS fires this on launch and on every return to the foreground, so it must not
 // open a second socket alongside a healthy one — CONNECTING counts as healthy.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") return;
+  // Spent on the way back in: iOS also fires this visible→visible on launch,
+  // and that must not be charged the last stint's time off screen.
+  const hiddenFor = hiddenAt ? Date.now() - hiddenAt : 0;
+  hiddenAt = 0;
   if (!currentSession) return;
   // The demo's screen is ours, not a repaint from tmux: resetting it would wipe
   // the transcript, and there is nothing to reconnect to.
   if (demoMode) { refit(); return; }
   // readyState is not evidence here — this is exactly where iOS hands back a
   // socket that reads open over a connection that no longer carries.
-  if (socketLive()) { probeSocket("resume"); refit(); return; }
+  if (socketLive()) {
+    // Past a few seconds off screen iOS has killed the connection essentially
+    // every time, so probing it first only holds the stale pre-background
+    // screen up for the probe's timeout before the very same reconnect runs.
+    // Guessing wrong costs one redundant trip down the adopt path ending in
+    // the repaint the probe would have produced anyway, so the guess is worth
+    // making. Longer than the server's linger and there is no session left to
+    // adopt: that comes back as a fresh attach with a replay frame, which is
+    // what a resume did before any of this. A socket still CONNECTING is a
+    // reconnect already in flight with nothing to drop, so it keeps the probe.
+    if (hiddenFor >= RESUME_DROP_MS && sock.readyState === WebSocket.OPEN) {
+      dropSocket("resume");
+      refit();
+      return;
+    }
+    probeSocket("resume");
+    refit();
+    return;
+  }
   retries = 0;
   // No reset — the reconnect's first frame replaces the screen; see connect().
   connect();
@@ -827,7 +864,12 @@ document.addEventListener("visibilitychange", () => {
 // "hidden" costs one redundant notification, a wrong "visible" swallows
 // real ones.
 document.addEventListener("visibilitychange", () => {
-  sendVisibility(document.visibilityState === "visible");
+  const visible = document.visibilityState === "visible";
+  if (!visible) hiddenAt = Date.now();
+  sendVisibility(visible);
 });
-window.addEventListener("pagehide", () => sendVisibility(false));
+window.addEventListener("pagehide", () => {
+  hiddenAt = Date.now();
+  sendVisibility(false);
+});
 
