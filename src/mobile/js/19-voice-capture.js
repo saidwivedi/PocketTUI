@@ -35,9 +35,12 @@ const REC_MIN_BLOB = 2048;
 // How often the analyser is sampled while recording. Fast enough that the level
 // bar tracks speech rather than lagging behind it, slow enough to be free.
 const REC_LEVEL_MS = 100;
-// Below this RMS the samples are not quiet, they are zero. Real silence in a
-// room still carries preamp noise two or three orders of magnitude above it;
-// what sits under it is the muted-capture failure writing literal zeroes.
+// Below this RMS the samples are not quiet, they are zero: the floor is what
+// separates literal zeroes from the preamp noise a live capture normally
+// carries. It does not on its own name the muted-capture failure, because iOS's
+// voice processing gates a quiet room to zeroes too — a live microphone nobody
+// spoke into looks exactly like a muted one from here. So a take under the floor
+// is evidence, not a verdict; see recSilentTake().
 const REC_DEAD_RMS = 1e-4;
 // How long a capture may show nothing at all before the recovery attempts run
 // (resume the audio session, then bounce the track). The muted-track failure is
@@ -197,12 +200,19 @@ let recLevelBuf = null;      // reused time-domain sample buffer
 let recLevelTimer = null;    // the ~100ms RMS sampler
 let recPeak = 0;             // loudest RMS seen in the current recording
 let recRevived = false;      // the recovery attempts have already been spent
-let recWarned = false;       // the "no signal" label is already up
+let recWarned = false;       // the "no sound yet" label is already up
 // Whether the analyser really ran for this take. A browser with no Web Audio,
 // or one that refused the source node, leaves recPeak at zero for reasons that
 // have nothing to do with the microphone — so the silence gate only applies
 // when there was actually something listening.
 let recMonitored = false;
+// How many takes in a row have ended carrying nothing. Deliberately across
+// takes, not reset by startRecording(): one silent take says nothing about the
+// hardware, because a mic gated to zeroes by a quiet room and a track muted by
+// iOS are the same picture to the analyser. Two in a row is the failure, since
+// the second one is a user who has now spoken twice. Zeroed by any take that
+// carries audio.
+let recDeadRuns = 0;
 
 function recording() {
   return recorder !== null;
@@ -472,12 +482,18 @@ function recLevelTick() {
   const rms = recRMS();
   if (rms > recPeak) recPeak = rms;
   recPaintLevel(rms);
-  if (recPeak > REC_DEAD_RMS) return;   // alive; nothing to escalate
+  if (recPeak > REC_DEAD_RMS) {
+    // Alive, and nothing to escalate — but the warning may be up from a take
+    // that opened on a pause, and a label saying nothing is arriving over a
+    // level bar that is moving is worse than no label at all.
+    if (recWarned) { recWarned = false; recSetLabel("Recording…"); }
+    return;
+  }
   const age = performance.now() - recStarted;
   if (age >= REC_REVIVE_MS) recRevive();
   if (age >= REC_WARN_MS && !recWarned) {
     recWarned = true;
-    recSetLabel("No signal — mic muted?");
+    recSetLabel("No sound yet — mic muted?");
   }
 }
 
@@ -705,18 +721,21 @@ function startRecording() {
       if (!recBusy || recCancelled) { recClearUI(); return; }
       const blob = new Blob(recChunks, { type: r.mimeType || "audio/webm" });
       recChunks = null;
-      // The decisive check, and the only one that catches the failure as it
-      // actually presents: 62KB of well-formed AAC whose every sample is zero.
-      // Size and the muted flag both called that recording healthy. The audio
-      // is the only witness that does not, so nothing under the floor is sent.
+      // The check that catches the failure as it actually presents: 62KB of
+      // well-formed AAC whose every sample is zero. Size and the muted flag both
+      // called that recording healthy. The audio is the only witness that does
+      // not, so nothing under the floor is sent — but what a take under the
+      // floor means is recSilentTake()'s call, not this one's.
       if (recMonitored) {
-        if (recPeak <= REC_DEAD_RMS) { recDeadCapture(); return; }
+        if (recPeak <= REC_DEAD_RMS) { recSilentTake(); return; }
       } else if (blob.size < REC_MIN_BLOB) {
         // No analyser to ask — a browser without Web Audio. All that is left is
         // the shape of the blob: too small to hold audio means it holds none.
-        recDeadCapture();
+        recSilentTake();
         return;
       }
+      // Audio, so whatever the last take was, the microphone is not dead.
+      recDeadRuns = 0;
       // The indicator stays up, now reading "Transcribing…", until this lands.
       uploadRecording(blob);
     };
@@ -751,13 +770,33 @@ function startRecording() {
   });
 }
 
+// A take that ended carrying nothing, from onstop, on whichever evidence that
+// take had: the analyser's peak RMS, or the blob's size when there was no
+// analyser. Either way there is nothing to transcribe, so the audio is dropped.
+//
+// What it means is the open question. The muted-capture failure writes zeroes,
+// and so does an iPhone whose voice processing gated a room where nobody spoke
+// — the two are indistinguishable from here. So the first one is read as the
+// harmless reading: the take goes away as quietly as a cancelled one, the strip
+// resets, and the user is told nothing was heard. Nothing latches, nothing opens
+// the phone's dictation, and the retained stream recRetire() just kept is left
+// alone for the re-record that usually follows. Only when a second take comes
+// back the same way is the microphone itself blamed.
+function recSilentTake() {
+  recDeadRuns++;
+  if (recDeadRuns >= 2) { recDeadCapture(); return; }
+  recBusy = false;
+  recClearUI();
+  toast("No sound recorded");
+}
+
 // The microphone was granted but never delivered audio — the iOS standalone-PWA
 // muted-track failure, which outlives the page and clears only on a real relaunch.
 // Nothing here is retryable — asking for the microphone again is what deepens
 // it, not what clears it — so the user is told the one thing that does.
 //
-// Called once, from onstop, on the verdict of whichever evidence that take had:
-// the analyser's peak RMS, or the blob's size when there was no analyser.
+// Called once a run of takes has carried nothing, never on the first of them —
+// recSilentTake() is what counts them and decides.
 function recDeadCapture() {
   recBusy = false;
   recFallback("Mic is muted by iOS — close and reopen the app");
