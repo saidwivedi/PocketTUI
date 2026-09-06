@@ -28,28 +28,14 @@ const REC_MIMES = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
 // before the idle timer releases it. Long enough to cover "read it, clear it,
 // say it again", short enough that a forgotten strip does not hold the mic.
 const REC_IDLE_RELEASE = 45000;
-// Below this, a finished recording is silence-shaped rather than audio: even a
-// half-second of AAC or Opus carries more than this in container overhead alone.
-// Only consulted where there is no analyser to ask instead.
-const REC_MIN_BLOB = 2048;
 // How often the analyser is sampled while recording. Fast enough that the level
 // bar tracks speech rather than lagging behind it, slow enough to be free.
 const REC_LEVEL_MS = 100;
-// Below this RMS the samples are not quiet, they are zero: the floor is what
-// separates literal zeroes from the preamp noise a live capture normally
-// carries. It does not on its own name the muted-capture failure, because iOS's
-// voice processing gates a quiet room to zeroes too — a live microphone nobody
-// spoke into looks exactly like a muted one from here. So a take under the floor
-// is evidence, not a verdict; see recSilentTake().
-const REC_DEAD_RMS = 1e-4;
-// How long a capture may show nothing at all before the recovery attempts run
-// (resume the audio session, then bounce the track). The muted-track failure is
-// visible immediately, so this only has to outlast the first analyser frames.
+// How long after the recorder starts the wake-up nudges run: resume the audio
+// session, then bounce the track. Deliberately after r.start() rather than
+// before it — a just-granted iOS track reports muted until something consumes
+// it, so the bounce has to land on a track the recorder is already reading.
 const REC_REVIVE_MS = 700;
-// ...and how long before the user is warned on screen, so a long dictation is
-// never spoken into a dead microphone. After the recovery attempts have had
-// their turn and still produced nothing.
-const REC_WARN_MS = 1500;
 // How long after the tap that stopped a recording the same key stops meaning
 // "cancel". The mic key is the compose key is the stop key, so the tap that ends
 // a take lands on the button that is about to mean "abandon the upload" — and
@@ -185,33 +171,29 @@ function learnSend(heard, sent) {
 }
 
 // --- Level monitoring -----------------------------------------------------
-// The muted-track failure hands over a track that reports readyState "live" and
-// muted false while delivering nothing but zero samples, so the flags cannot be
-// trusted. What can be trusted is the audio itself: the stream is tapped through
-// an AnalyserNode and its RMS watched. That serves three jobs at once — it shows
-// the user a live level so a dead mic is visible while speaking, it refuses to
-// upload a recording that never carried a signal, and creating/resuming the
-// AudioContext inside the tap is itself the documented way to wake the iOS audio
-// session, which frequently un-mutes the capture outright.
+// The stream is tapped through an AnalyserNode for one job only: to show the
+// user a live level while they speak, so a microphone delivering nothing is
+// visible on screen rather than discovered at the end. Nothing here judges the
+// capture. iOS's voice processing gates a quiet room down to literal zeroes, so
+// a live microphone nobody spoke into and a track muted by iOS write the same
+// samples, and a verdict drawn from them is a guess that gets the quiet user
+// wrong. The verdict belongs to the backend's silence gate, which rules on the
+// decoded audio and answers with an empty transcript — see codeMicFinish().
+//
+// Creating and resuming the AudioContext inside the tap is worth having for its
+// own sake: it is the documented way to wake the iOS audio session, which
+// frequently un-mutes the capture outright.
 let recCtx = null;           // the one AudioContext, kept across recordings
 let recSource = null;        // MediaStreamAudioSourceNode for the live stream
 let recAnalyser = null;
 let recLevelBuf = null;      // reused time-domain sample buffer
 let recLevelTimer = null;    // the ~100ms RMS sampler
-let recPeak = 0;             // loudest RMS seen in the current recording
-let recRevived = false;      // the recovery attempts have already been spent
-let recWarned = false;       // the "no sound yet" label is already up
-// Whether the analyser really ran for this take. A browser with no Web Audio,
-// or one that refused the source node, leaves recPeak at zero for reasons that
-// have nothing to do with the microphone — so the silence gate only applies
-// when there was actually something listening.
-let recMonitored = false;
-// How many takes in a row have ended carrying nothing. Deliberately across
-// takes, not reset by startRecording(): one silent take says nothing about the
-// hardware, because a mic gated to zeroes by a quiet room and a track muted by
-// iOS are the same picture to the analyser. Two in a row is the failure, since
-// the second one is a user who has now spoken twice. Zeroed by any take that
-// carries audio.
+let recReviveTimer = null;   // the pending wake-up nudges for the take in hand
+// How many takes in a row have come back from the backend with no transcript.
+// Deliberately across takes, not reset by startRecording(): one empty answer
+// says nothing about the hardware, because a room nobody spoke in transcribes
+// to nothing either. Two in a row is the failure, since the second one is a user
+// who has now spoken twice. Zeroed by any take that comes back with words.
 let recDeadRuns = 0;
 
 function recording() {
@@ -424,7 +406,7 @@ function recUnmonitor() {
 }
 
 // Root-mean-square of one analyser frame, 0..1 of full scale. Float samples are
-// already normalised, so this is directly comparable to REC_DEAD_RMS.
+// already normalised, so this is the fraction recLevelFill() scales for the bar.
 function recRMS() {
   if (!recAnalyser || !recLevelBuf) return 0;
   try {
@@ -459,13 +441,14 @@ function recPaintLevel(rms) {
   if (dot) dot.style.opacity = (0.25 + 0.75 * fill).toFixed(2);
 }
 
-// The recovery ladder, run once per recording when the first frames show
-// nothing. Both steps are cheap and neither interrupts the MediaRecorder, which
-// keeps running throughout — a revived mic just means the take opens on a
-// moment of silence, which nobody notices.
+// The wake-up ladder, run once per recording a moment after the recorder
+// starts. Unconditional: whether the capture is dead is not a question anything
+// on this side of the upload can answer, and both steps are cheap enough to
+// spend on every take. Neither interrupts the MediaRecorder, which keeps running
+// throughout — a woken mic just means the take opens on a moment of silence,
+// which nobody notices.
 function recRevive() {
-  if (recRevived) return;
-  recRevived = true;
+  recReviveTimer = null;
   // 1. The audio session may have gone back to sleep behind our backs.
   try { if (recCtx && recCtx.state !== "running") recCtx.resume(); } catch (e) {}
   // 2. Bouncing the track is what clears a stuck mute on the WebKit side.
@@ -475,26 +458,13 @@ function recRevive() {
   }
 }
 
-// The ~100ms sampler that runs for the length of a recording: it drives the
-// level display, remembers the loudest frame for the silence check at stop, and
-// escalates from recovery to an on-screen warning when nothing ever arrives.
+// The ~100ms sampler that runs for the length of a recording, driving the level
+// display and nothing else. The label it used to escalate says "Recording…" for
+// the whole take now: a bar that stays flat is honest about what the analyser
+// hears, where a label naming a muted microphone would be an accusation the
+// analyser cannot support.
 function recLevelTick() {
-  const rms = recRMS();
-  if (rms > recPeak) recPeak = rms;
-  recPaintLevel(rms);
-  if (recPeak > REC_DEAD_RMS) {
-    // Alive, and nothing to escalate — but the warning may be up from a take
-    // that opened on a pause, and a label saying nothing is arriving over a
-    // level bar that is moving is worse than no label at all.
-    if (recWarned) { recWarned = false; recSetLabel("Recording…"); }
-    return;
-  }
-  const age = performance.now() - recStarted;
-  if (age >= REC_REVIVE_MS) recRevive();
-  if (age >= REC_WARN_MS && !recWarned) {
-    recWarned = true;
-    recSetLabel("No sound yet — mic muted?");
-  }
+  recPaintLevel(recRMS());
 }
 
 // The one place the microphone is actually released. A track left live is a red
@@ -505,6 +475,10 @@ function recLevelTick() {
 function recRelease() {
   clearTimeout(recReleaseTimer);
   recReleaseTimer = null;
+  // The nudges belong to a take that is over: firing them now would resume the
+  // context this is about to suspend and bounce a track it is about to stop.
+  clearTimeout(recReviveTimer);
+  recReviveTimer = null;
   recUnmonitor();
   // Suspended rather than closed: a closed context can only be replaced by a new
   // one, and building that outside a tap is exactly what iOS refuses. Suspending
@@ -532,8 +506,11 @@ function recRelease() {
 // never restarted, startRecording() builds a new one on the retained stream.
 function recRetire() {
   recorder = null;
-  // The analyser tap belongs to the take that just ended; the context stays
-  // running so the re-record this retains the stream for starts hot.
+  // The analyser tap and the wake-up nudges both belong to the take that just
+  // ended; the context stays running so the re-record this retains the stream
+  // for starts hot.
+  clearTimeout(recReviveTimer);
+  recReviveTimer = null;
   recUnmonitor();
   clearInterval(recTimer);
   recTimer = null;
@@ -546,7 +523,7 @@ function recRetire() {
 // merely flagged muted usually is not — iOS sets that flag on any track nothing
 // is currently consuming, so testing it here would throw away a working stream
 // on every second take and force the fresh getUserMedia that actually fails.
-// A retained track that really is dead is caught by the analyser instead.
+// A retained track that really is dead shows up as an empty transcript.
 function recStreamUsable() {
   if (!recStream) return false;
   const t = recStream.getAudioTracks()[0];
@@ -660,9 +637,6 @@ function startRecording() {
   // the browser ever firing it — would otherwise park this take the moment it
   // stops. The take in hand is the only one this flag may ever speak for.
   recSalvage = false;
-  recPeak = 0;
-  recRevived = false;
-  recWarned = false;
   recNetRetried = false;
   // A take is starting, so the hint has to come down even though its slot lives
   // on: recStarting is a state recSyncMic() is never told about.
@@ -721,21 +695,13 @@ function startRecording() {
       if (!recBusy || recCancelled) { recClearUI(); return; }
       const blob = new Blob(recChunks, { type: r.mimeType || "audio/webm" });
       recChunks = null;
-      // The check that catches the failure as it actually presents: 62KB of
-      // well-formed AAC whose every sample is zero. Size and the muted flag both
-      // called that recording healthy. The audio is the only witness that does
-      // not, so nothing under the floor is sent — but what a take under the
-      // floor means is recSilentTake()'s call, not this one's.
-      if (recMonitored) {
-        if (recPeak <= REC_DEAD_RMS) { recSilentTake(); return; }
-      } else if (blob.size < REC_MIN_BLOB) {
-        // No analyser to ask — a browser without Web Audio. All that is left is
-        // the shape of the blob: too small to hold audio means it holds none.
-        recSilentTake();
-        return;
-      }
-      // Audio, so whatever the last take was, the microphone is not dead.
-      recDeadRuns = 0;
+      // Everything the recorder collected goes up, however quiet it looks from
+      // here. The failure this used to gate on — 62KB of well-formed AAC whose
+      // every sample is zero — is written by a muted track and by an iPhone
+      // gating a silent room alike, so the one reading available on this side
+      // punishes the quiet user for the muted one. The backend's silence gate
+      // rules on the decoded audio instead, and an empty transcript is its
+      // answer; see codeMicFinish().
       // The indicator stays up, now reading "Transcribing…", until this lands.
       uploadRecording(blob);
     };
@@ -744,12 +710,14 @@ function startRecording() {
     r.start();
     recStarted = performance.now();
     // Tapped after start() so the analyser and the recorder see the same audio
-    // from the same moment. recMonitored gates the silence check at stop: with
-    // no analyser there is no evidence either way, and the old blob-size
-    // heuristics are all this take gets.
+    // from the same moment. A browser without Web Audio simply gets no level
+    // bar; nothing else depends on the analyser having run.
     recMonitor(s);
-    recMonitored = !!recAnalyser;
-    if (recMonitored) recLevelTimer = setInterval(recLevelTick, REC_LEVEL_MS);
+    if (recAnalyser) recLevelTimer = setInterval(recLevelTick, REC_LEVEL_MS);
+    // The wake-up nudges, once per take, now that the recorder is consuming the
+    // track they bounce.
+    clearTimeout(recReviveTimer);
+    recReviveTimer = setTimeout(recRevive, REC_REVIVE_MS);
     // The strip has to be visible to show the indicator, but quiet: focusing the
     // textarea raises the keyboard over the terminal, which is exactly what
     // talking to it is meant to avoid.
@@ -770,35 +738,17 @@ function startRecording() {
   });
 }
 
-// A take that ended carrying nothing, from onstop, on whichever evidence that
-// take had: the analyser's peak RMS, or the blob's size when there was no
-// analyser. Either way there is nothing to transcribe, so the audio is dropped.
-//
-// What it means is the open question. The muted-capture failure writes zeroes,
-// and so does an iPhone whose voice processing gated a room where nobody spoke
-// — the two are indistinguishable from here. So the first one is read as the
-// harmless reading: the take goes away as quietly as a cancelled one, the strip
-// resets, and the user is told nothing was heard. Nothing latches, nothing opens
-// the phone's dictation, and the retained stream recRetire() just kept is left
-// alone for the re-record that usually follows. Only when a second take comes
-// back the same way is the microphone itself blamed.
-function recSilentTake() {
-  recDeadRuns++;
-  if (recDeadRuns >= 2) { recDeadCapture(); return; }
-  recBusy = false;
-  recClearUI();
-  toast("No sound recorded");
-}
-
 // The microphone was granted but never delivered audio — the iOS standalone-PWA
 // muted-track failure, which outlives the page and clears only on a real relaunch.
 // Nothing here is retryable — asking for the microphone again is what deepens
 // it, not what clears it — so the user is told the one thing that does.
 //
-// Called once a run of takes has carried nothing, never on the first of them —
-// recSilentTake() is what counts them and decides.
+// Called once two takes in a row have come back from the backend with nothing in
+// them, never on the first: codeMicFinish() is what counts them and decides. By
+// then the upload has settled and the strip is already down, so this only has to
+// latch and hand over; cancelRecording() inside recFallback() finds nothing left
+// to tear down and lets the microphone go.
 function recDeadCapture() {
-  recBusy = false;
   recFallback("Mic is muted by iOS — close and reopen the app");
 }
 
@@ -815,12 +765,6 @@ function stopRecording() {
   recSyncMic();
   clearInterval(recTimer);
   recTimer = null;
-  // One last read before the sampler stops: a very short take can finish inside
-  // a single tick, and the peak it saw is what the silence gate rules on.
-  if (recMonitored) {
-    const rms = recRMS();
-    if (rms > recPeak) recPeak = rms;
-  }
   clearInterval(recLevelTimer);
   recLevelTimer = null;
   recSetLabel("Transcribing…");
@@ -1013,12 +957,6 @@ function salvageRecording() {
   recSalvage = true;
   clearInterval(recTimer);
   recTimer = null;
-  // The same last read the stop tap takes, for the same reason: the silence gate
-  // rules on the peak, and a short take can finish inside a single tick.
-  if (recMonitored) {
-    const rms = recRMS();
-    if (rms > recPeak) recPeak = rms;
-  }
   clearInterval(recLevelTimer);
   recLevelTimer = null;
   try {
@@ -1037,28 +975,24 @@ function salvageRecording() {
   return true;
 }
 
-// The salvaged take, once the recorder has handed its audio over. The same gates
-// a normal stop applies — a recording that carried no signal is not worth
-// keeping, whatever interrupted it — and then the full release, because the app
-// is on its way out and the microphone must not still be open behind it.
+// The salvaged take, once the recorder has handed its audio over: parked
+// whatever it sounds like, then the full release, because the app is on its way
+// out and the microphone must not still be open behind it.
 //
-// A dead capture here is dropped silently rather than run through
-// recDeadCapture(): that latches recBroken and opens the phone's dictation, and
-// neither belongs on a page the user is not looking at, decided by a take they
-// never chose to end. The next real take diagnoses itself.
+// Parked unconditionally, like a normal stop uploads unconditionally. Whether
+// the audio carries a voice is the backend's question, and this take is going
+// nowhere near it until the user taps Retry — at which point an empty transcript
+// is the answer they get, on a page they are actually looking at.
 function salvageStopped(r) {
   const blob = new Blob(recChunks || [], { type: r.mimeType || "audio/webm" });
   recChunks = null;
-  const dead = recMonitored ? recPeak <= REC_DEAD_RMS : blob.size < REC_MIN_BLOB;
-  if (!dead) {
-    recPending = {
-      blob: blob,
-      engine: recEngine,
-      caretStart: recCaretStart,
-      caretEnd: recCaretEnd,
-      reason: REC_RETRY_INTERRUPTED,
-    };
-  }
+  recPending = {
+    blob: blob,
+    engine: recEngine,
+    caretStart: recCaretStart,
+    caretEnd: recCaretEnd,
+    reason: REC_RETRY_INTERRUPTED,
+  };
   // recRelease() rather than recRetire(): backgrounding is the clearest possible
   // sign that no quick re-record is coming, and a retained track is a red pill
   // in the status bar for the rest of the session.
@@ -1146,9 +1080,24 @@ function recSyncHint() {
 // recorded at the tap — the field has been blurred and hidden behind the
 // indicator ever since, so it cannot have moved, and reading it back off a
 // blurred textarea is not reliable across engines.
+//
+// An empty transcript is also where the microphone is judged, because the
+// backend's silence gate is the only thing in this path that hears the audio
+// properly. One of them is ordinary — a take that caught a pause, a room the
+// gate decided held no speech — so it says so and leaves everything alone. Two
+// in a row is a user who has now spoken twice into nothing, which is the muted
+// track; a truncated reply that still carries no words counts the same, since a
+// cut recording of silence is silence.
 function codeMicFinish(text, truncated) {
   recClearUI();
-  if (!text) { toast("Nothing heard"); return; }
+  if (!text) {
+    recDeadRuns++;
+    if (recDeadRuns >= 2) { recDeadCapture(); return; }
+    toast("Nothing heard");
+    return;
+  }
+  // Words came back, so whatever the last take was, the microphone is alive.
+  recDeadRuns = 0;
   const ta = $("compose-text"), v = ta.value;
   // No captured caret means nothing was ever focused: end of text, the old
   // behaviour, which is also right for an empty box.
