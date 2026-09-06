@@ -1163,6 +1163,7 @@ def server_capabilities() -> dict:
         "push": push_available(),
         "dbg": True,            # /api/dbg
         "git": True,            # /api/git/changes, /api/git/diff, /api/git/apply
+        "search": True,         # /api/search — the wide layout's find bar
         # /api/update — false on an install with no `pockettui` wrapper (or no
         # tmux) to drive, so the shell offers the button only where pressing it
         # would do something. Frozen at import like everything else here, which
@@ -3821,6 +3822,112 @@ def git_discard_untracked_dir(full: str, root: str) -> str:
     except OSError:
         return "the folder could not be deleted"
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Scrollback search
+# ---------------------------------------------------------------------------
+# The find bar on the wide layout. The browser's terminal is a tmux client, so
+# its xterm buffer holds only what tmux last painted — a find run in the browser
+# can see the visible screen and nothing else, while the scrollback the user is
+# actually looking for lives in tmux's history. So the bar drives tmux's own
+# copy-mode search instead: the same find the user would run from the keyboard,
+# which also means tmux draws the highlights itself and the attach socket
+# carries them over as an ordinary repaint.
+
+# Long enough for a path with a stem on it, short enough that nothing
+# pathological reaches tmux's regex engine. The query goes to tmux as one argv
+# element (never through a shell) and tmux reads it as a regex, which is what
+# someone typing `\.py$` means — so it is passed exactly as written.
+SEARCH_QUERY_MAX = 200
+
+# Typing sends one call per pause in the field, so this bucket has to be
+# roomier than the ones sized for a button press, while still being a ceiling
+# on a client stuck in a loop.
+RATE_SEARCH = 240
+
+# What the bar's counter reads. search_present and the two counts arrived in
+# tmux 3.2; an older tmux leaves them empty, which comes back as null and the
+# counter simply stays blank — the search itself still works there.
+SEARCH_FORMATS = ("pane_in_mode", "search_present", "search_count",
+                  "search_count_partial", "search_match")
+
+
+def active_pane_id(name: str) -> str:
+    """The session's active pane, as `%n`, or "".
+
+    list-panes rather than display-message for the reason active_pane gives.
+    """
+    rc, out = tmux("list-panes", "-t", f"={name}", "-f", "#{pane_active}",
+                   "-F", "#{pane_id}")
+    if rc != 0 or not out.strip():
+        return ""
+    return out.strip().splitlines()[0].strip()
+
+
+def search_state(pane: str) -> dict:
+    """Where the pane's search stands, in one display-message."""
+    rc, out = tmux("display-message", "-p", "-t", pane,
+                   "\t".join("#{" + f + "}" for f in SEARCH_FORMATS))
+    parts = out.rstrip("\n").split("\t") if rc == 0 else []
+
+    def num(i: int) -> int | None:
+        value = parts[i].strip() if i < len(parts) else ""
+        return int(value) if value.isdigit() else None
+
+    present, partial = num(1), num(3)
+    return {
+        "in_mode": num(0) == 1,
+        "present": None if present is None else present == 1,
+        "count": num(2),
+        "partial": None if partial is None else partial == 1,
+        "match": parts[4] if len(parts) > 4 else "",
+    }
+
+
+@app.post("/api/search")
+def api_search(request: Request, body: dict = Body(...)) -> Response:
+    """Search the scrollback of the pane this device is looking at.
+
+    The pane is resolved the way the explorer's and the diff pane's are, so the
+    search runs on the device's own grouped view rather than the base session's.
+
+    A changed query restarts: it leaves copy mode and enters it again, because
+    search-backward continues from the cursor and the cursor is wherever the
+    last query walked it to — starting again means starting at the bottom,
+    where the prompt is. `prev` and `next` are the continuations, upward and
+    downward, and they only enter copy mode if the pane is not already in it.
+    An emptied field is the end of the find rather than a find for nothing, so
+    it cancels.
+    """
+    refusal = throttled("search", RATE_SEARCH, request)
+    if refusal is not None:
+        return refusal
+    action = str(body.get("action", ""))
+    if action not in ("restart", "prev", "next", "cancel"):
+        return fs_error("bad_action", 400)
+    query = str(body.get("query", ""))[:SEARCH_QUERY_MAX]
+    dev = str(body.get("dev", ""))
+    target = resolve_target(str(body.get("session", "")),
+                            dev if DEV_RE.match(dev) else "")
+    pane = active_pane_id(target) if target else ""
+    if not pane:
+        return fs_error("no_pane", 404)
+
+    if not query:
+        action = "cancel"
+    in_mode = search_state(pane)["in_mode"]
+    if action == "cancel":
+        if in_mode:
+            tmux("send-keys", "-t", pane, "-X", "cancel")
+    else:
+        if action == "restart" and in_mode:
+            tmux("send-keys", "-t", pane, "-X", "cancel")
+        if action == "restart" or not in_mode:
+            tmux("copy-mode", "-t", pane)
+        tmux("send-keys", "-t", pane, "-X",
+             "search-forward" if action == "next" else "search-backward", query)
+    return no_store(JSONResponse(search_state(pane)))
 
 
 # ---------------------------------------------------------------------------

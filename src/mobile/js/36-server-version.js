@@ -74,6 +74,7 @@ async function fetchServerVersion() {
   // The diff pane is the one feature that polls: what it needs to know is
   // whether to poll at all, and this is the moment that becomes knowable.
   syncGitCap();
+  syncSearchCap();
 }
 
 // Whether the server on the other end serves this feature. Unknown means yes:
