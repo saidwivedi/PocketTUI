@@ -11,9 +11,13 @@
 // Wide layouts only, and that gate is the stylesheet's (see GIT DIFF PANE):
 // dropping below the breakpoint stops those rules applying and the split
 // disappears without being forgotten, so a window dragged wide again brings it
-// back. The markup lives inside #screen-term for the same reason — the
-// explorer, the reader and the editor swap .active off that screen, which
-// takes the pane down with it and puts it back on return, with no rule here.
+// back. The markup lives inside #screen-term for the same reason — the reader
+// and the editor swap .active off that screen, which takes the pane down with
+// it and puts it back on return, with no rule here.
+//
+// The width and the seam are not this pane's own: it shares one slot beside the
+// terminal with the docked file explorer (26-side-pane.js), and opening either
+// takes the slot off the other.
 //
 // The list is VS Code's Source Control split: Changes is the worktree against
 // the index, Staged is the index against HEAD, and a file part-staged sits in
@@ -38,12 +42,6 @@
 // the actions take it for the moment `git apply` needs it, which is what
 // staging anything costs.
 
-// Narrower than this and a hunk header wraps, which is the point at which the
-// diff stops being readable at all.
-const DIFF_MIN = 300;
-// What the terminal keeps whatever the drag asks for. 320px is roughly 40
-// columns at the default size — a shell that is cramped but still a shell.
-const DIFF_TERM_MIN = 320;
 // Fast enough that a commit made in the terminal shows up before you look
 // away, slow enough that a `git status` every two seconds is nothing.
 const DIFF_POLL_MS = 2000;
@@ -55,7 +53,6 @@ const DIFF_POLL_FACTOR = 4;
 const DIFF_POLL_MAX_MS = 60000;
 
 let diffOpen = false;
-let diffWidth = 0;          // 0 until sized — see diffSetOpen()
 let diffSession = null;     // whose changes are on screen; null before the first
 let diffRoot = "";
 let diffScope = "unstaged";  // which of the two lists the selection is in
@@ -83,81 +80,25 @@ function diffTabState() { return diffTabs[diffTab]; }
 // it — so there is no diff to open and the actions act on the whole tree.
 function diffIsDir(path) { return path.endsWith("/"); }
 
-// The main pane is the window less the rail and the seam it is drawn on, read
-// off the seam itself rather than recomputed from --sidebar-w: the rail's own
-// geometry is the truth, and on a phone the handle is display:none and takes
-// no width, which reads as "the window" without a branch.
-function diffMainW() {
-  const r = $("rail-resize").getBoundingClientRect();
-  return window.innerWidth - (r.width ? r.right : 0);
-}
-
-// Clamped on every read, the way the rail's width is: a stored number is a
-// number the window may since have grown or shrunk out from under.
-function diffClampW(px) {
-  const max = Math.max(DIFF_MIN, diffMainW() - DIFF_TERM_MIN);
-  return Math.round(Math.min(max, Math.max(DIFF_MIN, px)));
-}
-
-function applyDiffWidth(px) {
-  diffWidth = diffClampW(px);
-  document.documentElement.style.setProperty("--diff-w", diffWidth + "px");
-}
-
-// The one way the split opens or closes: the class, the remembered state, the
-// poll and the refit are the same fact, and nothing sets one without the rest.
-// The refit is what carries the new width to xterm and on to tmux — the
-// terminal has just changed shape, and it only learns that from a fit.
+// The one way the split opens or closes: the class, the slot on the terminal's
+// right and the poll are the same fact, and nothing sets one without the rest.
+// The width, the seam and the refit are the slot's (26-side-pane.js), which is
+// also where the explorer gets pushed out of the way if it is holding it.
 function diffSetOpen(open) {
   diffOpen = open;
-  cfg.diffPane = open;
   $("screen-term").classList.toggle("diff-open", open);
-  if (open) {
-    // Half the main pane the first time, and whatever was dragged after that.
-    applyDiffWidth(cfg.diffWidth || Math.round(diffMainW() / 2));
-    // The list's height is restored the same way, but only once one has been
-    // dragged: with nothing stored the list stays sized by the files in it,
-    // which is what the pane has always opened as.
-    if (cfg.diffListHeight) applyDiffListH(cfg.diffListHeight);
-    diffPoll(true);
-  }
-  refit(0);
+  if (!open) { sideDrop("diff"); return; }
+  sideClaim("diff");
+  // The list's height is restored the same way the width is, but only once one
+  // has been dragged: with nothing stored the list stays sized by the files in
+  // it, which is what the pane has always opened as.
+  if (cfg.diffListHeight) applyDiffListH(cfg.diffListHeight);
+  diffPoll(true);
 }
 
 function toggleDiffPane() { diffSetOpen(!diffOpen); }
 
 $("btn-diff-close").addEventListener("click", () => diffSetOpen(false));
-
-// Dragging the seam resizes the pane live, the rail's railResize() mirrored:
-// the width moves by the pointer's travel rather than jumping to it, the
-// variable does the layout for free, and the fit rides its own debounce until
-// the release forces one. Anchored to the right edge, so leftward travel is
-// a wider pane — hence the sum where the rail takes a difference.
-(function diffResize() {
-  const handle = $("diff-gutter");
-  let dragging = false, dragOff = 0;
-  handle.addEventListener("pointerdown", (e) => {
-    dragging = true;
-    dragOff = diffWidth + e.clientX;
-    handle.classList.add("dragging");
-    handle.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  });
-  handle.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    applyDiffWidth(dragOff - e.clientX);
-    refit();
-  });
-  const finish = () => {
-    if (!dragging) return;
-    dragging = false;
-    handle.classList.remove("dragging");
-    cfg.diffWidth = diffWidth;
-    refit(0);
-  };
-  handle.addEventListener("pointerup", finish);
-  handle.addEventListener("pointercancel", finish);
-})();
 
 // Three rows of the list at the size the stylesheet sets it in — below that it
 // stops reading as a list of files and becomes a strip.
@@ -201,7 +142,7 @@ function applyDiffListH(px) {
   pane.style.setProperty("--diff-list-h", diffListH + "px");
 }
 
-// The horizontal seam, diffResize() turned on its side: the list's height moves
+// The horizontal seam, the slot's sideResize() turned on its side: the list's height moves
 // by the pointer's travel rather than jumping to it, and downward travel is a
 // taller list — hence the sum where the vertical seam, anchored to the far
 // edge, takes a difference. No refit: the terminal beside this has not changed
@@ -915,4 +856,9 @@ syncDiffTabs();
 // Restored before anything opens, so a reload that lands straight in a terminal
 // comes up split exactly as it was left. The poll declines until there is a
 // terminal and a token to ask with.
-if (cfg.diffPane) diffSetOpen(true);
+// The slot on the terminal's right, as it was left. One restore rather than
+// two: only one pane can hold it (see cfg.sidePane), and the explorer's half is
+// only the claim — what it lists is the open session's cwd, and there is no
+// session open yet, so openTerminal fills the pane it finds claimed.
+if (cfg.sidePane === "diff") diffSetOpen(true);
+else if (cfg.sidePane === "files" && isWideLayout()) sideClaim("files");

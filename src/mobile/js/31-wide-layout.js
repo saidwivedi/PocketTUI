@@ -97,6 +97,9 @@ function applyRailFont(px) {
 // resize listener. Entering wide also means the list just appeared after
 // arbitrarily long away, so it reloads once, the way a re-shown list would.
 wideQuery.addEventListener("change", () => {
+  // The docked explorer is a wide-layout shape: below the breakpoint there is
+  // no slot to sit in, so it gives the pane back rather than half-applying.
+  if (!wideQuery.matches) closeDockedFiles();
   refit(0);
   markSelectedSession();
   if (wideQuery.matches && !demoMode && !needsSetup()) loadSessions();

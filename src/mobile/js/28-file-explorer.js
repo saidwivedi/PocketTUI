@@ -7,6 +7,14 @@
 // navigated into from there — crumbs, dir taps and the address bar all push,
 // so back walks folder history one step at a time; only back at the entry
 // folder closes the whole view.
+//
+// Beside a terminal on a wide layout it is that same view docked instead:
+// a pane in the slot the diff pane also wants (26-side-pane.js), with the
+// terminal live beside it rather than swapped out under it. Everything below
+// the topbar is unchanged — same listing, same taps, same sheets, same
+// editor and reader over the top. What the docked shape drops is the browser
+// history: it pushes nothing, and its own back arrow walks filesStack, so a
+// back press stays the terminal's to answer.
 
 let filesPath = "";        // the directory currently listed
 let filesHome = "";        // $HOME as the backend reports it, for ~ crumbs
@@ -24,6 +32,11 @@ let filesSelected = null;  // the entry the action sheet is about
 // The entries currently drawn, so switching list/grid redraws them in place
 // rather than re-listing the folder.
 let filesEntries = [];
+// Whether the explorer is the terminal's right-hand pane rather than a screen
+// over it, and whether that pane is filling the main area. Wide layouts only —
+// nothing narrower has room for the slot.
+let filesDocked = false;
+let filesExpanded = cfg.filesExpanded;
 // Set while btn-files-term's multi-entry history.go is in flight, so the one
 // popstate it lands as closes the view instead of climbing one folder.
 let filesClosing = false;
@@ -64,6 +77,12 @@ function fmtSize(n) {
 function openExplorer(path) {
   // Nothing to browse yet — prompt instead of failing against the static host.
   if (needsSetup()) { openSettings(true); return; }
+  // Beside a terminal there is room for both, so the explorer docks rather than
+  // taking the screen. Every caller lands here — the folder key, a tapped path,
+  // the editor's parent folder — so the two shapes are one entry point.
+  if (isWideLayout() && $("screen-term").classList.contains("active")) {
+    return openDockedFiles(path);
+  }
   if (!$("screen-files").classList.contains("active")) {
     filesOrigin = $("screen-term").classList.contains("active")
       ? "screen-term" : "screen-list";
@@ -118,6 +137,88 @@ function closeExplorer() {
   if (back === "screen-term") refit(0);
 }
 
+// ---- docked beside the terminal (wide layouts) -----------------------------
+// The same screen, seated in the slot on the terminal's right (26-side-pane.js)
+// instead of over it. #screen-term keeps .active throughout — the terminal
+// renders and takes keys the whole time the pane is up — so everything that
+// used to read "the explorer is up" off that class has to say which of the two
+// shapes it means; the flag is what says it.
+
+// Expanded is the pane's own state, but the class lives on #screen-term: the
+// seam it hides and the width it overrides are both read from there.
+function syncFilesExpand() {
+  const on = filesDocked && filesExpanded;
+  $("screen-term").classList.toggle("side-full", on);
+  const btn = $("btn-files-expand");
+  btn.querySelector("use").setAttribute("href", on ? "#i-collapse" : "#i-expand");
+  btn.setAttribute("aria-label", on ? "Shrink the file pane" : "Expand the file pane");
+}
+
+// Opening the pane a second time is a navigation within it, not a fresh entry:
+// a path tapped in the terminal lands in the pane already open, and the crumb
+// stack it walks back through is worth keeping.
+function openDockedFiles(path) {
+  const already = filesDocked;
+  filesDocked = true;
+  filesOrigin = "screen-term";
+  // Redundant beside a live terminal — it is right there — and the pane has
+  // its own cross for leaving.
+  $("btn-files-term").style.display = "none";
+  $("screen-files").classList.add("docked");
+  $("screen-files").classList.add("active");
+  syncFilesExpand();
+  sideClaim("files");
+  if (already) return navigateDir(path);
+  filesStack = [];           // seeded once loadDir below resolves the real path
+  return loadDir(path);
+}
+
+function closeDockedFiles() {
+  if (!filesDocked) return;
+  showViewMenu(false);
+  closePathEdit();
+  filesDocked = false;
+  filesOrigin = null;
+  filesStack = [];
+  $("screen-files").classList.remove("docked");
+  $("screen-files").classList.remove("active");
+  syncFilesExpand();         // takes .side-full off the terminal with it
+  sideDrop("files");
+}
+
+// The docked pane owns no history entries, so its back arrow has to do what a
+// pop does for the full-screen explorer: climb filesStack, and close at [0].
+function filesBack() {
+  if (!filesDocked) { history.back(); return; }
+  if ($("files-path-wrap").classList.contains("editing")) { closePathEdit(); return; }
+  if (filesStack.length > 1) {
+    filesStack.pop();
+    const path = filesStack[filesStack.length - 1];
+    if (filesListCache.has(path)) applyListing(filesListCache.get(path));
+    else loadDir(path);
+    return;
+  }
+  closeDockedFiles();
+}
+
+$("btn-files-expand").addEventListener("click", () => {
+  filesExpanded = !filesExpanded;
+  cfg.filesExpanded = filesExpanded;
+  syncFilesExpand();
+  refit(0);
+});
+$("btn-files-close").addEventListener("click", () => closeDockedFiles());
+
+// The pane after a rail switch that left it holding the slot with nothing in
+// it: this session stashed no folder, so it opens at the session's own cwd.
+// The demo has no files to open at all, so it gives the slot back instead of
+// leaving the terminal narrowed against an empty pane.
+function filesFollowSession() {
+  if (!isWideLayout() || sideOwner !== "files" || filesDocked) return;
+  if (demoMode) { sideDrop("files"); return; }
+  openFilesAtCwd();
+}
+
 // ---- putting the whole view away (see fileViews in 09-image-viewer.js) ------
 // A rail switch stashes the reader or the editor for the session it is leaving,
 // and the browsing underneath goes with it: coming back to a file view that
@@ -126,10 +227,14 @@ function closeExplorer() {
 // History entries the explorer owns: openExplorer's push plus one per level
 // navigated into — filesStack.length, and still one if the entry folder never
 // resolved and the stack stayed empty. The same count jumpToTerminal spends.
-function filesEntryCount() { return filesStack.length || 1; }
+// The docked pane pushes none at all, so it owns none.
+function filesEntryCount() { return filesDocked ? 0 : (filesStack.length || 1); }
 
 function filesStash() {
-  return { stack: filesStack.slice(), path: filesPath, origin: filesOrigin };
+  return {
+    stack: filesStack.slice(), path: filesPath,
+    origin: filesOrigin, docked: filesDocked,
+  };
 }
 
 // Drops the view without putting anything back: the caller is replacing every
@@ -139,6 +244,10 @@ function filesTeardown() {
   $("screen-files").classList.remove("active");
   filesOrigin = null;
   filesStack = [];
+  // Docked, the slot stays claimed — the pane is the terminal's and the
+  // terminal is only changing hands — but nothing is in it until it is filled
+  // again, by a restore or by filesFollowSession().
+  filesDocked = false;
 }
 
 // The mirror of openExplorer's screen work, minus the history push — the
@@ -147,9 +256,15 @@ function filesRestore(s) {
   filesStack = s.stack.slice();
   filesPath = s.path;
   filesOrigin = s.origin;
-  $("btn-files-term").style.display = filesOrigin === "screen-term" ? "" : "none";
-  $(filesOrigin || "screen-list").classList.remove("active");
+  filesDocked = !!s.docked;
+  $("btn-files-term").style.display =
+    !filesDocked && filesOrigin === "screen-term" ? "" : "none";
+  $("screen-files").classList.toggle("docked", filesDocked);
+  // Docked, the terminal underneath is the pane's neighbour rather than the
+  // screen it covers, and it stays on view.
+  if (!filesDocked) $(filesOrigin || "screen-list").classList.remove("active");
   $("screen-files").classList.add("active");
+  if (filesDocked) { sideClaim("files"); syncFilesExpand(); }
   syncChrome();
   // The rows on screen are whichever folder the session we were away in left
   // there; the cache spares a round trip for a folder already listed.
@@ -161,6 +276,9 @@ function filesRestore(s) {
 // with every cd — and $HOME quietly stands in when tmux cannot say.
 async function openFilesAtCwd() {
   if (demoMode) { toast("No files in the demo"); return; }
+  // Docked, the folder key is a toggle: the pane it opened is the pane it puts
+  // away. Full screen there is nothing to toggle — back is how that one leaves.
+  if (filesDocked) { closeDockedFiles(); return; }
   let cwd = "";
   try {
     const r = await fetch(apiURL("api/session_cwd?session="
@@ -319,11 +437,20 @@ async function loadDir(path) {
 // the error just replaces the current folder's view in place. Every
 // history.pushState of a folder is mirrored by a filesStack push: history
 // reserves the entry back has to consume, the stack is what back reads.
+// Answers whether the folder is on screen, the way loadDir does: a tapped path
+// link opens the file over the folder that holds it, and openPathInExplorer
+// reaches this one when the docked pane is already up.
 async function navigateDir(path) {
-  if (await loadDir(path)) {
-    history.pushState({ files: true, path: filesPath }, "", location.href);
+  const ok = await loadDir(path);
+  if (ok) {
+    // The docked pane reserves nothing: a back press there belongs to the
+    // terminal beside it, and its own arrow reads the stack directly.
+    if (!filesDocked) {
+      history.pushState({ files: true, path: filesPath }, "", location.href);
+    }
     filesStack.push(filesPath);
   }
+  return ok;
 }
 
 function crumbBtn(label, target, current) {
@@ -516,7 +643,9 @@ async function submitPathEdit() {
   closePathEdit();
   if (hit.kind !== "dir") { openEntry(hit.entry, hit.dir); return; }
   applyListing(hit.data);
-  history.pushState({ files: true, path: filesPath }, "", location.href);
+  if (!filesDocked) {
+    history.pushState({ files: true, path: filesPath }, "", location.href);
+  }
   filesStack.push(filesPath);
 }
 
@@ -955,7 +1084,7 @@ async function uploadFile(f, overwrite) {
 // ---- navigation chrome -----------------------------------------------------
 
 $("btn-files").addEventListener("click", () => openExplorer(""));
-$("btn-files-back").addEventListener("click", () => history.back());
+$("btn-files-back").addEventListener("click", filesBack);
 
 // Straight back to the terminal, however deep the browsing went. Not
 // closeExplorer() directly: the explorer's history entries would stay on the
@@ -987,6 +1116,9 @@ $("btn-files-term").addEventListener("click", jumpToTerminal);
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!$("screen-files").classList.contains("active")) return;
+  // Docked, the terminal beside the pane is live and Escape is one of its
+  // keys — so only a press aimed inside the pane is the pane's to answer.
+  if (filesDocked && !$("screen-files").contains(e.target)) return;
   // Ahead of the origin check: an open layout menu is the top thing to
   // dismiss, and it is there to dismiss whether or not a terminal is behind.
   if ($("files-view-wrap").classList.contains("open")) {
@@ -999,7 +1131,8 @@ document.addEventListener("keydown", (e) => {
   if ($("sheet-scrim").classList.contains("show")) return;
   if ($("viewer").classList.contains("show")) return;
   e.preventDefault();
-  jumpToTerminal();
+  if (filesDocked) closeDockedFiles();
+  else jumpToTerminal();
 }, true);
 
 // Explorer and editor sit on the history stack the way the terminal does, so
@@ -1008,6 +1141,9 @@ document.addEventListener("keydown", (e) => {
 window.addEventListener("popstate", () => {
   if ($("screen-editor").classList.contains("active")) { editorPopped(); return; }
   if ($("screen-reader").classList.contains("active")) { closeReader(); return; }
+  // The docked pane pushed nothing, so no pop is ever its own: this one is the
+  // terminal's, and closeTerminal() above has already spent it.
+  if (filesDocked) return;
   if (!$("screen-files").classList.contains("active")) return;
   // A go(-n) past several entries arrives as one popstate, not n of them, so
   // the per-level unwind below would land on the folder one up while history
@@ -1072,7 +1208,7 @@ function attachEdgeSwipe(scr, onBack) {
   scr.addEventListener("touchend", finish, { passive: true });
   scr.addEventListener("touchcancel", finish, { passive: true });
 }
-attachEdgeSwipe($("screen-files"), () => history.back());
+attachEdgeSwipe($("screen-files"), filesBack);
 attachEdgeSwipe($("screen-editor"), () => history.back());
 attachEdgeSwipe($("screen-reader"), () => history.back());
 

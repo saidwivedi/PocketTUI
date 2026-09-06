@@ -2458,6 +2458,83 @@ html.term-open #dbg-panel { opacity: 0.85; }
   display: none;
 }
 
+/* ---- docked beside the terminal (wide layouts) ----------------------------
+   The same screen seated in the slot on the terminal's right, on the diff
+   pane's geometry: same width variable, same seam, one of the two at a time
+   (26-side-pane.js). The dock's own controls are markup the phone also ships,
+   so they are hidden rather than absent. */
+.dock-only { display: none; }
+
+@media (min-width: 768px) and (min-height: 500px) {
+  #screen-files.docked .dock-only { display: inline-flex; }
+  /* Living inside #screen-term is what saves the diff pane a visibility rule;
+     this pane is a screen of its own, so it says the same thing in a selector:
+     it is only on view while the terminal it is docked to is. The plain
+     .docked rule outweighs .screen.active, and the sibling rule outweighs
+     both. */
+  #screen-files.docked { display: none; }
+  #screen-term.active ~ #screen-files.docked.active {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    left: auto;
+    width: var(--side-w);
+    margin-left: 0;
+    padding: var(--safe-top) 0 var(--safe-bot);
+    /* Its own paper and grain, for the diff pane's reason: while a terminal is
+       open syncChrome puts the terminal's background on html/body, and that
+       must not bleed in here. */
+    background-color: var(--paper);
+    background-image: var(--grain);
+    background-size: 200px 200px;
+    z-index: 55;
+  }
+  /* Expanded: the pane takes the whole main area and the terminal sits under
+     it — the phone's full-screen explorer, seated beside the rail. The seam
+     goes with the split it no longer divides. */
+  #screen-term.side-full.active ~ #screen-files.docked.active {
+    left: calc(var(--sidebar-w) + var(--rail-gutter));
+    width: auto;
+  }
+  /* One class more than the rule that shows it (see GIT DIFF PANE below),
+     which comes later in the file and would otherwise win the tie. */
+  #screen-term.side-open.side-full > #side-gutter { display: none; }
+  /* A full-screen view over the terminal has to cover the pane's seam too,
+     and that is fixed at z-index 60. Only here: on a phone these screens have
+     nothing beside them to out-stack. */
+  #screen-editor, #screen-reader { z-index: 65; }
+
+  /* The page-scrolling screen becomes a column that scrolls inside itself:
+     the bar stays put because it is the flex item that does not scroll, not
+     because it is stuck to a viewport. Still positioned — #files-suggest is
+     absolute against it. */
+  #screen-files.docked .topbar {
+    position: relative;
+    top: 0;
+    flex: 0 0 auto;
+    gap: 2px;
+    padding: 10px 8px 8px 12px;
+  }
+  #screen-files.docked .files-wrap {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0 12px 24px;
+  }
+  /* The rail's own compaction, for the same reason: eight controls and a path
+     across 340px, where the phone's bar had the whole window. */
+  #screen-files.docked .icon-btn { padding: 6px; }
+  #screen-files.docked .icon-btn svg { width: 17px; height: 17px; }
+  #screen-files.docked #btn-files-view { padding: 5px 8px; font-size: 12px; }
+  /* The two dropdown scrims belong to the pane, not to the window: the
+     terminal beside it is live, and a layout menu in here must not dim it.
+     The pane is position:fixed, so absolute already means "this pane". */
+  #screen-files.docked #files-suggest-scrim,
+  #screen-files.docked #files-view-scrim { position: absolute; }
+}
+
 /* Stacked full-width choices — the action sheets are menus, not forms. */
 .sheet-menu { display: flex; flex-direction: column; gap: 8px; }
 .sheet-menu button {
@@ -3062,20 +3139,23 @@ html.term-open #dbg-panel { opacity: 0.85; }
    layouts only — a phone has neither the width for two columns nor a keyboard
    to press the chord on — so everything below is behind the same query the
    rail is, and dropping under it hides the split without forgetting it (the
-   .diff-open class stays on; only these rules stop applying). */
-#diff-pane, #diff-gutter { display: none; }
+   .diff-open class stays on; only these rules stop applying).
+   The seam and the width are shared with the docked file explorer, which wants
+   the same slot (26-side-pane.js): .side-open is the terminal narrowing for
+   whichever of the two is in it, .diff-open only says which. */
+#diff-pane, #side-gutter { display: none; }
 
 @media (min-width: 768px) and (min-height: 500px) {
-  /* The pane's own width, dragged and remembered (37-git-diff.js), and the
-     seam between it and the terminal — the rail's gutter by another name and
-     the same 7px, because it is the same seam read from the other side. */
-  :root { --diff-w: 460px; --diff-gutter: 7px; }
+  /* The slot's width, dragged and remembered (26-side-pane.js), and the seam
+     between it and the terminal — the rail's gutter by another name and the
+     same 7px, because it is the same seam read from the other side. */
+  :root { --side-w: 460px; --side-gutter: 7px; }
 
   /* The split is the terminal screen's right edge moving in. Nothing inside
      the flex column has to know: #term-host, the compose strip and the key bar
      all narrow with it, and the key pill — placed from this box's own right
      edge — comes along. */
-  #screen-term.diff-open { right: calc(var(--diff-w) + var(--diff-gutter)); }
+  #screen-term.side-open { right: calc(var(--side-w) + var(--side-gutter)); }
 
   /* Fixed to the window rather than laid out in the column above it, so the
      terminal's own flex arithmetic is untouched. Its own paper and grain for
@@ -3087,7 +3167,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
     flex-direction: column;
     position: fixed;
     top: 0; right: 0; bottom: 0;
-    width: var(--diff-w);
+    width: var(--side-w);
     padding-top: var(--safe-top);
     padding-bottom: var(--safe-bot);
     background-color: var(--paper);
@@ -3099,12 +3179,12 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* The rail's gutter recipe verbatim (see #rail-resize), mirrored: it is the
      same recessed seam, and the two edges of the terminal should not read as
      two different kinds of edge. */
-  #screen-term.diff-open > #diff-gutter {
+  #screen-term.side-open > #side-gutter {
     display: block;
     position: fixed;
     top: 0; bottom: 0;
-    right: var(--diff-w);
-    width: var(--diff-gutter);
+    right: var(--side-w);
+    width: var(--side-gutter);
     cursor: col-resize;
     touch-action: none;
     z-index: 60;
@@ -3116,13 +3196,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
                 inset -1px 0 2px rgba(20, 16, 10, 0.05);
     transition: background 0.18s var(--ease-out);
   }
-  #diff-gutter::before {
+  #side-gutter::before {
     content: "";
     position: absolute;
     top: 0; bottom: 0;
     left: -5px; right: -5px;
   }
-  #diff-gutter::after {
+  #side-gutter::after {
     content: "";
     position: absolute;
     left: 50%; top: 50%;
@@ -3132,8 +3212,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
     background: var(--hair-strong);
     transition: background 0.18s var(--ease-out);
   }
-  #diff-gutter:hover, #diff-gutter.dragging { background: var(--umber-soft); }
-  #diff-gutter:hover::after, #diff-gutter.dragging::after { background: var(--umber); }
+  #side-gutter:hover, #side-gutter.dragging { background: var(--umber-soft); }
+  #side-gutter:hover::after, #side-gutter.dragging::after { background: var(--umber); }
 
   /* Header: the repo's name, the poll's dot, the way out. The rail's eyebrow
      scale, since the pane is the rail's opposite number. */
@@ -3246,7 +3326,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #diff-vsplit {
     flex: 0 0 auto;
     position: relative;
-    height: var(--diff-gutter);
+    height: var(--side-gutter);
     cursor: row-resize;
     touch-action: none;
     -webkit-user-select: none; user-select: none;
