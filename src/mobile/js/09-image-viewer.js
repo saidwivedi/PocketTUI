@@ -391,10 +391,12 @@ function fileViewKind() {
 function stashFileView(session, kind) {
   // The browsing underneath is read before the screen above it is taken down,
   // and goes into the same entry: coming back to a file view that had lost its
-  // folder would be half a restore.
+  // folder would be half a restore. A null kind is the docked explorer on its
+  // own — there the folder is the whole view, and it is worth keeping because
+  // the pane it is in stays open across the switch.
   const view = { files: filesStash() };
   if (kind === "editor") view.editor = edStash();
-  else view.reader = readerStash();
+  else if (kind === "reader") view.reader = readerStash();
   filesTeardown();
   fileViews.set(session, view);
 }
@@ -407,11 +409,15 @@ function restoreFileView(session) {
   // its own push site uses: openExplorer's, one per level navigated into
   // (navigateDir's), then the single one the reader and the editor share.
   // Nothing reads these back — the unwind goes by filesStack and the screen
-  // classes — but the count is what back spends, and it has to be exact.
-  history.pushState({ files: true }, "", location.href);
-  for (const path of view.files.stack.slice(1)) {
-    history.pushState({ files: true, path: path }, "", location.href);
+  // classes — but the count is what back spends, and it has to be exact. A
+  // docked pane pushed none of its own, so it gets none back.
+  if (!view.files.docked) {
+    history.pushState({ files: true }, "", location.href);
+    for (const path of view.files.stack.slice(1)) {
+      history.pushState({ files: true, path: path }, "", location.href);
+    }
   }
+  if (!view.editor && !view.reader) return;
   history.pushState(view.editor ? { editor: true } : { reader: true }, "", location.href);
   if (view.editor) edRestore(view.editor);
   else readerRestore(view.reader);
@@ -450,7 +456,18 @@ function openTerminal(name, resumed) {
       if (edDirty && !confirm("Discard your unsaved changes?")) return;
       closeEditor();
     }
-    if ($("screen-files").classList.contains("active")) {
+    // The docked explorer is the terminal's own pane rather than a screen over
+    // it, so a switch does not close it: the folder goes into the leaving
+    // session's stash and the pane stays for the tapped session to fill (the
+    // restore at the end of this function, or filesFollowSession()). With no
+    // session to keep it for, the folder is simply dropped.
+    if (filesDocked) {
+      if (name !== currentSession) {
+        closePathEdit();
+        if (currentSession) stashFileView(currentSession, null);
+        else filesTeardown();
+      }
+    } else if ($("screen-files").classList.contains("active")) {
       // Not arriving via back — no pop happened — so the address field (if
       // open) just closes and the screen follows.
       closePathEdit();
@@ -513,6 +530,7 @@ function openTerminal(name, resumed) {
   // Whatever this session had put away when the rail last left it, back on top
   // of the terminal it was opened over — which is live again underneath it.
   if (fileViews.has(name)) restoreFileView(name);
+  else filesFollowSession();
   requestAnimationFrame(() => {
     if (demoMode) {
       // Fit before the banner is written: demoStart() wraps its prose to
@@ -804,6 +822,11 @@ window.addEventListener("popstate", (e) => {
     openTerminal(p.name, true);
     return;
   }
+  // A docked explorer leaves the terminal .active under the editor and the
+  // reader, so "a terminal is on screen" no longer means "this pop is the
+  // terminal's". Those two answer their own pop, in the explorer's handler.
+  if ($("screen-editor").classList.contains("active")) return;
+  if ($("screen-reader").classList.contains("active")) return;
   if ($("screen-term").classList.contains("active")) closeTerminal();
 });
 
