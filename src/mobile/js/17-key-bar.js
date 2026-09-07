@@ -149,8 +149,13 @@ function composeGrow() {
 // The whole point of the strip: the composed text reaches the terminal once, as
 // a paste, so xterm's IME handling never gets to re-send it. term.paste() also
 // applies bracketed-paste framing when the running app asked for it, which is
-// what keeps a multi-line dictation from executing line by line. No trailing
-// \r — the user reviews it in the terminal and submits with the key bar's ⏎.
+// what keeps a multi-line dictation from executing line by line. A \r follows
+// the paste, so the tap that sends is also the tap that submits: dictation is
+// spoken as a finished instruction, and asking for the key bar's ⏎ on top of
+// Send was an extra step. The \r goes through send() rather than the paste,
+// so it is never framed as pasted text and the docked explorer still sees it
+// as an Enter. Under bracketed paste the app receives the message whole and
+// then the Enter, which is the same sequence a typed paste plus ⏎ produces.
 function composeSend() {
   // A capture in flight owns this button before any of that: while a take runs
   // it is the stop control, and while its upload runs it is the cancel. Neither
@@ -164,6 +169,7 @@ function composeSend() {
   const text = ta.value;
   if (!text || !term) return;
   term.paste(text);
+  send("\r");
   // The edit the user made to a dictated transcript before sending it is the
   // only evidence this app ever gets about what the microphone gets wrong, and
   // this is the one moment it exists. Read here, between the paste and the
