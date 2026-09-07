@@ -187,7 +187,7 @@ $("btn-update-rail").addEventListener("click", async () => {
   // A server that cannot update itself has nothing to start here: open Settings,
   // where the version block names the command to run on the computer, and leave
   // the notice standing until that server reports the newer build.
-  if (!hasCap("update")) { openSettings(false); return; }
+  if (!hasCap("update")) { openSettings(false, "about"); return; }
   // The button is disabled while an install runs; a click that arrives anyway
   // must not post a second start.
   if (updating) return;
