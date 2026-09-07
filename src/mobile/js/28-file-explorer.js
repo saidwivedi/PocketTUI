@@ -37,6 +37,10 @@ let filesEntries = [];
 // nothing narrower has room for the slot.
 let filesDocked = false;
 let filesExpanded = cfg.filesExpanded;
+// The folder the terminal's own cwd last put the docked pane at — what "the
+// pane is still where the terminal left it" is measured against, and "" while
+// nothing has ever synced it. Only the docked shape has a terminal to follow.
+let filesSyncedCwd = "";
 // Set while btn-files-term's multi-entry history.go is in flight, so the one
 // popstate it lands as closes the view instead of climbing one folder.
 let filesClosing = false;
@@ -233,7 +237,7 @@ function filesEntryCount() { return filesDocked ? 0 : (filesStack.length || 1); 
 function filesStash() {
   return {
     stack: filesStack.slice(), path: filesPath,
-    origin: filesOrigin, docked: filesDocked,
+    origin: filesOrigin, docked: filesDocked, syncedCwd: filesSyncedCwd,
   };
 }
 
@@ -257,6 +261,9 @@ function filesRestore(s) {
   filesPath = s.path;
   filesOrigin = s.origin;
   filesDocked = !!s.docked;
+  // A pane that was following its session's terminal when the rail left it is
+  // still following when the rail comes back.
+  filesSyncedCwd = s.syncedCwd || "";
   $("btn-files-term").style.display =
     !filesDocked && filesOrigin === "screen-term" ? "" : "none";
   $("screen-files").classList.toggle("docked", filesDocked);
@@ -272,6 +279,24 @@ function filesRestore(s) {
   else loadDir(filesPath);
 }
 
+// Where the pane this device is looking at currently sits, or "" when tmux
+// cannot say. null instead once an expired token has been answered: there is no
+// folder to act on, and rejectToken has already asked for the pairing code.
+// Shared by the folder key below and by the docked pane's following, so the two
+// ask the same question of the same session.
+async function fetchPaneCwd() {
+  try {
+    const r = await fetch(apiURL("api/session_cwd?session="
+        + encodeURIComponent(currentSession || "")
+        + "&dev=" + encodeURIComponent(cfg.devname)),
+      { cache: "no-store", headers: authHeaders() });
+    if (r.status === 401) { rejectToken(); return null; }
+    const data = await r.json().catch(() => null);
+    if (r.ok && data) return data.cwd || "";
+  } catch (e) {}
+  return "";
+}
+
 // The terminal entry point. The pane's cwd is asked for at tap time — it moves
 // with every cd — and $HOME quietly stands in when tmux cannot say.
 async function openFilesAtCwd() {
@@ -279,17 +304,43 @@ async function openFilesAtCwd() {
   // Docked, the folder key is a toggle: the pane it opened is the pane it puts
   // away. Full screen there is nothing to toggle — back is how that one leaves.
   if (filesDocked) { closeDockedFiles(); return; }
-  let cwd = "";
-  try {
-    const r = await fetch(apiURL("api/session_cwd?session="
-        + encodeURIComponent(currentSession || "")
-        + "&dev=" + encodeURIComponent(cfg.devname)),
-      { cache: "no-store", headers: authHeaders() });
-    if (r.status === 401) { rejectToken(); return; }
-    const data = await r.json().catch(() => null);
-    if (r.ok && data) cwd = data.cwd || "";
-  } catch (e) {}
-  openExplorer(cwd);
+  const cwd = await fetchPaneCwd();
+  if (cwd === null) return;
+  const ok = await openExplorer(cwd);
+  // The folder that actually resolved, not the string asked for: a cwd tmux
+  // could not give lands at $HOME, and that is where the pane is. Docked only —
+  // full screen there is no terminal beside it to keep up with.
+  if (ok && filesDocked) filesSyncedCwd = filesPath;
+}
+
+// Docked, the pane keeps up with the terminal it sits beside: cd in the shell
+// and the listing moves with it. Only while the pane is still showing what the
+// terminal put there — its own entry folder, and that folder the synced one —
+// so browsing anywhere, by crumb, by tap or by a path link out of the terminal,
+// hands the pane to the user and the following stops until it is closed and
+// opened again. A file view or the open address field is mid-use in the same
+// way: the folder under them is not ours to swap out.
+function filesFollowsCwd() {
+  return filesDocked
+      && filesStack.length <= 1 && filesPath === filesSyncedCwd
+      && !$("screen-editor").classList.contains("active")
+      && !$("screen-reader").classList.contains("active")
+      && !$("files-path-wrap").classList.contains("editing");
+}
+
+// One question in flight at a time, and every condition read again on the way
+// back: the pane can be closed, browsed into or covered while tmux is being
+// asked, and an answer landing then is about a pane that no longer wants it.
+let filesCwdBusy = false;
+async function followPaneCwd() {
+  if (filesCwdBusy || !filesFollowsCwd()) return;
+  filesCwdBusy = true;
+  let cwd;
+  try { cwd = await fetchPaneCwd(); } finally { filesCwdBusy = false; }
+  // "" is tmux declining to answer, not a move to $HOME — the pane stays put.
+  if (!cwd || cwd === filesSyncedCwd || !filesFollowsCwd()) return;
+  filesStack = [];         // a new entry folder, seeded once loadDir resolves it
+  if (await loadDir(cwd)) filesSyncedCwd = filesPath;
 }
 
 // The other terminal entry point: a path printed in a pane and tapped
