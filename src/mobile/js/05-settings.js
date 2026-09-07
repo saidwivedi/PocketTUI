@@ -142,9 +142,6 @@ function openSettings(firstRun, tab) {
   syncVersionRow();
   fetchServerVersion();
   $("alt-toggle").checked = cfg.altKeyOn;
-  $("snip-toggle").checked = cfg.snippetsOn;
-  $("snip-text").value = cfg.snippets;
-  $("snip-edit").classList.toggle("show", cfg.snippetsOn);
   $("sheet-title").textContent = firstRun ? "Connect your computer" : "Settings";
   $("sheet-note").classList.toggle("hide", !firstRun);
   // First run has nothing to go back to, so there is no cancelling out of it.
@@ -430,19 +427,6 @@ $("dbg-toggle").addEventListener("change", (e) => {
 $("alt-toggle").addEventListener("change", (e) => {
   cfg.altKeyOn = e.target.checked;
   buildKeybar();
-});
-// Applies on the tap, like the voice picker and debug switch: the row appears
-// and disappears behind the sheet as the switch moves, and Cancel must not
-// take that back.
-$("snip-toggle").addEventListener("change", (e) => {
-  cfg.snippetsOn = e.target.checked;
-  $("snip-edit").classList.toggle("show", e.target.checked);
-  syncSnipbar();
-});
-// Saved as typed — the box is the storage, line for line.
-$("snip-text").addEventListener("input", (e) => {
-  cfg.snippets = e.target.value;
-  syncSnipbar();
 });
 // Fetches and paints the learned-corrections list. Hidden outright rather than
 // shown empty on a demo/unpaired session or a failed fetch, since none of those

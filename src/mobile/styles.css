@@ -1037,50 +1037,9 @@ html.term-open, body.term-open {
 #voice-retry-dismiss:hover { color: var(--ink); }
 
 /* ============================================================
-   SNIPPET ROW — quick-command chips above the key bar
-   ============================================================ */
-/* Same glass as the key bar below so the two read as one dock. Hidden until
-   the Settings toggle turns it on — every row here is a terminal row lost. */
-.snipbar {
-  flex: 0 0 auto;
-  display: none;
-  gap: 5px;
-  padding: 3px 5px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  background: rgba(255, 253, 247, 0.94);
-  backdrop-filter: saturate(1.4) blur(14px);
-  -webkit-backdrop-filter: saturate(1.4) blur(14px);
-  border-top: 1px solid var(--hair);
-  z-index: 20;
-}
-:root[data-theme="dark"] .snipbar { background: rgba(31, 28, 22, 0.94); }
-.snipbar.show { display: flex; }
-.snipbar::-webkit-scrollbar { display: none; }
-/* Chips keep their natural width and the row scrolls sideways — a command is a
-   word to read, not a key to stretch. */
-.snipbar button {
-  flex: 0 0 auto;
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--ink-2);
-  background: var(--card-2);
-  border: 1px solid var(--hair-strong);
-  border-radius: 7px;
-  min-height: 26px;
-  padding: 0 10px;
-  white-space: nowrap;
-  cursor: pointer;
-  -webkit-user-select: none; user-select: none;
-}
-.snipbar button:active { transform: scale(0.96); background: var(--hair); }
-
-/* ============================================================
    PROMPT CHIPS — a detected prompt's answers, above the key bar
    ============================================================ */
-/* Same glass as the snippet row so the dock stays one surface. Shown only
+/* Same glass as the key bar below so the dock stays one surface. Shown only
    while the pane watcher says a prompt is up; sending any key hides it. */
 .chipbar {
   flex: 0 0 auto;
@@ -1099,7 +1058,7 @@ html.term-open, body.term-open {
 :root[data-theme="dark"] .chipbar { background: rgba(31, 28, 22, 0.94); }
 .chipbar.show { display: flex; }
 .chipbar::-webkit-scrollbar { display: none; }
-/* Answers carry the accent the snippet chips do not: this row only exists
+/* Answers carry an accent the key bar's own keys do not: this row only exists
    because something is waiting, so its keys are the point of the screen. */
 .chipbar button {
   flex: 0 0 auto;
@@ -1743,9 +1702,6 @@ html.term-open, body.term-open {
 /* The one textarea follows the fields' recipe above; it only adds what a
    multi-line control needs. */
 .sheet textarea { resize: none; line-height: 1.5; display: block; }
-/* Quick-command editor: revealed with its toggle, put away with it. */
-#snip-edit { display: none; margin-top: 12px; }
-#snip-edit.show { display: block; }
 #backend-token { letter-spacing: 0.06em; }
 /* A switch rather than a labelled field: it has no value to type, and the label
    has to sit beside the control instead of above it like the inputs do. */
@@ -1773,6 +1729,10 @@ html.term-open, body.term-open {
 #shortcuts-row { display: none; }
 @media (hover: hover) and (pointer: fine) {
   #shortcuts-row { display: flex; }
+  /* The Alt key row is the same test the other way round: its key lives on
+     the phone's bar, which a pointer-and-keyboard machine replaces with the
+     pill. */
+  #alt-row { display: none; }
 }
 #btn-shortcuts, #btn-report, #btn-update-server {
   flex-shrink: 0;
@@ -2086,23 +2046,25 @@ html.term-open, body.term-open {
   transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out);
 }
 .sheet .actions button:active { transform: scale(0.96); }
-/* The destructive one, so it stays out of the footer Save lives in — a quiet
-   line at the foot of the connection fields, aligned with them. Hidden during
+/* The destructive one, so it stays out of the footer Save lives in — an
+   outlined button at the foot of the connection fields, cut like the footer's
+   own so it reads as an action rather than a stray line of text. Hidden during
    first-run setup, where there is nothing stored yet to forget. */
 #btn-settings-forget {
   display: none;
   margin-top: 16px;
-  padding: 10px 0;
+  padding: 9px 16px;
   font-family: var(--sans);
   font-size: 14px;
   font-weight: 500;
-  border: none;
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
   background: transparent;
   color: var(--secondary);
   cursor: pointer;
 }
-#btn-settings-forget.show { display: block; }
-#btn-settings-forget:active { opacity: 0.6; }
+#btn-settings-forget.show { display: inline-block; }
+#btn-settings-forget:active { transform: scale(0.96); }
 /* The session sheet's destructive row. Below the actions and set off by a
    hairline, so a thumb aiming at Save can't graze it; umber rather than a
    literal red for the same reason as the recording dot — it is the app's one
