@@ -565,6 +565,9 @@
             aria-controls="panel-about" aria-selected="false">About</button>
   </div>
 
+  <!-- The scrolling middle of a fixed-height sheet, so switching tabs never
+       changes the box. -->
+  <div class="sheet-panels">
   <div class="sheet-panel" id="panel-connection" role="tabpanel" aria-labelledby="tab-connection">
     <div class="sheet-install" id="sheet-install">
       <label>Install the backend</label>
@@ -682,6 +685,7 @@
         <button type="button" id="btn-update-server" hidden>Update server</button>
       </div>
     </div>
+  </div>
   </div>
 
   <!-- One footer under every tab. Confirm stands in for Save for the length of

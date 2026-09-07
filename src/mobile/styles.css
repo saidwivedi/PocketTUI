@@ -1623,6 +1623,18 @@ html.term-open, body.term-open {
   color: var(--ink);
   border-bottom-color: var(--umber);
 }
+/* The sections scroll inside a box of one fixed size: a sheet that took the
+   height of whatever tab was up jumped on every switch. 580px clears the
+   paired Connection tab, the tallest everyday one, without a scroll; the
+   first run's install line and FAQ, and a long list of learned corrections,
+   scroll within it. The sheet's 88vh cap still wins on a short screen. */
+.sheet-panels {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
 /* Every section's first row already sits under the strip's own gap, so the
    top margin its rule hands it would double it. */
 .sheet .sheet-panel > :first-child { margin-top: 0; }
@@ -2140,17 +2152,21 @@ html.term-open, body.term-open {
   border-color: var(--umber);
   color: var(--paper);
 }
-/* One footer for all four tabs, pinned to the foot of the sheet: the tallest
-   panel runs past the 88vh cap, and a Save that scrolls off the bottom of a
-   sheet with no visible edge reads as a Save that is not there. The sheet's
-   own bottom pad moves onto the footer so the buttons sit above the
-   safe-area strip rather than under it, and the negative side margins let the
-   card background cover the full width of whatever scrolls beneath. */
-#sheet-settings { padding-bottom: 0; }
+/* The sheet is a fixed-height column: title and tab strip at the top, the
+   panels scrolling between, one footer for all four tabs at the foot. A Save
+   that scrolled off the bottom of a sheet with no visible edge read as a Save
+   that was not there. The sheet's own bottom pad moves onto the footer so the
+   buttons sit above the safe-area strip rather than under it, and the
+   negative side margins let the hairline run the full width. */
+#sheet-settings {
+  display: flex;
+  flex-direction: column;
+  height: 580px;
+  padding-bottom: 0;
+  overflow: hidden;   /* the panels scroll, never the sheet */
+}
+#sheet-settings > :not(.sheet-panels) { flex-shrink: 0; }
 #sheet-settings .actions {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
   margin: 18px -22px 0;
   padding: 14px 22px calc(22px + var(--safe-bot));
   background: var(--card);
