@@ -1425,6 +1425,10 @@ function buildKeybar() {
     const b = el("button", { type: "button" }, k.icon ? svgIcon(k.icon) : k.label);
     if (k.narrow) b.classList.add("narrow");
     if (k.aria) b.setAttribute("aria-label", k.aria);
+    // Only the pill's keys carry one, and only where the label alone leaves
+    // something out: a pointer can rest long enough to read that the key has a
+    // chord, which is the thing a screen reader's label cannot spell.
+    if (k.title) b.title = k.title;
     if (k.icon) b.classList.add("glyph-key");
     if (k.cls) b.classList.add(...k.cls.split(" "));
     if (k.only) b.classList.add(k.only + "-only");
@@ -1433,6 +1437,10 @@ function buildKeybar() {
     // it: reportAvailable() cannot be asked on the first build, which runs
     // before 35-report.js does.
     if (k.report) b.classList.toggle("show", $("report-row").classList.contains("show"));
+    // And the search key, from the shortcut row syncSearchCap() keeps in step
+    // with it, for the same reason: the capability map has not landed yet on
+    // the first build, and hasCap() would answer for a server nobody has asked.
+    if (k.search) b.classList.toggle("show", !$("key-search").hidden);
     if (k.mod) modButtons[k.mod] = b;
     // Every key but the focusing ones must leave focus exactly where it is:
     // stealing it would drop the soft keyboard, and handing it back would raise
@@ -1536,6 +1544,7 @@ function buildKeybar() {
       if (k.compose) { toggleCompose(); return; }
       if (k.files) { openFilesAtCwd(); return; }
       if (k.report) { openReport(); return; }
+      if (k.search) { openSearch(); return; }
       if (k.arrows) { setArrows(true); return; }
       if (k.collapse) { setArrows(false); return; }
       if (k.mod) { setMod(k.mod, !mods[k.mod]); return; }
