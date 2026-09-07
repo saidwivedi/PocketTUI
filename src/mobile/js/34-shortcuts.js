@@ -1,10 +1,9 @@
 // ============================================================
-// Keyboard shortcuts sheet
+// Keyboard shortcuts block
 // ============================================================
-// A sheet of its own rather than one more block in Settings, which is already a
-// long flat scroll, and reachable only where there is a keyboard to use it with
-// — the row that opens it is gated in the stylesheet, on the same test the
-// editor's Vim button wears.
+// The Keys tab of Settings, shown only where there is a keyboard to use it with
+// — the block is gated in the stylesheet, on the same test the editor's Vim
+// button wears.
 //
 // It carries the two text sizes because a laptop has no other way to reach
 // them: the terminal's size is a pinch gesture, which is touch-only, and the
@@ -27,17 +26,13 @@ function shortcutsFontSize() {
   return term ? term.options.fontSize : storedFontSize();
 }
 
+// Called from openSettings() alongside the other paints: the steppers show a
+// size that can have changed since the sheet was last open — a pinch on the
+// terminal moves the same number.
 function syncShortcuts() {
   syncStepper("termfont", shortcutsFontSize(), FONT_MIN, FONT_MAX);
   syncStepper("railfont", railFont, RAIL_FONT_MIN, RAIL_FONT_MAX);
 }
-
-function openShortcuts() {
-  syncShortcuts();
-  showSheet(true, "sheet-shortcuts");
-}
-
-$("btn-shortcuts").addEventListener("click", openShortcuts);
 
 // A press moves the size by one pixel through the same apply the pinch settles
 // through, then reads back what actually landed — the clamp lives in there, so
@@ -56,7 +51,7 @@ for (const by of [-1, 1]) {
 // ============================================================
 // Shortcuts card in the rail
 // ============================================================
-// The sheet above is complete and unread: nobody opens Settings looking for a
+// The block above is complete and unread: nobody opens Settings looking for a
 // chord they do not know exists, and the chord they get wrong is Ctrl+C, which
 // off a Mac copies a selection and interrupts when there is none. So the four
 // worth knowing sit at the foot of the rail, in the keys of the platform
@@ -94,10 +89,15 @@ let railKeysOpen = true;
 try { railKeysOpen = localStorage.getItem(RAIL_KEYS_KEY) !== "closed"; } catch (e) {}
 syncRailKeys(railKeysOpen);
 
-$("btn-rail-keys").addEventListener("click", () => {
+// The whole header row folds the card, not just the chevron: the word
+// "Shortcuts" is the obvious thing to aim at, and the chevron is a small target
+// in a narrow rail. One listener on the head — the button is inside it, so a
+// press on the chevron arrives here once, through the bubble, and stays the
+// control a keyboard and a screen reader are offered.
+$("rail-keys-head").addEventListener("click", () => {
   railKeysOpen = !railKeysOpen;
   syncRailKeys(railKeysOpen);
   try { localStorage.setItem(RAIL_KEYS_KEY, railKeysOpen ? "open" : "closed"); } catch (e) {}
 });
 
-$("btn-rail-keys-all").addEventListener("click", openShortcuts);
+$("btn-rail-keys-all").addEventListener("click", () => openSettings(false, "keys"));

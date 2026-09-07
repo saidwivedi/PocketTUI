@@ -4,7 +4,7 @@
 // One scrim serves every sheet, so closing means closing whichever is open.
 const SHEET_IDS = ["sheet-settings", "sheet-new", "sheet-session",
                    "sheet-file-actions", "sheet-files-add", "sheet-confirm",
-                   "sheet-shortcuts", "sheet-report"];
+                   "sheet-report"];
 function showSheet(on, id="sheet-settings") {
   // Closing the settings sheet ends the first-run voice step however it was
   // closed — Confirm, Cancel or the scrim. The device is paired by then, so
@@ -114,6 +114,11 @@ function selectSettingsTab(name) {
     $("tab-" + t).setAttribute("aria-selected", on ? "true" : "false");
     $("panel-" + t).hidden = !on;
   }
+  // The Keys panel's two steppers show live sizes — a pinch on the terminal
+  // moves one of them — so they are painted as the panel is shown. Here rather
+  // than beside the other paints in openSettings(): a tab is also switched to
+  // with the sheet already up.
+  if (name === "keys") syncShortcuts();
 }
 $("settings-tabs").addEventListener("click", (e) => {
   const tab = e.target && e.target.closest("[role=tab]");
