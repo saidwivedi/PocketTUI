@@ -1631,6 +1631,42 @@ html.term-open, body.term-open {
   margin: -6px 0 16px;
 }
 .sheet-note.hide { display: none; }
+/* The sheet is four sections now, not one column: past a certain length a
+   settings list stops being a list and becomes something to hunt through.
+   Text buttons rather than a segmented control — a bordered pill row at this
+   width would be four boxes competing with every field below it, where an
+   underline just says which section is showing. */
+.sheet-tabs {
+  display: flex;
+  gap: 2px;
+  margin: 0 0 18px;
+  border-bottom: 1px solid var(--hair);
+}
+.sheet-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 9px 2px;
+  border: none;
+  /* Carries the selected underline, transparent otherwise, so nothing shifts
+     as the selection moves; the negative margin lands it on the strip's own
+     hairline rather than below it. */
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sheet-tab[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--umber);
+}
+/* Every section's first row already sits under the strip's own gap, so the
+   top margin its rule hands it would double it. */
+.sheet .sheet-panel > :first-child { margin-top: 0; }
 /* First run only: the backend has to exist before an address can point at it,
    so the install line comes before the fields. */
 .sheet-install { display: none; margin: 0 0 16px; }
@@ -1756,7 +1792,6 @@ html.term-open, body.term-open {
    unequal length and each carries a second line of its own, which a segment
    cannot hold. Same recessed well and hairline rim as the fields above, so the
    group reads as one more thing in the sheet rather than a widget visiting. */
-#voice-label { margin-top: 18px; }
 .sheet .radio-group {
   border: 1px solid var(--hair);
   border-radius: 12px;
@@ -2051,17 +2086,23 @@ html.term-open, body.term-open {
   transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out);
 }
 .sheet .actions button:active { transform: scale(0.96); }
-/* Sits apart from Cancel/Save, at the far left: it is the destructive one, and
-   nobody should reach it while aiming for Save. Hidden during first-run setup,
-   where there is nothing stored yet to forget. */
+/* The destructive one, so it stays out of the footer Save lives in — a quiet
+   line at the foot of the connection fields, aligned with them. Hidden during
+   first-run setup, where there is nothing stored yet to forget. */
 #btn-settings-forget {
   display: none;
-  order: -1;
-  margin-right: auto;
-  border-color: transparent;
+  margin-top: 16px;
+  padding: 10px 0;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  border: none;
+  background: transparent;
   color: var(--secondary);
+  cursor: pointer;
 }
 #btn-settings-forget.show { display: block; }
+#btn-settings-forget:active { opacity: 0.6; }
 /* The session sheet's destructive row. Below the actions and set off by a
    hairline, so a thumb aiming at Save can't graze it; umber rather than a
    literal red for the same reason as the recording dot — it is the app's one
@@ -2090,11 +2131,6 @@ html.term-open, body.term-open {
 /* The confirm sheet's destructive yes: the file explorer's danger idiom
    (.sheet-menu button.danger), worn by a standard action-row button. */
 .sheet .actions button.danger { color: var(--bad); }
-/* The first-run voice step's own action row. Absent entirely the rest of the
-   time — past setup the picker applies on the tap and the sheet's Save/Cancel
-   row is the only one there is. */
-#voice-confirm-row { display: none; }
-#voice-confirm-row.show { display: flex; }
 .sheet .actions button[disabled] {
   opacity: 0.45;
   cursor: default;
@@ -2141,6 +2177,22 @@ html.term-open, body.term-open {
   background: var(--umber);
   border-color: var(--umber);
   color: var(--paper);
+}
+/* One footer for all four tabs, pinned to the foot of the sheet: the tallest
+   panel runs past the 88vh cap, and a Save that scrolls off the bottom of a
+   sheet with no visible edge reads as a Save that is not there. The sheet's
+   own bottom pad moves onto the footer so the buttons sit above the
+   safe-area strip rather than under it, and the negative side margins let the
+   card background cover the full width of whatever scrolls beneath. */
+#sheet-settings { padding-bottom: 0; }
+#sheet-settings .actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin: 18px -22px 0;
+  padding: 14px 22px calc(22px + var(--safe-bot));
+  background: var(--card);
+  border-top: 1px solid var(--hair);
 }
 
 /* ============================================================
