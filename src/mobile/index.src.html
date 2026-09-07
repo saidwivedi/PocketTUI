@@ -307,9 +307,6 @@
       </button>
     </div>
   </div>
-  <!-- Optional quick-command chips, built from Settings; hidden until the
-       toggle there turns them on. -->
-  <div class="snipbar" id="snipbar"></div>
   <!-- Prompt chips: when the pane watcher detects the session waiting on a
        question, its answers land here (plus ⏎ and esc, which every prompt
        understands). Hidden until a prompt frame arrives; sending any key —
@@ -638,22 +635,10 @@
   </div>
 
   <div class="sheet-panel" id="panel-keys" role="tabpanel" aria-labelledby="tab-keys" hidden>
-    <!-- The optional quick-command row above the key bar. The switch is the
-         feature; the box appears with it, one command per line, and every edit
-         applies as it is typed — there is no save step for it to miss. -->
-    <div class="toggle-row">
-      <label for="snip-toggle">Quick commands</label>
-      <input id="snip-toggle" type="checkbox">
-    </div>
-    <div id="snip-edit">
-      <label for="snip-text" class="opt">Commands <span>one per line</span></label>
-      <textarea id="snip-text" rows="4" autocapitalize="off" autocorrect="off"
-                spellcheck="false" autocomplete="off"
-                placeholder="git status"></textarea>
-    </div>
     <!-- A key-bar slot most sessions never reach for, so it stays out of the bar
-         until asked for. -->
-    <div class="toggle-row">
+         until asked for. Touch screens only: beside a real keyboard the key is
+         on the keyboard, and the pill never showed it anyway. -->
+    <div class="toggle-row" id="alt-row">
       <label for="alt-toggle">Alt key</label>
       <input id="alt-toggle" type="checkbox">
     </div>
