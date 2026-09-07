@@ -100,7 +100,28 @@ let setupMode = false;
 // on the voice step rather than the address one.
 let voiceStep = false;
 
-function openSettings(firstRun) {
+// Which section the sheet comes back to. Held for the session rather than
+// stored: a tab is where the user was a moment ago, not a preference, and a
+// fresh load has no reason to open anywhere but the connection.
+const SETTINGS_TABS = ["connection", "dictation", "keys", "about"];
+let settingsTab = "connection";
+
+function selectSettingsTab(name) {
+  if (SETTINGS_TABS.indexOf(name) < 0) name = "connection";
+  settingsTab = name;
+  for (const t of SETTINGS_TABS) {
+    const on = t === name;
+    $("tab-" + t).setAttribute("aria-selected", on ? "true" : "false");
+    $("panel-" + t).hidden = !on;
+  }
+}
+$("settings-tabs").addEventListener("click", (e) => {
+  const tab = e.target && e.target.closest("[role=tab]");
+  if (!tab) return;
+  selectSettingsTab(tab.dataset.tab);
+});
+
+function openSettings(firstRun, tab) {
   setupMode = !!firstRun;
   const parts = backendParts(cfg.backend);
   $("backend-url").value = parts.url;
@@ -137,6 +158,15 @@ function openSettings(firstRun) {
   $("sheet-install").classList.toggle("show", !!firstRun);
   $("sheet-faq").classList.toggle("show", !!firstRun);
   $("sheet-settings").classList.toggle("setup", !!firstRun);
+  // A first run is one question — which computer — and the step after it is the
+  // dictation one, so those are the only two tabs offered. The other two are
+  // about a session there is not one of yet.
+  $("tab-keys").hidden = !!firstRun;
+  $("tab-about").hidden = !!firstRun;
+  // A caller may name the tab it is sending the user to (the rail's Update
+  // pill wants the version block on About); a first run always starts where
+  // its only unanswered question is.
+  selectSettingsTab(firstRun ? "connection" : (tab || settingsTab));
   // The voice step is something a save opens, never something the sheet opens
   // with: until the code is entered there is nothing to confirm.
   showVoiceStep(false);
@@ -147,16 +177,20 @@ function openSettings(firstRun) {
 // Settings looks like, so this is what returns the sheet to normal.
 function showVoiceStep(on) {
   voiceStep = on;
-  $("voice-confirm-row").classList.toggle("show", on);
+  // Confirm stands where Save was: the address is stored by the time this step
+  // opens, so leaving both would offer a button with nothing left to commit.
+  $("btn-settings-save").hidden = on;
+  $("btn-voice-confirm").hidden = !on;
   $("btn-voice-confirm").classList.toggle("primary", on);
   if (on) syncVoiceConfirm();
 }
 
-// Brings the picker to the top of the sheet. The address fields above it are
-// answered by now and the FAQ below is about connecting, so what the step is
-// asking should be the first thing in view rather than something to scroll for.
+// Puts the step in front of the user: its own tab, from the top. The sheet was
+// left scrolled down the connection fields, and a panel swapped in under a
+// scrolled sheet starts part-way through itself.
 function revealVoiceStep() {
-  $("voice-label").scrollIntoView({ behavior: "smooth", block: "start" });
+  selectSettingsTab("dictation");
+  $("sheet-settings").scrollTop = 0;
 }
 
 // Confirm commits whatever the picker is showing, so it is only inert while the
@@ -178,6 +212,7 @@ function rejectToken() {
   // an answer about what was entered and has to reach the user.
   if ($("sheet-settings").classList.contains("show") && !voiceStep) return;
   openSettings(needsSetup());
+  selectSettingsTab("connection");
   $("backend-token").value = "";
   $("backend-token").focus();
   toast("Pairing code rejected");
@@ -244,7 +279,9 @@ $("btn-settings-save").addEventListener("click", () => {
   const pairing = (wasUnpaired || credsChanged) && !needsSetup();
   if (pairing) {
     $("sheet-settings").classList.remove("setup");
-    $("sheet-title").textContent = "Dictation";
+    // The tab strip names the step now, so the title goes back to naming the
+    // sheet.
+    $("sheet-title").textContent = "Settings";
     $("sheet-note").classList.add("hide");
     $("btn-settings-cancel").style.display = "";
     showVoiceStep(true);

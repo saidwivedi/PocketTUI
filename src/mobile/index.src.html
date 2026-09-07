@@ -551,135 +551,161 @@
   <button type="button" id="btn-sheet-demo">Try demo</button>
   <h2 id="sheet-title">Settings</h2>
   <p class="sheet-note" id="sheet-note">Your computer's terminal, on your phone.</p>
-  <div class="sheet-install" id="sheet-install">
-    <label>Install the backend</label>
-    <div class="cmd">
-      <code id="install-cmd">curl -fsSL https://pockettui.com/install.sh | bash</code>
-      <button type="button" id="btn-copy-install">Copy</button>
+  <!-- Four sections rather than one column. The sheet grew past the height it
+       can show at once, and everything below the fold — the dictation picker,
+       the quick-command box, the build line — was reachable only by scrolling
+       past settings nobody was looking for. The strip says what is in here;
+       Save and Cancel sit under all four, since the only thing Save commits
+       lives on the first one. -->
+  <div class="sheet-tabs" id="settings-tabs" role="tablist" aria-label="Settings sections">
+    <button type="button" class="sheet-tab" role="tab" id="tab-connection" data-tab="connection"
+            aria-controls="panel-connection" aria-selected="true">Connection</button>
+    <button type="button" class="sheet-tab" role="tab" id="tab-dictation" data-tab="dictation"
+            aria-controls="panel-dictation" aria-selected="false">Dictation</button>
+    <button type="button" class="sheet-tab" role="tab" id="tab-keys" data-tab="keys"
+            aria-controls="panel-keys" aria-selected="false">Keys</button>
+    <button type="button" class="sheet-tab" role="tab" id="tab-about" data-tab="about"
+            aria-controls="panel-about" aria-selected="false">About</button>
+  </div>
+
+  <div class="sheet-panel" id="panel-connection" role="tabpanel" aria-labelledby="tab-connection">
+    <div class="sheet-install" id="sheet-install">
+      <label>Install the backend</label>
+      <div class="cmd">
+        <code id="install-cmd">curl -fsSL https://pockettui.com/install.sh | bash</code>
+        <button type="button" id="btn-copy-install">Copy</button>
+      </div>
+    </div>
+    <label for="backend-url">Computer address</label>
+    <input id="backend-url" type="url" inputmode="url" autocapitalize="off" autocorrect="off"
+           spellcheck="false" placeholder="my-host.example.net/pockettui">
+    <label for="backend-token">Pairing code</label>
+    <input id="backend-token" type="text" inputmode="latin" autocapitalize="characters" autocorrect="off"
+           spellcheck="false" placeholder="XXXXX-XXXXX" maxlength="11">
+    <label for="backend-devname">Device name</label>
+    <input id="backend-devname" type="text" autocapitalize="off" autocorrect="off"
+           spellcheck="false" placeholder="iphone" maxlength="16">
+    <label for="backend-port" class="opt">Port <span>optional</span></label>
+    <input id="backend-port" type="text" inputmode="numeric" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="5560">
+    <!-- The one destructive thing in the sheet, so it stays out of the footer
+         where a thumb aiming at Save would pass over it. -->
+    <button type="button" id="btn-settings-forget">Forget</button>
+    <div class="sheet-faq" id="sheet-faq">
+      <p><b>What is this?</b> Your machine's tmux sessions, from any device.</p>
+      <p><b>How does it work?</b> xterm.js relays keys over a WebSocket straight to
+        your machine, authenticated by the pairing code the installer printed.
+        Nothing is stored off-device.</p>
     </div>
   </div>
-  <label for="backend-url">Computer address</label>
-  <input id="backend-url" type="url" inputmode="url" autocapitalize="off" autocorrect="off"
-         spellcheck="false" placeholder="my-host.example.net/pockettui">
-  <label for="backend-token">Pairing code</label>
-  <input id="backend-token" type="text" inputmode="latin" autocapitalize="characters" autocorrect="off"
-         spellcheck="false" placeholder="XXXXX-XXXXX" maxlength="11">
-  <label for="backend-devname">Device name</label>
-  <input id="backend-devname" type="text" autocapitalize="off" autocorrect="off"
-         spellcheck="false" placeholder="iphone" maxlength="16">
-  <label for="backend-port" class="opt">Port <span>optional</span></label>
-  <input id="backend-port" type="text" inputmode="numeric" autocapitalize="off"
-         autocorrect="off" spellcheck="false" placeholder="5560">
+
+  <div class="sheet-panel" id="panel-dictation" role="tabpanel" aria-labelledby="tab-dictation" hidden>
+    <!-- Which engine the key bar's mic key talks to. One choice rather than a
+         switch, because the two local engines are genuinely different answers and
+         the phone's own recogniser is the third — a checkbox could only ever have
+         said "local or not" and left the rest to guess. Rows the backend cannot
+         serve are disabled with the command that fixes them, so the picker never
+         offers what would fail on the first word. -->
+    <label id="voice-label">Engine</label>
+    <div class="radio-group" id="voice-engine" role="radiogroup" aria-labelledby="voice-label">
+      <label class="radio-row">
+        <input type="radio" name="voice-engine" value="phone">
+        <span class="name">Phone dictation</span>
+        <span class="note">the keyboard's own mic</span>
+      </label>
+      <label class="radio-row" id="voice-row-parakeet">
+        <input type="radio" name="voice-engine" value="parakeet">
+        <span class="name">Parakeet</span>
+        <span class="note"></span>
+      </label>
+      <label class="radio-row" id="voice-row-whisper">
+        <input type="radio" name="voice-engine" value="whisper">
+        <span class="name">Whisper</span>
+        <span class="note"></span>
+      </label>
+    </div>
+    <!-- What the corrections table has learned from edited transcripts. Hidden
+         until it has something to show: a fetch that fails or a demo/unpaired
+         session has nothing true to say about a store on a machine it cannot
+         reach. Lazily fetched when the sheet opens, same as voice status above,
+         so a store nobody has looked at yet costs nothing on every other visit. -->
+    <div id="learned-section">
+      <label id="learned-label">Learned corrections</label>
+      <div class="list-rows" id="learned-rows"></div>
+      <p id="learned-empty">Nothing learned yet.</p>
+      <button type="button" id="btn-learned-clear">Clear all</button>
+    </div>
+  </div>
+
+  <div class="sheet-panel" id="panel-keys" role="tabpanel" aria-labelledby="tab-keys" hidden>
+    <!-- The optional quick-command row above the key bar. The switch is the
+         feature; the box appears with it, one command per line, and every edit
+         applies as it is typed — there is no save step for it to miss. -->
+    <div class="toggle-row">
+      <label for="snip-toggle">Quick commands</label>
+      <input id="snip-toggle" type="checkbox">
+    </div>
+    <div id="snip-edit">
+      <label for="snip-text" class="opt">Commands <span>one per line</span></label>
+      <textarea id="snip-text" rows="4" autocapitalize="off" autocorrect="off"
+                spellcheck="false" autocomplete="off"
+                placeholder="git status"></textarea>
+    </div>
+    <!-- A key-bar slot most sessions never reach for, so it stays out of the bar
+         until asked for. -->
+    <div class="toggle-row">
+      <label for="alt-toggle">Alt key</label>
+      <input id="alt-toggle" type="checkbox">
+    </div>
+    <!-- Only where a hardware keyboard is, the same gate the editor's Vim button
+         wears: everything the sheet lists is a chord, and the two sizes it carries
+         are the ones a laptop has no gesture for. -->
+    <div class="toggle-row" id="shortcuts-row">
+      <label>Keyboard shortcuts</label>
+      <button type="button" id="btn-shortcuts">Open</button>
+    </div>
+  </div>
+
+  <div class="sheet-panel" id="panel-about" role="tabpanel" aria-labelledby="tab-about" hidden>
+    <div class="toggle-row">
+      <label for="dbg-toggle">Debug log</label>
+      <input id="dbg-toggle" type="checkbox">
+    </div>
+    <!-- Below the debug toggle because that is what a report is usually carrying.
+         Shown only once the app has actually reached a backend — see
+         reportAvailable(); a shell still asking for an address has nothing to
+         report but the sheet in front of it. -->
+    <div class="toggle-row" id="report-row">
+      <label>Report a problem</label>
+      <button type="button" id="btn-report">Open</button>
+    </div>
+    <!-- Which builds the shell and the computer are running. Last here because
+         it is the answer to "why is this button missing" rather than anything to
+         set, and it is the only place the shell mentions the update at all — the
+         skew is worth stating once where it can be looked up, never worth a
+         toast. -->
+    <div class="sheet-version" id="sheet-version" hidden>
+      <p id="sheet-version-line">App unknown · Server unknown</p>
+      <!-- Two ways to take the update, and which one shows is the server's to
+           say: a server carrying the "update" capability can start it itself, so
+           the row offers the button and drops the command. Anything older is
+           still told what to type on the computer. -->
+      <div id="sheet-version-update" hidden>
+        <p>Update to <span id="sheet-version-latest"></span> available.<span
+           id="sheet-version-manual"> On the computer, run:
+          <code>pockettui update</code></span></p>
+        <button type="button" id="btn-update-server" hidden>Update server</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- One footer under every tab. Confirm stands in for Save for the length of
+       the first run's dictation step — the address is already stored by then, so
+       there is nothing left for Save to commit. -->
   <div class="actions">
-    <button type="button" id="btn-settings-forget">Forget</button>
     <button type="button" id="btn-settings-cancel">Cancel</button>
     <button type="button" id="btn-settings-save">Save</button>
-  </div>
-  <div class="sheet-faq" id="sheet-faq">
-    <p><b>What is this?</b> Your machine's tmux sessions, from any device.</p>
-    <p><b>How does it work?</b> xterm.js relays keys over a WebSocket straight to
-      your machine, authenticated by the pairing code the installer printed.
-      Nothing is stored off-device.</p>
-  </div>
-  <!-- Which engine the key bar's mic key talks to. One choice rather than a
-       switch, because the two local engines are genuinely different answers and
-       the phone's own recogniser is the third — a checkbox could only ever have
-       said "local or not" and left the rest to guess. Rows the backend cannot
-       serve are disabled with the command that fixes them, so the picker never
-       offers what would fail on the first word. -->
-  <label id="voice-label">Dictation</label>
-  <div class="radio-group" id="voice-engine" role="radiogroup" aria-labelledby="voice-label">
-    <label class="radio-row">
-      <input type="radio" name="voice-engine" value="phone">
-      <span class="name">Phone dictation</span>
-      <span class="note">the keyboard's own mic</span>
-    </label>
-    <label class="radio-row" id="voice-row-parakeet">
-      <input type="radio" name="voice-engine" value="parakeet">
-      <span class="name">Parakeet</span>
-      <span class="note"></span>
-    </label>
-    <label class="radio-row" id="voice-row-whisper">
-      <input type="radio" name="voice-engine" value="whisper">
-      <span class="name">Whisper</span>
-      <span class="note"></span>
-    </label>
-  </div>
-  <!-- First run only. Pairing is the moment the local engines stop being greyed
-       rows and become a real choice, and it is also the moment the sheet used to
-       close — so the one time the picker had something to say was the one time
-       nobody saw it. The sheet stays for this step instead, and closing it is
-       this button rather than the Save above, which has already done its job. -->
-  <div class="actions" id="voice-confirm-row">
-    <button type="button" id="btn-voice-confirm">Confirm</button>
-  </div>
-  <!-- What the corrections table has learned from edited transcripts. Hidden
-       until it has something to show: a fetch that fails or a demo/unpaired
-       session has nothing true to say about a store on a machine it cannot
-       reach. Lazily fetched when the sheet opens, same as voice status above,
-       so a store nobody has looked at yet costs nothing on every other visit. -->
-  <div id="learned-section">
-    <label id="learned-label">Learned corrections</label>
-    <div class="list-rows" id="learned-rows"></div>
-    <p id="learned-empty">Nothing learned yet.</p>
-    <button type="button" id="btn-learned-clear">Clear all</button>
-  </div>
-  <!-- The optional quick-command row above the key bar. The switch is the
-       feature; the box appears with it, one command per line, and every edit
-       applies as it is typed — there is no save step for it to miss. -->
-  <div class="toggle-row">
-    <label for="snip-toggle">Quick commands</label>
-    <input id="snip-toggle" type="checkbox">
-  </div>
-  <div id="snip-edit">
-    <label for="snip-text" class="opt">Commands <span>one per line</span></label>
-    <textarea id="snip-text" rows="4" autocapitalize="off" autocorrect="off"
-              spellcheck="false" autocomplete="off"
-              placeholder="git status"></textarea>
-  </div>
-  <!-- A key-bar slot most sessions never reach for, so it stays out of the bar
-       until asked for. -->
-  <div class="toggle-row">
-    <label for="alt-toggle">Alt key</label>
-    <input id="alt-toggle" type="checkbox">
-  </div>
-  <!-- Only where a hardware keyboard is, the same gate the editor's Vim button
-       wears: everything the sheet lists is a chord, and the two sizes it carries
-       are the ones a laptop has no gesture for. -->
-  <div class="toggle-row" id="shortcuts-row">
-    <label>Keyboard shortcuts</label>
-    <button type="button" id="btn-shortcuts">Open</button>
-  </div>
-  <!-- Last in the sheet because it is a diagnostic, not part of connecting. -->
-  <div class="toggle-row">
-    <label for="dbg-toggle">Debug log</label>
-    <input id="dbg-toggle" type="checkbox">
-  </div>
-  <!-- Below the debug toggle because that is what a report is usually carrying.
-       Shown only once the app has actually reached a backend — see
-       reportAvailable(); a shell still asking for an address has nothing to
-       report but the sheet in front of it. -->
-  <div class="toggle-row" id="report-row">
-    <label>Report a problem</label>
-    <button type="button" id="btn-report">Open</button>
-  </div>
-  <!-- Which builds the shell and the computer are running. The foot of the
-       sheet because it is the answer to "why is this button missing" rather
-       than anything to set, and it is the only place the shell mentions the
-       update at all — the skew is worth stating once where it can be looked
-       up, never worth a toast. -->
-  <div class="sheet-version" id="sheet-version" hidden>
-    <p id="sheet-version-line">App unknown · Server unknown</p>
-    <!-- Two ways to take the update, and which one shows is the server's to
-         say: a server carrying the "update" capability can start it itself, so
-         the row offers the button and drops the command. Anything older is
-         still told what to type on the computer. -->
-    <div id="sheet-version-update" hidden>
-      <p>Update to <span id="sheet-version-latest"></span> available.<span
-         id="sheet-version-manual"> On the computer, run:
-        <code>pockettui update</code></span></p>
-      <button type="button" id="btn-update-server" hidden>Update server</button>
-    </div>
+    <button type="button" id="btn-voice-confirm" hidden>Confirm</button>
   </div>
 </div>
 
