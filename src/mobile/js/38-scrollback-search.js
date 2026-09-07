@@ -1,10 +1,13 @@
 // ============================================================
 // Scrollback search
 // ============================================================
-// Ctrl+Shift+F, and nothing else: no key, no setting, no button anywhere. The
-// chord is claimed in 31-wide-layout.js beside the diff pane's, so search only
-// exists where there is a keyboard to press it on — a phone has no chord and no
-// room for a bar over the grid, and the markup below stays display:none there.
+// Ctrl+Shift+F, and the key pill's magnifier, which opens the same bar for the
+// pointer that never learned the chord. Both belong to the laptop: the chord is
+// claimed in 31-wide-layout.js beside the diff pane's, the key is shown only in
+// pill mode, and pill mode is the wide layout plus a real pointer — so search
+// exists exactly where there is a keyboard to press it on. A phone has neither,
+// and no room for a bar over the grid: the markup below stays display:none
+// there, and so does the key.
 //
 // The bar is absolutely positioned inside #screen-term, which is the terminal's
 // own column: the rail moves that box's left edge and the side pane its right,
@@ -153,6 +156,13 @@ function syncSearchCap() {
     const row = $(id);
     if (row) row.hidden = !on;
   }
+  // And the pill's key, the one button this feature has. A class rather than
+  // the rows' `hidden`, because the pill's display rules are ID-strength and
+  // would outrank the attribute — the report key carries its own .show for
+  // exactly that reason. Looked up rather than held, since buildKeybar()
+  // replaces it.
+  const key = $("keybar").querySelector(".k-search");
+  if (key) key.classList.toggle("show", on);
 }
 
 // Escape is the bar's only while its own field has the focus. The three other

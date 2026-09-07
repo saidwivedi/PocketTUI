@@ -62,6 +62,17 @@ const KEYS = [
   // folder key is.
   { icon: "i-life-ring", report: true, narrow: true, only: "collapsed",
     cls: "k-report", aria: "Report a problem" },
+  // Pill only as well, and for the report key's reason turned round: the find
+  // is opened by a chord (Ctrl+Shift+F, claimed in 31-wide-layout.js), so the
+  // key that spells that chord out belongs exactly where there is a keyboard to
+  // press it on — a chord nobody has been told about is not a feature. Last of
+  // the pill's keys, so adding it moves none of the ones already under the
+  // pointer. `focusing` for the compose key's reason: opening search means
+  // putting the caret in its field. Shown only once the computer says it can
+  // search, which syncSearchCap() in 38-scrollback-search.js decides.
+  { icon: "i-search", search: true, focusing: true, narrow: true, only: "collapsed",
+    cls: "k-search", aria: "Search scrollback",
+    title: "Search scrollback (Ctrl+Shift+F)" },
   { icon: "i-close", collapse: true, narrow: true, cls: "k-close", only: "expanded", aria: "Hide arrow keys" },
 ];
 
