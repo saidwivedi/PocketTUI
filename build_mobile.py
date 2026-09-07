@@ -25,6 +25,7 @@ Usage:
   python build_mobile.py --backend URL       # bake one in
   python build_mobile.py --backend-file      # bake in .backend_url's contents
   python build_mobile.py --assemble-only     # only refresh mobile_app.html + sw.js
+  python build_mobile.py --version 0.9.4     # stamp the release into the shell
   python build_mobile.py --emit-runtime DIR  # write the flat runtime set into DIR
 
 Baking a backend in is opt-in, so a stray .backend_url can never leak a private
@@ -105,7 +106,7 @@ def assemble() -> str:
     index.src.html is copied through line by line; a line that is exactly
     `@include NAME` is replaced by that fragment's bytes. `@include js` expands
     to every JS_FRAGMENTS entry in order. Placeholders (__CACHE_VERSION__,
-    __BACKEND_URL__) pass through untouched — substituting them is the caller's
+    __BACKEND_URL__, __APP_VERSION__) pass through untouched — substituting them is the caller's
     job, here and in app.py, on the assembled result.
     """
     def read(rel: Path) -> str:
@@ -167,6 +168,13 @@ def main() -> int:
     parser.add_argument("--assemble-only", action="store_true",
                         help="Only refresh the runtime copies at the repo root; "
                              "skip mobile_build/.")
+    # The release this build is, for the Settings line that puts the shell's
+    # version next to the server's. Only the published shell can know it —
+    # deploy_cloudflare.sh computes it and passes it here — so it defaults to
+    # empty and a checkout build reads as "unknown".
+    parser.add_argument("--version", default="",
+                        help="Stamp this release version into the shell "
+                             "(mobile_build/ only). Omit for a checkout build.")
     parser.add_argument("--emit-runtime", metavar="DIR",
                         help="Also write the flat runtime set (mobile_app.html, "
                              "sw.js, icons) into DIR. Used by install.sh when "
@@ -188,8 +196,9 @@ def main() -> int:
             return 1
 
     # The runtime copies are the assembled source, placeholders intact: app.py
-    # substitutes __CACHE_VERSION__ itself when it serves them, and a checkout
-    # run straight from run.sh reads these. Written on every build so they can
+    # substitutes __CACHE_VERSION__ and __APP_VERSION__ itself when it serves
+    # them — the version from the VERSION file the tarball carries — and a
+    # checkout run straight from run.sh reads these. Written on every build so they can
     # never drift behind src/.
     template = assemble()
     sw_template = (SRC_DIR / "sw.js").read_text(encoding="utf-8")
@@ -209,6 +218,7 @@ def main() -> int:
 
     html = template.replace("__BACKEND_URL__", backend)
     html = html.replace("__CACHE_VERSION__", cache_version)
+    html = html.replace("__APP_VERSION__", args.version.strip())
     (BUILD_DIR / "index.html").write_text(html, encoding="utf-8")
 
     sw = sw_template.replace("__CACHE_VERSION__", cache_version)
@@ -223,6 +233,7 @@ def main() -> int:
     print(f"Built -> {BUILD_DIR}")
     print(f"Backend baked in: {backend or '(none — app asks on first run)'}")
     print(f"Cache version:    {cache_version}")
+    print(f"App version:      {args.version.strip() or '(none — shell says unknown)'}")
     for f in sorted(BUILD_DIR.rglob("*")):
         if f.is_file():
             print(f"  {str(f.relative_to(BUILD_DIR)):24s} {f.stat().st_size:>8d} B")

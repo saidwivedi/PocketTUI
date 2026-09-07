@@ -124,6 +124,11 @@ function reportDiagnostics() {
     ? "  zoom=" + Math.round(window.outerWidth / window.innerWidth * 100) + "%" : "";
   return [
     "version: " + buildVersion(),
+    // The two releases behind that cache stamp. Either can be "unknown" — a
+    // shell built from a checkout, a server too old to carry a VERSION file —
+    // and a report where they disagree is a report about the skew.
+    "app: " + (appVersion() || "unknown"),
+    "server: " + (serverVersion || "unknown"),
     "browser: " + ua.browser,
     "os: " + ua.os,
     arch ? "arch: " + arch : null,
