@@ -200,6 +200,11 @@ function ensureTerm() {
   // A selection can go away without the gesture asking — a reset, or xterm
   // dropping it on a repaint — and the Copy pill must not outlive it.
   term.onSelectionChange(() => termSelectionCleared());
+  // A shell that titles its window retitles it as the prompt comes back, which
+  // is the moment a cd is done: the docked explorer uses that to keep up
+  // (28-file-explorer.js). Nothing else reads the title, and a shell that sets
+  // none simply never fires this.
+  term.onTitleChange(() => scheduleCwdAfterTitle());
 }
 
 // The GPU renderer, which is what makes a flick scroll smoothly on a phone. It
