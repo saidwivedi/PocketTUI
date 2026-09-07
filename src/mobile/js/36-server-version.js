@@ -15,6 +15,19 @@
 // What the site is publishing, which is what `pockettui update` would install.
 const LATEST_VERSION_URL = "https://pockettui.com/version.txt";
 
+// Which build this shell is. Stamped at build time — deploy_cloudflare.sh hands
+// the release version to build_mobile.py for the hosted shell, and app.py
+// substitutes the install's VERSION file when it serves the runtime copy. A
+// checkout has neither, so the placeholder comes through as it is here.
+const APP_VERSION = "__APP_VERSION__";
+
+// The shell's own build, or "" when nothing stamped it: an unsubstituted
+// placeholder and an empty stamp are the same non-answer, and read as "unknown"
+// exactly like a server too old to carry a VERSION file.
+function appVersion() {
+  return /^\d+\.\d+\.\d+$/.test(APP_VERSION) ? APP_VERSION : "";
+}
+
 // "" until /api/version has answered once; a server too old to carry a VERSION
 // file answers "" too, and both read as "unknown" here.
 let serverVersion = "";
@@ -134,8 +147,15 @@ function syncVersionRow() {
   // install this shell has no memory of is already running.
   if (stale && !updating) resumeUpdateIfRunning();
   if (!on) return;
-  $("sheet-version-line").textContent =
-    serverVersion ? "Server v" + serverVersion : "Server version unknown";
+  // Both ends on one line, because the question this block answers is never
+  // "which build is the server" on its own — it is whether the shell in front
+  // of the user and the computer it drives are the same release. The hosted
+  // shell is redeployed on its own schedule, so they can differ either way.
+  const app = appVersion();
+  const line = $("sheet-version-line");
+  line.textContent = "App " + (app ? "v" + app : "unknown") +
+    " · Server " + (serverVersion ? "v" + serverVersion : "unknown");
+  line.classList.toggle("version-skew", !!app && !!serverVersion && app !== serverVersion);
   $("sheet-version-latest").textContent = "v" + latestVersion;
   $("sheet-version-update").hidden = !stale;
   // The button only where the server said it can honour it; everywhere else the

@@ -68,6 +68,21 @@ VOICE_DIR = HERE / "voice"
 # and from installs made before versioning existed, which reads as "unknown".
 VERSION_PATH = HERE / "VERSION"
 
+
+def installed_version() -> str:
+    """Which build this install is, or "" when nothing stamped it.
+
+    Read rather than cached: `pockettui update` rewrites the file under a
+    running service, and the answer that matters is the one on disk now. Both
+    the shell's version stamp and /api/version come through here, so the page
+    can never name a different build from the API it is asking.
+    """
+    try:
+        return VERSION_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 # Cache-busting stamp, injected into the HTML/sw at serve time. Bumping on every
 # server start is what makes iOS drop the old PWA shell after a redeploy.
 CACHE_VERSION = time.strftime("%Y%m%d-%H%M%S")
@@ -1037,6 +1052,11 @@ def no_store(resp: Response) -> Response:
 @app.get("/")
 def index() -> Response:
     html = HTML_PATH.read_text(encoding="utf-8").replace("__CACHE_VERSION__", CACHE_VERSION)
+    # The shell a self-hosted install serves is this install's own build, so it
+    # is stamped with the same VERSION /api/version reports. The hosted shell at
+    # pockettui.com/app/ gets its stamp at build time instead, and a checkout
+    # with no VERSION file substitutes "" and says "unknown".
+    html = html.replace("__APP_VERSION__", installed_version())
     # Served from the backend itself, so the frontend stays same-origin. The
     # sentinel says so explicitly: a public static build substitutes an empty
     # string here and must ask the user for a backend instead of guessing that
@@ -1184,11 +1204,7 @@ def api_version() -> Response:
     `capabilities` rides along so the same one round-trip that answers "how old
     is this server" also answers "what can it do" — see server_capabilities().
     """
-    try:
-        version = VERSION_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        version = ""
-    return no_store(JSONResponse({"version": version,
+    return no_store(JSONResponse({"version": installed_version(),
                                   "capabilities": CAPABILITIES}))
 
 

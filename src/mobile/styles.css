@@ -1952,6 +1952,10 @@ html.term-open, body.term-open {
   margin: 0;
 }
 .sheet-version p + p { margin-top: 6px; }
+/* Both builds known and not the same one. Out of the quiet grey, because a skew
+   is the reason a feature is missing and this line is the only place it is
+   said — but no louder than a warning, since the app still works. */
+#sheet-version-line.version-skew { color: var(--warn); }
 /* The line and, on a server that can update itself, the button that starts it —
    laid out like the sheet's toggle rows above, text left and the small button
    held to the right. The explicit none is what keeps `hidden` working against
