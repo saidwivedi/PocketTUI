@@ -343,6 +343,51 @@ async function followPaneCwd() {
   if (await loadDir(cwd)) filesSyncedCwd = filesPath;
 }
 
+// The wide tick (31-wide-layout.js) is the backstop; these are the moments a cd
+// has just happened, so a cd shows in the pane in well under the 15 s the tick
+// would take. The listing itself is fast — what was slow was the asking.
+//
+// Enter is the first moment, seen in send() (09-image-viewer.js), where every
+// input source funnels through: any Enter may move the cwd, so the bytes are
+// not read for "cd" — the ask is scheduled twice, once for a local prompt and
+// once late enough for a shell across ssh to have redrawn.
+const CWD_AFTER_ENTER_MS = [400, 1500];
+// The second is the terminal's title, which a prompt that sets one rewrites
+// per prompt — several writes to a prompt, so this trigger coalesces them.
+const CWD_AFTER_TITLE_MS = 300;
+let cwdEnterTimers = [];
+let cwdTitleTimer = null;
+
+// Everything the tick returns on before it ever reaches followPaneCwd, so a
+// keystroke or a title write asks nothing the tick would not have asked. Read
+// again when the timer fires: the pane can be closed, or the app backgrounded,
+// in the second the ask was waiting out.
+function cwdCheckWanted() {
+  return !document.hidden && !demoMode && !needsSetup()
+      && !$("sheet-scrim").classList.contains("show")
+      && filesFollowsCwd();
+}
+
+function cwdCheckNow() {
+  if (cwdCheckWanted()) followPaneCwd();
+}
+
+// One pending set per trigger, re-armed rather than stacked: a run of Enters
+// asks about the last one, not about each.
+function scheduleCwdAfterEnter() {
+  for (const t of cwdEnterTimers) clearTimeout(t);
+  cwdEnterTimers = [];
+  if (!cwdCheckWanted()) return;
+  cwdEnterTimers = CWD_AFTER_ENTER_MS.map((ms) => setTimeout(cwdCheckNow, ms));
+}
+
+function scheduleCwdAfterTitle() {
+  clearTimeout(cwdTitleTimer);
+  cwdTitleTimer = null;
+  if (!cwdCheckWanted()) return;
+  cwdTitleTimer = setTimeout(cwdCheckNow, CWD_AFTER_TITLE_MS);
+}
+
 // The other terminal entry point: a path printed in a pane and tapped
 // (activateLink in 08-links.js). A folder is browsed; a file opens the way
 // tapping its row would, over the folder that holds it — closeEditor and

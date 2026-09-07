@@ -190,6 +190,9 @@ document.addEventListener("keydown", (e) => {
 function send(data) {
   // Any key the user sends answers whatever prompt the chips were offering.
   hideChips();
+  // Enter is a moment the shell's cwd can move, so the docked explorer asks
+  // just after one rather than waiting for its tick (28-file-explorer.js).
+  if (typeof data === "string" && data.indexOf("\r") !== -1) scheduleCwdAfterEnter();
   if (demoMode) { demoInput(data); return; }
   if (sock && sock.readyState === WebSocket.OPEN) sock.send(data);
 }
