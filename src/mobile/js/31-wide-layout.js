@@ -117,6 +117,11 @@ setInterval(() => {
   // firing 401s at the server while the user re-pairs underneath it.
   if ($("sheet-scrim").classList.contains("show")) return;
   loadSessions(false, true);
+  // The docked explorer rides the same tick rather than bringing a timer of its
+  // own: it is asking the same backend about the same session, on a cadence
+  // that is already the right one for "the terminal moved and the pane has not
+  // heard yet".
+  followPaneCwd();
 }, WIDE_REFRESH_MS);
 
 // ============================================================
