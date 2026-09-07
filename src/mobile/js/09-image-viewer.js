@@ -630,6 +630,10 @@ function dropSocket(why) {
 // to say something, and if nothing at all arrives, reconnect on our own terms.
 let probeTimer = null;
 function probeSocket(why) {
+  // Only where the server has said it knows the frame. One that has not would
+  // type it into the shell — token and all — instead of answering it, and
+  // probing is a pure gain that every server before it did without.
+  if (!hasCapStrict("ping")) return;
   if (!sock || sock.readyState !== WebSocket.OPEN) return;
   if (probeTimer) return;   // one already in flight answers for this socket
   const ws = sock, gen = sockGen;
@@ -684,8 +688,8 @@ function connect() {
   ws.onmessage = (ev) => {
     if (gen !== sockGen) return;
     // Liveness is proven by traffic, not by pong in particular: a repaint is
-    // just as good an answer, and against a server too old to know ping it is
-    // the only one there is.
+    // just as good an answer, and it is the one that arrives first when the
+    // socket was carrying all along.
     probeCancel();
     if (typeof ev.data === "string") {
       // Server→client text frames are JSON control messages; binary frames

@@ -98,6 +98,16 @@ function hasCap(name) {
   return serverCaps[name] === true;
 }
 
+// The same question with the map's default reversed: unknown means no. For a
+// feature the shell sends *to* the server rather than asks it for, an unknown
+// server is precisely the one that cannot cope — an unrecognised control frame
+// used to be typed into the shell, so guessing yes pastes it at the user's
+// prompt. Only for features an old server plainly lived without, where not
+// having them costs nothing.
+function hasCapStrict(name) {
+  return !!serverCaps && serverCaps[name] === true;
+}
+
 // What the site is publishing, asked once per shell load. Silent on failure by
 // design: a self-hosted shell served from the user's own server is a different
 // origin from pockettui.com and will be refused by CORS until the site sends a

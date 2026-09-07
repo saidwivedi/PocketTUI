@@ -1184,6 +1184,8 @@ def server_capabilities() -> dict:
         "dbg": True,            # /api/dbg
         "git": True,            # /api/git/changes, /api/git/diff, /api/git/apply
         "search": True,         # /api/search — the wide layout's find bar
+        "ping": True,           # the attach socket's liveness probe: this
+                                # server answers it instead of typing it
         # /api/update — false on an install with no `pockettui` wrapper (or no
         # tmux) to drive, so the shell offers the button only where pressing it
         # would do something. Frozen at import like everything else here, which
@@ -4782,6 +4784,17 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                         # Inline, not a task: the guard inside is only sound
                         # with nothing awaiting between it and the signal.
                         claim_size(view, me)
+                    continue
+                if isinstance(ctl, dict) and isinstance(ctl.get("type"), str):
+                    # A named control frame this build has no handler for —
+                    # a newer shell talking to this server. Typing it into the
+                    # shell is the one thing it must never do: that is how the
+                    # liveness ping ended up pasted, token and all, at the
+                    # prompt of every server older than it. Anything else that
+                    # starts with "{" is text (a JSON literal pasted into a
+                    # REPL) and still goes through.
+                    log(f"conn {cid} ignoring control frame "
+                        f"type={ctl.get('type')!r}")
                     continue
             os.write(fd, text.encode("utf-8"))
             watch_saw_input(session_name)

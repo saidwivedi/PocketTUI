@@ -298,12 +298,18 @@ def test_ping_is_answered_with_pong_and_never_reaches_the_pty(client, bridge):
             b"after-ping", b"")
 
 
-def test_unknown_control_type_still_reaches_the_pty(client, bridge):
-    # Anything the server has no handler for is keystrokes, as it always was.
+def test_unknown_control_type_is_dropped_but_plain_json_text_is_typed(client, bridge):
+    # A named frame this build has no handler for is a newer shell talking to
+    # an older server, and typing it into the shell is what pasted the liveness
+    # ping — token and all — at people's prompts. Anything else starting with
+    # "{" is text: a JSON literal pasted into a REPL must still go through.
     with client.websocket_connect("/ws/attach/work") as ws:
         hello(ws)
-        ws.send_text(json.dumps({"type": "pong"}) + "\n")
-        collect_bytes(ws, b'{"type": "pong"}')
+        ws.send_text(json.dumps({"type": "future_thing", "token": TOKEN}) + "\n")
+        ws.send_text('{"a": 1}\n')
+        acc = collect_bytes(ws, b'{"a": 1}')
+        assert b"future_thing" not in acc
+        assert TOKEN.encode() not in acc
 
 
 def test_second_connect_to_the_same_view_retires_the_first(client, bridge):
