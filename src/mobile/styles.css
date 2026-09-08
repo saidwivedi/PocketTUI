@@ -2424,9 +2424,100 @@ html.term-open #dbg-panel { opacity: 0.85; }
   visibility: hidden;
 }
 .view-row.on .view-check { visibility: visible; }
+/* The branch picker, on #btn-files-view's recipe: the bar's two dropdowns are
+   one control drawn twice, so only what differs is set here. Mono, because
+   what it holds is a ref name and those are read like paths, and capped so a
+   long branch name shrinks the crumbs by a fixed amount rather than by its
+   own length. */
+#files-ref-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex; align-items: center;
+  margin-left: 4px;
+}
+#files-ref-wrap[hidden] { display: none; }
+#btn-files-ref {
+  display: flex; align-items: center; gap: 5px;
+  max-width: 108px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--secondary);
+  background: transparent;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding: 6px 9px;
+  cursor: pointer;
+}
+#btn-files-ref::after {
+  content: "▾";
+  color: var(--tertiary);
+  font-size: 10px;
+}
+#files-ref-wrap.open #btn-files-ref::after { content: "▴"; }
+#btn-files-ref:active { background: var(--umber-tint); }
+/* Off the working tree: the one state where what the explorer is showing is
+   not what is on the disk, so the control that put it there wears the accent
+   for as long as it lasts. */
+#btn-files-ref.on {
+  color: var(--umber);
+  border-color: var(--umber);
+  background: var(--umber-tint);
+}
+#files-ref-ro {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--tertiary);
+}
+#files-ref-ro[hidden] { display: none; }
+/* #files-view-menu's panel, scrolling: a repo has as many branches as it has,
+   where the layout menu has six rows and always will. */
+#files-ref-menu {
+  display: none;
+  position: absolute;
+  top: 100%; left: 0;
+  margin-top: 6px;
+  min-width: 200px;
+  max-height: 60vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--card);
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
+  z-index: 60;
+}
+#files-ref-wrap.open #files-ref-menu { display: block; }
+/* A ref name is long and a menu row is one line: the name ellipsises rather
+   than wrapping the row to two heights. */
+#files-ref-menu .view-row { font-family: var(--mono); font-size: 13px; }
+#files-ref-menu .view-row .ref-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* Says which of the rows is the tree on disk, in the caption's register — it
+   is a note about the row, not part of the branch's name. */
+#files-ref-menu .ref-live {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 8px;
+  font-family: var(--sans);
+  font-size: 10px;
+  color: var(--tertiary);
+}
 /* The address field wants every pixel of the bar it can get, and behind its
    scrim there is no listing to lay out either way. */
-#files-path-wrap.editing ~ #files-view-wrap { display: none; }
+#files-path-wrap.editing ~ #files-view-wrap,
+#files-path-wrap.editing ~ #files-ref-wrap,
+#files-path-wrap.editing ~ #files-ref-ro { display: none; }
 /* .topbar is position:sticky, which (like position:relative) is itself a
    positioned element — enough of a containing block to anchor this without
    a dedicated wrapper. Full width of the bar rather than just the input, so
@@ -2665,6 +2756,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-files.docked .icon-btn { padding: 6px; }
   #screen-files.docked .icon-btn svg { width: 17px; height: 17px; }
   #screen-files.docked #btn-files-view { padding: 5px 8px; font-size: 12px; }
+  #screen-files.docked #btn-files-ref {
+    padding: 5px 8px; font-size: 12px; max-width: 92px;
+  }
   /* The two dropdown scrims belong to the pane, not to the window: the
      terminal beside it is live, and a layout menu in here must not dim it.
      The pane is position:fixed, so absolute already means "this pane". */

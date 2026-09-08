@@ -1323,3 +1323,170 @@ def test_apply_refuses_an_unknown_action_and_a_patch_with_no_hunk(client, in_rep
                      "not a patch at all\n").status_code == 400
     assert git_apply(client, in_repo, "tracked.txt", "stage_hunk",
                      "   ").status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# browsing at a git ref
+# ---------------------------------------------------------------------------
+# The explorer reading a branch it has not checked out, which is /api/git/branches
+# plus `ref`/`root` on the two read routes. Against a real two-branch repo for
+# the diff pane's reason: what is under test is git's own output.
+
+
+@pytest.fixture
+def branched(tmp_path):
+    """A repo whose other branch has a file and a folder this one has not.
+
+    `common.txt` differs between the two, `only/new.txt` and its folder exist
+    on `side` alone, and `pic.bin` is there to be refused as binary at the ref
+    exactly as it would be on disk.
+    """
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "common.txt").write_text("base\n")
+    (root / "sub").mkdir()
+    (root / "sub" / "kept.txt").write_text("kept\n")
+    run_git(root, "init", "-q", ".")
+    run_git(root, "add", "-A")
+    run_git(root, "-c", "user.email=t@example.com", "-c", "user.name=T",
+            "commit", "-qm", "base")
+    run_git(root, "checkout", "-q", "-b", "side")
+    (root / "common.txt").write_text("side\n")
+    (root / "only").mkdir()
+    (root / "only" / "new.txt").write_text("only on side\n")
+    (root / "pic.bin").write_bytes(b"\x89PNG\x00\x01\x02")
+    run_git(root, "add", "-A")
+    run_git(root, "-c", "user.email=t@example.com", "-c", "user.name=T",
+            "commit", "-qm", "side")
+    run_git(root, "checkout", "-q", "-")
+    return root
+
+
+def base_branch(client, root):
+    """Whichever name `git init` gave the first branch on this machine."""
+    return client.get("/api/git/branches", params={"path": str(root)}).json()["current"]
+
+
+@needs_git
+def test_branches_names_the_root_the_current_branch_and_both_names(client, branched):
+    d = client.get("/api/git/branches", params={"path": str(branched / "sub")}).json()
+    assert d["root"] == str(branched)
+    assert d["current"] in d["branches"]
+    assert sorted(d["branches"]) == sorted([d["current"], "side"])
+
+
+@needs_git
+def test_branches_answers_for_a_folder_that_exists_only_on_the_other_branch(
+        client, branched):
+    """The picker has to keep working once a ref is being browsed, and then the
+    folder on screen is one the working tree does not have."""
+    d = client.get("/api/git/branches",
+                   params={"path": str(branched / "only")}).json()
+    assert d["root"] == str(branched)
+
+
+def test_branches_calls_a_folder_outside_any_repo_no_error(client, tmp_path):
+    assert client.get("/api/git/branches", params={"path": str(tmp_path)}).json() \
+        == {"root": None, "current": None, "branches": []}
+
+
+@needs_git
+def test_list_at_ref_shows_what_only_the_other_branch_has(client, branched):
+    r = client.get("/api/fs/list", params={
+        "path": str(branched), "ref": "side", "root": str(branched)})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["path"] == str(branched)
+    assert d["readonly"] is True
+    # Directories first, then files, and the folder that is not on disk at all.
+    assert entry_names(d) == ["only", "sub", "common.txt", "pic.bin"]
+    assert [e["type"] for e in d["entries"]] == ["dir", "dir", "file", "file"]
+    assert next(e for e in d["entries"] if e["name"] == "common.txt")["size"] == 5
+
+
+@needs_git
+def test_list_at_ref_descends_into_a_folder_the_working_tree_lacks(client, branched):
+    d = client.get("/api/fs/list", params={
+        "path": str(branched / "only"), "ref": "side", "root": str(branched)}).json()
+    assert entry_names(d) == ["new.txt"]
+    assert d["path"] == str(branched / "only")
+
+
+@needs_git
+def test_read_at_ref_gives_the_other_branch_s_bytes_not_the_disk_s(client, branched):
+    live = client.get("/api/fs/read",
+                      params={"path": str(branched / "common.txt")}).json()
+    at_ref = client.get("/api/fs/read", params={
+        "path": str(branched / "common.txt"), "ref": "side",
+        "root": str(branched)}).json()
+    assert live["content"] == "base\n"
+    assert at_ref["content"] == "side\n"
+    assert at_ref["readonly"] is True
+    assert "readonly" not in live
+
+
+@needs_git
+def test_read_at_ref_refuses_binary_the_way_the_disk_route_does(client, branched):
+    r = client.get("/api/fs/read", params={
+        "path": str(branched / "pic.bin"), "ref": "side", "root": str(branched)})
+    assert r.status_code == 415
+    assert r.json()["error"] == "binary_file"
+
+
+@needs_git
+def test_ref_reads_leave_the_working_tree_exactly_as_it_was(client, branched):
+    before = (branched / "common.txt").read_text()
+    client.get("/api/fs/list", params={
+        "path": str(branched), "ref": "side", "root": str(branched)})
+    client.get("/api/fs/read", params={
+        "path": str(branched / "common.txt"), "ref": "side", "root": str(branched)})
+    assert (branched / "common.txt").read_text() == before
+    assert not (branched / "only").exists()
+
+
+@needs_git
+def test_an_empty_ref_is_the_live_answer_byte_for_byte(client, branched):
+    plain = client.get("/api/fs/list", params={"path": str(branched)})
+    with_empty = client.get("/api/fs/list",
+                            params={"path": str(branched), "ref": "", "root": ""})
+    assert plain.json() == with_empty.json()
+    assert "readonly" not in plain.json()
+
+
+@needs_git
+def test_ref_requests_that_do_not_add_up_are_refused(client, branched, tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    bad = [
+        # a ref that names nothing, and one that would be read as a flag
+        {"path": str(branched), "ref": "no-such-branch", "root": str(branched)},
+        {"path": str(branched), "ref": "--all", "root": str(branched)},
+        # a path that is not inside the root it was sent with
+        {"path": str(outside), "ref": "side", "root": str(branched)},
+        {"path": "/etc/passwd", "ref": "side", "root": str(branched)},
+        # a root that is not a repository, and one that is not its top level
+        {"path": str(outside), "ref": "side", "root": str(outside)},
+        {"path": str(branched / "sub"), "ref": "side", "root": str(branched / "sub")},
+    ]
+    for params in bad:
+        assert client.get("/api/fs/list", params=params).status_code == 400, params
+        assert client.get("/api/fs/read", params=params).status_code == 400, params
+
+
+@needs_git
+def test_a_path_absent_at_the_ref_is_not_found_rather_than_empty(client, branched):
+    base = base_branch(client, branched)
+    assert client.get("/api/fs/list", params={
+        "path": str(branched / "only"), "ref": base,
+        "root": str(branched)}).status_code == 404
+    assert client.get("/api/fs/read", params={
+        "path": str(branched / "only" / "new.txt"), "ref": base,
+        "root": str(branched)}).status_code == 404
+    # A folder is not a file and a file is not a folder, at a ref as on disk.
+    assert client.get("/api/fs/read", params={
+        "path": str(branched / "sub"), "ref": "side",
+        "root": str(branched)}).status_code == 404
+
+
+def test_version_names_the_ref_routes_as_a_capability(client):
+    assert client.get("/api/version").json()["capabilities"]["git_ref"] is True

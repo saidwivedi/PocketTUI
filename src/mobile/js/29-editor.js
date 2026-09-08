@@ -243,21 +243,25 @@ function edDefineVimEx() {
 // of a file cost one back between them.
 async function openEditor(path, opts) {
   const create = !!(opts && opts.create);
-  let content = "", hash = "", lossy = false;
+  let content = "", hash = "", lossy = false, atRef = false;
   if (!create) {
     const data = await fsReadText(path);
     if (!data) return;
     content = data.content; hash = data.hash; lossy = !!data.lossy;
+    // Read at a git ref rather than off the disk: there is a file here to read
+    // and none here to write, since /api/fs/write only ever writes the working
+    // tree. The explorer says which branch; the missing Save says the rest.
+    atRef = !!data.readonly;
   }
   try { await ensureCM(); } catch (e) { toast("Couldn't load the editor"); return; }
 
   edPath = path;
   edHash = hash;
-  edReadOnly = lossy;
+  edReadOnly = lossy || atRef;
   $("editor-filename").textContent = baseName(path);
   // Read-only has nothing to save; hiding the button says so louder than
   // disabling it would.
-  $("btn-editor-save").style.display = lossy ? "none" : "";
+  $("btn-editor-save").style.display = edReadOnly ? "none" : "";
   edBuild(content, path);
   edSetDirty(false);
   edSyncWrapButton();
