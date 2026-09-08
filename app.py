@@ -1183,6 +1183,9 @@ def server_capabilities() -> dict:
         "push": push_available(),
         "dbg": True,            # /api/dbg
         "git": True,            # /api/git/changes, /api/git/diff, /api/git/apply
+        # /api/git/branches, and the ref= param the two /api/fs read routes
+        # take, which is how the explorer browses a branch it has not checked out
+        "git_ref": True,
         "search": True,         # /api/search — the wide layout's find bar
         "ping": True,           # the attach socket's liveness probe: this
                                 # server answers it instead of typing it
@@ -2909,15 +2912,206 @@ def atomic_write(p: Path, data: bytes, mode: int | None) -> None:
         raise
 
 
+# ---------------------------------------------------------------------------
+# Browsing at a git ref
+# ---------------------------------------------------------------------------
+# The two read routes above take an optional `ref` (with the `root` it is
+# relative to), and answer from `git ls-tree`/`git show` at that ref instead of
+# from the filesystem — the explorer's way of reading a branch that is not
+# checked out. Nothing here writes and nothing here checks anything out: the
+# tree the user's own shell is sitting in is never touched, which is the whole
+# point of reading a branch this way rather than switching to it.
+#
+# git() and its timeouts live in the git-diff section further down; these are
+# here because the routes they serve are the explorer's, not the diff pane's.
+
+
+def git_ref_root(root: str) -> str:
+    """`root` back, if it really is a repository's top level, else "".
+
+    Asked of git rather than of the filesystem: a .git directory is not the
+    question, "is this the toplevel the ref's paths are relative to" is. git
+    answers with the resolved path, so a root reached through a symlink is
+    compared against its real path too — and what comes back is the client's
+    own spelling, which is what the paths it sends are relative to.
+    """
+    if not root.startswith("/") or not os.path.isdir(root):
+        return ""
+    rc, out, _ = git(root, "rev-parse", "--show-toplevel")
+    top = out.decode("utf-8", "replace").strip()
+    if rc != 0 or not top:
+        return ""
+    if os.path.normpath(top) not in (os.path.normpath(root), os.path.realpath(root)):
+        return ""
+    return root
+
+
+def git_ref_rel(root: str, raw: str) -> str | None:
+    """`raw` as a path relative to `root`, or None when it is not under it.
+
+    fs_path's treatment of the string — a leading ~, then the configured
+    rewrites — but measured against `root` instead of against the filesystem: a
+    folder that exists only on the other branch is exactly what this route is
+    for, so "is anything there" cannot be the test. "" is the root itself.
+    """
+    p = str(raw or "")
+    if p.startswith("~"):
+        p = str(Path.home()) + p[1:]
+    if not p.startswith("/"):
+        return None
+    base = os.path.normpath(root).rstrip("/")
+    for cand in (p, *rewritten_paths(p)):
+        full = os.path.normpath(cand)
+        if full == base:
+            return ""
+        if full.startswith(base + "/"):
+            return full[len(base) + 1:]
+    return None
+
+
+def git_ref_at(root: str, path: str, ref: str) -> tuple[str, str]:
+    """(the repo-relative path, "") for a triple that checks out, else ("", why).
+
+    One place, because the two read routes have to agree exactly on what a ref
+    request means: a `root` that is a repository, a `path` inside it, and a
+    `ref` git can resolve to a commit. Anything else is a client that has lost
+    track of which repo it is browsing, and earns the same 400 git_target's
+    callers do.
+
+    The leading-dash refusal is not about a ref that could exist — `git
+    rev-parse` would read "--all" as its own flag long before it read it as a
+    name, and every call below passes the ref in that same position.
+    """
+    if not git_ref_root(root):
+        return "", "bad_root"
+    rel = git_ref_rel(root, path)
+    if rel is None:
+        return "", "bad_path"
+    if not ref or ref.startswith("-"):
+        return "", "bad_ref"
+    if git(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}")[0] != 0:
+        return "", "bad_ref"
+    return rel, ""
+
+
+def git_ref_kind(root: str, ref: str, rel: str) -> str:
+    """What is at `rel` on `ref`: "tree", "blob", or "" for nothing at all.
+
+    Asked before the listing or the read, because `ls-tree` answers a folder
+    that is not on this branch with a clean empty listing — indistinguishable
+    from an empty one, and the explorer's "not found" has to be honest.
+    """
+    rc, out, _ = git(root, "cat-file", "-t", ref + ":" + rel)
+    return out.decode("utf-8", "replace").strip() if rc == 0 else ""
+
+
+def git_ref_entries(root: str, ref: str, rel: str) -> list[dict]:
+    """`rel`'s contents at `ref`, in api_fs_list's own entry shape.
+
+    A trailing slash is what makes ls-tree list a directory's contents rather
+    than the directory; no pathspec at all is the root. -z gives raw paths (git
+    quotes them otherwise) and -l the blob sizes, which are the only part of
+    the live shape a tree can still answer — a commit has no mtimes, so those
+    come back 0 and the client draws the row without an age.
+
+    A gitlink (mode 160000) is a submodule: a whole other repository, whose
+    objects this one does not hold. It lists as "link", the type the live route
+    already gives to a row there is nothing to enter or read.
+    """
+    args = ["ls-tree", "-z", "-l", ref]
+    if rel:
+        args += ["--", rel + "/"]
+    rc, out, _ = git(root, *args)
+    if rc != 0:
+        return []
+    entries = []
+    for rec in out.split(b"\x00"):
+        if not rec:
+            continue
+        head, _, name = rec.partition(b"\t")
+        bits = head.split()
+        if len(bits) != 4 or not name:
+            continue
+        mode, kind, _sha, size = bits
+        entries.append({
+            "name": name.decode("utf-8", "replace").rsplit("/", 1)[-1],
+            "type": "dir" if kind == b"tree" else (
+                "link" if kind == b"commit" else "file"),
+            "size": int(size) if size.isdigit() else 0,
+            "mtime": 0,
+        })
+    entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower(), e["name"]))
+    return entries
+
+
+def git_ref_abs(root: str, rel: str) -> str:
+    """The absolute path `rel` names, spelled from `root`."""
+    return os.path.normpath(os.path.join(root, rel)) if rel else root
+
+
+def api_fs_list_at_ref(path: str, ref: str, root: str) -> Response:
+    """api_fs_list's answer for a folder as it stands on another branch."""
+    rel, bad = git_ref_at(root, path or root, ref)
+    if bad:
+        return fs_error(bad, 400)
+    if git_ref_kind(root, ref, rel) != "tree":
+        return fs_error("not_found", 404)
+    return no_store(JSONResponse({
+        "path": git_ref_abs(root, rel), "home": str(Path.home()),
+        "entries": git_ref_entries(root, ref, rel), "readonly": True,
+    }))
+
+
+def api_fs_read_at_ref(path: str, ref: str, root: str) -> Response:
+    """api_fs_read's answer for a file as it stands on another branch.
+
+    Past the fetch it is the same file: the size ceiling, the null-byte refusal
+    and the lossy-decode fallback are the disk route's, applied to the blob, so
+    the editor cannot tell the two answers apart except by `readonly`.
+    """
+    rel, bad = git_ref_at(root, path, ref)
+    if bad:
+        return fs_error(bad, 400)
+    if not rel or git_ref_kind(root, ref, rel) != "blob":
+        return fs_error("not_found", 404)
+    # Asked before the bytes are: a generated blob can be far past what this
+    # route would ever return, and there is no reason to pipe it through only
+    # to measure it.
+    rc, out, _ = git(root, "cat-file", "-s", ref + ":" + rel)
+    raw = out.decode("utf-8", "replace").strip()
+    size = int(raw) if raw.isdigit() else 0
+    if size > MAX_TEXT_BYTES:
+        return fs_error("too_large", 413, size=size)
+    rc, data, _ = git(root, "show", ref + ":" + rel)
+    if rc != 0:
+        return fs_error("not_readable", 403)
+    if b"\x00" in data:
+        return fs_error("binary_file", 415)
+    try:
+        content, lossy = data.decode("utf-8"), False
+    except UnicodeDecodeError:
+        content, lossy = data.decode("utf-8", errors="replace"), True
+    return no_store(JSONResponse({
+        "path": git_ref_abs(root, rel), "content": content, "hash": fs_hash(data),
+        "size": len(data), "mtime": 0, "lossy": lossy, "readonly": True,
+    }))
+
+
 @app.get("/api/fs/list")
-def api_fs_list(path: str = "") -> Response:
+def api_fs_list(path: str = "", ref: str = "", root: str = "") -> Response:
     """A directory's entries: dirs first, then everything else, alphabetical.
 
     Dotfiles included — on this machine they are half of what anyone opens an
     editor for. No path defaults to $HOME, which is where the session list's
     folder button starts; `home` rides along so the client can shorten paths
     under it to ~ without a second request.
+
+    A non-empty `ref` reads the folder as it stands on that branch instead,
+    relative to the repository `root` — same shape, plus `readonly`. Absent, not
+    one byte of the answer below changes.
     """
+    if ref:
+        return api_fs_list_at_ref(path, ref, root)
     p = fs_path(path or "~")
     if p is None:
         return fs_error("bad_path", 400)
@@ -2952,7 +3146,7 @@ def api_fs_list(path: str = "") -> Response:
 
 
 @app.get("/api/fs/read")
-def api_fs_read(path: str = "") -> Response:
+def api_fs_read(path: str = "", ref: str = "", root: str = "") -> Response:
     """A text file's content, plus the hash the editor will write back against.
 
     Binary (a null byte anywhere) is refused outright — there is nothing an
@@ -2960,7 +3154,13 @@ def api_fs_read(path: str = "") -> Response:
     replacement characters instead and flagged `lossy`: the phone can still
     *read* it, but writing the decoded form back would corrupt the file, so
     the client opens it read-only.
+
+    `ref` and `root` read the file at another branch instead, as on the listing
+    route; a file read that way is `readonly` and has no hash worth writing
+    back against, since /api/fs/write only ever writes the working tree.
     """
+    if ref:
+        return api_fs_read_at_ref(path, ref, root)
     p = fs_path(path)
     if p is None:
         return fs_error("bad_path", 400)
@@ -3618,6 +3818,53 @@ def api_git_changes(session: str = "", dev: str = "",
     if err:
         return answer({"root": root, "files": [], "error": err})
     return answer({"root": root, "files": files})
+
+
+@app.get("/api/git/branches")
+def api_git_branches(path: str = "") -> Response:
+    """The branches of the repository `path` sits in, for the explorer's picker.
+
+    `path` need not exist. The explorer asks about the folder it is showing, and
+    once a ref is being browsed that folder can be one that lives only on the
+    other branch — so the question is put to the nearest ancestor that is
+    actually there, which is still inside the same repository.
+
+    Anything that is not in a repository answers 200 with nulls, the way
+    /api/git/changes does: browsing ~/Downloads is not an error, it is a folder
+    with no branches to offer. Local branches lead, remote-tracking ones follow,
+    and a symbolic ref (origin/HEAD) is dropped — it is another name for a
+    branch already in the list, not a branch.
+    """
+    def answer(root, current, branches):
+        return no_store(JSONResponse(
+            {"root": root, "current": current, "branches": branches}))
+
+    p = fs_path(path or "~")
+    if p is None:
+        return answer(None, None, [])
+    while not os.path.isdir(p) and p.parent != p:
+        p = p.parent
+    rc, out, _ = git(str(p), "rev-parse", "--show-toplevel")
+    root = out.decode("utf-8", "replace").strip()
+    if rc != 0 or not root:
+        return answer(None, None, [])
+    # symbolic-ref rather than `rev-parse --abbrev-ref`: it names the branch
+    # even before its first commit exists, and says nothing at all on a
+    # detached HEAD instead of echoing the word back as if it were a branch.
+    _, out, _ = git(root, "symbolic-ref", "--short", "-q", "HEAD")
+    current = out.decode("utf-8", "replace").strip() or "HEAD"
+    _, out, _ = git(root, "for-each-ref", "--format=%(refname)%09%(symref)",
+                    "refs/heads", "refs/remotes")
+    local, remote = [], []
+    for line in out.decode("utf-8", "replace").splitlines():
+        name, _, symref = line.partition("\t")
+        if symref:
+            continue
+        if name.startswith("refs/heads/"):
+            local.append(name[len("refs/heads/"):])
+        elif name.startswith("refs/remotes/"):
+            remote.append(name[len("refs/remotes/"):])
+    return answer(root, current, local + remote)
 
 
 def git_target(root: str, path: str) -> tuple[str, str]:

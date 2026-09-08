@@ -398,6 +398,24 @@
              autocorrect="off" spellcheck="false" autocomplete="off"
              placeholder="/path/to/folder" aria-label="Go to path">
     </div>
+    <!-- Which branch the listing is read at. Hidden outside a git repo and on
+         a server too old to answer /api/git/branches, so the bar is unchanged
+         everywhere the question has no answer. Its own button-and-menu rather
+         than a <select> for #btn-files-view's reason, plus one of its own: a
+         branch list is however many branches the repo has, and the OS picker
+         would draw them in the OS's shape while the bar beside it drew the
+         other dropdown in ours. Sits beside the crumbs because it is part of
+         what the path on screen means — which tree it is a path in. -->
+    <div id="files-ref-wrap" hidden>
+      <button type="button" id="btn-files-ref" aria-haspopup="true"
+              aria-expanded="false" aria-label="Branch to browse"></button>
+      <!-- Rows written by syncRefMenu(); .view-row and .view-check are the
+           layout menu's, since these are the same choice in the same panel. -->
+      <div id="files-ref-menu" role="menu"></div>
+    </div>
+    <!-- Nothing at this ref can be written, and the bar says so rather than
+         leaving the user to notice that + and the long-press sheet are gone. -->
+    <span id="files-ref-ro" hidden>read-only</span>
     <button class="icon-btn" id="btn-files-edit-path" aria-label="Go to path"><svg><use href="#i-pencil"/></svg></button>
     <button class="icon-btn" id="btn-files-add" aria-label="New file, folder or upload"><svg><use href="#i-plus"/></svg></button>
     <!-- How the folder is drawn and in what order, both remembered across

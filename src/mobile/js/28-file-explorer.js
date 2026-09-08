@@ -49,6 +49,28 @@ let filesClosing = false;
 // viewerOpenedAt idea).
 let filesPressedAt = 0;
 
+// ---- reading at a git ref ---------------------------------------------------
+// The listing can come from a branch instead of from the disk: `ref` and `root`
+// on /api/fs/list and /api/fs/read answer out of `git ls-tree` and `git show`
+// at that ref. It is a reading mode and nothing else — every write the explorer
+// offers goes away while it is on, the editor opens read-only, and the working
+// tree the terminal beside it is sitting in never moves, which is the point of
+// looking at a branch this way rather than checking it out.
+//
+// Deliberately not remembered across loads, unlike the layout and sort above:
+// those are how this user reads every folder, and this is a place they went to
+// look at something. A reload lands back on the disk.
+
+let filesRef = "";        // the branch being read, "" for the working tree
+let filesRefRoot = "";    // the repo top level filesRef's paths are relative to
+// The /api/git/branches answer about the folder on screen — {root, current,
+// branches}, root null outside a repo — or null before it has been asked.
+let filesRepo = null;
+// Which folder that answer was about. Inside a known root the answer cannot
+// have changed, and outside one there is no root to test the next folder
+// against, so this is what says whether the question needs asking again.
+let filesRepoAsked = "";
+
 // Mirrors app.py's MEDIA_TYPES allowlist: these open in the existing viewer
 // over /api/file rather than in the editor.
 const FILES_MEDIA_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|mp4|webm|mov)$/i;
@@ -119,8 +141,8 @@ function filesEntryState() {
 
 function closeExplorer() {
   // Before the address-field branch below, which returns without closing the
-  // screen: either way the layout menu is going, scrim and all.
-  showViewMenu(false);
+  // screen: either way the bar's menus are going, scrim and all.
+  closeFilesMenus();
   // Back (popstate or the edge swipe) while the address field is open closes
   // just the field, same as Escape — same pushState-back trick editorPopped()
   // uses for a dirty buffer, since the pop has already happened by the time
@@ -134,6 +156,7 @@ function closeExplorer() {
   const back = filesOrigin || "screen-list";
   filesOrigin = null;
   filesStack = [];
+  clearRefState();
   $(back).classList.add("active");
   syncChrome();
   // The terminal kept its socket while we were away; it only needs its size
@@ -179,11 +202,12 @@ function openDockedFiles(path) {
 
 function closeDockedFiles() {
   if (!filesDocked) return;
-  showViewMenu(false);
+  closeFilesMenus();
   closePathEdit();
   filesDocked = false;
   filesOrigin = null;
   filesStack = [];
+  clearRefState();
   $("screen-files").classList.remove("docked");
   $("screen-files").classList.remove("active");
   syncFilesExpand();         // takes .side-full off the terminal with it
@@ -198,7 +222,8 @@ function filesBack() {
   if (filesStack.length > 1) {
     filesStack.pop();
     const path = filesStack[filesStack.length - 1];
-    if (filesListCache.has(path)) applyListing(filesListCache.get(path));
+    const hit = cachedListing(path);
+    if (hit) applyListing(hit);
     else loadDir(path);
     return;
   }
@@ -238,6 +263,9 @@ function filesStash() {
   return {
     stack: filesStack.slice(), path: filesPath,
     origin: filesOrigin, docked: filesDocked, syncedCwd: filesSyncedCwd,
+    // A branch being read is part of what the session was looking at, so it
+    // comes back with the folder rather than the pane returning to the disk.
+    ref: filesRef, refRoot: filesRefRoot, repo: filesRepo, repoAsked: filesRepoAsked,
   };
 }
 
@@ -248,6 +276,7 @@ function filesTeardown() {
   $("screen-files").classList.remove("active");
   filesOrigin = null;
   filesStack = [];
+  clearRefState();
   // Docked, the slot stays claimed — the pane is the terminal's and the
   // terminal is only changing hands — but nothing is in it until it is filled
   // again, by a restore or by filesFollowSession().
@@ -264,6 +293,12 @@ function filesRestore(s) {
   // A pane that was following its session's terminal when the rail left it is
   // still following when the rail comes back.
   filesSyncedCwd = s.syncedCwd || "";
+  filesRef = s.ref || "";
+  filesRefRoot = s.refRoot || "";
+  filesRepo = s.repo || null;
+  filesRepoAsked = s.repoAsked || "";
+  syncRefBar();
+  syncRefActions();
   $("btn-files-term").style.display =
     !filesDocked && filesOrigin === "screen-term" ? "" : "none";
   $("screen-files").classList.toggle("docked", filesDocked);
@@ -275,7 +310,8 @@ function filesRestore(s) {
   syncChrome();
   // The rows on screen are whichever folder the session we were away in left
   // there; the cache spares a round trip for a folder already listed.
-  if (filesListCache.has(filesPath)) applyListing(filesListCache.get(filesPath));
+  const hit = cachedListing(filesPath);
+  if (hit) applyListing(hit);
   else loadDir(filesPath);
 }
 
@@ -322,6 +358,9 @@ async function openFilesAtCwd() {
 // way: the folder under them is not ours to swap out.
 function filesFollowsCwd() {
   return filesDocked
+      // Reading a branch is the user having taken the pane somewhere; a cd in
+      // the terminal cannot pull it back to the working tree from under them.
+      && !filesRef
       && filesStack.length <= 1 && filesPath === filesSyncedCwd
       && !$("screen-editor").classList.contains("active")
       && !$("screen-reader").classList.contains("active")
@@ -415,11 +454,47 @@ async function openPathInExplorer(path) {
 // retyping or backspacing within a directory already listed costs nothing.
 const filesListCache = new Map();
 
+// Is `path` inside `root`? The one place ~ is expanded client-side, because
+// the address bar is the one thing that can type it — everything else already
+// holds a path the backend spelled out.
+function insideRoot(path, root) {
+  if (!root) return false;
+  let p = String(path || "");
+  if (p.startsWith("~")) p = filesHome + p.slice(1);
+  return p === root || p.startsWith(root + "/");
+}
+
+// The ref a request for `path` is made at: the branch being read, unless the
+// path is outside the repo that branch lives in. A ref has no answer for a
+// folder in another tree, so that folder is simply read live — the request is
+// not refused, and applyListing below is what then ends the mode.
+function refFor(path) {
+  return insideRoot(path, filesRefRoot) ? filesRef : "";
+}
+
+function refParams(ref) {
+  return ref ? ["ref=" + encodeURIComponent(ref),
+                "root=" + encodeURIComponent(filesRefRoot)] : [];
+}
+
+// The same folder at two refs is two listings, so the ref is part of the key.
+function filesCacheKey(path, ref) { return ref ? ref + "\n" + path : path; }
+
+// The cached listing for `path` at whatever ref it would be fetched at. Every
+// reader of the cache goes through this rather than through the map, so none
+// of them can paint a branch's folder over the disk's or the other way round.
+function cachedListing(path) {
+  return filesListCache.get(filesCacheKey(path, refFor(path)));
+}
+
 // Raw GET against /api/fs/list, cache-populating. Throws on anything but a
 // clean 200 so callers keep their own error handling (loadDir's toast-style
 // failure, the suggestion dropdown's inline note) rather than sharing one.
 async function fsList(path) {
-  const q = path ? "?path=" + encodeURIComponent(path) : "";
+  const ref = refFor(path);
+  const parts = path ? ["path=" + encodeURIComponent(path)] : [];
+  parts.push(...refParams(ref));
+  const q = parts.length ? "?" + parts.join("&") : "";
   const r = await fetch(apiURL("api/fs/list" + q),
                         { cache: "no-store", headers: authHeaders() });
   if (r.status === 401) { rejectToken(); throw new Error("unauthorized"); }
@@ -429,7 +504,7 @@ async function fsList(path) {
     err.code = data && data.error;
     throw err;
   }
-  filesListCache.set(data.path, data);
+  filesListCache.set(filesCacheKey(data.path, ref), data);
   return data;
 }
 
@@ -449,7 +524,7 @@ async function resolveFsPath(path) {
     const [dirPart, name] = splitTyped(path);
     let parent = null;
     try {
-      parent = dirPart ? (filesListCache.get(dirPart) || await fsList(dirPart)) : null;
+      parent = dirPart ? (cachedListing(dirPart) || await fsList(dirPart)) : null;
     } catch (e2) {}
     const entry = parent && (parent.entries || []).find(x => x.name === name);
     if (!entry) throw e;
@@ -467,7 +542,8 @@ async function resolveFsPath(path) {
 async function fsReadText(path) {
   let r, data;
   try {
-    r = await fetch(apiURL("api/fs/read?path=" + encodeURIComponent(path)),
+    const q = ["path=" + encodeURIComponent(path), ...refParams(refFor(path))];
+    r = await fetch(apiURL("api/fs/read?" + q.join("&")),
                     { cache: "no-store", headers: authHeaders() });
     data = await r.json().catch(() => null);
   } catch (e) { toast("Couldn't read the file"); return null; }
@@ -493,12 +569,20 @@ async function fsReadText(path) {
 // inspect the failure first (a "not a directory" error there still might be
 // a file to open, where loadDir's callers always mean a directory).
 function applyListing(data) {
-  // A folder landing here is a navigation, and the layout menu does not survive
-  // one. Not in renderEntries below: the menu's own redraw goes straight there,
-  // and closing itself again on the way would read as a loop.
-  showViewMenu(false);
+  // A folder landing here is a navigation, and neither dropdown survives one.
+  // Not in renderEntries below: the layout menu's own redraw goes straight
+  // there, and closing itself again on the way would read as a loop.
+  closeFilesMenus();
   filesPath = data.path;
   filesHome = data.home || "";
+  // A folder outside the repo the branch lives in is one the branch has no
+  // answer for, and fsList has already read it live — so the mode ends where
+  // its repo does rather than following the user out of it.
+  if (filesRef && !insideRoot(filesPath, filesRefRoot)) {
+    filesRef = "";
+    filesRefRoot = "";
+    syncRefActions();
+  }
   // The first listing after openExplorer's push is the entry folder — back
   // here is what closes the explorer, however the path the caller asked for
   // (~, a cwd, a rewritten mount) actually resolved. Only the first: this also
@@ -508,6 +592,9 @@ function applyListing(data) {
   renderCrumbs(data.path);
   renderEntries(data.entries || []);
   $("files-error").style.display = "none";
+  // After filesPath, which is the folder the question is about.
+  syncRefBar();
+  syncRepo();
 }
 function showListError(e) {
   dbg("fs list failed:", e);
@@ -602,10 +689,10 @@ function splitTyped(v) {
 }
 
 function openPathEdit() {
-  // The field takes the bar over and the stylesheet hides the layout button
-  // with it — so close the menu here, or its scrim would be left dimming the
+  // The field takes the bar over and the stylesheet hides the two dropdowns
+  // with it — so close them here, or the scrim would be left dimming the
   // screen with nothing to tap it away.
-  showViewMenu(false);
+  closeFilesMenus();
   $("files-path-wrap").classList.add("editing");
   $("files-suggest-scrim").classList.add("show");
   const input = $("files-path-input");
@@ -690,7 +777,7 @@ function pickSuggestion(dirPart, entry) {
 // rather than wait out the debounce meant for a still-moving finger.
 async function loadSuggestions(dirPart, segPart) {
   const gen = ++suggestGen;
-  const cached = filesListCache.get(dirPart);
+  const cached = cachedListing(dirPart);
   try {
     const data = cached || await fsList(dirPart);
     if (gen !== suggestGen) return;   // the field moved on while this was in flight
@@ -805,7 +892,11 @@ function sortedEntries() {
 }
 
 function fileRow(e) {
-  const meta = e.type === "file" ? fmtSize(e.size) + " · " + relTime(e.mtime)
+  // No mtime is what a listing read at a ref has to say — a commit records
+  // when the tree was written, not when each file in it was — so the row drops
+  // the age rather than dating everything to the epoch.
+  const meta = e.type === "file"
+                 ? fmtSize(e.size) + (e.mtime ? " · " + relTime(e.mtime) : "")
              : e.type === "link" ? "link" : "";
   const row = el("div", { class: "file-row" },
     el("span", { class: "file-ic " + e.type },
@@ -840,6 +931,9 @@ function showViewMenu(on) {
   $("btn-files-view").setAttribute("aria-expanded", on ? "true" : "false");
 }
 
+// Only ever one open, and the scrim above belongs to whichever it is.
+$("btn-files-view").addEventListener("click", () => showRefMenu(false));
+
 // Both groups tick from cfg — so this is also what a fresh load calls to catch
 // up with what was remembered.
 function syncViewMenu() {
@@ -855,7 +949,7 @@ syncViewMenu();
 $("btn-files-view").addEventListener("click", () => {
   showViewMenu(!$("files-view-wrap").classList.contains("open"));
 });
-$("files-view-scrim").addEventListener("click", () => showViewMenu(false));
+$("files-view-scrim").addEventListener("click", closeFilesMenus);
 for (const row of $("files-view-menu").querySelectorAll(".view-row")) {
   // Either choice is global, so nothing is re-listed: the entries already on
   // screen are simply drawn the other way, and every later listing — including
@@ -870,6 +964,134 @@ for (const row of $("files-view-menu").querySelectorAll(".view-row")) {
     if ($("files-error").style.display !== "block") renderEntries(filesEntries);
   });
 }
+
+// ---- the branch picker ------------------------------------------------------
+// Same button-and-menu as the layout switch above, over one more question: which
+// tree the folder on screen is read from. Both dropdowns share #files-view-scrim
+// — there is one floating layer over this bar, not two — so opening either
+// closes the other, and the moments that mean "close whatever is open" close
+// both.
+
+function showRefMenu(on) {
+  if (on) showViewMenu(false);
+  $("files-ref-wrap").classList.toggle("open", on);
+  $("files-view-scrim").classList.toggle("show", on);
+  $("btn-files-ref").setAttribute("aria-expanded", on ? "true" : "false");
+}
+
+function closeFilesMenus() { showViewMenu(false); showRefMenu(false); }
+
+// Which repo the folder on screen is in, and what it has to offer. Asked per
+// repo rather than per folder: inside a root already known the answer cannot
+// have changed, and outside every root there is nothing to re-ask until the
+// folder itself moves.
+async function syncRepo() {
+  if (demoMode || !hasCap("git_ref")) { filesRepo = null; syncRefBar(); return; }
+  const path = filesPath;
+  const fresh = filesRepo && (filesRepo.root ? insideRoot(path, filesRepo.root)
+                                             : path === filesRepoAsked);
+  if (fresh) { syncRefBar(); return; }
+  let d = null;
+  try {
+    const r = await fetch(apiURL("api/git/branches?path=" + encodeURIComponent(path)),
+                          { cache: "no-store", headers: authHeaders() });
+    if (r.status === 401) { rejectToken(); return; }
+    if (r.ok) d = await r.json();
+  } catch (e) {}
+  // The explorer can have moved on while the question was in flight, and a late
+  // answer would name a repo it has already left.
+  if (path !== filesPath) return;
+  // A server that could not answer — an older one with no such route — is a
+  // folder with no branches, not a folder to keep asking about.
+  filesRepo = d && typeof d === "object" ? d : { root: null, current: null, branches: [] };
+  filesRepoAsked = path;
+  syncRefBar();
+}
+
+// Everything the picker shows: whether there is a repo to offer at all, which
+// ref is being read, and whether the bar is saying read-only.
+function syncRefBar() {
+  const repo = filesRepo && filesRepo.root ? filesRepo : null;
+  $("files-ref-wrap").hidden = !repo;
+  $("files-ref-ro").hidden = !filesRef;
+  if (!repo) { showRefMenu(false); return; }
+  const live = repo.current || "HEAD";
+  const btn = $("btn-files-ref");
+  btn.textContent = filesRef || live;
+  btn.classList.toggle("on", !!filesRef);
+  btn.setAttribute("aria-label", filesRef
+    ? "Reading " + filesRef + ", read-only. Change branch"
+    : "Branch to browse");
+  syncRefMenu(repo, live);
+}
+
+// The working tree first and labelled as such, then every other branch. The row
+// that ends the mode is the one row always present, so it is the one that never
+// moves; the rest are the server's order, locals before remotes.
+function syncRefMenu(repo, live) {
+  const menu = $("files-ref-menu");
+  menu.innerHTML = "";
+  for (const name of [live, ...(repo.branches || []).filter(b => b !== live)]) {
+    const on = name === (filesRef || live);
+    const row = el("button", {
+      type: "button", class: "view-row" + (on ? " on" : ""),
+      role: "menuitemradio", "aria-checked": on ? "true" : "false",
+    },
+      el("span", { class: "view-check", "aria-hidden": "true" }, "✓"),
+      el("span", { class: "ref-name" }, name),
+      name === live ? el("span", { class: "ref-live" }, "working tree") : null,
+    );
+    row.addEventListener("click", () => pickRef(name === live ? "" : name));
+    menu.appendChild(row);
+  }
+}
+
+// "" is the working tree — the row labelled so, and every path out of the mode.
+function pickRef(ref) {
+  showRefMenu(false);
+  if (ref === filesRef) return;
+  filesRef = ref;
+  filesRefRoot = ref && filesRepo ? filesRepo.root || "" : "";
+  syncRefBar();
+  syncRefActions();
+  // The same folder, read from somewhere else. The cache is keyed by ref, so
+  // this is a fetch rather than a repaint of what is already on screen.
+  loadDir(filesPath);
+}
+
+// The bar's one control that writes. mkdir, upload and the new-file editor all
+// address the working tree, and offering them over a listing that is not the
+// working tree would be offering to change a different file than the one shown.
+// The action sheet's rows are the same story, refused in openFileActions.
+function syncRefActions() {
+  $("btn-files-add").style.display = filesRef ? "none" : "";
+}
+
+// Leaving the explorer leaves the branch behind, the way it leaves the folder
+// behind: this is a place the user went to look at something, not a setting.
+function clearRefState() {
+  filesRef = "";
+  filesRefRoot = "";
+  filesRepo = null;
+  filesRepoAsked = "";
+  syncRefBar();
+  syncRefActions();
+}
+
+// The explorer's one server-gated control (36-server-version.js calls this the
+// way it calls the diff pane's own gate): a server too old to answer
+// /api/git/branches must not be left with a bar offering a mode it cannot serve.
+function syncRefCap() {
+  if (hasCap("git_ref")) { if (filesPath) syncRepo(); return; }
+  filesRepo = null;
+  filesRepoAsked = "";
+  if (filesRef) pickRef("");
+  else syncRefBar();
+}
+
+$("btn-files-ref").addEventListener("click", () => {
+  showRefMenu(!$("files-ref-wrap").classList.contains("open"));
+});
 
 // Tap opens; a long press (or a desktop right-click) opens the action sheet.
 function wireRow(row, entry) {
@@ -908,9 +1130,16 @@ function openEntry(e, dir=filesPath) {
   // A broken link or a special file: nothing to enter or edit, so the sheet
   // (whose Download is the only sensible offer) is the whole answer.
   if (e.type === "link") { openFileActions(e); return; }
-  if (FILES_MEDIA_RE.test(e.name)) { showImage(full); return; }
+  // The viewer and the sandboxed page both fetch the file straight off the
+  // disk, and neither route takes a ref — so at a ref an image says so, and a
+  // page opens as the source it is, in the editor that already opens read-only.
+  if (FILES_MEDIA_RE.test(e.name)) {
+    if (filesRef) toast("Can't preview images from " + filesRef);
+    else showImage(full);
+    return;
+  }
   if (FILES_MD_RE.test(e.name)) { openReader(full); return; }
-  if (FILES_HTML_RE.test(e.name)) { openRendered(full); return; }
+  if (FILES_HTML_RE.test(e.name) && !filesRef) { openRendered(full); return; }
   openEditor(full);
 }
 
@@ -948,6 +1177,9 @@ async function openRendered(path) {
 }
 
 function openFileActions(entry) {
+  // Every row in this sheet either writes the working tree or downloads it off
+  // the disk, and at a ref the listing on screen is neither.
+  if (filesRef) { toast("Read-only on " + filesRef); return; }
   filesSelected = entry;
   $("file-actions-title").textContent = entry.name;
   $("btn-file-download").style.display = entry.type === "dir" ? "none" : "";
@@ -1215,11 +1447,12 @@ document.addEventListener("keydown", (e) => {
   // Docked, the terminal beside the pane is live and Escape is one of its
   // keys — so only a press aimed inside the pane is the pane's to answer.
   if (filesDocked && !$("screen-files").contains(e.target)) return;
-  // Ahead of the origin check: an open layout menu is the top thing to
-  // dismiss, and it is there to dismiss whether or not a terminal is behind.
-  if ($("files-view-wrap").classList.contains("open")) {
+  // Ahead of the origin check: an open dropdown is the top thing to dismiss,
+  // and it is there to dismiss whether or not a terminal is behind.
+  if ($("files-view-wrap").classList.contains("open")
+      || $("files-ref-wrap").classList.contains("open")) {
     e.preventDefault();
-    showViewMenu(false);
+    closeFilesMenus();
     return;
   }
   if (filesOrigin !== "screen-term") return;          // nothing to jump back to
@@ -1261,7 +1494,8 @@ window.addEventListener("popstate", () => {
   if (filesStack.length > 1) {
     filesStack.pop();
     const path = filesStack[filesStack.length - 1];
-    if (filesListCache.has(path)) applyListing(filesListCache.get(path));
+    const hit = cachedListing(path);
+    if (hit) applyListing(hit);
     else loadDir(path);
     return;
   }
