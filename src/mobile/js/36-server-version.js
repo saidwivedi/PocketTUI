@@ -88,6 +88,7 @@ async function fetchServerVersion() {
   // whether to poll at all, and this is the moment that becomes knowable.
   syncGitCap();
   syncSearchCap();
+  syncRefCap();
 }
 
 // Whether the server on the other end serves this feature. Unknown means yes:
