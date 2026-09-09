@@ -57,6 +57,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 import uvicorn
 
+import qrcodegen
 import resolver
 
 HERE = Path(__file__).resolve().parent
@@ -67,6 +68,9 @@ VOICE_DIR = HERE / "voice"
 # Stamped into the tarball by deploy_cloudflare.sh. Absent from a git checkout
 # and from installs made before versioning existed, which reads as "unknown".
 VERSION_PATH = HERE / "VERSION"
+# Written while the server runs and removed when it stops, so the installer can
+# tell "never started" from "started and died" from "alive but not answering".
+RUNTIME_PATH = HERE / "runtime.json"
 
 
 def installed_version() -> str:
@@ -168,6 +172,62 @@ def normalize_token(raw: str) -> str:
 def format_token(token: str) -> str:
     """Group the canonical form as XXXXX-XXXXX — far easier to read off a screen."""
     return f"{token[:5]}-{token[5:]}"
+
+
+def pair_payload(address: str | None, token: str) -> str:
+    """The body of a #pair= fragment: base64url JSON, padding stripped.
+
+    One definition for the two places that hand a phone its pairing: the
+    installer's QR at the end of a fresh install, and /api/pair_qr.svg for a
+    device that is already paired. "a" is the address exactly as the settings
+    sheet's field expects it, with no scheme forced (normalizeBackend adds
+    one), and is left out entirely when the backend serves the shell itself —
+    there the phone is already on the right origin and only the code is new.
+    """
+    payload = {"v": 1, "t": token}
+    if address:
+        payload["a"] = address
+    enc = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).rstrip(b"=")
+    return enc.decode()
+
+
+def pair_url(shell_base: str, address: str | None, token: str) -> str:
+    """The whole link a QR carries: the shell's URL with the payload behind #.
+
+    A fragment rather than a query parameter so the secret never leaves the
+    browser: it is not sent to the server that serves the shell, and it is not
+    written into a proxy's access log.
+    """
+    return shell_base + "#pair=" + pair_payload(address, token)
+
+
+def qr_svg(text: str, border: int = 4) -> str:
+    """`text` as a self-contained QR SVG.
+
+    Every dark module is one subpath of a single <path>, which keeps the
+    document small enough to hand back on every Settings open, and the whole
+    thing references nothing outside itself so it renders from a blob: URL.
+    The white rect is the quiet zone as much as the background: a QR read off a
+    dark-themed screen needs the light border to be actually light.
+    """
+    qr = qrcodegen.QrCode.encode_text(text, qrcodegen.QrCode.Ecc.MEDIUM)
+    size = qr.get_size()
+    dim = size + border * 2
+    modules = " ".join(
+        f"M{x + border},{y + border}h1v1h-1z"
+        for y in range(size)
+        for x in range(size)
+        if qr.get_module(x, y)
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {dim} {dim}" '
+        f'shape-rendering="crispEdges">'
+        f'<rect width="{dim}" height="{dim}" fill="#ffffff"/>'
+        f'<path d="{modules}" fill="#000000"/>'
+        f'</svg>'
+    )
 
 
 def generate_token() -> str:
@@ -1065,6 +1125,22 @@ def index() -> Response:
     return no_store(Response(html, media_type="text/html; charset=utf-8"))
 
 
+@app.get("/.well-known/pockettui")
+def well_known() -> Response:
+    """Is a PocketTUI backend answering here, and which build is it?
+
+    Ungated on purpose: the phone asks this exactly when its token is not
+    working or nothing is answering, so a gated probe could only ever say
+    "401" where the useful answer is "a proxy is up but PocketTUI is not".
+    It is also the installer's readiness probe. For that reason the body
+    carries nothing about the host: no hostname, no port, no paths, no
+    capabilities. A version and a product name are what a reachability check
+    needs and all an unauthenticated caller gets.
+    """
+    return no_store(JSONResponse({"product": "pockettui",
+                                  "version": installed_version()}))
+
+
 @app.get("/manifest.json")
 def manifest() -> Response:
     data = {
@@ -1194,6 +1270,9 @@ def server_capabilities() -> dict:
         # would do something. Frozen at import like everything else here, which
         # is fine: the wrapper is written by the same run that writes app.py.
         "update": update_command() is not None,
+        # /api/pair_qr.svg — the Settings card that pairs a second device
+        # without going back to the computer for the installer's printout.
+        "pair_qr": True,
     }
 
 
@@ -1211,6 +1290,34 @@ def api_version() -> Response:
     """
     return no_store(JSONResponse({"version": installed_version(),
                                   "capabilities": CAPABILITIES}))
+
+
+# What a pairing QR may point at. The base is a shell URL this server is being
+# told to draw, not one it fetches, so the check is only that it is an http(s)
+# URL with no fragment of its own — the fragment is what the payload becomes.
+PAIR_BASE_RE = re.compile(r"^https?://[^\s#]{1,512}$")
+PAIR_ADDR_RE = re.compile(r"^[^\s#]{0,256}$")
+
+
+@app.get("/api/pair_qr.svg")
+def api_pair_qr(base: str = "", a: str = "") -> Response:
+    """A QR that pairs another device with this computer.
+
+    The caller passes only the two things it knows and this server does not —
+    which shell URL to open and which address to enter — and never the pairing
+    code: the token goes in here, from this process's own AUTH_TOKEN, so a
+    secret is not carried in a query string and cannot be read out of anyone's
+    logs or history. Gated like every other /api/ route, so the device asking
+    for it is one that already holds the code it is about to hand on.
+    """
+    if not PAIR_BASE_RE.match(base):
+        return no_store(JSONResponse({"error": "bad_base"}, status_code=400))
+    if not PAIR_ADDR_RE.match(a):
+        return no_store(JSONResponse({"error": "bad_address"}, status_code=400))
+    if AUTH_TOKEN is None:
+        return no_store(JSONResponse({"error": "no_token"}, status_code=404))
+    svg = qr_svg(pair_url(base, a or None, AUTH_TOKEN))
+    return no_store(Response(svg, media_type="image/svg+xml"))
 
 
 @app.get("/api/sessions")
@@ -5993,6 +6100,36 @@ def die(msg: str) -> None:
     raise SystemExit(1)
 
 
+def write_runtime(host: str, port: int) -> None:
+    """Record that this process is the backend, for the installer to read.
+
+    Never fatal: a read-only install dir costs the installer its sharper
+    diagnosis, not the user their server.
+    """
+    try:
+        atomic_write(RUNTIME_PATH, json.dumps({
+            "version": installed_version(),
+            "pid": os.getpid(),
+            "host": host,
+            "port": port,
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }).encode(), 0o644)
+    except OSError as exc:
+        log(f"could not write {RUNTIME_PATH}: {exc}")
+
+
+def clear_runtime() -> None:
+    """Drop the record on the way out, so a stale file never claims a pid.
+
+    A kill -9 leaves it behind anyway, which is why the reader checks the pid
+    rather than trusting the file's existence.
+    """
+    try:
+        RUNTIME_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def rotate_token() -> None:
     """Replace the token on disk and print the new one.
 
@@ -6058,7 +6195,18 @@ def main() -> None:
 
     install_title_hook()
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    write_runtime(args.host, args.port)
+    # uvicorn takes SIGINT and SIGTERM for its own graceful shutdown and then
+    # re-raises whichever it caught, under the handlers that were in place
+    # before it ran. SIGINT's default raises KeyboardInterrupt, so the finally
+    # below runs; SIGTERM's default ends the process where it stands, and
+    # runtime.json would survive it claiming a pid that is gone. Making SIGTERM
+    # a normal exit is all it takes for the cleanup to happen either way.
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    finally:
+        clear_runtime()
 
 
 if __name__ == "__main__":
