@@ -69,6 +69,11 @@ VERBOSE="${POCKETTUI_VERBOSE:-0}"
 # flag it survives the documented pipe (`curl … | bash -s -- --update`); as an
 # environment variable it is what the wrapper and any automation can set.
 UPDATE="${POCKETTUI_UPDATE:-0}"
+# Set once the pre-update snapshot is on disk, which is what makes a rollback
+# possible at all, and once one has actually happened — the summary reports a
+# rolled-back update as the failure it is rather than as an install.
+PREV_SAVED=0
+ROLLED_BACK=0
 for arg in ${@+"$@"}; do
     case "$arg" in
         -v|--verbose) VERBOSE=1 ;;
@@ -417,6 +422,40 @@ remote_version() {
     esac
 }
 
+# What this update did, for the phone to read back through /api/update_status.
+# The install restarts the service under whoever started it, so the shell comes
+# back with no memory of it and needs the answer written down: the status, the
+# two versions, and when. Written to a temp file and renamed so a reader can
+# never catch half an object. Never fatal — an install dir we cannot write is
+# already a bigger problem than a missing record.
+write_update_state() {
+    local status="$1" code="${2:-0}" tmp="$INSTALL_DIR/update-state.json.tmp"
+    printf '{"status":"%s","from":"%s","to":"%s","exit":%s,"ts":%s}\n' \
+        "$status" "${OLD_VERSION:-unknown}" "${NEW_VERSION:-unknown}" "$code" \
+        "$(date +%s)" > "$tmp" 2>/dev/null || return 0
+    mv -f "$tmp" "$INSTALL_DIR/update-state.json" 2>/dev/null || return 0
+}
+
+# Put the files the update replaced back, from the snapshot taken before it
+# replaced them. Each entry is removed before it is copied back: cp -R of a
+# directory onto an existing one of the same name nests it instead of replacing
+# it, and vendor/ would end up as vendor/vendor. Fails rather than half-restores
+# when there is no snapshot, so the caller can say so.
+restore_prev() {
+    local prev="$INSTALL_DIR/.prev" f entries=()
+    [[ -d "$prev" ]] || return 1
+    shopt -s nullglob
+    entries=("$prev"/*)
+    shopt -u nullglob
+    [[ "${#entries[@]}" -gt 0 ]] || return 1
+    for f in "${entries[@]}"; do
+        rm -rf "${INSTALL_DIR:?}/${f##*/}"
+        cp -R "$f" "$INSTALL_DIR/" || return 1
+    done
+    vsay "  restored the previous files from $prev"
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # Install directory
 # ---------------------------------------------------------------------------
@@ -493,6 +532,24 @@ elif [[ -e "$INSTALL_DIR" ]]; then
         else
             vsay "  Kept as they are: .token, voice/, .voice_learned.json, .venv."
         fi
+        # Everything the copy below is about to overwrite, kept for as long as
+        # this update takes. It is what makes the self-check and the failed
+        # restart recoverable: without it, a version that does not run leaves
+        # nothing to go back to. Remade from scratch each time, so what is in
+        # there is always exactly one install and never a merge of two.
+        PREV_DIR="$INSTALL_DIR/.prev"
+        if rm -rf "${PREV_DIR:?}" 2>/dev/null && mkdir -p "$PREV_DIR" 2>/dev/null; then
+            for f in app.py resolver.py mobile_app.html sw.js pockettui.service \
+                     install.sh setup_voice.sh requirements.txt qrcodegen.py \
+                     icon-192.png icon-512.png vendor VERSION; do
+                [[ -e "$INSTALL_DIR/$f" ]] && cp -R "$INSTALL_DIR/$f" "$PREV_DIR/"
+            done
+            PREV_SAVED=1
+            vsay "  kept the current files in $PREV_DIR until the new ones prove they run"
+        else
+            vsay "  could not write $PREV_DIR, so this update cannot be rolled back"
+        fi
+        write_update_state running 0
         # The tarball ships the complete vendor set, so anything left in there
         # afterwards is a file upstream deleted — it would otherwise be served
         # for the life of the install. Scoped to vendor/ alone: it is the only
@@ -557,6 +614,12 @@ else
     tar -xzf "$TMP_TGZ" -C "$INSTALL_DIR" || die "could not extract the tarball"
     vsay "  -> $INSTALL_DIR"
 fi
+
+# What is on disk now, whichever route put it there. Set unconditionally: the
+# NEW_VERSION the interactive prompt above may have set is what the site said it
+# was offering, and the rollback path has to report the version that was
+# actually unpacked.
+NEW_VERSION="$(installed_version)"
 
 # ---------------------------------------------------------------------------
 # Python environment
@@ -763,6 +826,27 @@ vsay "  fastapi + uvicorn installed"
 step_done "ok"
 
 # ---------------------------------------------------------------------------
+# Does the new code run
+# ---------------------------------------------------------------------------
+# The one question worth asking before the service is restarted onto this code:
+# an app.py the interpreter cannot load takes the server down and, by then, the
+# copy that worked is already overwritten. --selfcheck imports the file and the
+# pieces a bare import does not cover; it starts nothing and binds no port.
+step "Checking the new code"
+if "$VENV_PY" "$INSTALL_DIR/app.py" --selfcheck >/dev/null 2>&1; then
+    step_done "ok"
+elif [[ "$UPDATE" == "1" ]] && [[ "$PREV_SAVED" == "1" ]]; then
+    step_done "failed" "$C_WARN"
+    restore_prev || true
+    write_update_state failed 1
+    die "the new version failed its self-check; restored version $OLD_VERSION (nothing was restarted)"
+else
+    step_done "failed" "$C_WARN"
+    die "app.py failed its self-check. Run it by hand to see why:
+      $VENV_PY $INSTALL_DIR/app.py --selfcheck"
+fi
+
+# ---------------------------------------------------------------------------
 # Run script
 # ---------------------------------------------------------------------------
 # When tmux comes from the install's own conda env, every launcher has to put
@@ -819,6 +903,23 @@ local_version() {
     else
         printf 'unknown'
     fi
+}
+
+# Is a strictly older than b? Written out field by field rather than handed to
+# sort -V, which exists on Linux and not on macOS. Three fields, a missing one
+# reads as 0. Only ever asked about two real stamps: the caller checks for
+# "unknown" first, because a non-answer is not a comparison.
+version_lt() {
+    local a="$1" b="$2" i x y
+    for i in 1 2 3; do
+        x="$(printf '%s' "$a" | cut -d. -f"$i")"
+        y="$(printf '%s' "$b" | cut -d. -f"$i")"
+        case "$x" in ([0-9]*) ;; (*) x=0 ;; esac
+        case "$y" in ([0-9]*) ;; (*) y=0 ;; esac
+        [[ "$x" -lt "$y" ]] && return 0
+        [[ "$x" -gt "$y" ]] && return 1
+    done
+    return 1
 }
 
 # What runtime.json says about the backend on this machine. Same three cases
@@ -903,7 +1004,40 @@ run_installer() {
 case "${1:-}" in
     (update)
         shift
-        run_installer ${@+"$@"}
+        # Installing an older build than the one already here is almost always
+        # a stale version.txt or a mirror that is behind, and it would cost the
+        # user their newer install without asking. Refused unless the flag says
+        # it was meant; the flag itself is not passed on, since install.sh has
+        # no use for it. An "unknown" on either side is not a comparison and
+        # changes nothing.
+        have="$(local_version)"
+        there="$(remote_version)"
+        allow=0
+        args=()
+        for a in ${@+"$@"}; do
+            case "$a" in
+                (--allow-downgrade) allow=1 ;;
+                (*)                 args+=("$a") ;;
+            esac
+        done
+        if [[ "$allow" != "1" ]] && [[ "$have" != "unknown" ]] \
+           && [[ "$there" != "unknown" ]] && version_lt "$there" "$have"; then
+            echo "Refusing to downgrade $have -> $there. Re-run with --allow-downgrade if you mean it." >&2
+            exit 1
+        fi
+        rc=0
+        run_installer ${args[@]+"${args[@]}"} || rc=$?
+        # install.sh writes update-state.json as it goes and records how it
+        # ended. An installer that died before it could — killed, or out of
+        # disk — would leave the phone watching a "running" that never ends, so
+        # the last thing to see the exit code closes the record itself.
+        if [[ "$rc" != "0" ]] \
+           && grep -q '"status":"running"' "$INSTALL_DIR/update-state.json" 2>/dev/null; then
+            printf '{"status":"failed","from":"%s","to":"unknown","exit":%s,"ts":%s}\n' \
+                "$have" "$rc" "$(date +%s)" \
+                > "$INSTALL_DIR/update-state.json" 2>/dev/null || true
+        fi
+        exit "$rc"
         ;;
     (status)
         echo "installed  $(local_version)"
@@ -1296,6 +1430,37 @@ describe_backend_failure() {
     fi
 }
 
+# The new code was installed, started, and nothing answered. Put the old files
+# back and start those instead, so a failed update leaves a working server
+# rather than a dead one. How to restart is the caller's to say, because only it
+# knows how this install is run. Never fatal in itself: a rollback that cannot
+# find its snapshot leaves the install exactly as the failure left it, and says
+# so, which is still better than exiting mid-way.
+rollback_update() {
+    local how="$1" uid
+    if ! restore_prev; then
+        say "  There is no snapshot to roll back to; the new files are still in place."
+        write_update_state failed 1
+        return 1
+    fi
+    case "$how" in
+        (systemd) systemctl --user restart "$SERVICE_NAME" >/dev/null 2>&1 || true ;;
+        (launchd) uid="$(id -u)"
+                  launchctl kickstart -k "gui/$uid/$AGENT_LABEL" >/dev/null 2>&1 || true ;;
+        (*)       nohup "$INSTALL_DIR/start.sh" >>"$INSTALL_DIR/pockettui.log" 2>&1 </dev/null &
+                  disown 2>/dev/null || true ;;
+    esac
+    if wait_for_server; then
+        ROLLED_BACK=1
+        say "  Rolled back to version $OLD_VERSION."
+        write_update_state rolled_back 1
+        return 0
+    fi
+    say "  Rolled back to version $OLD_VERSION, but that is not answering either."
+    write_update_state failed 1
+    return 1
+}
+
 # daemon-reload, then enable + start, then verify. Shared by the "we wrote the
 # unit" and the "the user kept theirs" paths, which differ only in wording.
 start_service() {
@@ -1324,6 +1489,9 @@ start_service() {
         say "  See what it said:"
         say "      systemctl --user status $SERVICE_NAME"
         say "      journalctl --user -u $SERVICE_NAME -n 50 --no-pager"
+        if [[ "$UPDATE" == "1" ]] && [[ "$PREV_SAVED" == "1" ]]; then
+            rollback_update systemd || true
+        fi
         say ""
     fi
 }
@@ -1405,6 +1573,9 @@ start_agent() {
         say "  See what it said:"
         say "      launchctl list | grep $AGENT_LABEL"
         say "      tail -50 $INSTALL_DIR/pockettui.log"
+        if [[ "$UPDATE" == "1" ]] && [[ "$PREV_SAVED" == "1" ]]; then
+            rollback_update launchd || true
+        fi
         say ""
     fi
 }
@@ -1438,6 +1609,9 @@ start_background() {
         say "      tail -50 $log"
         say "  Or run it in the foreground to watch it fail:"
         say "      $INSTALL_DIR/start.sh"
+        if [[ "$UPDATE" == "1" ]] && [[ "$PREV_SAVED" == "1" ]]; then
+            rollback_update background || true
+        fi
         say ""
     fi
 }
@@ -2235,10 +2409,25 @@ fi
 # one that did, rather than dressed up as a successful upgrade.
 if [[ "$UPDATE" == "1" ]]; then
     say ""
-    if [[ "$NOW_VERSION" == "$OLD_VERSION" ]]; then
+    if [[ "$ROLLED_BACK" == "1" ]]; then
+        # The version that was installed is not the version that is running, and
+        # that is the whole news: NOW_VERSION was re-read after the restore.
+        say "  ${C_WARN}Update to $NEW_VERSION failed; rolled back to $NOW_VERSION.$C_RESET"
+    elif [[ "$NOW_VERSION" == "$OLD_VERSION" ]]; then
         say "  ${C_OK}Re-installed version $NOW_VERSION.$C_RESET"
     else
         say "  ${C_OK}Updated $OLD_VERSION -> $NOW_VERSION.$C_RESET"
+    fi
+    # The verdict the phone reads back. A run that reached here with nothing
+    # answering did not roll back either (there was no snapshot to roll back
+    # to), and "ok" would leave the shell waiting for a version that is not
+    # coming; the rollback path has already written its own.
+    if [[ "$ROLLED_BACK" != "1" ]]; then
+        if [[ "$SERVER_UP" == "1" ]]; then
+            write_update_state ok 0
+        else
+            write_update_state failed 1
+        fi
     fi
 fi
 

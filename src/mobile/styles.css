@@ -248,6 +248,18 @@ body {
   .pill-btn.pill-working::before { animation: none; }
 }
 
+/* The third face: the install ran and left the server on the build it started
+   from. The del pair where the offer used the add pair, so the row says at a
+   glance which of the two happened, and still a button because trying again is
+   the usual answer to a failed update. */
+.pill-btn.pill-failed {
+  background: var(--diff-del-bg);
+  color: var(--diff-del-ink);
+  border-color: var(--diff-del-ink);
+}
+.pill-btn.pill-failed::before { background: var(--bad); }
+.pill-btn.pill-failed:hover { background: color-mix(in srgb, var(--diff-del-bg) 82%, var(--diff-del-ink)); }
+
 /* ============================================================
    SESSION LIST
    ============================================================ */
@@ -455,6 +467,39 @@ body {
   font-size: 15px;
   display: none;
 }
+/* The unreachable card's three parts: the verdict in the same italic serif the
+   empty state uses, the reason beneath it in plain sans, and the one command to
+   type on the computer set apart as monospace. The command is selectable text,
+   not a button: nothing in the shell runs it. */
+#list-error .hint {
+  margin-top: 10px;
+  font-family: var(--sans);
+  font-style: normal;
+  font-size: 13px;
+  line-height: 1.5;
+}
+#list-error .hint:empty { display: none; }
+#list-error .command {
+  display: block;
+  margin: 12px auto 0;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--umber-tint);
+  border: 1px solid var(--hair);
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 12.5px;
+  color: var(--secondary);
+  text-align: left;
+  white-space: pre;
+  -webkit-user-select: text; user-select: text;
+}
+/* display:block above outranks the [hidden] the verdict sets when it carries
+   no command, so say it again at the same specificity. */
+#list-error .command[hidden] { display: none; }
+
 /* The empty state carries the same offer as the eyebrow, where the eye already
    is — the sentence alone left the user hunting for a control. */
 /* Demo row — a card like a session, but dashed so it never reads as one. */
@@ -729,6 +774,20 @@ html.term-open, body.term-open {
 }
 #conn-banner.show { display: flex; }
 #conn-banner .msg { flex: 1 1 auto; min-width: 0; }
+/* The verdict's second line, wrapped onto its own row under the title and the
+   buttons. Empty on a plain reconnect failure, and then it takes no room and
+   the banner keeps its one-line pill shape. */
+#conn-banner .hint {
+  flex: 1 0 100%;
+  order: 3;
+  padding: 2px 8px 2px 0;
+  font-weight: 400;
+  font-size: 12px;
+  line-height: 1.35;
+  opacity: 0.82;
+}
+#conn-banner .hint:empty { display: none; }
+#conn-banner:has(.hint:not(:empty)) { flex-wrap: wrap; border-radius: 16px; }
 #conn-banner button {
   flex: 0 0 auto;
   font-family: var(--sans);

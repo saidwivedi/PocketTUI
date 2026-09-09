@@ -27,6 +27,7 @@ import fcntl
 import getpass
 import hashlib
 import hmac
+import importlib
 import json
 import math
 import mimetypes
@@ -71,6 +72,10 @@ VERSION_PATH = HERE / "VERSION"
 # Written while the server runs and removed when it stops, so the installer can
 # tell "never started" from "started and died" from "alive but not answering".
 RUNTIME_PATH = HERE / "runtime.json"
+# install.sh's own record of the last update: running, ok, rolled_back, failed.
+# The phone cannot watch an install that restarts the service under it, so the
+# verdict has to survive on disk for it to read back afterwards.
+UPDATE_STATE_PATH = HERE / "update-state.json"
 
 
 def installed_version() -> str:
@@ -422,6 +427,22 @@ def peer_ip(scope_client) -> str:
     return scope_client[0] if scope_client else "unknown"
 
 
+# What each refusal reason means to the person holding the phone. The 401 body
+# carries one so the shell can say something true about *this* refusal instead
+# of its own generic guess. Deliberately nothing about the filesystem: an
+# unauthenticated caller learns only what they already know, that they typed
+# the wrong code or typed it too often.
+AUTH_HINTS = {
+    "bad token": (
+        "The pairing code did not match the one on the computer. Re-run the "
+        "installer to see it again, or run app.py --rotate-token for a new one."
+    ),
+    "too many attempts": (
+        "Too many wrong codes from this device. Wait a minute and try again."
+    ),
+}
+
+
 def check_auth(candidate: str, ip: str, where: str) -> tuple[bool, str]:
     """Throttled token check. Returns (ok, reason) — reason is empty when ok.
 
@@ -468,7 +489,8 @@ async def require_token(request: Request, call_next):
         f"http {request.url.path}",
     )
     if not ok:
-        return no_store(JSONResponse({"error": reason}, status_code=401))
+        return no_store(JSONResponse(
+            {"error": reason, "hint": AUTH_HINTS.get(reason, "")}, status_code=401))
     return await call_next(request)
 
 
@@ -1273,6 +1295,10 @@ def server_capabilities() -> dict:
         # /api/pair_qr.svg — the Settings card that pairs a second device
         # without going back to the computer for the installer's printout.
         "pair_qr": True,
+        # /api/update_status — the installer's written verdict on the last
+        # update. Strictly checked by the shell: an older server has no file
+        # and no route, and guessing "yes" would read a 404 as a failed update.
+        "update_status": True,
     }
 
 
@@ -2792,7 +2818,11 @@ def api_update() -> Response:
     if wrapper is None:
         return JSONResponse({"error": "update_unavailable"}, status_code=501)
     if session_exists(UPDATE_SESSION):
-        return JSONResponse({"error": "already_running"}, status_code=409)
+        return JSONResponse({
+            "error": "already_running",
+            "hint": "An update is already running. Open the pockettui-update "
+                    "session to watch it.",
+        }, status_code=409)
 
     # os.setsid() before the exec is what keeps the installer non-interactive:
     # it drops the controlling terminal, so install.sh's `(exec 3<>/dev/tty)`
@@ -2826,6 +2856,31 @@ def api_update() -> Response:
     # As in api_new_session: a server this command started has no hook yet.
     install_title_hook()
     return no_store(JSONResponse({"session": UPDATE_SESSION}))
+
+
+@app.get("/api/update_status")
+def api_update_status() -> Response:
+    """What install.sh recorded about the last update, and whether one is live.
+
+    An update restarts this service, so the phone that started it loses the
+    socket it was watching and comes back with no memory of what happened. The
+    session going away is not an answer either — a wrapper that failed and one
+    that succeeded both leave nothing behind. install.sh writes its own verdict
+    to update-state.json instead, and this hands it over as it stands.
+
+    Anything unreadable reads as no state at all: the file is written whole
+    through a rename, so the only ways to get here are "no update has run" and
+    "something truncated it", and neither is news the shell can act on.
+    """
+    state = None
+    try:
+        state = json.loads(UPDATE_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = None
+    if not isinstance(state, dict):
+        state = None
+    return no_store(JSONResponse({"state": state,
+                                  "session_alive": session_exists(UPDATE_SESSION)}))
 
 
 # Paths printed by a remote session may name storage under a mount point that
@@ -6130,6 +6185,32 @@ def clear_runtime() -> None:
         pass
 
 
+def selfcheck() -> int:
+    """Does this copy of PocketTUI load? The installer's gate before a restart.
+
+    An update that unpacked a file the interpreter cannot import is only found
+    out when the service fails to answer, minutes later, with the old code
+    already overwritten. Running the new app.py with --selfcheck first turns
+    that into something install.sh can act on while it still has the old files
+    in .prev: reaching this function at all proves the module imported, and the
+    two things a bare import does not cover — the built shell on disk and the
+    modules the routes reach for — are checked here.
+
+    Nothing is started, no port is bound and no tmux is touched, so it is safe
+    to run against a live install.
+    """
+    try:
+        if not HTML_PATH.exists():
+            raise FileNotFoundError(f"{HTML_PATH} is missing")
+        for name in ("qrcodegen", "resolver"):
+            importlib.import_module(name)
+    except Exception as exc:
+        print(f"selfcheck failed: {exc}", file=sys.stderr, flush=True)
+        return 1
+    print(f"selfcheck ok {installed_version() or 'unknown'}", flush=True)
+    return 0
+
+
 def rotate_token() -> None:
     """Replace the token on disk and print the new one.
 
@@ -6151,6 +6232,9 @@ def main() -> None:
     parser.add_argument("--log-level", default="info")
     parser.add_argument("--rotate-token", action="store_true",
                         help="generate a new pairing token, print it, and exit")
+    parser.add_argument("--selfcheck", action="store_true",
+                        help="import check: exit 0 if this file and its "
+                             "dependencies load, 1 otherwise")
     parser.add_argument("--no-auth", action="store_true",
                         help="serve with no token — refused unless bound to loopback")
     args = parser.parse_args()
@@ -6158,6 +6242,9 @@ def main() -> None:
     if args.rotate_token:
         rotate_token()
         return
+
+    if args.selfcheck:
+        raise SystemExit(selfcheck())
 
     global AUTH_TOKEN
     if args.no_auth:

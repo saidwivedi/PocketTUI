@@ -560,7 +560,7 @@ def test_no_runtime_file_reads_as_never_started(tmp_path):
 # (e) the wrapper's own status subcommand
 # ---------------------------------------------------------------------------
 
-def wrapper_harness(inst, runtime=""):
+def wrapper_harness(inst, runtime="", args="status", installer_rc=0):
     """The wrapper's helpers and its case block, with run_installer stubbed."""
     return (
         f'INSTALL_DIR="{inst}"\n'
@@ -570,8 +570,9 @@ def wrapper_harness(inst, runtime=""):
         "PORT=5560\n"
         + runtime
         + slice_sh(*WRAPPER_HELPERS)
-        + 'run_installer() { printf "CALLED: run_installer %s\\n" "$*"; }\n'
-          'set -- status\n'
+        + 'run_installer() { printf "CALLED: run_installer %s\\n" "$*"; '
+          f'return {installer_rc}; }}\n'
+          f'set -- {args}\n'
         + slice_sh(*WRAPPER_CASE)
     )
 
@@ -614,3 +615,315 @@ def test_status_never_runs_the_installer(tmp_path):
     r = run_bash(tmp_path, wrapper_harness(inst), env=with_curl(tmp_path, "200"))
     assert r.returncode == 0, r.stderr
     assert "CALLED: run_installer" not in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# (f) an update that does not work has to be undoable
+# ---------------------------------------------------------------------------
+
+SNAPSHOT_SECTION = ('    if [[ "$UPDATE" == "1" ]]; then',
+                    "        # The tarball ships the complete vendor set, so anything left in there")
+STATE_SECTION = ("write_update_state() {", "}")
+RESTORE_SECTION = ("restore_prev() {", "}")
+SELFCHECK_SECTION = ('step "Checking the new code"', "fi")
+ROLLBACK_SECTION = ("rollback_update() {", "}")
+
+# Every file the update overwrites, which is exactly what the snapshot has to
+# hold. vendor/ is the one directory in the list and the one that would nest if
+# it were copied back onto itself.
+SNAPSHOT_FILES = ["app.py", "resolver.py", "mobile_app.html", "sw.js",
+                  "pockettui.service", "install.sh", "setup_voice.sh",
+                  "requirements.txt", "qrcodegen.py", "icon-192.png",
+                  "icon-512.png", "VERSION"]
+
+
+def fill_install(inst, mark):
+    """An install dir holding one recognisable version of every file."""
+    for f in SNAPSHOT_FILES:
+        (inst / f).write_text(f"{f} {mark}\n")
+    (inst / "vendor").mkdir(exist_ok=True)
+    (inst / "vendor/xterm.js").write_text(f"xterm {mark}\n")
+    (inst / "VERSION").write_text("0.9.12\n" if mark == "old" else "0.9.13\n")
+
+
+def state_of(inst):
+    return (inst / "update-state.json").read_text()
+
+
+def snapshot_harness(inst):
+    """The head of the update branch, up to the point it starts overwriting."""
+    return (
+        f'INSTALL_DIR="{inst}"\n'
+        "VERBOSE=0\nUPDATE=1\nROTATE_TOKEN=0\nPREV_SAVED=0\n"
+        'OLD_VERSION="0.9.12"\nNEW_VERSION="0.9.13"\n'
+        + slice_sh(*STATE_SECTION, include_end=True)
+        + slice_sh(*SNAPSHOT_SECTION)
+        # The slice stops inside the branch it opened, on purpose: everything
+        # after it is the overwriting this test is not running.
+        + "fi\n"
+          'printf "PREV_SAVED=%s\\n" "$PREV_SAVED"\n'
+    )
+
+
+def test_the_snapshot_holds_a_byte_copy_of_every_file_the_update_replaces(tmp_path):
+    inst = install_dir(tmp_path)
+    fill_install(inst, "old")
+    r = run_bash(tmp_path, snapshot_harness(inst))
+    assert r.returncode == 0, r.stderr
+    assert "PREV_SAVED=1" in r.stdout
+    for f in SNAPSHOT_FILES:
+        assert (inst / ".prev" / f).read_bytes() == (inst / f).read_bytes(), f
+    assert (inst / ".prev/vendor/xterm.js").read_text() == "xterm old\n"
+
+
+def test_the_snapshot_records_that_an_update_is_running(tmp_path):
+    inst = install_dir(tmp_path)
+    fill_install(inst, "old")
+    r = run_bash(tmp_path, snapshot_harness(inst))
+    assert r.returncode == 0, r.stderr
+    written = state_of(inst)
+    assert '"status":"running"' in written
+    assert '"from":"0.9.12"' in written
+    assert '"to":"0.9.13"' in written
+    # Written whole and renamed, so nothing is left half way.
+    assert not (inst / "update-state.json.tmp").exists()
+
+
+def selfcheck_harness(inst, ok, update="1", prev_saved="1"):
+    make_exe(inst / "fakepy", "#!/bin/bash\nexit %d\n" % (0 if ok else 1))
+    return (
+        f'INSTALL_DIR="{inst}"\n'
+        f'VENV_PY="{inst}/fakepy"\n'
+        f"VERBOSE=0\nUPDATE={update}\nPREV_SAVED={prev_saved}\n"
+        'OLD_VERSION="0.9.12"\nNEW_VERSION="0.9.13"\n'
+        + slice_sh(*STATE_SECTION, include_end=True)
+        + slice_sh(*RESTORE_SECTION, include_end=True)
+        + slice_sh(*SELFCHECK_SECTION, include_end=True)
+        + "echo PAST_THE_CHECK\n"
+    )
+
+
+def test_code_that_loads_is_waved_through(tmp_path):
+    inst = install_dir(tmp_path)
+    r = run_bash(tmp_path, selfcheck_harness(inst, ok=True))
+    assert r.returncode == 0, r.stderr
+    assert "PAST_THE_CHECK" in r.stdout
+
+
+def test_code_that_does_not_load_puts_the_old_version_back(tmp_path):
+    """Nothing is restarted: the check runs before the service is touched, so a
+    failure here costs the user nothing but the update."""
+    inst = install_dir(tmp_path)
+    fill_install(inst, "old")
+    (inst / ".prev").mkdir()
+    for f in SNAPSHOT_FILES:
+        (inst / ".prev" / f).write_text(f"{f} old\n")
+    (inst / ".prev/VERSION").write_text("0.9.12\n")
+    (inst / ".prev/vendor").mkdir()
+    (inst / ".prev/vendor/xterm.js").write_text("xterm old\n")
+    fill_install(inst, "new")          # what the update just unpacked
+
+    r = run_bash(tmp_path, selfcheck_harness(inst, ok=False))
+    assert r.returncode == 1
+    assert "PAST_THE_CHECK" not in r.stdout
+    assert "restored version 0.9.12" in r.stderr
+    assert "nothing was restarted" in r.stderr
+    for f in SNAPSHOT_FILES:
+        assert (inst / f).read_bytes() == (inst / ".prev" / f).read_bytes(), f
+    assert (inst / "VERSION").read_text() == "0.9.12\n"
+    # cp -R onto a directory that is already there nests it; the restore removes
+    # the target first, so vendor/ must not have grown a vendor/ of its own.
+    assert (inst / "vendor/xterm.js").read_text() == "xterm old\n"
+    assert not (inst / "vendor/vendor").exists()
+    assert '"status":"failed"' in state_of(inst)
+
+
+def test_a_fresh_install_that_fails_the_check_just_stops(tmp_path):
+    """There is no previous version to go back to, so the only thing to do is
+    say which command shows why."""
+    inst = install_dir(tmp_path)
+    r = run_bash(tmp_path, selfcheck_harness(inst, ok=False, update="0",
+                                             prev_saved="0"))
+    assert r.returncode == 1
+    assert "failed its self-check" in r.stderr
+    assert "--selfcheck" in r.stderr
+    assert not (inst / "update-state.json").exists()
+
+
+def sequenced_curl(tmp_path, codes):
+    """A curl that answers each call with the next code, then repeats the last."""
+    d = tmp_path / "curlbin"
+    calls = tmp_path / "curl-calls"
+    make_exe(d / "curl",
+             "#!/bin/bash\n"
+             f'n="$(cat "{calls}" 2>/dev/null || echo 0)"\n'
+             f'echo $((n + 1)) > "{calls}"\n'
+             f'codes=({" ".join(codes)})\n'
+             'i="$n"\n'
+             '[[ "$i" -ge "${#codes[@]}" ]] && i=$(( ${#codes[@]} - 1 ))\n'
+             'printf %s "${codes[$i]}"\n')
+    return d
+
+
+def rollback_harness(inst, how="systemd"):
+    return (
+        f'INSTALL_DIR="{inst}"\n'
+        "PORT=5560\nVERBOSE=0\n"
+        'SERVICE_NAME="pockettui"\nAGENT_LABEL="com.pockettui.server"\n'
+        "ROLLED_BACK=0\n"
+        'OLD_VERSION="0.9.12"\nNEW_VERSION="0.9.13"\n'
+        + slice_sh(*STATE_SECTION, include_end=True)
+        + slice_sh(*RESTORE_SECTION, include_end=True)
+        + slice_sh(*WAIT_SECTION)
+        + slice_sh(*ROLLBACK_SECTION, include_end=True)
+        + f"rollback_update {how} || true\n"
+          'printf "ROLLED_BACK=%s\\n" "$ROLLED_BACK"\n'
+    )
+
+
+def prev_only(inst):
+    """The state after an update: new files in place, old ones in .prev."""
+    (inst / ".prev").mkdir()
+    for f in SNAPSHOT_FILES:
+        (inst / ".prev" / f).write_text(f"{f} old\n")
+    (inst / ".prev/VERSION").write_text("0.9.12\n")
+    fill_install(inst, "new")
+
+
+def test_a_service_that_will_not_answer_is_rolled_back_and_restarted(tmp_path):
+    inst = install_dir(tmp_path)
+    prev_only(inst)
+    curl = sequenced_curl(tmp_path, ["502", "200"])
+    log = tmp_path / "restart.txt"
+    make_exe(curl / "systemctl", f'#!/bin/bash\necho "systemctl $*" >> "{log}"\n')
+    r = run_bash(tmp_path, rollback_harness(inst),
+                 env={"PATH": f"{curl}:{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stderr
+    assert log.read_text().strip() == "systemctl --user restart pockettui"
+    assert "Rolled back to version 0.9.12." in r.stdout
+    assert "ROLLED_BACK=1" in r.stdout
+    assert (inst / "app.py").read_text() == "app.py old\n"
+    assert (inst / "VERSION").read_text() == "0.9.12\n"
+    written = state_of(inst)
+    assert '"status":"rolled_back"' in written
+    assert '"exit":1' in written
+
+
+def test_a_rollback_that_does_not_come_back_either_says_failed(tmp_path):
+    inst = install_dir(tmp_path)
+    prev_only(inst)
+    curl = sequenced_curl(tmp_path, ["502"])
+    make_exe(curl / "systemctl", "#!/bin/bash\nexit 0\n")
+    r = run_bash(tmp_path, rollback_harness(inst),
+                 env={"PATH": f"{curl}:{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stderr
+    assert "ROLLED_BACK=0" in r.stdout
+    assert '"status":"failed"' in state_of(inst)
+
+
+def test_nothing_to_roll_back_to_leaves_the_install_where_it_is(tmp_path):
+    inst = install_dir(tmp_path)
+    fill_install(inst, "new")
+    curl = sequenced_curl(tmp_path, ["502"])
+    make_exe(curl / "systemctl", "#!/bin/bash\nexit 0\n")
+    r = run_bash(tmp_path, rollback_harness(inst),
+                 env={"PATH": f"{curl}:{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stderr
+    assert "no snapshot to roll back to" in r.stdout
+    assert "ROLLED_BACK=0" in r.stdout
+    assert (inst / "app.py").read_text() == "app.py new\n"
+    assert '"status":"failed"' in state_of(inst)
+
+
+def test_the_mac_path_kickstarts_the_agent_instead(tmp_path):
+    inst = install_dir(tmp_path)
+    prev_only(inst)
+    curl = sequenced_curl(tmp_path, ["200"])
+    log = tmp_path / "restart.txt"
+    make_exe(curl / "launchctl", f'#!/bin/bash\necho "launchctl $*" >> "{log}"\n')
+    r = run_bash(tmp_path, rollback_harness(inst, "launchd"),
+                 env={"PATH": f"{curl}:{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stderr
+    assert log.read_text().startswith("launchctl kickstart -k gui/")
+    assert "ROLLED_BACK=1" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# (g) the wrapper refuses to install an older build over a newer one
+# ---------------------------------------------------------------------------
+
+def test_an_older_remote_version_is_refused(tmp_path):
+    inst = install_dir(tmp_path)
+    (inst / "VERSION").write_text("0.9.12\n")
+    r = run_bash(tmp_path, wrapper_harness(inst, args="update"),
+                 env=with_curl(tmp_path, "0.9.10"))
+    assert r.returncode == 1
+    assert "Refusing to downgrade 0.9.12 -> 0.9.10" in r.stderr
+    assert "--allow-downgrade" in r.stderr
+    assert "CALLED: run_installer" not in r.stdout
+
+
+def test_the_flag_allows_it_and_is_not_passed_on(tmp_path):
+    """install.sh has no such flag, so handing it over would be an error the
+    user never made."""
+    inst = install_dir(tmp_path)
+    (inst / "VERSION").write_text("0.9.12\n")
+    r = run_bash(tmp_path, wrapper_harness(inst, args="update --allow-downgrade -v"),
+                 env=with_curl(tmp_path, "0.9.10"))
+    assert r.returncode == 0, r.stderr
+    assert "CALLED: run_installer -v" in r.stdout
+    assert "--allow-downgrade" not in r.stdout
+
+
+def test_a_newer_remote_version_runs_the_installer(tmp_path):
+    inst = install_dir(tmp_path)
+    (inst / "VERSION").write_text("0.9.12\n")
+    r = run_bash(tmp_path, wrapper_harness(inst, args="update"),
+                 env=with_curl(tmp_path, "0.9.13"))
+    assert r.returncode == 0, r.stderr
+    assert "CALLED: run_installer" in r.stdout
+
+
+def test_an_unknown_version_on_either_side_is_not_a_comparison(tmp_path):
+    """No VERSION file, or no network: the update goes ahead as it always did."""
+    inst = install_dir(tmp_path)
+    r = run_bash(tmp_path, wrapper_harness(inst, args="update"),
+                 env=with_curl(tmp_path, "0.9.10"))
+    assert r.returncode == 0, r.stderr
+    assert "CALLED: run_installer" in r.stdout
+
+
+def test_the_double_digit_field_is_compared_as_a_number(tmp_path):
+    """0.9.9 -> 0.9.10 is an update, not a downgrade, which is the whole reason
+    the comparison is not a string one."""
+    inst = install_dir(tmp_path)
+    (inst / "VERSION").write_text("0.9.9\n")
+    r = run_bash(tmp_path, wrapper_harness(inst, args="update"),
+                 env=with_curl(tmp_path, "0.9.10"))
+    assert r.returncode == 0, r.stderr
+    assert "CALLED: run_installer" in r.stdout
+
+
+def test_an_installer_that_died_mid_update_closes_the_record(tmp_path):
+    """Otherwise the phone watches a "running" that nothing will ever end."""
+    inst = install_dir(tmp_path)
+    (inst / "VERSION").write_text("0.9.12\n")
+    (inst / "update-state.json").write_text(
+        '{"status":"running","from":"0.9.12","to":"0.9.13","exit":0,"ts":1757500000}\n')
+    r = run_bash(tmp_path, wrapper_harness(inst, args="update", installer_rc=3),
+                 env=with_curl(tmp_path, "0.9.13"))
+    assert r.returncode == 3
+    written = state_of(inst)
+    assert '"status":"failed"' in written
+    assert '"exit":3' in written
+
+
+def test_a_finished_record_is_left_alone(tmp_path):
+    """install.sh already said how it ended; the wrapper must not overwrite it."""
+    inst = install_dir(tmp_path)
+    (inst / "VERSION").write_text("0.9.12\n")
+    (inst / "update-state.json").write_text('{"status":"rolled_back","exit":1}\n')
+    r = run_bash(tmp_path, wrapper_harness(inst, args="update", installer_rc=1),
+                 env=with_curl(tmp_path, "0.9.13"))
+    assert r.returncode == 1
+    assert state_of(inst) == '{"status":"rolled_back","exit":1}\n'
