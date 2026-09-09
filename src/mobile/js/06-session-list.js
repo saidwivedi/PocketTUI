@@ -159,6 +159,15 @@ function renderListError(v) {
   const cmd = box.querySelector(".command");
   cmd.textContent = v.command || "";
   cmd.hidden = !v.command;
+  // The shortcut past retyping the command on a phone keyboard, offered only
+  // where the server that would type it is the one still answering: these two
+  // verdicts are the ones where the computer is up and PocketTUI is reachable,
+  // and the path in front of it is what broke.
+  const type = $("btn-list-type");
+  const offer = !!v.command && hasCapStrict("type") &&
+    (v.kind === "not_published" || v.kind === "server_error");
+  type.hidden = !offer;
+  type.onclick = offer ? () => stageCommand(v.command) : null;
 }
 
 // For the paths where the address itself has just changed or come back: probe
@@ -378,6 +387,30 @@ function openNewSession() {
   $("new-name").focus();
 }
 
+// The create call on its own, without the form around it: the new-session sheet
+// reads a name from its field, and a staged command has no field to read, but
+// both need a session that exists first. Returns what the server answered, so
+// the caller can name its own failure. `exact` means the name came from the
+// user and is not the shell's to suffix.
+async function createSessionNamed(base, exact) {
+  let data = null, r = null;
+  // Two auto-named sessions in the same minute collide; suffix past it rather
+  // than blaming the user for a name they never chose.
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const name = attempt === 1 ? base : base + "-" + attempt;
+    r = await fetch(apiURL("api/session"), {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ name: name, dir: "" }),
+    });
+    data = await r.json().catch(() => null);
+    const dup = data && data.error && data.error.includes("already exists");
+    if (r.ok || exact || !dup) break;
+  }
+  return { session: r && r.ok && data ? data.session : "",
+           error: data && data.error ? data.error : "" };
+}
+
 async function createSession() {
   const typed = $("new-name").value.trim();
   // tmux reads these as window/pane separators, so a name carrying one never
@@ -387,24 +420,11 @@ async function createSession() {
   }
   const base = typed || defaultSessionName();
   try {
-    let data = null, r = null;
-    // Two auto-named sessions in the same minute collide; suffix past it rather
-    // than blaming the user for a name they never chose.
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      const name = attempt === 1 ? base : base + "-" + attempt;
-      r = await fetch(apiURL("api/session"), {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ name: name, dir: "" }),
-      });
-      data = await r.json().catch(() => null);
-      const dup = data && data.error && data.error.includes("already exists");
-      if (r.ok || typed || !dup) break;
-    }
-    if (!r.ok) { toast(data && data.error ? data.error : "Couldn't create the session"); return; }
+    const made = await createSessionNamed(base, !!typed);
+    if (!made.session) { toast(made.error || "Couldn't create the session"); return; }
     showSheet(false);
     $("new-name").value = "";
-    openTerminal(data.session);
+    openTerminal(made.session);
     // The new session has to show up in the wide layout's rail now, not on the
     // next 15s poll — quiet like that poll, since the user is looking at the
     // terminal and a refresh hiccup shouldn't toast over it.
