@@ -276,6 +276,83 @@ def test_rules_are_reduced_outside_shell():
     assert R.apply_rules("tests slash test dot py", "claude") == "tests/test.py"
 
 
+@pytest.mark.parametrize("spoken,expected", [
+    # The mark closes the word on its left and keeps its space on the right.
+    ("ls semicolon pwd", "ls; pwd"),
+    ("echo a comma b", "echo a, b"),
+    # Spoken as two words, so the pair has to be matched before "mark" and
+    # "point" are read as the ordinary words they are.
+    ("run the tests question mark", "run the tests?"),
+    ("sudo reboot exclamation mark", "sudo reboot!"),
+    ("sudo reboot exclamation point", "sudo reboot!"),
+    # Several in one line, which is the shape the shell wants them in.
+    ("echo a comma b semicolon ls", "echo a, b; ls"),
+])
+def test_a_trailing_mark_attaches_to_the_word_on_its_left(spoken, expected):
+    assert R.apply_rules(spoken, "shell") == expected
+
+
+@pytest.mark.parametrize("spoken,expected", [
+    ("echo open paren a close paren", "echo (a)"),
+    ("echo left paren a right paren", "echo (a)"),
+    ("arr open bracket idx close bracket", "arr [idx]"),
+    ("arr left bracket idx right bracket", "arr [idx]"),
+    ("echo open brace x close brace", "echo {x}"),
+    ("echo left brace x right brace", "echo {x}"),
+])
+def test_a_bracket_opens_on_its_right_and_closes_on_its_left(spoken, expected):
+    """The two classes meet: the opener glues onto the word it introduces, the
+    closer onto the word it follows, so a pair spoken around a word comes back
+    around it."""
+    assert R.apply_rules(spoken, "shell") == expected
+
+
+@pytest.mark.parametrize("spoken,expected", [
+    ("open paren app dot py close paren", "(app.py)"),
+    ("cd dollar HOME slash work", "cd $HOME/work"),
+])
+def test_a_joiner_reaches_past_an_opener_the_rules_just_attached(spoken,
+                                                                expected):
+    """"(app" is the word "app" wearing a bracket, so the extension still
+    joins onto it; the opener is not what the joiner has to glue to."""
+    assert R.apply_rules(spoken, "shell") == expected
+
+
+def test_a_bare_opener_is_still_nothing_to_join_onto():
+    """Only the word under the symbol counts: a lone bracket has none."""
+    assert R.apply_rules("( dot py", "shell") == "( dot py"
+
+
+def test_dollar_is_a_shell_sigil_only_where_it_cannot_be_the_word():
+    """"dollar" names the character after a command and the currency in a
+    sentence, so it is confined to the shell and to a non-prose left side."""
+    assert R.apply_rules("echo dollar HOME", "shell") == "echo $HOME"
+    assert R.apply_rules("echo dollar HOME", "claude") == "echo dollar HOME"
+    assert R.apply_rules("the dollar fell", "shell") == "the dollar fell"
+
+
+@pytest.mark.parametrize("text", [
+    # A punctuation name between ordinary English is someone describing the
+    # mark, exactly as it is for the joiners.
+    "put a comma between the two words",
+    "put a semicolon after that line",
+    "put a question mark at the end of that sentence",
+    "is that a semicolon",
+    # The existing joiner guard, unchanged: "period" is still not a full stop
+    # between two ordinary words.
+    "the period of time",
+])
+def test_the_new_marks_leave_prose_alone(text):
+    assert R.apply_rules(text, "shell") == text
+
+
+def test_a_name_that_merely_contains_a_mark_is_not_one():
+    """The tables are looked up on whole tokens, so a filename spelling one of
+    them out is untouched and still joins as a name."""
+    assert R.apply_rules("cat comma_separated dot py", "shell") == \
+        "cat comma_separated.py"
+
+
 def test_comma_fragmented_dictation_does_not_glue_punctuation_mid_token():
     """Whisper comma-separates list-ish dictation (a comma-list --prompt used
     to teach it this format); joined path segments must not carry the comma
