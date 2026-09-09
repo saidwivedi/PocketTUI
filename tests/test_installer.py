@@ -462,3 +462,155 @@ def test_no_rc_file_at_all_leaves_the_hint_to_do_the_work(tmp_path, home):
     assert "PATH_LINE_ADDED=0" in r.stdout
     assert not (home / ".bashrc").exists()
     assert not (home / ".zshrc").exists()
+
+
+# ---------------------------------------------------------------------------
+# (d) is the backend answering, and if not, why not
+# ---------------------------------------------------------------------------
+
+WAIT_SECTION = ("SERVER_UP=0", "start_service() {")
+WRAPPER_HELPERS = ("local_version() {", "run_installer() {")
+WRAPPER_CASE = ('case "${1:-}" in', "EOF")
+
+
+def fake_curl(tmp_path, code):
+    """A curl that answers the probe with one scripted HTTP code."""
+    d = tmp_path / "curlbin"
+    make_exe(d / "curl", f'#!/bin/bash\nprintf %s "{code}"\n')
+    return d
+
+
+def with_curl(tmp_path, code):
+    return {"PATH": f"{fake_curl(tmp_path, code)}:{os.environ['PATH']}"}
+
+
+# runtime.json as app.py writes it, with the pid left to the caller.
+RUNTIME_JSON = ('{"version":"0.9.12","pid":%s,"host":"127.0.0.1",'
+                '"port":5560,"started_at":"2026-09-10T09:00:00Z"}')
+
+
+def wait_harness(inst, runtime=""):
+    return (
+        f'INSTALL_DIR="{inst}"\n'
+        "PORT=5560\n"
+        + runtime
+        + slice_sh(*WAIT_SECTION)
+        + 'if wait_for_server 2; then echo UP; else echo DOWN; fi\n'
+          'printf "SERVER_UP=%s PROBE_CODE=%s\\n" "$SERVER_UP" "$PROBE_CODE"\n'
+          'describe_backend_failure\n'
+    )
+
+
+def live_pid(inst):
+    """This very shell is the backend: a pid that is certainly alive."""
+    return "printf '%s\\n' \"$$\" > \"%s/runtime.json\"\n" % (RUNTIME_JSON, inst)
+
+
+def dead_pid(inst):
+    """A pid that existed and was reaped: the started-then-crashed case."""
+    return ("( exit 0 ) & dead=$!\n"
+            'wait "$dead" 2>/dev/null || true\n'
+            + "printf '%s\\n' \"$dead\" > \"%s/runtime.json\"\n" % (RUNTIME_JSON, inst))
+
+
+@pytest.mark.parametrize("code", ["200", "404"])
+def test_the_descriptor_and_an_older_build_both_count_as_up(tmp_path, code):
+    """404 is a version that predates the descriptor route, not a dead server."""
+    inst = install_dir(tmp_path)
+    r = run_bash(tmp_path, wait_harness(inst), env=with_curl(tmp_path, code))
+    assert r.returncode == 0, r.stderr
+    assert "UP" in r.stdout
+    assert f"SERVER_UP=1 PROBE_CODE={code}" in r.stdout
+
+
+@pytest.mark.parametrize("code", ["502", "000"])
+def test_a_proxy_error_or_no_answer_is_not_up(tmp_path, code):
+    inst = install_dir(tmp_path)
+    r = run_bash(tmp_path, wait_harness(inst), env=with_curl(tmp_path, code))
+    assert r.returncode == 0, r.stderr
+    assert "DOWN" in r.stdout
+    assert f"SERVER_UP=0 PROBE_CODE={code}" in r.stdout
+
+
+def test_a_live_pid_that_will_not_answer_is_named_as_such(tmp_path):
+    inst = install_dir(tmp_path)
+    r = run_bash(tmp_path, wait_harness(inst, live_pid(inst)),
+                 env=with_curl(tmp_path, "502"))
+    assert r.returncode == 0, r.stderr
+    assert "The backend is up (pid" in r.stdout
+    assert "on port 5560 but the HTTP probe failed (last answer: 502)." in r.stdout
+
+
+def test_a_dead_pid_reads_as_started_and_exited(tmp_path):
+    inst = install_dir(tmp_path)
+    r = run_bash(tmp_path, wait_harness(inst, dead_pid(inst)),
+                 env=with_curl(tmp_path, "000"))
+    assert r.returncode == 0, r.stderr
+    assert "is gone: the server started and then exited." in r.stdout
+
+
+def test_no_runtime_file_reads_as_never_started(tmp_path):
+    inst = install_dir(tmp_path)
+    r = run_bash(tmp_path, wait_harness(inst), env=with_curl(tmp_path, "000"))
+    assert r.returncode == 0, r.stderr
+    assert f"The backend never started (no {inst}/runtime.json)." in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# (e) the wrapper's own status subcommand
+# ---------------------------------------------------------------------------
+
+def wrapper_harness(inst, runtime=""):
+    """The wrapper's helpers and its case block, with run_installer stubbed."""
+    return (
+        f'INSTALL_DIR="{inst}"\n'
+        'BASE_URL="https://pockettui.invalid"\n'
+        'SERVICE_NAME="pockettui"\n'
+        'WRAPPER_BIN="/tmp/bin"\n'
+        "PORT=5560\n"
+        + runtime
+        + slice_sh(*WRAPPER_HELPERS)
+        + 'run_installer() { printf "CALLED: run_installer %s\\n" "$*"; }\n'
+          'set -- status\n'
+        + slice_sh(*WRAPPER_CASE)
+    )
+
+
+def test_status_reports_version_backend_and_probe(tmp_path):
+    inst = install_dir(tmp_path)
+    (inst / "VERSION").write_text("0.9.12\n")
+    r = run_bash(tmp_path, wrapper_harness(inst, live_pid(inst)),
+                 env=with_curl(tmp_path, "200"))
+    assert r.returncode == 0, r.stderr
+    lines = [l for l in r.stdout.splitlines() if l.startswith(("installed", "backend", "probe"))]
+    assert len(lines) == 3, r.stdout
+    assert lines[0] == "installed  0.9.12"
+    assert lines[1].startswith("backend    running (pid ")
+    assert lines[1].endswith(", port 5560)")
+    assert lines[2] == "probe      answering on http://127.0.0.1:5560"
+
+
+def test_status_says_so_when_nothing_is_running(tmp_path):
+    inst = install_dir(tmp_path)
+    r = run_bash(tmp_path, wrapper_harness(inst), env=with_curl(tmp_path, "000"))
+    assert r.returncode == 0, r.stderr
+    assert "installed  unknown" in r.stdout
+    assert f"backend    not running (no {inst}/runtime.json)" in r.stdout
+    assert "probe      no answer on http://127.0.0.1:5560" in r.stdout
+
+
+def test_status_separates_a_live_process_from_an_unreachable_one(tmp_path):
+    """The case that sends the user to the proxy rather than to the service."""
+    inst = install_dir(tmp_path)
+    r = run_bash(tmp_path, wrapper_harness(inst, live_pid(inst)),
+                 env=with_curl(tmp_path, "502"))
+    assert r.returncode == 0, r.stderr
+    assert "backend    running (pid " in r.stdout
+    assert "probe      http://127.0.0.1:5560 answered 502" in r.stdout
+
+
+def test_status_never_runs_the_installer(tmp_path):
+    inst = install_dir(tmp_path)
+    r = run_bash(tmp_path, wrapper_harness(inst), env=with_curl(tmp_path, "200"))
+    assert r.returncode == 0, r.stderr
+    assert "CALLED: run_installer" not in r.stdout

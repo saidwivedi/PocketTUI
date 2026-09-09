@@ -89,6 +89,7 @@ async function fetchServerVersion() {
   syncGitCap();
   syncSearchCap();
   syncRefCap();
+  syncPairCard();
 }
 
 // Whether the server on the other end serves this feature. Unknown means yes:

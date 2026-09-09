@@ -809,6 +809,7 @@ INSTALL_DIR="$INSTALL_DIR"
 BASE_URL="$BASE_URL"
 SERVICE_NAME="$SERVICE_NAME"
 WRAPPER_BIN="$USER_BIN"
+PORT="$PORT"
 EOF
 cat <<'EOF'
 
@@ -818,6 +819,43 @@ local_version() {
     else
         printf 'unknown'
     fi
+}
+
+# What runtime.json says about the backend on this machine. Same three cases
+# install.sh reports, written out again because a wrapper has no installer to
+# source. A pid owned by another user answers kill -0 with EPERM, which still
+# means it is there.
+backend_state() {
+    local rt="$INSTALL_DIR/runtime.json" pid="" port=""
+    if [[ -r "$rt" ]]; then
+        pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$rt" | head -1)"
+        port="$(sed -n 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$rt" | head -1)"
+    fi
+    if [[ -z "$pid" ]]; then
+        printf 'not running (no %s)' "$rt"
+    elif kill -0 "$pid" 2>/dev/null || [[ "$(kill -0 "$pid" 2>&1)" == *ermitted* ]]; then
+        printf 'running (pid %s, port %s)' "$pid" "${port:-$PORT}"
+    else
+        printf 'stopped (pid %s is gone, %s left behind)' "$pid" "$rt"
+    fi
+}
+
+# The unauthenticated descriptor: it answers only if PocketTUI itself holds the
+# port, which is the difference between "the process is alive" and "the phone
+# can talk to it". 404 is a build older than the route, and still up.
+probe_state() {
+    local code=""
+    if ! command -v curl >/dev/null 2>&1; then
+        printf 'unknown (no curl)'
+        return 0
+    fi
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$PORT/.well-known/pockettui" 2>/dev/null || true)"
+    case "$code" in
+        (200)     printf 'answering on http://127.0.0.1:%s' "$PORT" ;;
+        (404)     printf 'answering on http://127.0.0.1:%s (older build, no descriptor)' "$PORT" ;;
+        (000|"")  printf 'no answer on http://127.0.0.1:%s' "$PORT" ;;
+        (*)       printf 'http://127.0.0.1:%s answered %s' "$PORT" "$code" ;;
+    esac
 }
 
 # Advisory only, exactly as in install.sh: no network, no version.txt, or a
@@ -867,6 +905,11 @@ case "${1:-}" in
         shift
         run_installer ${@+"$@"}
         ;;
+    (status)
+        echo "installed  $(local_version)"
+        echo "backend    $(backend_state)"
+        echo "probe      $(probe_state)"
+        ;;
     (version|--version|-V)
         have="$(local_version)"
         there="$(remote_version)"
@@ -882,10 +925,11 @@ case "${1:-}" in
         fi
         ;;
     (*)
-        echo "usage: pockettui update | version"
+        echo "usage: pockettui update | version | status"
         echo
         echo "  update   fetch and install the current version, in place"
         echo "  version  what is installed here, and what is current"
+        echo "  status   whether the backend is running, and answering"
         ;;
 esac
 EOF
@@ -1200,11 +1244,17 @@ UNIT_BACKUP=""
 # Whether the backend is actually answering, which is the only claim worth
 # making at the end. `systemctl is-active` says the process was spawned, not
 # that uvicorn bound the port — a unit that crash-loops on an occupied port is
-# "active" for the first second of every restart. GET / is unauthenticated
-# (the token guards the API, not the page), so a 2xx here means the server is
-# up and reachable. Poll rather than sleep-once: a cold start is usually well
-# under a second but a loaded machine can take several.
+# "active" for the first second of every restart. The probe is the
+# unauthenticated descriptor at /.well-known/pockettui, so an answer means
+# PocketTUI itself has the port rather than whatever else grabbed it; a 404
+# counts as up too, because a build older than that route is still perfectly
+# running (and the rollback path can put one back). Poll rather than
+# sleep-once: a cold start is usually well under a second but a loaded machine
+# can take several.
 SERVER_UP=0
+# The last code the probe saw, for describe_backend_failure to quote. Empty
+# means the probe never ran; curl says "000" when nothing answered at all.
+PROBE_CODE=""
 # POSIX sleep only promises integer seconds; GNU and BSD both take fractions.
 # Probe once rather than assume, so a minimal /bin/sleep polls at 1s instead of
 # erroring out of the loop on every iteration.
@@ -1214,14 +1264,36 @@ wait_for_server() {
     local tries="${1:-20}"
     command -v curl >/dev/null 2>&1 || return 1
     while [[ "$tries" -gt 0 ]]; do
-        if curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/" 2>/dev/null; then
-            SERVER_UP=1
-            return 0
-        fi
+        PROBE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$PORT/.well-known/pockettui" 2>/dev/null || true)"
+        case "$PROBE_CODE" in
+            (200|404) SERVER_UP=1; return 0 ;;
+        esac
         sleep "$SLEEP_TICK"
         tries=$((tries - 1))
     done
     return 1
+}
+
+# Why nothing answered, in the terms that pick the next move. app.py writes
+# runtime.json at start and removes it on the way out, so "no file", "a file
+# naming a pid that is gone" and "a file naming a live pid" are three different
+# failures: never started, started and crashed, running but not reachable.
+# Read with sed rather than a parser because python may not be on PATH yet and
+# we wrote the file ourselves, one flat object. A pid owned by another user
+# answers kill -0 with EPERM, which still means it exists.
+describe_backend_failure() {
+    local rt="$INSTALL_DIR/runtime.json" pid="" port=""
+    if [[ -r "$rt" ]]; then
+        pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$rt" | head -1)"
+        port="$(sed -n 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$rt" | head -1)"
+    fi
+    if [[ -z "$pid" ]]; then
+        say "  The backend never started (no $rt)."
+    elif kill -0 "$pid" 2>/dev/null || [[ "$(kill -0 "$pid" 2>&1)" == *ermitted* ]]; then
+        say "  The backend is up (pid $pid) on port ${port:-$PORT} but the HTTP probe failed (last answer: ${PROBE_CODE:-none})."
+    else
+        say "  runtime.json is there but pid $pid is gone: the server started and then exited."
+    fi
 }
 
 # daemon-reload, then enable + start, then verify. Shared by the "we wrote the
@@ -1248,6 +1320,7 @@ start_service() {
         # modes, because the user has nothing else to go on.
         say ""
         say "  $SERVICE_NAME was started but nothing answered on port $PORT."
+        describe_backend_failure
         say "  See what it said:"
         say "      systemctl --user status $SERVICE_NAME"
         say "      journalctl --user -u $SERVICE_NAME -n 50 --no-pager"
@@ -1328,6 +1401,7 @@ start_agent() {
         step_done "not responding" "$C_WARN"
         say ""
         say "  $AGENT_LABEL was loaded but nothing answered on port $PORT."
+        describe_backend_failure
         say "  See what it said:"
         say "      launchctl list | grep $AGENT_LABEL"
         say "      tail -50 $INSTALL_DIR/pockettui.log"
@@ -1359,6 +1433,7 @@ start_background() {
         note "could not start $INSTALL_DIR/start.sh"
         step_done "failed to start" "$C_WARN"
         say ""
+        describe_backend_failure
         say "  Nothing answered on port $PORT. See what it said:"
         say "      tail -50 $log"
         say "  Or run it in the foreground to watch it fail:"
@@ -2252,23 +2327,23 @@ PYEOF
 # type. A verified serve is https end to end, so there the hosted app plus the
 # address works. The URL comes first because it is the first thing to do.
 #
-# The QR payload mirrors that: #pair=<base64url JSON {v,a,t}>, "a" the address
-# exactly as the settings sheet's address field expects (no scheme forced —
-# normalizeBackend adds one), omitted for the LAN page since it is the backend
-# talking to itself; "t" the canonical 10-char token. Building it is the same
-# soft-fail Python-in-heredoc rule as the box below it: anyone who scans the
-# code gets this machine's shell, so the warning is printed right under it.
+# The QR payload mirrors that: #pair=<base64url JSON {v,a,t}>, built by
+# app.pair_url() so the one shape lives in one place — the Settings card's
+# /api/pair_qr.svg draws the same link for a second device later. "a" is the
+# address exactly as the settings sheet's address field expects (no scheme
+# forced — normalizeBackend adds one) and is left out for the LAN page since
+# that is the backend talking to itself. Calling it is the same soft-fail
+# Python-in-heredoc rule as the box below it: anyone who scans the code gets
+# this machine's shell, so the warning is printed right under it.
 RULE="─────────────────────────────────────"
 say ""
 if [[ "$TS_SERVED" == "1" ]]; then
     QR_URL="$("$VENV_PY" - "$INSTALL_DIR" "$BASE_URL/app/" "$TS_HOST/pockettui" <<'PYEOF' || true
-import base64, json, sys
+import sys
 sys.path.insert(0, sys.argv[1])
 import app
 
-payload = {"v": 1, "a": sys.argv[3], "t": app.read_token()}
-enc = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).rstrip(b"=")
-print(sys.argv[2] + "#pair=" + enc.decode())
+print(app.pair_url(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None, app.read_token()))
 PYEOF
     )"
     if [[ -n "$QR_URL" ]] && print_qr "$QR_URL"; then
@@ -2284,13 +2359,11 @@ PYEOF
     say "  $C_RULE$RULE$C_RESET"
 elif [[ -n "$LAN_IP" ]]; then
     QR_URL="$("$VENV_PY" - "$INSTALL_DIR" "http://$LAN_IP:$PORT/" <<'PYEOF' || true
-import base64, json, sys
+import sys
 sys.path.insert(0, sys.argv[1])
 import app
 
-payload = {"v": 1, "t": app.read_token()}
-enc = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).rstrip(b"=")
-print(sys.argv[2] + "#pair=" + enc.decode())
+print(app.pair_url(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None, app.read_token()))
 PYEOF
     )"
     if [[ -n "$QR_URL" ]] && print_qr "$QR_URL"; then
