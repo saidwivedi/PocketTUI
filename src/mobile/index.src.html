@@ -184,7 +184,13 @@
     <div class="eyebrow" id="list-eyebrow">Sessions</div>
     <div id="list"></div>
     <div id="list-empty">No tmux sessions yet — New session starts one.</div>
-    <div id="list-error">Couldn't reach your computer.</div>
+    <!-- Filled in by renderListError() with whichever verdict probeServer()
+         earned; the command is text to type on the computer, never a control. -->
+    <div id="list-error">
+      <div class="title">Couldn't reach your computer.</div>
+      <div class="hint"></div>
+      <code class="command" hidden></code>
+    </div>
   </div>
   <!-- Pinned under the list on the wide layout, and only where a pointer says
        there is a keyboard to press these on — both gates are the stylesheet's.
@@ -224,6 +230,7 @@
        loop keeps running while it is up, and a successful open takes it down. -->
   <div id="conn-banner" role="status">
     <span class="msg">Can't reach your computer</span>
+    <span class="hint" id="conn-banner-hint"></span>
     <button type="button" id="btn-conn-retry">Retry now</button>
     <button type="button" id="btn-conn-sessions">Sessions</button>
   </div>
