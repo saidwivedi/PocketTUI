@@ -1299,6 +1299,11 @@ def server_capabilities() -> dict:
         # update. Strictly checked by the shell: an older server has no file
         # and no route, and guessing "yes" would read a 404 as a failed update.
         "update_status": True,
+        # /api/session/type — the "Type it for me" button, which puts a command
+        # at a prompt without running it. Strictly checked by the shell: an
+        # older server answers the POST with a 404, and offering a button that
+        # cannot work is worse than leaving the command to be read and typed.
+        "type": True,
     }
 
 
@@ -2804,6 +2809,59 @@ def api_new_session(request: Request, body: dict = Body(...)) -> Response:
     # dies with the server it was set on.
     install_title_hook()
     return no_store(JSONResponse({"session": name}))
+
+
+# A generous line and no more: what this route is for is a command the user
+# would otherwise retype by hand, and nothing that long is one.
+TYPE_MAX = 4096
+
+
+@app.post("/api/session/type")
+def api_session_type(request: Request, body: dict = Body(...)) -> Response:
+    """Put text at a session's prompt without running it.
+
+    The phone's failure cards and the update notice each name a command to run
+    on the computer, and this is the shortcut past retyping it on a phone
+    keyboard. It types and stops there: `send-keys -l` sends the text
+    literally, no Enter is ever sent, and every newline is stripped here — so
+    what lands is a line sitting at the prompt, and the decision to run it
+    stays with the person reading it.
+
+    Throttled on the same bucket as create/kill/rename, because it is the same
+    kind of act: a human doing something to a session a few times an hour.
+    """
+    refusal = throttled("session_mutate", RATE_SESSION_MUTATE, request)
+    if refusal is not None:
+        return refusal
+
+    text = str(body.get("text", ""))
+    if len(text) > TYPE_MAX:
+        return JSONResponse({"error": "too_long"}, status_code=413)
+    # A newline is the character that would submit the line, so it never
+    # survives the trip in either spelling. A caller that sent one gets the
+    # rest of its text typed rather than an error: the contract is that this
+    # route cannot submit, not that it is hard to call.
+    text = text.replace("\r", "").replace("\n", "")
+    if not text:
+        return JSONResponse({"error": "empty"}, status_code=400)
+
+    dev = str(body.get("dev", ""))
+    # As in api_session_cwd: the device's own grouped view is the pane the user
+    # is looking at, so the text has to land there rather than in the base.
+    target = resolve_target(str(body.get("name", "")),
+                            dev if DEV_RE.match(dev) else "")
+    if not target:
+        return JSONResponse({"error": "no such session"}, status_code=404)
+    # "=name:" and not "=name": send-keys takes a pane, and a bare session name
+    # is not one — tmux answers "can't find pane". The trailing colon names the
+    # session's current window and its active pane, which is the pane the phone
+    # is attached to; the = keeps the name exact, so typing at "work" can never
+    # land in "work2" by prefix match.
+    rc, _ = tmux("send-keys", "-t", f"={target}:", "-l", "--", text)
+    if rc != 0:
+        return JSONResponse({"error": "tmux would not take the text."},
+                            status_code=500)
+    return no_store(JSONResponse({"session": target, "chars": len(text)}))
 
 
 @app.post("/api/update")

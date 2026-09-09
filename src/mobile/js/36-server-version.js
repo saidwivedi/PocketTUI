@@ -184,6 +184,9 @@ function syncVersionRow() {
   const canUpdate = hasCap("update");
   $("btn-update-server").hidden = !canUpdate;
   $("sheet-version-manual").hidden = canUpdate;
+  // After an install that did not take, the retry is a command; a server that
+  // can type it saves the user finding a keyboard to write it on.
+  $("btn-update-type").hidden = !(updateFailed && hasCapStrict("type"));
 }
 
 // The notice in the session list header. Settings is where an update is
