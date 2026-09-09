@@ -320,13 +320,110 @@ def test_alias_follows_the_representative_rule(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Pre-typed commands
+# ---------------------------------------------------------------------------
+
+# A base and the phone's own view of it, the shape resolve_target has to pick
+# between: what the phone is looking at is the view's pane, not the base's.
+TYPE_GROUP = (
+    {"name": "work", "created": 100, "group": "work"},
+    {"name": "phone-work", "created": 200, "group": "work"},
+)
+
+
+def sent_keys(tmux):
+    return [c for c in tmux.calls if c[0] == "send-keys"]
+
+
+def test_type_sends_the_text_literally_and_presses_nothing(client, monkeypatch):
+    tmux = fake(monkeypatch, TYPE_GROUP)
+    r = client.post("/api/session/type",
+                    json={"name": "work", "text": "pockettui update"})
+    assert r.status_code == 200
+    assert r.json() == {"session": "work", "chars": 16}
+    # -l for literal, -- so a command starting with a dash is still text, and
+    # no second call carrying Enter.
+    assert sent_keys(tmux) == [
+        ("send-keys", "-t", "=work:", "-l", "--", "pockettui update"),
+    ]
+
+
+def test_type_falls_back_to_the_base_for_a_device_with_no_view(client, monkeypatch):
+    """A device watching without a view of its own still gets its text typed.
+
+    The other half of resolve_target — text landing in the device's own view
+    rather than the base — needs a real grouped session to be worth asserting,
+    and lives in test_type.py against a real tmux.
+    """
+    tmux = fake(monkeypatch, TYPE_GROUP)
+    r = client.post("/api/session/type",
+                    json={"name": "work", "dev": "laptop", "text": "ls"})
+    assert r.status_code == 200
+    assert r.json()["session"] == "work"
+    assert sent_keys(tmux) == [("send-keys", "-t", "=work:", "-l", "--", "ls")]
+
+
+def test_type_strips_every_newline_before_it_reaches_tmux(client, monkeypatch):
+    """The route cannot submit, whatever it is handed."""
+    tmux = fake(monkeypatch, TYPE_GROUP)
+    r = client.post("/api/session/type",
+                    json={"name": "work", "text": "echo one\r\necho two\n"})
+    assert r.status_code == 200
+    assert sent_keys(tmux)[0][-1] == "echo oneecho two"
+    assert r.json()["chars"] == len("echo oneecho two")
+
+
+def test_type_refuses_an_unknown_session(client, monkeypatch):
+    tmux = fake(monkeypatch, TYPE_GROUP)
+    r = client.post("/api/session/type", json={"name": "ghost", "text": "ls"})
+    assert r.status_code == 404
+    assert sent_keys(tmux) == []
+
+
+def test_type_refuses_more_than_a_command_line(client, monkeypatch):
+    tmux = fake(monkeypatch, TYPE_GROUP)
+    r = client.post("/api/session/type",
+                    json={"name": "work", "text": "x" * (A.TYPE_MAX + 1)})
+    assert r.status_code == 413
+    assert r.json() == {"error": "too_long"}
+    assert sent_keys(tmux) == []
+    # The limit itself is allowed.
+    r = client.post("/api/session/type",
+                    json={"name": "work", "text": "x" * A.TYPE_MAX})
+    assert r.status_code == 200
+
+
+@pytest.mark.parametrize("text", ["", "\n", "\r\n"])
+def test_type_refuses_text_with_nothing_left_in_it(client, monkeypatch, text):
+    tmux = fake(monkeypatch, TYPE_GROUP)
+    r = client.post("/api/session/type", json={"name": "work", "text": text})
+    assert r.status_code == 400
+    assert sent_keys(tmux) == []
+
+
+def test_type_shares_the_session_mutation_bucket(client, monkeypatch):
+    fake(monkeypatch, TYPE_GROUP)
+    for _ in range(A.RATE_SESSION_MUTATE):
+        assert client.post("/api/session/type",
+                           json={"name": "work", "text": "ls"}).status_code == 200
+    r = client.post("/api/session/type", json={"name": "work", "text": "ls"})
+    assert r.status_code == 429
+    assert r.json()["error"] == "rate_limited"
+
+
+def test_type_is_a_capability_the_shell_can_check(monkeypatch):
+    assert A.server_capabilities()["type"] is True
+
+
+# ---------------------------------------------------------------------------
 # Auth and throttle
 # ---------------------------------------------------------------------------
 
 def test_session_endpoints_refuse_without_a_token(client, monkeypatch):
     fake(monkeypatch, RENAMED_BASE)
     monkeypatch.setattr(A, "AUTH_TOKEN", TOKEN)
-    for route in ("/api/session", "/api/session/kill", "/api/session/rename"):
+    for route in ("/api/session", "/api/session/kill", "/api/session/rename",
+                  "/api/session/type"):
         r = client.post(route, json={"session": "work2", "name": "x"})
         assert r.status_code == 401, route
 
