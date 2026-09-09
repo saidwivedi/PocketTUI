@@ -1689,6 +1689,53 @@ STANDALONE = {
     "caret": "^",
 }
 
+# Spoken names for punctuation that closes the word on its left: no space
+# before it, a space after, the way the mark is written. "ls semicolon pwd" is
+# "ls; pwd": neither the glued "ls;pwd" a joiner would build nor the free
+# standing "ls ; pwd", which is why these need a table of their own.
+# Some are spoken as two words; the pair is matched before either half is read
+# on its own, because "mark", "point" and "close" are ordinary words.
+TRAILING = {
+    "semicolon": ";",
+    "comma": ",",
+    "question mark": "?",
+    "exclamation mark": "!",
+    "exclamation point": "!",
+    "close paren": ")",
+    "right paren": ")",
+    "close bracket": "]",
+    "right bracket": "]",
+    "close brace": "}",
+    "right brace": "}",
+}
+
+# Spoken names for punctuation that opens the word on its right: "open paren
+# app" is "(app", "dollar HOME" is "$HOME". The brackets that close these are
+# in TRAILING, so a pair spoken around a word comes back around it.
+LEADING = {
+    "open paren": "(",
+    "left paren": "(",
+    "open bracket": "[",
+    "left bracket": "[",
+    "open brace": "{",
+    "left brace": "{",
+    "dollar": "$",
+}
+# The entry above that is shell syntax rather than punctuation, and the one
+# that is also an ordinary English word. "the dollar fell" must not grow a
+# sigil, so it is asked for more than the shared guard: the shell register, the
+# way STANDALONE is, and a left neighbour that is not plain English. A variable
+# is named right after a command, never after a sentence.
+_LEADING_ENGLISH = frozenset(("dollar",))
+# Deliberately absent, on the same trade as the missing "at" above. "percent"
+# is how a number is read aloud far more often than it names a character, and
+# "hash" is the word for a commit id in the one place a "#" would be dictated.
+# "backslash" is unambiguous as a word but wants opposite classes for its two
+# uses (escaping the character on its right, ending the line on its left), so
+# there is no one right answer to give it. "less than" / "greater than" are a
+# comparison in ordinary speech. A quote name cannot say whether it opens or
+# closes, and a quote on the wrong side of a word is worse than the word.
+
 # Tokens that separate commands rather than name anything. The matcher has to
 # skip any window containing one: they carry no letters, so normalize() erases
 # them and the window scores as whatever word sits beside it.
@@ -1705,6 +1752,17 @@ _IDENT_CHARS = re.compile(r"[A-Za-z0-9_./~=+*|&^:@-]")
 
 def _is_wordish(tok: str) -> bool:
     return bool(tok) and bool(re.match(r"^[A-Za-z0-9]", tok))
+
+
+# An opening symbol the rules attached a moment ago is not part of the word it
+# introduces: "(app" and "$HOME" are still the tokens "app" and "HOME" as far
+# as a joiner on their right is concerned, so the path or extension it names
+# goes on joining.
+_LEADING_CHARS = "".join(sorted(set(LEADING.values())))
+
+
+def _is_wordish_left(tok: str) -> bool:
+    return _is_wordish(tok.lstrip(_LEADING_CHARS))
 
 
 # A short flag as it is dictated: one or two letters ("dash m", "dash rf"),
@@ -1757,6 +1815,18 @@ def _at_flag_position(out: list[str], right: str,
                for tok in prefix):
         return False
     return not command_only or _known_shell_command(prefix[0].strip(",.").lower())
+
+
+def _punctuation_is_prose(left: str, right: str) -> bool:
+    """Is a punctuation name here being described rather than dictated?
+
+    "put a comma between the two words" names the mark; "echo a comma b" uses
+    it. Ordinary English on both sides is the tell, the same one the joiner
+    rule reads. A missing neighbour counts as ordinary: an utterance ending on
+    the name has nothing left to argue that it is syntax.
+    """
+    return ((not left or left.lower().strip(",.") in COMMON_WORDS)
+            and (not right or right.lower().strip(",.") in COMMON_WORDS))
 
 
 def _tokenize(text: str) -> list[str]:
@@ -1917,7 +1987,7 @@ def apply_rules(text: str, register: str) -> str:
             prose = (left.lower().strip(",.") in COMMON_WORDS
                      and right.lower().strip(",.") in COMMON_WORDS
                      and not ext_case and not num_case and not chain_case)
-            if _is_wordish(left) and _is_wordish(right) and not prose \
+            if _is_wordish_left(left) and _is_wordish(right) and not prose \
                     and (not strict or ext_case or num_case or char in "/_"):
                 if ext_case:
                     right = right.lower().strip(",.")
@@ -1931,6 +2001,34 @@ def apply_rules(text: str, register: str) -> str:
                 # punctuation and must survive.
                 out[-1] = left.rstrip(",.") + char + right
                 i += 2
+                continue
+
+        # A punctuation name is one token or two ("comma", "question mark"),
+        # so the pair is what the tables are probed with first.
+        pair = f"{low} {tokens[i + 1].lower().strip(',.')}" if i + 1 < n else ""
+
+        closing = pair if pair in TRAILING else low
+        if closing in TRAILING and out and out[-1] not in OPERATORS:
+            width = 2 if closing == pair else 1
+            if not _punctuation_is_prose(out[-1],
+                                         tokens[i + width] if i + width < n else ""):
+                # Whisper's own sentence dressing on the left token is not
+                # part of it, so the mark replaces it rather than following it,
+                # the same reading the joiner rule takes.
+                out[-1] = out[-1].rstrip(",.") + TRAILING[closing]
+                i += width
+                continue
+
+        opening = pair if pair in LEADING else low
+        if opening in LEADING:
+            width = 2 if opening == pair else 1
+            left = out[-1] if out else ""
+            allowed = opening not in _LEADING_ENGLISH or (
+                not strict and left.lower().strip(",.") not in COMMON_WORDS)
+            if allowed and i + width < n and _is_wordish(tokens[i + width]) \
+                    and not _punctuation_is_prose(left, tokens[i + width]):
+                out.append(LEADING[opening] + tokens[i + width])
+                i += width + 1
                 continue
 
         if not strict and low in STANDALONE and out and i + 1 < n:
