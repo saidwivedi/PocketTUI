@@ -993,7 +993,12 @@ run_installer() {
         env "${INSTALLER_ENV[@]}" bash "$FRESH_INSTALLER" --update ${@+"$@"}
     elif [[ -f "$INSTALL_DIR/install.sh" ]]; then
         echo "Could not fetch $BASE_URL/install.sh — using the copy in $INSTALL_DIR." >&2
-        env "${INSTALLER_ENV[@]}" bash "$INSTALL_DIR/install.sh" --update ${@+"$@"}
+        # Copied out before it runs, for the same reason the installer renames
+        # this wrapper into place: the install dir's install.sh is overwritten
+        # by the payload it is unpacking, and a bash reading its own script by
+        # file offset would resume inside the new bytes.
+        cp "$INSTALL_DIR/install.sh" "$FRESH_INSTALLER" 2>/dev/null || return 1
+        env "${INSTALLER_ENV[@]}" bash "$FRESH_INSTALLER" --update ${@+"$@"}
     else
         echo "Could not fetch $BASE_URL/install.sh, and there is no copy at" >&2
         echo "$INSTALL_DIR/install.sh. Check your network and try again." >&2
@@ -1077,9 +1082,17 @@ WRAPPER_SAME=0
 
 # Never fatal: the command is a convenience and the curl one-liner does the same
 # job, so an unwritable ~/.local/bin costs a line in the changelog, not the run.
+#
+# Written beside the old file and renamed over it, never truncated in place: an
+# update is driven BY this wrapper, and bash reads a script lazily by file
+# offset, so rewriting its inode made the live shell resume inside the new,
+# longer bytes and fall into the usage branch after a successful update. The
+# rename leaves the running wrapper on the inode it started on.
+WRAPPER_TMP="$WRAPPER_PATH.new.$$"
 if mkdir -p "$USER_BIN" 2>/dev/null \
-   && printf '%s\n' "$WRAPPER_CONTENT" > "$WRAPPER_PATH" 2>/dev/null; then
-    chmod +x "$WRAPPER_PATH" 2>/dev/null || true
+   && printf '%s\n' "$WRAPPER_CONTENT" > "$WRAPPER_TMP" 2>/dev/null \
+   && chmod +x "$WRAPPER_TMP" 2>/dev/null \
+   && mv -f "$WRAPPER_TMP" "$WRAPPER_PATH" 2>/dev/null; then
     WRAPPER_WRITTEN=1
     vsay "  wrote $WRAPPER_PATH"
     if [[ "$WRAPPER_SAME" != "1" ]]; then
@@ -1087,6 +1100,7 @@ if mkdir -p "$USER_BIN" 2>/dev/null \
         note "wrote the 'pockettui' command to $WRAPPER_PATH"
     fi
 else
+    rm -f "$WRAPPER_TMP" 2>/dev/null || true
     vsay "  could not write $WRAPPER_PATH — the 'pockettui' command was skipped"
     note "could not write $WRAPPER_PATH (no 'pockettui' command)"
 fi
