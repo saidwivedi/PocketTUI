@@ -617,6 +617,45 @@ def test_status_never_runs_the_installer(tmp_path):
     assert "CALLED: run_installer" not in r.stdout
 
 
+WRAPPER_WRITE_SECTION = ("WRAPPER_SAME=0", "fi")
+
+NEW_WRAPPER = "#!/bin/bash\nthe new wrapper"
+
+
+def wrapper_write_harness(user_bin):
+    """The region that puts the generated wrapper on disk, and nothing else."""
+    return (
+        f'USER_BIN="{user_bin}"\n'
+        'WRAPPER_PATH="$USER_BIN/pockettui"\n'
+        "WRAPPER_WRITTEN=0\n"
+        f"WRAPPER_CONTENT='{NEW_WRAPPER}'\n"
+        + slice_sh(*WRAPPER_WRITE_SECTION, include_end=True)
+        + 'printf "WRAPPER_WRITTEN=%s\\n" "$WRAPPER_WRITTEN"\n'
+    )
+
+
+def test_the_wrapper_is_renamed_over_not_rewritten_in_place(tmp_path):
+    """An update is driven by the wrapper, and bash reads a script by offset:
+    truncating the same inode made the live wrapper resume inside the new bytes
+    and print the usage block after a successful update."""
+    user_bin = tmp_path / "bin"
+    user_bin.mkdir()
+    wrapper = user_bin / "pockettui"
+    make_exe(wrapper, "#!/bin/bash\nthe old wrapper\n")
+    before = wrapper.stat().st_ino
+
+    r = run_bash(tmp_path, wrapper_write_harness(user_bin))
+    assert r.returncode == 0, r.stderr
+    assert "WRAPPER_WRITTEN=1" in r.stdout
+
+    after = wrapper.stat()
+    assert after.st_ino != before, "the wrapper was rewritten in place"
+    assert wrapper.read_text() == NEW_WRAPPER + "\n"
+    assert after.st_mode & 0o111, "the renamed wrapper is not executable"
+    # The temp file it went through is gone: only the command is left.
+    assert [p.name for p in user_bin.iterdir()] == ["pockettui"]
+
+
 # ---------------------------------------------------------------------------
 # (f) an update that does not work has to be undoable
 # ---------------------------------------------------------------------------
