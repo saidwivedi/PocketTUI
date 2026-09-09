@@ -126,6 +126,23 @@ $("settings-tabs").addEventListener("click", (e) => {
   selectSettingsTab(tab.dataset.tab);
 });
 
+// Which half of the first run is showing: 1 is the command to run on the
+// computer, 2 the address and code that command printed. Nothing is stored, the
+// same way the tab above is not: a step is where someone is in this visit, and
+// a reload has no reason to resume half-way through a setup.
+// Called on every open, including the ordinary ones, because step 2 with no
+// first run is exactly what a normal Settings sheet is.
+function showSetupStep(step) {
+  const onRun = setupMode && step === 1;
+  $("sheet-settings").classList.toggle("setup-run", onRun);
+  // Each step is one question, so the title asks it. Past the first run the
+  // sheet is named for what it is.
+  $("sheet-title").textContent = !setupMode ? "Settings"
+    : onRun ? "Run this on your computer" : "Enter what the installer printed";
+  $("sheet-install").classList.toggle("show", onRun);
+  $("sheet-faq").classList.toggle("show", onRun);
+}
+
 function openSettings(firstRun, tab) {
   setupMode = !!firstRun;
   const parts = backendParts(cfg.backend);
@@ -147,7 +164,6 @@ function openSettings(firstRun, tab) {
   syncVersionRow();
   fetchServerVersion();
   $("alt-toggle").checked = cfg.altKeyOn;
-  $("sheet-title").textContent = firstRun ? "Connect your computer" : "Settings";
   $("sheet-note").classList.toggle("hide", !firstRun);
   // First run has nothing to go back to, so there is no cancelling out of it.
   $("btn-settings-cancel").style.display = firstRun ? "none" : "";
@@ -157,9 +173,15 @@ function openSettings(firstRun, tab) {
   // Nothing to forget on a first run, and nothing to forget if the backend was
   // baked in at build time and no code has been entered yet.
   $("btn-settings-forget").classList.toggle("show", !firstRun && !!(cfg.backend || cfg.token));
-  $("sheet-install").classList.toggle("show", !!firstRun);
-  $("sheet-faq").classList.toggle("show", !!firstRun);
   $("sheet-settings").classList.toggle("setup", !!firstRun);
+  // Where the first run starts. The install command is only worth a screen of
+  // its own to someone who has nothing: a scanned pairing link arrives with both
+  // halves, and an address baked in at build time could only have come off a
+  // computer already running the backend, a same-origin shell most of all since
+  // that backend is what served this page. Any of those and the install has
+  // evidently happened, so the sheet opens on what is still missing.
+  const installEvident = SAME_ORIGIN || !!cfg.backend || !!cfg.token;
+  showSetupStep(firstRun && !installEvident ? 1 : 2);
   // One QR per visit to the sheet: it is drawn from things that only change
   // while the sheet is closed.
   pairQrAsked = false;
@@ -287,6 +309,11 @@ $("btn-sheet-demo").addEventListener("click", () => {
   showSheet(false);
   openDemo();
 });
+// "I ran it" is the user's answer, not a check: nothing on this device can see
+// the computer yet, and the address they are about to type is what will prove
+// it either way. Back for the case that answer was optimistic.
+$("btn-setup-ran").addEventListener("click", () => showSetupStep(2));
+$("btn-setup-back").addEventListener("click", () => showSetupStep(1));
 $("btn-copy-install").addEventListener("click", () => {
   const cmd = $("install-cmd").textContent;
   if (!navigator.clipboard || !navigator.clipboard.writeText) {
