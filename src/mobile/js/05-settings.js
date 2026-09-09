@@ -160,6 +160,9 @@ function openSettings(firstRun, tab) {
   $("sheet-install").classList.toggle("show", !!firstRun);
   $("sheet-faq").classList.toggle("show", !!firstRun);
   $("sheet-settings").classList.toggle("setup", !!firstRun);
+  // One QR per visit to the sheet: it is drawn from things that only change
+  // while the sheet is closed.
+  pairQrAsked = false;
   // A first run is one question — which computer — and the step after it is the
   // dictation one, so those are the only two tabs offered. The other two are
   // about a session there is not one of yet.
@@ -173,6 +176,61 @@ function openSettings(firstRun, tab) {
   // with: until the code is entered there is nothing to confirm.
   showVoiceStep(false);
   showSheet(true);
+  // After the sheet is up, since the QR is only drawn for a sheet someone is
+  // actually looking at.
+  syncPairCard();
+}
+
+// The blob: URL the QR image is showing, kept only so the previous one can be
+// released before the next is made.
+let pairQrURL = null;
+let pairQrAsked = false;
+
+// Pairing a second device from a device that is already paired. This one holds
+// the code, so the computer can draw the same QR the installer printed and
+// nobody has to walk back to it. Shown only on a shell that has something to
+// hand on — not the demo, not a first run, and not against a server too old to
+// draw one, which is why the strict form of the capability question is the
+// right one here.
+function syncPairCard() {
+  const card = $("sheet-pair");
+  const on = !setupMode && !demoMode && !needsSetup() && hasCapStrict("pair_qr");
+  card.hidden = !on;
+  // Drawn once per open, and only for a sheet that is up: a QR nobody has asked
+  // to see is a round trip and a copy of the pairing code for nothing.
+  if (!on || pairQrAsked || !$("sheet-settings").classList.contains("show")) return;
+  pairQrAsked = true;
+  $("pair-code").textContent = formatTokenDisplay(cfg.token);
+  $("pair-address").textContent = cfg.backend || (location.origin + BASE);
+  // The address the other device will type. https is what the sheet's field
+  // assumes, so it comes off; a plain-http backend is the case that has to keep
+  // its scheme. A shell the backend serves itself passes no address at all —
+  // the scanned page is already the right origin.
+  const a = cfg.backend
+    ? cfg.backend.replace(/^https:\/\//i, "").replace(/\/+$/, "")
+    : "";
+  // The code is not in this URL: the server puts its own token into the payload
+  // it draws, so nothing secret rides in a query string.
+  let url = apiURL("api/pair_qr.svg?base="
+    + encodeURIComponent(location.origin + location.pathname));
+  if (a) url += "&a=" + encodeURIComponent(a);
+  fetch(url, { cache: "no-store", headers: authHeaders() })
+    .then((r) => {
+      if (!r.ok) throw new Error("pair_qr " + r.status);
+      return r.blob();
+    })
+    .then((b) => {
+      if (pairQrURL) URL.revokeObjectURL(pairQrURL);
+      pairQrURL = URL.createObjectURL(b);
+      $("pair-qr").src = pairQrURL;
+      $("pair-qr").hidden = false;
+    })
+    .catch((e) => {
+      // No QR means no card: the code and address are already in the fields
+      // above, so a half-drawn block would only be something else to explain.
+      dbg("pair qr failed:", e);
+      card.hidden = true;
+    });
 }
 
 // The first-run voice step: on or off. Off is also what every ordinary visit to

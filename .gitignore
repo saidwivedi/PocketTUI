@@ -34,6 +34,10 @@ voice/
 # Corrections learned from edited transcripts (see resolver.py). Personal
 # vocabulary, local to this machine.
 .voice_learned.json
+# Per-run state the server and the updater leave in the install dir: who is
+# serving right now (app.py) and how the last update went (install.sh).
+runtime.json
+update-state.json
 explore/
 # Assembled by build_mobile.py from src/mobile/. The runtime layout is flat, so
 # these live at the root even though their source is split under src/.

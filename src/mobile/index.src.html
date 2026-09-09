@@ -609,6 +609,17 @@
     <!-- The one destructive thing in the sheet, so it stays out of the footer
          where a thumb aiming at Save would pass over it. -->
     <button type="button" id="btn-settings-forget">Forget</button>
+    <!-- Pairing a second device without walking back to the computer: this one
+         already holds the code, so the server draws the same QR the installer
+         printed. Hidden until the server says it can draw it. -->
+    <div class="sheet-pair" id="sheet-pair" hidden>
+      <label>Pair another device</label>
+      <img id="pair-qr" alt="QR code that pairs another device" hidden>
+      <p>Address <code id="pair-address"></code></p>
+      <p>Code <code id="pair-code"></code></p>
+      <p class="pair-note">On an iPhone, add PocketTUI to the Home Screen first (Share, then Add to Home Screen), then scan from the camera.</p>
+      <p class="pair-warn">Anyone who scans this gets this computer's shell. Don't screenshot or share it.</p>
+    </div>
     <div class="sheet-faq" id="sheet-faq">
       <p><b>What is this?</b> Your machine's tmux sessions, from any device.</p>
       <p><b>How does it work?</b> xterm.js relays keys over a WebSocket straight to
