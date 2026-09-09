@@ -783,6 +783,15 @@ function connect() {
 function showConnBanner() { $("conn-banner").classList.add("show"); }
 function hideConnBanner() { $("conn-banner").classList.remove("show"); }
 
+// The same banner with a verdict in it: the title on the first line, the why
+// underneath. No command here — the banner belongs to a screen the user is
+// reading output on, and the list card is where a command to type is offered.
+function renderConnBanner(v) {
+  $("conn-banner").querySelector(".msg").textContent = v.title;
+  $("conn-banner-hint").textContent = v.hint || "";
+  showConnBanner();
+}
+
 $("btn-conn-retry").addEventListener("click", () => {
   // Impatience resets the backoff, so the follow-up attempts come fast again.
   retries = 0;
@@ -790,6 +799,23 @@ $("btn-conn-retry").addEventListener("click", () => {
   connect();
 });
 $("btn-conn-sessions").addEventListener("click", () => closeTerminal());
+
+// The device's own network dropping and coming back. Offline is a verdict no
+// retry improves on, so the loop stops and says so; online restarts it at once
+// rather than sitting out a five-second backoff that was set while it was down.
+window.addEventListener("offline", () => {
+  if (demoMode) return;   // the demo has no machine to reach
+  clearTimeout(retryTimer);
+  const v = classifyFailure(null, null, null);
+  if (currentSession) renderConnBanner(v);
+  else { renderListError(v); $("list-error").style.display = "block"; }
+});
+window.addEventListener("online", () => {
+  if (demoMode) return;
+  retries = 0;
+  if (currentSession) connect();
+  else loadSessions(false, true);
+});
 
 function scheduleReconnect() {
   // Nothing to reconnect *to* while the app is off screen: the socket would be
@@ -799,12 +825,22 @@ function scheduleReconnect() {
   // in the same moment — which is what claims the window for the phone the
   // user has just picked up.
   if (document.hidden) return;
+  // Off the network entirely: retrying cannot help, and the loop would burn
+  // the backoff out to its cap before the device is back. The "online"
+  // listener below restarts it the moment it is.
+  if (netOffline()) {
+    clearTimeout(retryTimer);
+    renderConnBanner(classifyFailure(null, null, null));
+    return;
+  }
   retries += 1;
   // 0.5s → 5s, capped; only nag with a toast once it's clearly not transient.
   const delay = Math.min(500 * Math.pow(1.7, retries - 1), 5000);
   if (retries === 3) toast("Reconnecting…");
-  // Six straight failures is no longer a blip — put up the banner.
-  if (retries >= 6) showConnBanner();
+  // Six straight failures is no longer a blip — put up the banner, and ask the
+  // health descriptor what to put in it. Fire and forget: the retry below is
+  // not waiting on the answer.
+  if (retries >= 6) probeServer().then(p => renderConnBanner(classifyFailure(null, null, p)));
   clearTimeout(retryTimer);
   // No term.reset() here: the new connection's first frame (replay or attach
   // repaint) does the wiping, so the screen stays readable through the wait.
