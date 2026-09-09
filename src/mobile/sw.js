@@ -115,7 +115,10 @@ self.addEventListener("fetch", (e) => {
   // ours to intercept or cache.
   if (u.origin !== location.origin) return;
   // Live data and the PTY socket must always hit the network untouched.
-  if (u.pathname.includes("/api/") || u.pathname.includes("/ws/")) return;
+  // The health probe is a live verdict about the server: a cached answer would
+  // say it is reachable long after it stopped being.
+  if (u.pathname.includes("/api/") || u.pathname.includes("/ws/") ||
+      u.pathname.includes("/.well-known/")) return;
   if (e.request.method !== "GET") return;
 
   e.respondWith(

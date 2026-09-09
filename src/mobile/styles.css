@@ -248,6 +248,18 @@ body {
   .pill-btn.pill-working::before { animation: none; }
 }
 
+/* The third face: the install ran and left the server on the build it started
+   from. The del pair where the offer used the add pair, so the row says at a
+   glance which of the two happened, and still a button because trying again is
+   the usual answer to a failed update. */
+.pill-btn.pill-failed {
+  background: var(--diff-del-bg);
+  color: var(--diff-del-ink);
+  border-color: var(--diff-del-ink);
+}
+.pill-btn.pill-failed::before { background: var(--bad); }
+.pill-btn.pill-failed:hover { background: color-mix(in srgb, var(--diff-del-bg) 82%, var(--diff-del-ink)); }
+
 /* ============================================================
    SESSION LIST
    ============================================================ */
@@ -455,6 +467,55 @@ body {
   font-size: 15px;
   display: none;
 }
+/* The unreachable card's three parts: the verdict in the same italic serif the
+   empty state uses, the reason beneath it in plain sans, and the one command to
+   type on the computer set apart as monospace. The command is selectable text,
+   not a button: nothing in the shell runs it. */
+#list-error .hint {
+  margin-top: 10px;
+  font-family: var(--sans);
+  font-style: normal;
+  font-size: 13px;
+  line-height: 1.5;
+}
+#list-error .hint:empty { display: none; }
+#list-error .command {
+  display: block;
+  margin: 12px auto 0;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--umber-tint);
+  border: 1px solid var(--hair);
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 12.5px;
+  color: var(--secondary);
+  text-align: left;
+  white-space: pre;
+  -webkit-user-select: text; user-select: text;
+}
+/* display:block above outranks the [hidden] the verdict sets when it carries
+   no command, so say it again at the same specificity. */
+#list-error .command[hidden] { display: none; }
+/* The one control on the card, under the command it stages. Quiet enough that
+   the command above stays the thing being read: this only saves the typing. */
+#btn-list-type {
+  margin-top: 10px;
+  font-family: var(--sans);
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+#btn-list-type:active { transform: scale(0.96); }
+
 /* The empty state carries the same offer as the eyebrow, where the eye already
    is — the sentence alone left the user hunting for a control. */
 /* Demo row — a card like a session, but dashed so it never reads as one. */
@@ -729,6 +790,20 @@ html.term-open, body.term-open {
 }
 #conn-banner.show { display: flex; }
 #conn-banner .msg { flex: 1 1 auto; min-width: 0; }
+/* The verdict's second line, wrapped onto its own row under the title and the
+   buttons. Empty on a plain reconnect failure, and then it takes no room and
+   the banner keeps its one-line pill shape. */
+#conn-banner .hint {
+  flex: 1 0 100%;
+  order: 3;
+  padding: 2px 8px 2px 0;
+  font-weight: 400;
+  font-size: 12px;
+  line-height: 1.35;
+  opacity: 0.82;
+}
+#conn-banner .hint:empty { display: none; }
+#conn-banner:has(.hint:not(:empty)) { flex-wrap: wrap; border-radius: 16px; }
 #conn-banner button {
   flex: 0 0 auto;
   font-family: var(--sans);
@@ -1682,6 +1757,39 @@ html.term-open, body.term-open {
   cursor: pointer;
 }
 .sheet-install button:active { transform: scale(0.96); }
+/* Pair another device: .sheet-version's quiet register under the fields, with
+   the QR the one loud thing in it. Ruled off above like the blocks that follow
+   the fields elsewhere in the sheet. */
+.sheet-pair {
+  border-top: 1px solid var(--hair);
+  margin-top: 18px;
+  padding-top: 14px;
+}
+.sheet-pair p {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--tertiary);
+  margin: 6px 0 0;
+}
+.sheet-pair code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+/* Nearest-neighbour scaling: the SVG's modules are whole units, and smoothing
+   a QR across a phone's device pixels is what makes one refuse to scan. */
+#pair-qr {
+  display: block;
+  width: 200px;
+  max-width: 100%;
+  margin: 10px 0 2px;
+  border-radius: 8px;
+  image-rendering: pixelated;
+}
+.sheet-pair .pair-note { color: var(--tertiary); }
+/* The one line in the block that is a caution rather than an instruction. */
+.sheet-pair .pair-warn { color: var(--warn); }
 /* First run only: below the fields, so it answers rather than gates. */
 .sheet-faq {
   display: none;
@@ -1699,6 +1807,50 @@ html.term-open, body.term-open {
 .sheet-faq p:last-child { margin-bottom: 0; }
 .sheet-faq b { font-weight: 600; color: var(--secondary); }
 .sheet-faq a { color: var(--umber); text-decoration: underline; }
+/* The first run is two screens, not one: the command to run on the computer,
+   then the address and code that command printed. Someone who has never
+   installed anything cannot answer the fields yet, and a screen that asks
+   anyway reads as a form with the instructions buried above it. Step one is
+   therefore the only thing in the panel while it is up, and the tab strip and
+   the footer go with the fields: there is nothing to switch to and nothing to
+   save until the command has been run. */
+#setup-step-run { display: none; }
+#sheet-settings.setup-run #setup-step-run { display: block; }
+#sheet-settings.setup-run #panel-connection > :not(#setup-step-run) { display: none; }
+#sheet-settings.setup-run .sheet-tabs,
+#sheet-settings.setup-run .actions { display: none; }
+/* The one thing to do on step one once the command has run. Full width because
+   it is the only action on the screen, filled because it is the way forward. */
+#btn-setup-ran {
+  display: block;
+  width: 100%;
+  margin-top: 18px;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 12px 20px;
+  border-radius: 12px;
+  cursor: pointer;
+  border: 1px solid var(--umber);
+  background: var(--umber);
+  color: var(--paper);
+}
+#btn-setup-ran:active { transform: scale(0.96); }
+/* A line of text rather than a button: it undoes a step, it does not take one,
+   and the fields under it are what the screen is for. */
+#btn-setup-back {
+  display: none;
+  margin: 0 0 14px;
+  padding: 0;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  background: transparent;
+  color: var(--umber);
+  cursor: pointer;
+}
+#sheet-settings.setup #btn-setup-back { display: block; }
 .sheet input, .sheet textarea {
   width: 100%;
   font-family: var(--mono);
@@ -1743,7 +1895,7 @@ html.term-open, body.term-open {
      pill. */
   #alt-row { display: none; }
 }
-#btn-report, #btn-update-server {
+#btn-report, #btn-update-server, #btn-update-type {
   flex-shrink: 0;
   font-family: var(--sans);
   font-size: 12px;
@@ -1756,7 +1908,8 @@ html.term-open, body.term-open {
   cursor: pointer;
 }
 #btn-report:active,
-#btn-update-server:active { transform: scale(0.96); }
+#btn-update-server:active,
+#btn-update-type:active { transform: scale(0.96); }
 /* Three stacked rows rather than a segmented control: the names are words of
    unequal length and each carries a second line of its own, which a segment
    cannot hold. Same recessed well and hairline rim as the fields above, so the
@@ -1970,6 +2123,9 @@ html.term-open, body.term-open {
   justify-content: space-between;
   gap: 12px;
   margin-top: 6px;
+  /* Two buttons and a sentence do not fit one phone-width line; let the second
+     one drop rather than squeeze the sentence out of the row. */
+  flex-wrap: wrap;
 }
 #sheet-version-update[hidden] { display: none; }
 #sheet-version-update p { margin: 0; }

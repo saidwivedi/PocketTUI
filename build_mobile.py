@@ -96,6 +96,7 @@ JS_FRAGMENTS = (
     "36-server-version.js",
     "37-git-diff.js",
     "38-scrollback-search.js",
+    "39-type-command.js",
     "27-boot.js",
 )
 
