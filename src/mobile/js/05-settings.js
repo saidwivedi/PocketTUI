@@ -264,7 +264,7 @@ function syncVoiceConfirm() {
 
 // The address was reachable but the code was wrong — send them straight back
 // to re-enter it rather than showing the generic can't-connect toast.
-function rejectToken() {
+function rejectToken(hint) {
   // With the sheet already open the user is where a rejection would send them,
   // and re-opening would rewrite every field from stored cfg — wiping a code
   // they are part-way through typing over a stale token's 401. Leave it alone.
@@ -275,7 +275,9 @@ function rejectToken() {
   selectSettingsTab("connection");
   $("backend-token").value = "";
   $("backend-token").focus();
-  toast("Pairing code rejected");
+  // The server's own reason when it sent one: which code it wanted, or that
+  // this device has simply guessed too often. Given longer to read.
+  toast(hint || "Pairing code rejected", hint ? 3500 : 1800);
 }
 
 $("btn-settings").addEventListener("click", () => openSettings(false));
@@ -359,8 +361,9 @@ $("btn-settings-save").addEventListener("click", () => {
   }
   // Reload against the new backend so a bad URL surfaces straight away. Not
   // awaited either way: the list is being built behind the voice step, and is
-  // there the moment it closes.
-  loadSessions(true);
+  // there the moment it closes. Probe first: an address that was typed a
+  // moment ago is exactly the one worth naming the failure of.
+  loadSessionsAfterProbe();
 });
 // Ends the first-run voice step. The tap is the choice — including the one the
 // picker had already resolved on the user's behalf, which is written here so an

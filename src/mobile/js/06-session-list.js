@@ -111,9 +111,17 @@ async function loadSessions(spin=false, quiet=false) {
   const gen = ++sessListGen;
   const btn = $("btn-reload");
   if (spin) btn.classList.add("spin");
+  // Out here so the catch can see what the server answered, if anything.
+  let r = null;
   try {
-    const r = await fetch(apiURL("api/sessions"), { cache: "no-store", headers: authHeaders() });
-    if (r.status === 401) { rejectToken(); return; }
+    r = await fetch(apiURL("api/sessions"), { cache: "no-store", headers: authHeaders() });
+    if (r.status === 401) {
+      // The server says why it refused; pass that through rather than guessing.
+      let hint = "";
+      try { hint = (await r.json()).hint || ""; } catch (e) {}
+      rejectToken(hint);
+      return;
+    }
     if (!r.ok) throw new Error("HTTP " + r.status);
     const data = await r.json();
     if (gen !== sessListGen) return;
@@ -129,11 +137,47 @@ async function loadSessions(spin=false, quiet=false) {
     $("list").innerHTML = "";
     if (needsSetup()) $("list").appendChild(demoCard());
     $("list-empty").style.display = "none";
+    // Ask the health descriptor what is actually wrong, unless the device
+    // itself is off the network and the answer is already known.
+    const probe = netOffline() ? null : await probeServer();
+    if (gen !== sessListGen) return;
+    const v = classifyFailure(e, r, probe);
+    renderListError(v);
     $("list-error").style.display = "block";
-    if (!quiet) toast("Couldn't load sessions");
+    if (!quiet) toast(v.title);
   } finally {
     btn.classList.remove("spin");
   }
+}
+
+// The failure card, in three parts: what happened, why, and the one command to
+// type on the computer. The command is text to read; nothing here runs it.
+function renderListError(v) {
+  const box = $("list-error");
+  box.querySelector(".title").textContent = v.title;
+  box.querySelector(".hint").textContent = v.hint || "";
+  const cmd = box.querySelector(".command");
+  cmd.textContent = v.command || "";
+  cmd.hidden = !v.command;
+}
+
+// For the paths where the address itself has just changed or come back: probe
+// before spending the pairing code, so a wrong address gets its own verdict
+// instead of the generic couldn't-load card an authenticated call would earn.
+// The periodic poll does it the other way round, and only probes once the
+// authenticated call has already failed.
+async function loadSessionsAfterProbe() {
+  if (needsSetup()) { loadSessions(true); return; }
+  const stop = (v) => {
+    renderListError(v);
+    $("list-empty").style.display = "none";
+    $("list-error").style.display = "block";
+    toast(v.title, 3500);
+  };
+  if (netOffline()) { stop(classifyFailure(null, null, null)); return; }
+  const p = await probeServer();
+  if (p.kind !== "ok" && p.kind !== "old_server") { stop(classifyFailure(null, null, p)); return; }
+  loadSessions(true);
 }
 
 // Always last in the list while unpaired: an offline terminal to look around

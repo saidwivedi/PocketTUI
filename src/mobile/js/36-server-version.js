@@ -66,6 +66,14 @@ const UPDATE_GIVE_UP_MS = 5 * 60 * 1000;
 // Said whenever the install stops being watchable without the server having
 // come back newer. It names the session because the pane is where the reason is.
 const UPDATE_FAILED = "Update did not finish. Open the pockettui-update session to see why.";
+// The same news with the one detail that changes what to do about it: the
+// installer put the old version back, so the server on the other end is working
+// and is simply the build it was before.
+const UPDATE_ROLLED_BACK = "Update failed and was rolled back. Open the pockettui-update session to see why.";
+// True from the moment a watch ends badly until a fresh one starts or one
+// lands. The pill keeps saying so, because a toast is gone in four seconds and
+// "did that update work" is a question asked long afterwards.
+let updateFailed = false;
 
 // Ask the computer what it is and what it can do. Any failure leaves the last
 // answer standing: a dropped tailnet is not news about the server's build.
@@ -191,8 +199,13 @@ function syncUpdatePill(stale) {
   // the pulsing dot is what says the wait is still alive — the label alone
   // could be a screen that stopped updating an hour ago.
   pill.classList.toggle("pill-working", updating);
+  // A third face for the install that did not take. It stays pressable: the
+  // thing to do about a failed update is usually to try it once more.
+  pill.classList.toggle("pill-failed", !updating && updateFailed);
   pill.disabled = updating;
-  pill.textContent = updating ? "Updating…" : "Update v" + latestVersion;
+  pill.textContent = updating ? "Updating…"
+    : updateFailed ? "Update failed"
+    : "Update v" + latestVersion;
 }
 
 $("btn-update-rail").addEventListener("click", async () => {
@@ -244,6 +257,9 @@ async function startServerUpdate() {
 function beginUpdateWatch() {
   if (updating) return;
   updating = true;
+  // A watch that is starting is the current news; whatever the last one ended
+  // as is not.
+  updateFailed = false;
   updateStartedAt = Date.now();
   syncVersionRow();
   updateTimer = setTimeout(pollUpdate, UPDATE_POLL_MS);
@@ -252,8 +268,9 @@ function beginUpdateWatch() {
 // Stop watching, saying why. The notice re-renders from the plain state, which
 // means it disappears if the server came back newer and goes back to offering
 // the update if it did not.
-function endUpdateWatch(message) {
+function endUpdateWatch(message, failed = false) {
   updating = false;
+  updateFailed = !!failed;
   clearTimeout(updateTimer);
   updateTimer = null;
   syncVersionRow();
@@ -286,12 +303,50 @@ async function updateSessionAlive() {
   }
 }
 
+// What install.sh recorded about this update, or null when the question could
+// not be asked. Strictly gated: a server too old for the route answers 404, and
+// reading that as "no update state" would be a guess about a file the shell
+// cannot see. Unlike the session probe below this is a verdict rather than an
+// inference — the installer is the only thing that knows it rolled back.
+async function updateStatus() {
+  if (!hasCapStrict("update_status")) return null;
+  try {
+    const r = await fetch(apiURL("api/update_status"), {
+      cache: "no-store", headers: authHeaders(),
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) {
+    return null;
+  }
+}
+
 // One round of "is it done yet". Most rounds during an install fail outright —
 // the service is restarting under them — and fetchServerVersion already treats
 // that as no news, which is exactly right here.
 async function pollUpdate() {
   await fetchServerVersion();
   if (!updating || finishIfLanded()) return;
+  // Where the server can say what happened, that answer comes first.
+  const st = await updateStatus();
+  const status = st && st.state ? st.state.status : "";
+  if (status === "ok") {
+    // The install is over and the service is back; the version is the only
+    // thing left to wait for, so ask once more and keep waiting if it is
+    // mid-restart.
+    await fetchServerVersion();
+    if (!updating || finishIfLanded()) return;
+  } else if (status === "rolled_back" || status === "failed") {
+    endUpdateWatch(status === "rolled_back" ? UPDATE_ROLLED_BACK : UPDATE_FAILED, true);
+    return;
+  } else if (status === "running" && st.session_alive === false &&
+             Date.now() - Number(st.state.ts || 0) * 1000 > 60000) {
+    // "running" with nothing running it: the installer died without recording
+    // an end. The minute of slack is for the gap between the file being written
+    // and the session being visible.
+    endUpdateWatch(UPDATE_FAILED, true);
+    return;
+  }
   // The session ending is a hint, not a verdict: the wrapper can exit having
   // failed, and it can also finish a beat before the restarted server is
   // answering again. So the version gets one more ask, and only a server that
@@ -299,14 +354,14 @@ async function pollUpdate() {
   if (await updateSessionAlive() === false) {
     await fetchServerVersion();
     if (!updating || finishIfLanded()) return;
-    endUpdateWatch(UPDATE_FAILED);
+    endUpdateWatch(UPDATE_FAILED, true);
     return;
   }
   // Nothing has been heard for long enough that waiting is no longer useful.
   // The offer comes back so the user can try again; the pane says why it needs
   // trying again.
   if (Date.now() - updateStartedAt > UPDATE_GIVE_UP_MS) {
-    endUpdateWatch(UPDATE_FAILED);
+    endUpdateWatch(UPDATE_FAILED, true);
     return;
   }
   updateTimer = setTimeout(pollUpdate, UPDATE_POLL_MS);
@@ -319,6 +374,20 @@ async function pollUpdate() {
 async function resumeUpdateIfRunning() {
   if (updateResumeChecked || demoMode || !hasCap("update")) return;
   updateResumeChecked = true;
+  // The record outlives the session, which is what makes it the better question
+  // here: a reload after a rollback finds no pane at all, only the file saying
+  // why there is none.
+  const st = await updateStatus();
+  if (st) {
+    const status = st.state ? st.state.status : "";
+    if (status === "rolled_back" || status === "failed") {
+      updateFailed = true;
+      syncVersionRow();
+      return;
+    }
+    if (st.session_alive === true) beginUpdateWatch();
+    return;
+  }
   if (await updateSessionAlive() === true) beginUpdateWatch();
 }
 

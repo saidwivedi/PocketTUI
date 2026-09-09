@@ -331,6 +331,32 @@ def test_session_endpoints_refuse_without_a_token(client, monkeypatch):
         assert r.status_code == 401, route
 
 
+def test_the_401_says_which_refusal_it_is(client, monkeypatch):
+    """The body carries a hint, so the phone can say why rather than guess.
+
+    Nothing about the filesystem is in it: an unauthenticated caller learns
+    only what they already know, that the code was wrong or came too often.
+    """
+    fake(monkeypatch, RENAMED_BASE)
+    monkeypatch.setattr(A, "AUTH_TOKEN", TOKEN)
+    r = client.get("/api/sessions", headers={A.TOKEN_HEADER: "WRONGCODE"})
+    assert r.status_code == 401
+    assert r.json() == {"error": "bad token", "hint": A.AUTH_HINTS["bad token"]}
+
+    # Past the free tries the reason changes, and so does the hint.
+    for _ in range(A.AuthLimiter.FREE_TRIES):
+        client.get("/api/sessions", headers={A.TOKEN_HEADER: "WRONGCODE"})
+    r = client.get("/api/sessions", headers={A.TOKEN_HEADER: "WRONGCODE"})
+    assert r.status_code == 401
+    assert r.json() == {
+        "error": "too many attempts",
+        "hint": A.AUTH_HINTS["too many attempts"],
+    }
+    for hint in A.AUTH_HINTS.values():
+        assert str(A.TOKEN_PATH) not in hint
+        assert str(A.HERE) not in hint
+
+
 def test_dbg_logs_every_line_and_answers_with_no_body(client, monkeypatch, capsys):
     """The phone's debug tail reaches the journal and nothing comes back."""
     monkeypatch.setattr(A, "AUTH_TOKEN", TOKEN)
