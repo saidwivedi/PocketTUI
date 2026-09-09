@@ -595,13 +595,30 @@
        changes the box. -->
   <div class="sheet-panels">
   <div class="sheet-panel" id="panel-connection" role="tabpanel" aria-labelledby="tab-connection">
-    <div class="sheet-install" id="sheet-install">
-      <label>Install the backend</label>
-      <div class="cmd">
-        <code id="install-cmd">curl -fsSL https://pockettui.com/install.sh | bash</code>
-        <button type="button" id="btn-copy-install">Copy</button>
+    <!-- Step one of the first run. The backend has to exist before an address
+         can point at it, so the command comes on its own screen and nothing is
+         asked for until it has been run. The FAQ lives here rather than under
+         the fields because this is the screen someone reads before deciding to
+         pipe a stranger's script into bash. -->
+    <div id="setup-step-run">
+      <div class="sheet-install" id="sheet-install">
+        <label>Install the backend</label>
+        <div class="cmd">
+          <code id="install-cmd">curl -fsSL https://pockettui.com/install.sh | bash</code>
+          <button type="button" id="btn-copy-install">Copy</button>
+        </div>
       </div>
+      <div class="sheet-faq" id="sheet-faq">
+        <p><b>What is this?</b> Your machine's tmux sessions, from any device.</p>
+        <p><b>How does it work?</b> xterm.js relays keys over a WebSocket straight to
+          your machine, authenticated by the pairing code the installer printed.
+          Nothing is stored off-device.</p>
+      </div>
+      <button type="button" id="btn-setup-ran">I ran it</button>
     </div>
+    <!-- Step two's way back, for someone who came through before running the
+         command. -->
+    <button type="button" id="btn-setup-back">&larr; Back</button>
     <label for="backend-url">Computer address</label>
     <input id="backend-url" type="url" inputmode="url" autocapitalize="off" autocorrect="off"
            spellcheck="false" placeholder="my-host.example.net/pockettui">
@@ -627,12 +644,6 @@
       <p>Code <code id="pair-code"></code></p>
       <p class="pair-note">On an iPhone, add PocketTUI to the Home Screen first (Share, then Add to Home Screen), then scan from the camera.</p>
       <p class="pair-warn">Anyone who scans this gets this computer's shell. Don't screenshot or share it.</p>
-    </div>
-    <div class="sheet-faq" id="sheet-faq">
-      <p><b>What is this?</b> Your machine's tmux sessions, from any device.</p>
-      <p><b>How does it work?</b> xterm.js relays keys over a WebSocket straight to
-        your machine, authenticated by the pairing code the installer printed.
-        Nothing is stored off-device.</p>
     </div>
   </div>
 
