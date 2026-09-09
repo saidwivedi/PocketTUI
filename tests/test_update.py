@@ -130,7 +130,9 @@ def test_update_runs_the_wrapper_in_a_watchable_session(client, fake_wrapper):
     # second installer over the first.
     again = client.post("/api/update")
     assert again.status_code == 409
-    assert again.json() == {"error": "already_running"}
+    assert again.json()["error"] == "already_running"
+    # And it says where to go and look instead of just refusing.
+    assert "pockettui-update" in again.json()["hint"]
 
     text = read_when(fake_wrapper, "tty=")
     assert "argv=update" in text
@@ -190,3 +192,83 @@ def test_update_command_needs_tmux(monkeypatch, tmp_path):
     monkeypatch.setattr(A.shutil, "which",
                         lambda name: str(wrapper) if name == "pockettui" else None)
     assert A.update_command() is None
+
+
+# ---------------------------------------------------------------------------
+# --selfcheck: the gate install.sh puts in front of the restart
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not A.HTML_PATH.exists(),
+                    reason="the shell has not been built into this checkout")
+def test_selfcheck_passes_on_a_working_copy():
+    """The whole point is that it can be run against the file just unpacked."""
+    r = subprocess.run([sys.executable, str(Path(A.__file__).resolve()), "--selfcheck"],
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.startswith("selfcheck ok"), r.stdout
+
+
+def test_selfcheck_fails_on_a_file_that_will_not_load(tmp_path):
+    """A truncated download is the case this exists for, and it must exit 1 —
+    install.sh reads nothing but the status."""
+    broken = tmp_path / "app.py"
+    broken.write_text(Path(A.__file__).read_text(encoding="utf-8") + "\ndef (:\n",
+                      encoding="utf-8")
+    r = subprocess.run([sys.executable, str(broken), "--selfcheck"],
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 1
+    assert "selfcheck ok" not in r.stdout
+
+
+def test_selfcheck_names_a_missing_shell(monkeypatch, tmp_path, capsys):
+    """An app.py that imports but has no page to serve is still a bad install."""
+    monkeypatch.setattr(A, "HTML_PATH", tmp_path / "mobile_app.html")
+    assert A.selfcheck() == 1
+    assert "is missing" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# /api/update_status: what the installer wrote down, read back by the phone
+# ---------------------------------------------------------------------------
+
+def test_capability_update_status_is_true():
+    assert A.server_capabilities()["update_status"] is True
+
+
+def test_no_state_file_is_no_state(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(A, "UPDATE_STATE_PATH", tmp_path / "update-state.json")
+    r = client.get("/api/update_status")
+    assert r.status_code == 200
+    assert r.json() == {"state": None, "session_alive": False}
+
+
+def test_the_state_is_handed_back_as_the_installer_wrote_it(client, monkeypatch,
+                                                            tmp_path):
+    state = tmp_path / "update-state.json"
+    state.write_text('{"status":"rolled_back","from":"0.9.12","to":"0.9.13",'
+                     '"exit":1,"ts":1757500000}\n')
+    monkeypatch.setattr(A, "UPDATE_STATE_PATH", state)
+    d = client.get("/api/update_status").json()
+    assert d["state"] == {"status": "rolled_back", "from": "0.9.12",
+                          "to": "0.9.13", "exit": 1, "ts": 1757500000}
+
+
+def test_a_half_written_state_reads_as_none(client, monkeypatch, tmp_path):
+    """The file is renamed into place, so this should be impossible — and a
+    shell that got half an object would report a failure that never happened."""
+    state = tmp_path / "update-state.json"
+    state.write_text('{"status":"run')
+    monkeypatch.setattr(A, "UPDATE_STATE_PATH", state)
+    assert client.get("/api/update_status").json()["state"] is None
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
+def test_a_live_update_session_is_reported_as_such(client, fake_wrapper,
+                                                   monkeypatch, tmp_path):
+    """The other half of the answer: a record can say "running" long after the
+    thing that wrote it stopped, so the session is asked about separately."""
+    monkeypatch.setattr(A, "UPDATE_STATE_PATH", tmp_path / "update-state.json")
+    assert client.post("/api/update").status_code == 200
+    assert client.get("/api/update_status").json()["session_alive"] is True
+    A.tmux("kill-session", "-t", f"={A.UPDATE_SESSION}")
+    assert client.get("/api/update_status").json()["session_alive"] is False

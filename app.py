@@ -27,6 +27,7 @@ import fcntl
 import getpass
 import hashlib
 import hmac
+import importlib
 import json
 import math
 import mimetypes
@@ -57,6 +58,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 import uvicorn
 
+import qrcodegen
 import resolver
 
 HERE = Path(__file__).resolve().parent
@@ -67,6 +69,13 @@ VOICE_DIR = HERE / "voice"
 # Stamped into the tarball by deploy_cloudflare.sh. Absent from a git checkout
 # and from installs made before versioning existed, which reads as "unknown".
 VERSION_PATH = HERE / "VERSION"
+# Written while the server runs and removed when it stops, so the installer can
+# tell "never started" from "started and died" from "alive but not answering".
+RUNTIME_PATH = HERE / "runtime.json"
+# install.sh's own record of the last update: running, ok, rolled_back, failed.
+# The phone cannot watch an install that restarts the service under it, so the
+# verdict has to survive on disk for it to read back afterwards.
+UPDATE_STATE_PATH = HERE / "update-state.json"
 
 
 def installed_version() -> str:
@@ -168,6 +177,62 @@ def normalize_token(raw: str) -> str:
 def format_token(token: str) -> str:
     """Group the canonical form as XXXXX-XXXXX — far easier to read off a screen."""
     return f"{token[:5]}-{token[5:]}"
+
+
+def pair_payload(address: str | None, token: str) -> str:
+    """The body of a #pair= fragment: base64url JSON, padding stripped.
+
+    One definition for the two places that hand a phone its pairing: the
+    installer's QR at the end of a fresh install, and /api/pair_qr.svg for a
+    device that is already paired. "a" is the address exactly as the settings
+    sheet's field expects it, with no scheme forced (normalizeBackend adds
+    one), and is left out entirely when the backend serves the shell itself —
+    there the phone is already on the right origin and only the code is new.
+    """
+    payload = {"v": 1, "t": token}
+    if address:
+        payload["a"] = address
+    enc = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).rstrip(b"=")
+    return enc.decode()
+
+
+def pair_url(shell_base: str, address: str | None, token: str) -> str:
+    """The whole link a QR carries: the shell's URL with the payload behind #.
+
+    A fragment rather than a query parameter so the secret never leaves the
+    browser: it is not sent to the server that serves the shell, and it is not
+    written into a proxy's access log.
+    """
+    return shell_base + "#pair=" + pair_payload(address, token)
+
+
+def qr_svg(text: str, border: int = 4) -> str:
+    """`text` as a self-contained QR SVG.
+
+    Every dark module is one subpath of a single <path>, which keeps the
+    document small enough to hand back on every Settings open, and the whole
+    thing references nothing outside itself so it renders from a blob: URL.
+    The white rect is the quiet zone as much as the background: a QR read off a
+    dark-themed screen needs the light border to be actually light.
+    """
+    qr = qrcodegen.QrCode.encode_text(text, qrcodegen.QrCode.Ecc.MEDIUM)
+    size = qr.get_size()
+    dim = size + border * 2
+    modules = " ".join(
+        f"M{x + border},{y + border}h1v1h-1z"
+        for y in range(size)
+        for x in range(size)
+        if qr.get_module(x, y)
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {dim} {dim}" '
+        f'shape-rendering="crispEdges">'
+        f'<rect width="{dim}" height="{dim}" fill="#ffffff"/>'
+        f'<path d="{modules}" fill="#000000"/>'
+        f'</svg>'
+    )
 
 
 def generate_token() -> str:
@@ -362,6 +427,22 @@ def peer_ip(scope_client) -> str:
     return scope_client[0] if scope_client else "unknown"
 
 
+# What each refusal reason means to the person holding the phone. The 401 body
+# carries one so the shell can say something true about *this* refusal instead
+# of its own generic guess. Deliberately nothing about the filesystem: an
+# unauthenticated caller learns only what they already know, that they typed
+# the wrong code or typed it too often.
+AUTH_HINTS = {
+    "bad token": (
+        "The pairing code did not match the one on the computer. Re-run the "
+        "installer to see it again, or run app.py --rotate-token for a new one."
+    ),
+    "too many attempts": (
+        "Too many wrong codes from this device. Wait a minute and try again."
+    ),
+}
+
+
 def check_auth(candidate: str, ip: str, where: str) -> tuple[bool, str]:
     """Throttled token check. Returns (ok, reason) — reason is empty when ok.
 
@@ -408,7 +489,8 @@ async def require_token(request: Request, call_next):
         f"http {request.url.path}",
     )
     if not ok:
-        return no_store(JSONResponse({"error": reason}, status_code=401))
+        return no_store(JSONResponse(
+            {"error": reason, "hint": AUTH_HINTS.get(reason, "")}, status_code=401))
     return await call_next(request)
 
 
@@ -1065,6 +1147,22 @@ def index() -> Response:
     return no_store(Response(html, media_type="text/html; charset=utf-8"))
 
 
+@app.get("/.well-known/pockettui")
+def well_known() -> Response:
+    """Is a PocketTUI backend answering here, and which build is it?
+
+    Ungated on purpose: the phone asks this exactly when its token is not
+    working or nothing is answering, so a gated probe could only ever say
+    "401" where the useful answer is "a proxy is up but PocketTUI is not".
+    It is also the installer's readiness probe. For that reason the body
+    carries nothing about the host: no hostname, no port, no paths, no
+    capabilities. A version and a product name are what a reachability check
+    needs and all an unauthenticated caller gets.
+    """
+    return no_store(JSONResponse({"product": "pockettui",
+                                  "version": installed_version()}))
+
+
 @app.get("/manifest.json")
 def manifest() -> Response:
     data = {
@@ -1194,6 +1292,18 @@ def server_capabilities() -> dict:
         # would do something. Frozen at import like everything else here, which
         # is fine: the wrapper is written by the same run that writes app.py.
         "update": update_command() is not None,
+        # /api/pair_qr.svg — the Settings card that pairs a second device
+        # without going back to the computer for the installer's printout.
+        "pair_qr": True,
+        # /api/update_status — the installer's written verdict on the last
+        # update. Strictly checked by the shell: an older server has no file
+        # and no route, and guessing "yes" would read a 404 as a failed update.
+        "update_status": True,
+        # /api/session/type — the "Type it for me" button, which puts a command
+        # at a prompt without running it. Strictly checked by the shell: an
+        # older server answers the POST with a 404, and offering a button that
+        # cannot work is worse than leaving the command to be read and typed.
+        "type": True,
     }
 
 
@@ -1211,6 +1321,34 @@ def api_version() -> Response:
     """
     return no_store(JSONResponse({"version": installed_version(),
                                   "capabilities": CAPABILITIES}))
+
+
+# What a pairing QR may point at. The base is a shell URL this server is being
+# told to draw, not one it fetches, so the check is only that it is an http(s)
+# URL with no fragment of its own — the fragment is what the payload becomes.
+PAIR_BASE_RE = re.compile(r"^https?://[^\s#]{1,512}$")
+PAIR_ADDR_RE = re.compile(r"^[^\s#]{0,256}$")
+
+
+@app.get("/api/pair_qr.svg")
+def api_pair_qr(base: str = "", a: str = "") -> Response:
+    """A QR that pairs another device with this computer.
+
+    The caller passes only the two things it knows and this server does not —
+    which shell URL to open and which address to enter — and never the pairing
+    code: the token goes in here, from this process's own AUTH_TOKEN, so a
+    secret is not carried in a query string and cannot be read out of anyone's
+    logs or history. Gated like every other /api/ route, so the device asking
+    for it is one that already holds the code it is about to hand on.
+    """
+    if not PAIR_BASE_RE.match(base):
+        return no_store(JSONResponse({"error": "bad_base"}, status_code=400))
+    if not PAIR_ADDR_RE.match(a):
+        return no_store(JSONResponse({"error": "bad_address"}, status_code=400))
+    if AUTH_TOKEN is None:
+        return no_store(JSONResponse({"error": "no_token"}, status_code=404))
+    svg = qr_svg(pair_url(base, a or None, AUTH_TOKEN))
+    return no_store(Response(svg, media_type="image/svg+xml"))
 
 
 @app.get("/api/sessions")
@@ -2673,6 +2811,59 @@ def api_new_session(request: Request, body: dict = Body(...)) -> Response:
     return no_store(JSONResponse({"session": name}))
 
 
+# A generous line and no more: what this route is for is a command the user
+# would otherwise retype by hand, and nothing that long is one.
+TYPE_MAX = 4096
+
+
+@app.post("/api/session/type")
+def api_session_type(request: Request, body: dict = Body(...)) -> Response:
+    """Put text at a session's prompt without running it.
+
+    The phone's failure cards and the update notice each name a command to run
+    on the computer, and this is the shortcut past retyping it on a phone
+    keyboard. It types and stops there: `send-keys -l` sends the text
+    literally, no Enter is ever sent, and every newline is stripped here — so
+    what lands is a line sitting at the prompt, and the decision to run it
+    stays with the person reading it.
+
+    Throttled on the same bucket as create/kill/rename, because it is the same
+    kind of act: a human doing something to a session a few times an hour.
+    """
+    refusal = throttled("session_mutate", RATE_SESSION_MUTATE, request)
+    if refusal is not None:
+        return refusal
+
+    text = str(body.get("text", ""))
+    if len(text) > TYPE_MAX:
+        return JSONResponse({"error": "too_long"}, status_code=413)
+    # A newline is the character that would submit the line, so it never
+    # survives the trip in either spelling. A caller that sent one gets the
+    # rest of its text typed rather than an error: the contract is that this
+    # route cannot submit, not that it is hard to call.
+    text = text.replace("\r", "").replace("\n", "")
+    if not text:
+        return JSONResponse({"error": "empty"}, status_code=400)
+
+    dev = str(body.get("dev", ""))
+    # As in api_session_cwd: the device's own grouped view is the pane the user
+    # is looking at, so the text has to land there rather than in the base.
+    target = resolve_target(str(body.get("name", "")),
+                            dev if DEV_RE.match(dev) else "")
+    if not target:
+        return JSONResponse({"error": "no such session"}, status_code=404)
+    # "=name:" and not "=name": send-keys takes a pane, and a bare session name
+    # is not one — tmux answers "can't find pane". The trailing colon names the
+    # session's current window and its active pane, which is the pane the phone
+    # is attached to; the = keeps the name exact, so typing at "work" can never
+    # land in "work2" by prefix match.
+    rc, _ = tmux("send-keys", "-t", f"={target}:", "-l", "--", text)
+    if rc != 0:
+        return JSONResponse({"error": "tmux would not take the text."},
+                            status_code=500)
+    return no_store(JSONResponse({"session": target, "chars": len(text)}))
+
+
 @app.post("/api/update")
 def api_update() -> Response:
     """Run `pockettui update` in a detached tmux session named pockettui-update.
@@ -2685,7 +2876,11 @@ def api_update() -> Response:
     if wrapper is None:
         return JSONResponse({"error": "update_unavailable"}, status_code=501)
     if session_exists(UPDATE_SESSION):
-        return JSONResponse({"error": "already_running"}, status_code=409)
+        return JSONResponse({
+            "error": "already_running",
+            "hint": "An update is already running. Open the pockettui-update "
+                    "session to watch it.",
+        }, status_code=409)
 
     # os.setsid() before the exec is what keeps the installer non-interactive:
     # it drops the controlling terminal, so install.sh's `(exec 3<>/dev/tty)`
@@ -2719,6 +2914,31 @@ def api_update() -> Response:
     # As in api_new_session: a server this command started has no hook yet.
     install_title_hook()
     return no_store(JSONResponse({"session": UPDATE_SESSION}))
+
+
+@app.get("/api/update_status")
+def api_update_status() -> Response:
+    """What install.sh recorded about the last update, and whether one is live.
+
+    An update restarts this service, so the phone that started it loses the
+    socket it was watching and comes back with no memory of what happened. The
+    session going away is not an answer either — a wrapper that failed and one
+    that succeeded both leave nothing behind. install.sh writes its own verdict
+    to update-state.json instead, and this hands it over as it stands.
+
+    Anything unreadable reads as no state at all: the file is written whole
+    through a rename, so the only ways to get here are "no update has run" and
+    "something truncated it", and neither is news the shell can act on.
+    """
+    state = None
+    try:
+        state = json.loads(UPDATE_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = None
+    if not isinstance(state, dict):
+        state = None
+    return no_store(JSONResponse({"state": state,
+                                  "session_alive": session_exists(UPDATE_SESSION)}))
 
 
 # Paths printed by a remote session may name storage under a mount point that
@@ -5993,6 +6213,62 @@ def die(msg: str) -> None:
     raise SystemExit(1)
 
 
+def write_runtime(host: str, port: int) -> None:
+    """Record that this process is the backend, for the installer to read.
+
+    Never fatal: a read-only install dir costs the installer its sharper
+    diagnosis, not the user their server.
+    """
+    try:
+        atomic_write(RUNTIME_PATH, json.dumps({
+            "version": installed_version(),
+            "pid": os.getpid(),
+            "host": host,
+            "port": port,
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }).encode(), 0o644)
+    except OSError as exc:
+        log(f"could not write {RUNTIME_PATH}: {exc}")
+
+
+def clear_runtime() -> None:
+    """Drop the record on the way out, so a stale file never claims a pid.
+
+    A kill -9 leaves it behind anyway, which is why the reader checks the pid
+    rather than trusting the file's existence.
+    """
+    try:
+        RUNTIME_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def selfcheck() -> int:
+    """Does this copy of PocketTUI load? The installer's gate before a restart.
+
+    An update that unpacked a file the interpreter cannot import is only found
+    out when the service fails to answer, minutes later, with the old code
+    already overwritten. Running the new app.py with --selfcheck first turns
+    that into something install.sh can act on while it still has the old files
+    in .prev: reaching this function at all proves the module imported, and the
+    two things a bare import does not cover — the built shell on disk and the
+    modules the routes reach for — are checked here.
+
+    Nothing is started, no port is bound and no tmux is touched, so it is safe
+    to run against a live install.
+    """
+    try:
+        if not HTML_PATH.exists():
+            raise FileNotFoundError(f"{HTML_PATH} is missing")
+        for name in ("qrcodegen", "resolver"):
+            importlib.import_module(name)
+    except Exception as exc:
+        print(f"selfcheck failed: {exc}", file=sys.stderr, flush=True)
+        return 1
+    print(f"selfcheck ok {installed_version() or 'unknown'}", flush=True)
+    return 0
+
+
 def rotate_token() -> None:
     """Replace the token on disk and print the new one.
 
@@ -6014,6 +6290,9 @@ def main() -> None:
     parser.add_argument("--log-level", default="info")
     parser.add_argument("--rotate-token", action="store_true",
                         help="generate a new pairing token, print it, and exit")
+    parser.add_argument("--selfcheck", action="store_true",
+                        help="import check: exit 0 if this file and its "
+                             "dependencies load, 1 otherwise")
     parser.add_argument("--no-auth", action="store_true",
                         help="serve with no token — refused unless bound to loopback")
     args = parser.parse_args()
@@ -6021,6 +6300,9 @@ def main() -> None:
     if args.rotate_token:
         rotate_token()
         return
+
+    if args.selfcheck:
+        raise SystemExit(selfcheck())
 
     global AUTH_TOKEN
     if args.no_auth:
@@ -6058,7 +6340,18 @@ def main() -> None:
 
     install_title_hook()
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    write_runtime(args.host, args.port)
+    # uvicorn takes SIGINT and SIGTERM for its own graceful shutdown and then
+    # re-raises whichever it caught, under the handlers that were in place
+    # before it ran. SIGINT's default raises KeyboardInterrupt, so the finally
+    # below runs; SIGTERM's default ends the process where it stands, and
+    # runtime.json would survive it claiming a pid that is gone. Making SIGTERM
+    # a normal exit is all it takes for the cleanup to happen either way.
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    finally:
+        clear_runtime()
 
 
 if __name__ == "__main__":
