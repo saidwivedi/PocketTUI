@@ -2277,7 +2277,7 @@ html.term-open, body.term-open {
 #btn-sheet-demo {
   display: none;
   position: absolute;
-  top: 20px; right: 22px;
+  top: 16px; right: 22px;
   font-family: var(--sans);
   font-size: 13px;
   font-weight: 500;
