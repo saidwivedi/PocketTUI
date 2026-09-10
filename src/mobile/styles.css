@@ -1727,6 +1727,7 @@ html.term-open, body.term-open {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  margin: 0 0 8px;
   background: var(--card-2);
   border: 1px solid var(--hair);
   border-radius: 10px;
@@ -1757,6 +1758,10 @@ html.term-open, body.term-open {
   cursor: pointer;
 }
 .sheet-install button:active { transform: scale(0.96); }
+/* A second block heading in the same run of prose; .sheet input + label's gap,
+   for the same reason. */
+.sheet-install p + label { margin-top: 18px; }
+.sheet-install a { color: var(--umber); text-decoration: underline; }
 /* Pair another device: .sheet-version's quiet register under the fields, with
    the QR the one loud thing in it. Ruled off above like the blocks that follow
    the fields elsewhere in the sheet. */

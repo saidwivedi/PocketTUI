@@ -314,14 +314,18 @@ $("btn-sheet-demo").addEventListener("click", () => {
 // it either way. Back for the case that answer was optimistic.
 $("btn-setup-ran").addEventListener("click", () => showSetupStep(2));
 $("btn-setup-back").addEventListener("click", () => showSetupStep(1));
-$("btn-copy-install").addEventListener("click", () => {
-  const cmd = $("install-cmd").textContent;
+// Step one is three commands now, and each Copy takes the one beside it: the
+// button names its own code rather than the handler knowing the list.
+$("sheet-install").addEventListener("click", (e) => {
+  const btn = e.target && e.target.closest("button[data-copy]");
+  if (!btn) return;
+  const cmd = $(btn.dataset.copy).textContent;
   if (!navigator.clipboard || !navigator.clipboard.writeText) {
     toast("Clipboard unavailable");
     return;
   }
   navigator.clipboard.writeText(cmd)
-    .then(() => toast("Install command copied"))
+    .then(() => toast("Command copied"))
     .catch(() => toast("Clipboard blocked"));
 });
 // Drops the stored address and pairing code, so this device is no longer paired
