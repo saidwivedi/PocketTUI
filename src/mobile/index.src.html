@@ -602,11 +602,36 @@
          pipe a stranger's script into bash. -->
     <div id="setup-step-run">
       <div class="sheet-install" id="sheet-install">
+        <!-- The same guide as the landing page's Install section, in the order
+             it has to happen: a machine the phone cannot reach is not fixed by
+             an installer, so the network comes first and the backend second. -->
+        <label>Reach the machine</label>
+        <p>Only if the computer is not directly reachable from this device. On the
+          same network its local IP is enough &mdash; skip to the next block.</p>
+        <p>Install Tailscale on the computer and on this device. Packages for every
+          platform are at <a href="https://pkgs.tailscale.com/stable/" target="_blank"
+          rel="noopener">pkgs.tailscale.com/stable</a>.</p>
+        <p>Bring it up:</p>
+        <div class="cmd">
+          <code id="cmd-ts-up">sudo tailscale up</code>
+          <button type="button" data-copy="cmd-ts-up">Copy</button>
+        </div>
+        <p>It prints a URL. Open it to sign in to your tailnet.</p>
+        <p>Publish the port:</p>
+        <div class="cmd">
+          <code id="cmd-ts-serve">sudo tailscale serve --bg --set-path /pockettui 5560</code>
+          <button type="button" data-copy="cmd-ts-serve">Copy</button>
+        </div>
+        <p>The first time it may print a link to enable HTTPS; approve it and the
+          command prints your address,
+          <code>https://your-machine.your-tailnet.ts.net/pockettui</code>. That is the
+          address for the next screen.</p>
         <label>Install the backend</label>
         <div class="cmd">
           <code id="install-cmd">curl -fsSL https://pockettui.com/install.sh | bash</code>
-          <button type="button" id="btn-copy-install">Copy</button>
+          <button type="button" id="btn-copy-install" data-copy="install-cmd">Copy</button>
         </div>
+        <p>It prints the address and pairing code to enter on the next screen.</p>
       </div>
       <div class="sheet-faq" id="sheet-faq">
         <p><b>What is this?</b> Your machine's tmux sessions, from any device.</p>
