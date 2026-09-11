@@ -314,6 +314,13 @@ function refit(delay=60) {
   fitTimer = setTimeout(() => {
     if (!term || !$("screen-term").classList.contains("active")) return;
     try { fitAddon.fit(); } catch (e) {}
+    // A fit that grows the grid back (the keyboard leaving, 20 rows to 38)
+    // can leave xterm's viewport parked in its scrollback, exactly the added
+    // rows above the base, so the bottom of the live screen sits below the
+    // view until the next keystroke scrolls it home. tmux repaints the whole
+    // screen after every resize and the scrollback here is only its earlier
+    // paints, so the bottom is the one place the view belongs after a fit.
+    try { term.scrollToBottom(); } catch (e) {}
     dbgFit();
     sendResize();
   }, delay);
