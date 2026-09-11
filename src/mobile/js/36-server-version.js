@@ -137,7 +137,7 @@ function learnProfileHost(host) {
   if (!host || !p || p.host === host) return;
   updateProfile(p.id, { host: host });
   syncProfileSwitcher();
-  renderProfileList();
+  syncProfilePick();
   syncConnectionName();
 }
 

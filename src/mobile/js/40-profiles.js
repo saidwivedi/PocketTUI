@@ -57,90 +57,15 @@ function profileNameField() {
   return $("backend-name").value.trim().slice(0, 40);
 }
 
-// ---- the list of computers in Settings -------------------------------------
+// ---- the menu, drawn in two places -----------------------------------------
 
-// One row per computer, the active one marked, above the fields that edit it.
-// Selecting a row is a switch: picking a computer here means what picking one
-// from the session list's switcher means, and the fields below are always about
-// whichever computer the app is actually talking to.
-function renderProfileList() {
-  const list = readProfiles();
-  // Nothing to say on a device that has never paired, and the first run asks
-  // one question — this is not it.
-  $("profile-block").hidden = !list.length || setupMode;
-  // The rows are a choice, and one computer is not a choice: below two of them
-  // the section is only the way to add another, and the fields underneath are
-  // that one computer's. Most people have one machine, and a row naming it says
-  // nothing the fields do not already say.
-  $("profile-rows").hidden = list.length < 2;
-  const box = $("profile-list");
-  box.innerHTML = "";
-  const active = activeProfileId();
-  for (const p of list) {
-    const on = p.id === active && !addingProfile;
-    const row = el("button", {
-      type: "button", class: "profile-item" + (on ? " on" : ""),
-      "aria-pressed": on ? "true" : "false",
-    },
-      el("span", { class: "profile-item-name" }, profileLabel(p)),
-      el("span", { class: "profile-item-addr" }, profileHost(p.backend)),
-    );
-    row.addEventListener("click", () => {
-      // The computer already on the other end: the tap has nothing to switch
-      // to, and only ends an "Add computer" the user thought better of.
-      if (p.id === activeProfileId()) {
-        addingProfile = false;
-        fillConnectionFields(activeProfile());
-        renderProfileList();
-        return;
-      }
-      switchProfile(p.id);
-    });
-    box.appendChild(row);
-  }
-}
-
-// The blank fields a computer is typed into. Save is what turns them into a
-// profile — until then nothing is stored, so backing out of the sheet leaves
-// this device exactly as it was.
-function beginAddProfile() {
-  addingProfile = true;
-  blankConnectionFields();
-  renderProfileList();
-  $("backend-url").focus();
-}
-
-$("btn-profile-add").addEventListener("click", beginAddProfile);
-
-// ---- the session list's switcher -------------------------------------------
-
-// Which computer the list belongs to. Shown for one computer as much as for
-// several: what it carries is that computer's name — "studio", not the address
-// it is reached at — so it says whose sessions these are, which is worth a line
-// on the list of a device that has only ever had one. It is also the way to a
-// second, through the menu's last row.
-function syncProfileSwitcher() {
-  const list = readProfiles();
-  $("btn-profile").hidden = !list.length;
-  $("profile-name").textContent = profileLabel(activeProfile()) || "This computer";
-}
-
-// Open and closed are one class on the wrap, and the scrim rides along so a tap
-// anywhere off the menu closes it without the list underneath taking that tap —
-// the file explorer's two dropdowns work the same way, and for the same reasons.
-function showProfileMenu(on) {
-  $("profile-wrap").classList.toggle("open", on);
-  $("profile-scrim").classList.toggle("show", on);
-  $("btn-profile").setAttribute("aria-expanded", on ? "true" : "false");
-  if (on) renderProfileMenu();
-}
-
-// Written on open rather than kept in step: a computer can be added, renamed or
-// forgotten while this is closed, and the menu is only ever looked at open.
-function renderProfileMenu() {
-  const menu = $("profile-menu");
+// One row per computer, the one in force ticked. The two dropdowns differ in a
+// single row: Settings ends with the way to add a computer, because adding one
+// is a settings job, and the session list's does not, because a pill over a
+// list of sessions is for getting between machines and nothing else.
+function fillProfileMenu(menu, pick, withAdd) {
   menu.innerHTML = "";
-  const active = activeProfileId();
+  const active = addingProfile ? "" : activeProfileId();
   for (const p of readProfiles()) {
     const on = p.id === active;
     const row = el("button", {
@@ -149,25 +74,106 @@ function renderProfileMenu() {
     },
       el("span", { class: "view-check", "aria-hidden": "true" }, "✓"),
       el("span", { class: "profile-menu-name" }, profileLabel(p)),
+      // Which address that name resolves to, for the two computers whose names
+      // do not tell them apart on their own.
+      el("span", { class: "profile-menu-addr" }, profileHost(p.backend)),
     );
-    row.addEventListener("click", () => {
-      showProfileMenu(false);
-      if (p.id !== activeProfileId()) switchProfile(p.id);
-    });
+    row.addEventListener("click", () => pick(p.id));
     menu.appendChild(row);
   }
+  if (!withAdd) return;
   const add = el("button", { type: "button", class: "view-row profile-menu-add", role: "menuitem" },
     el("span", { class: "view-check", "aria-hidden": "true" }, "✓"),
-    // "another", because every row above it is already a computer — on a
-    // device with one, this row is the whole reason the menu opens.
+    // "another", because every row above it is already a computer.
     el("span", {}, "Add another computer…"),
   );
   add.addEventListener("click", () => {
-    showProfileMenu(false);
-    openSettings(false, "connection");
+    showProfilePick(false);
     beginAddProfile();
   });
   menu.appendChild(add);
+}
+
+// ---- the chooser at the top of Settings > Connection ------------------------
+
+// What the fields below are about: the computer in force, or the new one being
+// typed. Present from the first computer on — it is the only way to add a
+// second — and gone only where there is none at all, which is the first run.
+function syncProfilePick() {
+  const list = readProfiles();
+  $("profile-block").hidden = !list.length || setupMode;
+  $("profile-pick-name").textContent = addingProfile
+    ? "New computer" : (profileLabel(activeProfile()) || "This computer");
+}
+
+function showProfilePick(on) {
+  $("profile-pick-wrap").classList.toggle("open", on);
+  $("btn-profile-pick").setAttribute("aria-expanded", on ? "true" : "false");
+  if (!on) return;
+  fillProfileMenu($("profile-pick-menu"), (id) => {
+    showProfilePick(false);
+    // The computer already on the other end: nothing to switch to, and the tap
+    // only ends an add the user thought better of.
+    if (id === activeProfileId() && !addingProfile) return;
+    if (id === activeProfileId()) {
+      addingProfile = false;
+      fillConnectionFields(activeProfile());
+      syncProfilePick();
+      return;
+    }
+    switchProfile(id);
+  }, true);
+}
+
+// The blank fields a computer is typed into. Save is what turns them into a
+// profile — until then nothing is stored, so backing out of the sheet leaves
+// this device exactly as it was.
+function beginAddProfile() {
+  addingProfile = true;
+  blankConnectionFields();
+  syncProfilePick();
+  $("backend-url").focus();
+}
+
+$("btn-profile-pick").addEventListener("click", () => {
+  showProfilePick(!$("profile-pick-wrap").classList.contains("open"));
+});
+// This one floats inside the sheet rather than over the session list, so it has
+// no scrim of its own to be dismissed by: anything pressed outside it closes
+// it, which is what the scrim does for the other one. On capture, so a control
+// under the open panel still gets its own click.
+document.addEventListener("click", (e) => {
+  if (!$("profile-pick-wrap").classList.contains("open")) return;
+  if (e.target.closest && e.target.closest("#profile-pick-wrap")) return;
+  showProfilePick(false);
+}, true);
+
+// ---- the session list's switcher -------------------------------------------
+
+// Which computer the list belongs to, and the way between them. Only from two
+// computers on: with one there is nowhere to go, and this menu does not add
+// them — Settings does. What it carries is that computer's name rather than its
+// address, so where it does show it says whose sessions these are.
+function syncProfileSwitcher() {
+  const list = readProfiles();
+  $("btn-profile").hidden = list.length < 2;
+  $("profile-name").textContent = profileLabel(activeProfile()) || "This computer";
+}
+
+// Open and closed are one class on the wrap, and the scrim rides along so a tap
+// anywhere off the menu closes it without the list underneath taking that tap —
+// the file explorer's two dropdowns work the same way, and for the same reasons.
+// Written on open rather than kept in step: a computer can be added, renamed or
+// forgotten while this is closed, and the menu is only ever looked at open.
+function showProfileMenu(on) {
+  $("profile-wrap").classList.toggle("open", on);
+  $("profile-scrim").classList.toggle("show", on);
+  $("btn-profile").setAttribute("aria-expanded", on ? "true" : "false");
+  if (!on) return;
+  fillProfileMenu($("profile-menu"), (id) => {
+    showProfileMenu(false);
+    if (id !== activeProfileId()) switchProfile(id);
+  }, false);
 }
 
 $("btn-profile").addEventListener("click", () => {
@@ -179,7 +185,7 @@ $("profile-scrim").addEventListener("click", () => showProfileMenu(false));
 // open — a switch made from the session list changes what those are about.
 function syncProfileUI() {
   syncProfileSwitcher();
-  renderProfileList();
+  syncProfilePick();
   if ($("sheet-settings").classList.contains("show") && !addingProfile) {
     fillConnectionFields(activeProfile());
   }

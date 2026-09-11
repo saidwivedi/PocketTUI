@@ -176,14 +176,15 @@
     </div>
   </div>
   <div class="list-wrap" id="list-wrap">
-    <!-- Which computer this list belongs to, and the way to another one. Shown
-         from the first computer on (syncProfileSwitcher), since it names that
-         computer rather than repeating its address. Left of the row's two pills
-         (the auto margin below) because it names what they act on rather than
-         being a third thing to press. Its menu is the file bar's
-         button-and-dropdown (28-file-explorer.js), same panel, since it asks
-         the same shape of question. -->
-    <div class="list-new"><div id="profile-wrap"><button class="pill-btn" id="btn-profile" aria-haspopup="true" aria-expanded="false" hidden><span class="pill-label" id="profile-name"></span></button><div id="profile-menu" role="menu"></div></div><button class="pill-btn pill-alert" id="btn-update-rail" hidden></button><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg><span class="pill-label">New session</span></button></div>
+    <!-- Which computer this list belongs to, and the way between them. Shown
+         only where there is somewhere to go — two computers or more
+         (syncProfileSwitcher) — and it only chooses: adding one is a Settings
+         job, done by the same control at the top of the Connection tab. Left of
+         the row's two pills (the auto margin below) because it names what they
+         act on rather than being a third thing to press. Button and panel are
+         the file bar's dropdown (28-file-explorer.js), since it asks the same
+         shape of question. -->
+    <div class="list-new"><div class="profile-wrap" id="profile-wrap"><button class="pill-btn profile-pill" id="btn-profile" aria-haspopup="true" aria-expanded="false" hidden><span class="pill-label" id="profile-name"></span></button><div class="profile-menu" id="profile-menu" role="menu"></div></div><button class="pill-btn pill-alert" id="btn-update-rail" hidden></button><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg><span class="pill-label">New session</span></button></div>
     <div class="eyebrow" id="list-eyebrow">Sessions</div>
     <div id="list"></div>
     <div id="list-empty">No tmux sessions yet — New session starts one.</div>
@@ -647,18 +648,21 @@
          be used full screen, and this is the last screen before it is. Text is
          set per platform in showSetupStep(). -->
     <p class="sheet-a2hs" id="sheet-a2hs" hidden><span id="sheet-a2hs-text"></span></p>
-    <!-- The computers this device is paired with, above the fields that edit
-         them: a tap selects one — which is a switch, the same as picking it
-         from the session list — and the fields below are always the selected
-         one's. The rows appear once there are two of them to choose between;
-         with one computer there is nothing to pick, so all that shows is the
-         way to add a second, and the fields below are that one computer's. -->
+    <!-- Which computer the fields below are about, and the only place another
+         one is added. The same button-and-panel the session list carries, one
+         entry per computer with the tick on the one in force: picking another
+         is a switch, and picking the last row — "Add another computer…" —
+         empties the fields for one that does not exist yet, which Save then
+         creates. Above the fields because it says what they are editing.
+         Hidden only while there is no computer at all, which is the first run,
+         where the fields are the question. -->
     <div id="profile-block" hidden>
-      <div id="profile-rows" hidden>
-        <label>Computers</label>
-        <div id="profile-list"></div>
+      <label>Computer</label>
+      <div class="profile-wrap" id="profile-pick-wrap">
+        <button type="button" class="pill-btn profile-pill" id="btn-profile-pick"
+                aria-haspopup="true" aria-expanded="false"><span class="pill-label" id="profile-pick-name"></span></button>
+        <div class="profile-menu" id="profile-pick-menu" role="menu"></div>
       </div>
-      <button type="button" id="btn-profile-add">Add computer</button>
     </div>
     <label for="backend-url">Computer address</label>
     <input id="backend-url" type="url" inputmode="url" autocapitalize="off" autocorrect="off"
