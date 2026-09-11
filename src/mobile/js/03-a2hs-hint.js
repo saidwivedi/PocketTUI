@@ -1,6 +1,8 @@
 // ============================================================
-// Add-to-home-screen hint
+// Add-to-home-screen checks
 // ============================================================
+// Who is looking and whether the app is already installed. Used by the first
+// run's reminder, the notification prompt and the report diagnostics.
 // Phone/tablet only. iPadOS reports as "Macintosh" unless it's touch-capable,
 // which real Macs never are, so that combination still counts as iOS.
 function a2hsPlatform() {
@@ -13,21 +15,6 @@ function a2hsPlatform() {
 function a2hsInstalled() {
   return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 }
-function a2hsShouldShow() {
-  return !!a2hsPlatform() && !a2hsInstalled() && !localStorage.getItem("pockettui_a2hs_dismissed");
-}
-function initA2hsHint() {
-  if (!a2hsShouldShow()) return;
-  const text = a2hsPlatform() === "ios"
-    ? "Add PocketTUI to your home screen: tap Share, then Add to Home Screen."
-    : "Add PocketTUI to your home screen: tap the browser menu, then Add to Home screen.";
-  $("a2hs-hint-text").textContent = text;
-  $("a2hs-hint").classList.add("show");
-}
-$("a2hs-hint-dismiss").addEventListener("click", () => {
-  localStorage.setItem("pockettui_a2hs_dismissed", "1");
-  $("a2hs-hint").classList.remove("show");
-});
 
 // The app is served both at / and behind `tailscale serve` at /pockettui/, so
 // same-origin URLs hang off the directory of the current path rather than the

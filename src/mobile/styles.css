@@ -311,33 +311,6 @@ body {
   .list-new:has(.pill-alert:not([hidden])) #btn-new .pill-label { display: none; }
 }
 
-/* "Add to Home Screen" hint — a slim strip above the list, shown only to
-   phone users in a plain browser tab who haven't dismissed it before. */
-.a2hs-hint {
-  display: none;
-  align-items: center; gap: 10px;
-  background: var(--umber-tint);
-  border: 1px solid var(--hair-strong);
-  border-radius: 12px;
-  padding: 10px 10px 10px 14px;
-  margin-top: 14px;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--ink-2);
-}
-.a2hs-hint.show { display: flex; }
-.a2hs-hint span { flex: 1; }
-.a2hs-hint button {
-  background: transparent; border: none;
-  color: var(--secondary);
-  font-size: 15px;
-  line-height: 1;
-  padding: 6px;
-  cursor: pointer;
-  flex: 0 0 auto;
-}
-.a2hs-hint button:hover { color: var(--ink); }
-
 .item {
   background: var(--card);
   border: 1px solid var(--hair);
@@ -1794,6 +1767,14 @@ html.term-open, body.term-open {
 .sheet-pair .pair-note { color: var(--tertiary); }
 /* The one line in the block that is a caution rather than an instruction. */
 .sheet-pair .pair-warn { color: var(--warn); }
+/* A reminder rather than a control: no border and no dismiss, since the screen
+   it sits on is left behind as soon as the code is entered. */
+.sheet-a2hs {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--tertiary);
+}
 /* First run only: below the fields, so it answers rather than gates. */
 .sheet-faq {
   display: none;

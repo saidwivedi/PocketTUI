@@ -141,6 +141,16 @@ function showSetupStep(step) {
     : onRun ? "Run this on your computer" : "Enter what the installer printed";
   $("sheet-install").classList.toggle("show", onRun);
   $("sheet-faq").classList.toggle("show", onRun);
+  // The reminder rides step two of a first run only, and only where it is
+  // actionable: a phone browser tab that is not already the installed app.
+  const plat = setupMode && step === 2 ? a2hsPlatform() : null;
+  const showA2hs = !!plat && !a2hsInstalled();
+  if (showA2hs) {
+    $("sheet-a2hs-text").textContent = plat === "ios"
+      ? "Reminder: add PocketTUI to your Home Screen for full screen. Tap Share, then Add to Home Screen."
+      : "Reminder: add PocketTUI to your home screen for full screen. Tap the browser menu, then Add to Home screen.";
+  }
+  $("sheet-a2hs").hidden = !showA2hs;
 }
 
 function openSettings(firstRun, tab) {
