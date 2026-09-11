@@ -38,6 +38,7 @@ import secrets
 import shlex
 import shutil
 import signal
+import socket
 import stat
 import struct
 import subprocess
@@ -1318,8 +1319,16 @@ def api_version() -> Response:
 
     `capabilities` rides along so the same one round-trip that answers "how old
     is this server" also answers "what can it do" — see server_capabilities().
+
+    `host` is this machine's own name, which is what a phone holding several
+    computers calls this one until its owner renames it. Raw, as the machine
+    reports it: a ".local" suffix is part of the name the user knows the box by.
+    A server too old to send it is not a lesser case — the app falls back to the
+    host part of the address it was reached on — so it carries no capability
+    flag of its own; the field being missing is the whole signal.
     """
     return no_store(JSONResponse({"version": installed_version(),
+                                  "host": socket.gethostname(),
                                   "capabilities": CAPABILITIES}))
 
 

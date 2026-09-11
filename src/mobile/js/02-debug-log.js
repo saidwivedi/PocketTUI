@@ -142,11 +142,153 @@ const BUILD_BACKEND = "__BACKEND_URL__";
 const SAME_ORIGIN = BUILD_BACKEND === "same-origin" || BUILD_BACKEND.indexOf("__") === 0;
 const DEFAULT_BACKEND = SAME_ORIGIN ? "" : BUILD_BACKEND;
 
+// ============================================================
+// Connection profiles
+// ============================================================
+// One phone, several computers. A profile is one machine this device is paired
+// with — {id, name, backend, token} — and exactly one of them is active: every
+// URL the app builds, every header it sends and every session it lists belongs
+// to whichever that is. cfg.backend and cfg.token below are views onto the
+// active profile rather than keys of their own, so the forty-odd places that
+// ask for "the backend" keep asking the same question and get this one's answer.
+//
+// Switching is a reconnect and never a reattach — see switchProfile()
+// (40-profiles.js), which closes whatever session is open, drops every piece of
+// per-machine state this shell is holding, and loads the chosen computer's list.
+const PROFILES_KEY = "pockettui_profiles";
+const ACTIVE_PROFILE_KEY = "pockettui_profile";
+
+// Bumped by every switch. Anything that asks one computer a question and paints
+// the answer (loadSessions, fetchServerVersion) carries the generation it asked
+// under and drops an answer that lands after the machine changed under it — the
+// same guard sockGen is for the terminal's socket.
+let profileGen = 0;
+
+function newProfileId() {
+  try { return crypto.randomUUID(); } catch (e) {}
+  return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// Anything unreadable reads as "no profiles", which is first-run territory —
+// the same answer an empty store gives, and the only safe one when the store
+// is something this build cannot parse.
+function readProfiles() {
+  try {
+    const list = JSON.parse(localStorage.getItem(PROFILES_KEY));
+    if (Array.isArray(list)) return list.filter((p) => p && typeof p === "object" && p.id);
+  } catch (e) {}
+  return [];
+}
+
+function writeProfiles(list) {
+  try { localStorage.setItem(PROFILES_KEY, JSON.stringify(list)); } catch (e) {}
+}
+
+function activeProfileId() { return localStorage.getItem(ACTIVE_PROFILE_KEY) || ""; }
+
+// The profile every cfg.backend/cfg.token read answers from, or null when this
+// device is paired with nothing at all: a first run, or the last computer
+// forgotten.
+function activeProfile() {
+  const id = activeProfileId();
+  return readProfiles().find((p) => p.id === id) || null;
+}
+
+function setActiveProfile(id) {
+  localStorage.setItem(ACTIVE_PROFILE_KEY, id);
+  mirrorLegacyKeys();
+}
+
+function updateProfile(id, patch) {
+  const list = readProfiles();
+  const p = list.find((x) => x.id === id);
+  if (!p) return null;
+  Object.assign(p, patch);
+  writeProfiles(list);
+  if (id === activeProfileId()) mirrorLegacyKeys();
+  return p;
+}
+
+function addProfile(fields) {
+  const p = Object.assign({ id: newProfileId(), name: "", backend: "", token: "" },
+                          fields || {});
+  const list = readProfiles();
+  list.push(p);
+  writeProfiles(list);
+  return p;
+}
+
+function removeProfile(id) {
+  writeProfiles(readProfiles().filter((p) => p.id !== id));
+  // The marks were about that machine's sessions, and nothing will ever ask
+  // about them again.
+  dropProfileUnread(id);
+  if (id === activeProfileId()) localStorage.removeItem(ACTIVE_PROFILE_KEY);
+  mirrorLegacyKeys();
+}
+
+// The host out of an address, which is what a computer is called until it says
+// its own name. With the port, since two of these can be one machine serving
+// twice and the port is then the only thing telling them apart. An empty
+// address is a shell the backend served itself, so the page's own host is the
+// honest answer there.
+function profileHost(backend) {
+  if (!backend) return location.host;
+  try { return new URL(backend).host; } catch (e) { return backend; }
+}
+
+// What a profile is called on screen: the name the server gave or the user
+// typed, else the address it is reached at.
+function profileLabel(p) {
+  return p ? (p.name || profileHost(p.backend)) : "";
+}
+
+// Setting a credential with no profile to hold it makes one: the first Save of
+// a first run, and a pairing link that arrives before any Save.
+function writeActiveProfile(field, v) {
+  const p = activeProfile();
+  if (p) { updateProfile(p.id, { [field]: v }); return; }
+  setActiveProfile(addProfile({ [field]: v }).id);
+}
+
+// The active profile's credentials, mirrored into the two keys this app used
+// before profiles existed. Nothing here reads them back — it is cheap insurance
+// for an older shell still cached on the same origin, which knows only those.
+function mirrorLegacyKeys() {
+  const p = activeProfile();
+  localStorage.setItem("pockettui_backend", p ? p.backend || "" : "");
+  localStorage.setItem("pockettui_token", p ? p.token || "" : "");
+}
+
+// One-time, and before anything reads cfg: a device paired the old way holds one
+// backend and one token under those keys, and that pairing becomes profile one
+// rather than being asked for all over again. Empty on both is a device that was
+// never paired, which is a first run either way and needs no profile invented
+// for it. Drop once no old installs are left, the way boot-theme.js's rename is.
+function migrateProfiles() {
+  if (localStorage.getItem(PROFILES_KEY) !== null) return;
+  const backend = localStorage.getItem("pockettui_backend") || "";
+  const token = localStorage.getItem("pockettui_token") || "";
+  if (!backend && !token) return;
+  setActiveProfile(addProfile({ backend: backend, token: token }).id);
+}
+migrateProfiles();
+
 const cfg = {
-  get backend() { return localStorage.getItem("pockettui_backend") || DEFAULT_BACKEND; },
-  set backend(v) { localStorage.setItem("pockettui_backend", v); },
-  get token() { return localStorage.getItem("pockettui_token") || ""; },
-  set token(v) { localStorage.setItem("pockettui_token", v); },
+  // The active profile's address, or whatever the build itself knows when this
+  // device is paired with nothing yet — the fallback this getter always had. A
+  // profile with no address of its own means same-origin, which on a build with
+  // nothing baked in is the same empty string.
+  get backend() {
+    const p = activeProfile();
+    return (p ? p.backend : "") || DEFAULT_BACKEND;
+  },
+  set backend(v) { writeActiveProfile("backend", v); },
+  get token() {
+    const p = activeProfile();
+    return (p ? p.token : "") || "";
+  },
+  set token(v) { writeActiveProfile("token", v); },
   // Names this device's own grouped view session (<devname>-<target>), so
   // two devices watching one session never detach each other. Minted once and
   // kept, because a name that changed per visit would strand a view per reload.

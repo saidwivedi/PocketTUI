@@ -176,7 +176,12 @@
     </div>
   </div>
   <div class="list-wrap" id="list-wrap">
-    <div class="list-new"><button class="pill-btn pill-alert" id="btn-update-rail" hidden></button><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg><span class="pill-label">New session</span></button></div>
+    <!-- Which computer this list belongs to, and the way to another one. Left
+         of the row's two pills (the auto margin below) because it names what
+         they act on rather than being a third thing to press. Its menu is the
+         file bar's button-and-dropdown (28-file-explorer.js), same panel and
+         same panel, since it asks the same shape of question. -->
+    <div class="list-new"><div id="profile-wrap"><button class="pill-btn" id="btn-profile" aria-haspopup="true" aria-expanded="false" hidden><span class="pill-label" id="profile-name"></span></button><div id="profile-menu" role="menu"></div></div><button class="pill-btn pill-alert" id="btn-update-rail" hidden></button><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg><span class="pill-label">New session</span></button></div>
     <div class="eyebrow" id="list-eyebrow">Sessions</div>
     <div id="list"></div>
     <div id="list-empty">No tmux sessions yet — New session starts one.</div>
@@ -189,6 +194,12 @@
       <button type="button" id="btn-list-type" hidden>Type it for me</button>
     </div>
   </div>
+  <!-- The switcher's scrim: tapping it closes the menu, and while it is up the
+       rows underneath cannot take a tap meant for the menu. Outside .list-wrap,
+       which is a size container and would therefore be the containing block for
+       a position:fixed child — the scrim has to cover the window, not the list.
+       Inside #screen-list, so leaving the list takes it with it. -->
+  <div id="profile-scrim"></div>
   <!-- Pinned under the list on the wide layout, and only where a pointer says
        there is a keyboard to press these on — both gates are the stylesheet's.
        The key names are filled in per platform, and the card's open/closed
@@ -634,12 +645,28 @@
          be used full screen, and this is the last screen before it is. Text is
          set per platform in showSetupStep(). -->
     <p class="sheet-a2hs" id="sheet-a2hs" hidden><span id="sheet-a2hs-text"></span></p>
+    <!-- The computers this device is paired with, above the fields that edit
+         them: a tap selects one — which is a switch, the same as picking it
+         from the session list — and the fields below are always the selected
+         one's. Hidden until there is at least one, so a first run is the one
+         question it always was. -->
+    <div id="profile-block" hidden>
+      <label>Computers</label>
+      <div id="profile-list"></div>
+      <button type="button" id="btn-profile-add">Add computer</button>
+    </div>
     <label for="backend-url">Computer address</label>
     <input id="backend-url" type="url" inputmode="url" autocapitalize="off" autocorrect="off"
            spellcheck="false" placeholder="my-host.example.net/pockettui">
     <label for="backend-token">Pairing code</label>
     <input id="backend-token" type="text" inputmode="latin" autocapitalize="characters" autocorrect="off"
            spellcheck="false" placeholder="XXXXX-XXXXX" maxlength="11">
+    <!-- What this computer is called in the switcher. Filled in by the computer
+         itself the first time it answers /api/version, so the field is empty
+         until then and emptying it hands the name back to the machine. -->
+    <label for="backend-name" class="opt">Computer name <span>optional</span></label>
+    <input id="backend-name" type="text" autocapitalize="off" autocorrect="off"
+           spellcheck="false" placeholder="my-laptop" maxlength="40">
     <label for="backend-devname">Device name</label>
     <input id="backend-devname" type="text" autocapitalize="off" autocorrect="off"
            spellcheck="false" placeholder="iphone" maxlength="16">
