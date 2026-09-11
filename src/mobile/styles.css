@@ -311,34 +311,39 @@ body {
   .list-new:has(.pill-alert:not([hidden])) #btn-new .pill-label { display: none; }
 }
 
-/* ---- the computer switcher -------------------------------------------------
-   The row is right-aligned for its two pills; the auto margin is what holds
-   this one to the left of them without changing the rule that lays them out.
-   A relative box, so the menu below can hang off the button rather than off the
-   list. Nothing to hold when the button is hidden, so the wrap goes with it. */
-#profile-wrap { position: relative; margin-right: auto; }
+/* ---- the computer chooser --------------------------------------------------
+   Two of these, one control: the pill over the session list, which gets between
+   computers, and the one at the top of Settings > Connection, which also adds
+   them. Button, panel and rows are the file bar's dropdown (see
+   #btn-files-view), since it asks the same shape of question. A relative box,
+   so the panel hangs off the button rather than off whatever is around it. */
+.profile-wrap { position: relative; }
+/* The session list's row is right-aligned for its two pills; the auto margin is
+   what holds this one to the left of them without changing the rule that lays
+   them out. Nothing to hold when the pill is hidden, so the wrap goes too. */
+#profile-wrap { margin-right: auto; }
 #profile-wrap:has(#btn-profile[hidden]) { display: none; }
 /* A pill like New session beside it, with the chevron a <select> would have
    drawn for itself — #btn-files-view's glyph, at this row's size. The name is
    whatever the computer is called, so it is capped rather than trusted: a long
    hostname must not push the pills it shares the row with off the screen. */
-#btn-profile { padding-right: 10px; }
-#profile-name {
+.profile-pill { padding-right: 10px; }
+.profile-pill .pill-label {
   max-width: 13ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#btn-profile::after {
+.profile-pill::after {
   content: "▾";
   color: var(--tertiary);
   font-size: 10px;
 }
-#profile-wrap.open #btn-profile::after { content: "▴"; }
+.profile-wrap.open .profile-pill::after { content: "▴"; }
 /* #files-view-menu's floating panel, anchored under the button on the left
    since that is the edge it shares with it, and its rows are .view-row — the
    app has one dropdown, drawn wherever one is needed. */
-#profile-menu {
+.profile-menu {
   display: none;
   position: absolute;
   top: 100%; left: 0;
@@ -352,10 +357,21 @@ body {
   box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
   z-index: 60;
 }
-#profile-wrap.open #profile-menu { display: block; }
+.profile-wrap.open .profile-menu { display: block; }
 /* A computer's name is one line however long it is, the way a branch name is
-   in the explorer's picker. */
+   in the explorer's picker, and the address it resolves to is the quiet half
+   of the row — it is there to tell two alike names apart, not to be read. */
 .profile-menu-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-menu-addr {
+  margin-left: auto;
+  padding-left: 10px;
+  flex: 0 1 auto;
+  font-size: 11.5px;
+  color: var(--tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2295,62 +2311,15 @@ html.term-open, body.term-open {
 }
 #btn-settings-forget.show { display: inline-block; }
 #btn-settings-forget:active { transform: scale(0.96); }
-/* The computers this device is paired with, above the fields that edit them.
-   Rows rather than a <select> for the session list switcher's reason, and
-   because each row says two things — what the computer is called and where it
-   is — which a picker's one line cannot. */
+/* Which computer the fields below are about: the session list's own chooser,
+   seated under a field label. Its panel floats inside the sheet, over the
+   fields, which is why it needs no scrim — the sheet is already the only thing
+   taking taps (see showProfilePick, 40-profiles.js). */
 #profile-block { margin-bottom: 20px; }
-#profile-list { display: flex; flex-direction: column; gap: 6px; }
-.profile-item {
-  display: flex; align-items: baseline; gap: 10px;
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--hair);
-  border-radius: 12px;
-  background: transparent;
-  font-family: var(--sans);
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 0.18s var(--ease-out), background 0.18s var(--ease-out);
-}
-/* The one the app is talking to, in the app's own accent — the same marking
-   the rail gives the session that is open. */
-.profile-item.on { border-color: var(--umber); background: var(--umber-tint); }
-.profile-item:active { transform: scale(0.99); }
-.profile-item-name {
-  font-size: 14px;
-  color: var(--ink);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.profile-item.on .profile-item-name { font-weight: 600; }
-/* The address is the second thing about a row, so it is held to the right and
-   is the half that gives way when the two do not fit. */
-.profile-item-addr {
-  margin-left: auto;
-  flex: 0 1 auto;
-  font-size: 12px;
-  color: var(--tertiary);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-/* #btn-settings-forget's cut, since it is the same kind of button at the other
-   end of the same list — one that adds rather than one that removes. */
-#btn-profile-add {
-  display: inline-block;
-  margin-top: 10px;
-  padding: 9px 16px;
-  font-family: var(--sans);
-  font-size: 14px;
-  font-weight: 500;
-  border: 1px solid var(--hair-strong);
-  border-radius: 12px;
-  background: transparent;
-  color: var(--secondary);
-  cursor: pointer;
-}
-#btn-profile-add:active { transform: scale(0.96); }
-/* With one computer the rows are gone and this button is the whole section, so
-   it drops the gap that separated it from them. */
-#profile-rows[hidden] + #btn-profile-add { margin-top: 0; }
+#profile-pick-wrap { display: inline-flex; max-width: 100%; }
+/* Room for a full hostname here, where the pill is not sharing a row with
+   anything and the sheet is the width it is. */
+#profile-pick-name { max-width: 22ch; }
 /* The session sheet's destructive row. Below the actions and set off by a
    hairline, so a thumb aiming at Save can't graze it; umber rather than a
    literal red for the same reason as the recording dot — it is the app's one
