@@ -209,8 +209,13 @@ function updateProfile(id, patch) {
   return p;
 }
 
+// `name` is the user's rename and nothing else; `host` is what the computer
+// called itself the last time it said (see learnProfileHost). Two fields rather
+// than one because they answer to different people: a name typed here must
+// survive whatever the server says next, and a server's own name must not be
+// mistaken for a rename nobody made.
 function addProfile(fields) {
-  const p = Object.assign({ id: newProfileId(), name: "", backend: "", token: "" },
+  const p = Object.assign({ id: newProfileId(), name: "", host: "", backend: "", token: "" },
                           fields || {});
   const list = readProfiles();
   list.push(p);
@@ -227,8 +232,8 @@ function removeProfile(id) {
   mirrorLegacyKeys();
 }
 
-// The host out of an address, which is what a computer is called until it says
-// its own name. With the port, since two of these can be one machine serving
+// The address a profile is reached at, written the short way: host and port,
+// no scheme. With the port, since two of these can be one machine serving
 // twice and the port is then the only thing telling them apart. An empty
 // address is a shell the backend served itself, so the page's own host is the
 // honest answer there.
@@ -237,10 +242,21 @@ function profileHost(backend) {
   try { return new URL(backend).host; } catch (e) { return backend; }
 }
 
-// What a profile is called on screen: the name the server gave or the user
-// typed, else the address it is reached at.
+// The same address as a name: the host on its own. A port is part of where a
+// computer is, not of what it is called.
+function profileHostname(backend) {
+  if (!backend) return location.hostname;
+  try { return new URL(backend).hostname; } catch (e) { return backend; }
+}
+
+// What a profile is called, everywhere it is named — the switcher, the menu,
+// the list in Settings and the name field itself, so the four always agree.
+// Three answers in order of who said it: the user, who renamed it; the computer,
+// which reported its own hostname (`host`, /api/version); and failing both the
+// address, which is the one thing there always is. Never blank for a profile
+// with an address, which is why the name field can be filled from it.
 function profileLabel(p) {
-  return p ? (p.name || profileHost(p.backend)) : "";
+  return p ? (p.name || p.host || profileHostname(p.backend)) : "";
 }
 
 // Setting a credential with no profile to hold it makes one: the first Save of

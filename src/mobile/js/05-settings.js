@@ -383,7 +383,15 @@ $("btn-settings-save").addEventListener("click", () => {
   // the same voice step as a first pairing, even though wasUnpaired is false.
   // A computer being added is a new pairing by definition.
   const adding = addingProfile;
-  const credsChanged = adding || cfg.backend !== v || cfg.token !== tok;
+  const backendChanged = cfg.backend !== v;
+  const credsChanged = adding || backendChanged || cfg.token !== tok;
+  // The name the field was showing when this Save started — which for a
+  // computer nobody has renamed is one the app worked out for itself, from the
+  // server's hostname or from the address. Only a value the user actually
+  // changed is stored as a rename; leaving the field alone stores nothing, so a
+  // computer still named after its address can take its own name the moment an
+  // older server is updated and starts reporting one.
+  const nameWas = profileLabel(activeProfile());
   if (adding) {
     // The computer just added is the one the app talks to from here: saving it
     // is the switch, which is what makes its sessions the list underneath, and
@@ -396,7 +404,15 @@ $("btn-settings-save").addEventListener("click", () => {
     cfg.token = tok;
     // The active profile is whatever the two writes above landed in — on a
     // first run that is the profile they just created.
-    if (activeProfileId()) updateProfile(activeProfileId(), { name: name });
+    if (activeProfileId()) {
+      const patch = {};
+      if (name !== nameWas) patch.name = name;
+      // A profile pointed at a different address is pointed at a different
+      // computer: the name the last one gave is not this one's, and the fetch
+      // below is what asks the new one for its own.
+      if (backendChanged) patch.host = "";
+      updateProfile(activeProfileId(), patch);
+    }
     syncProfileUI();
     // A computer that was just paired, or re-pointed somewhere else, is one
     // this app has never asked anything of — and its answer carries the name
