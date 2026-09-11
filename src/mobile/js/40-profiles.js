@@ -20,12 +20,27 @@ let addingProfile = false;
 
 // The fields as one computer's. With no profile at all it is a first run, where
 // the only thing that could be known is an address baked in at build time.
+//
+// The name field shows the name in force rather than only a typed one: a
+// computer is called something from the moment it has an address — its own
+// hostname where it reports one, the host out of the address where it does not
+// — and a blank field would say it had no name while three other places showed
+// one. What is in the field is therefore also what a rename is measured against
+// (the Save handler, 05-settings.js).
 function fillConnectionFields(p) {
   const parts = backendParts((p ? p.backend : "") || DEFAULT_BACKEND);
   $("backend-url").value = parts.url;
   $("backend-port").value = parts.port;
   $("backend-token").value = formatTokenDisplay(p ? p.token || "" : "");
-  $("backend-name").value = p ? p.name || "" : "";
+  $("backend-name").value = profileLabel(p);
+}
+
+// Just the name, for the moment the computer answers with one while the sheet
+// is open. A field the user is typing in is theirs — never painted over.
+function syncConnectionName() {
+  if (!$("sheet-settings").classList.contains("show") || addingProfile) return;
+  if (document.activeElement === $("backend-name")) return;
+  $("backend-name").value = profileLabel(activeProfile());
 }
 
 function blankConnectionFields() {
