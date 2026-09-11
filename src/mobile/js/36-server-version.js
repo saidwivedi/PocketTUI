@@ -79,14 +79,23 @@ let updateFailed = false;
 // answer standing: a dropped tailnet is not news about the server's build.
 async function fetchServerVersion() {
   if (demoMode) return;
+  // Which computer is being asked. A switch retires the generation, and the
+  // build and capabilities of the machine that was left must not be written
+  // down as the new one's.
+  const pgen = profileGen;
   try {
     const r = await fetch(apiURL("api/version"), {
       cache: "no-store", headers: authHeaders(),
     });
     if (!r.ok) return;
     const d = await r.json();
+    if (pgen !== profileGen) return;
     serverVersion = typeof d.version === "string" ? d.version : "";
     serverCaps = d.capabilities && typeof d.capabilities === "object" ? d.capabilities : null;
+    // The one answer that is about the profile rather than the build. A server
+    // too old to send it leaves the profile named after its address, which is
+    // what profileLabel() falls back to.
+    learnProfileHost(typeof d.host === "string" ? d.host : "");
   } catch (e) {
     dbg("server version failed:", e);
     return;
@@ -98,6 +107,32 @@ async function fetchServerVersion() {
   syncSearchCap();
   syncRefCap();
   syncPairCard();
+}
+
+// Everything this block knows about the computer it was describing, dropped for
+// the one being switched to: an install being watched is that machine's, and so
+// is the verdict on the last one. The site's own latest version is not — it is
+// the same release whichever computer is on the other end.
+function versionResetForProfile() {
+  serverVersion = "";
+  serverCaps = null;
+  clearTimeout(updateTimer);
+  updateTimer = null;
+  updating = false;
+  updateFailed = false;
+  updateResumeChecked = false;
+  syncVersionRow();
+}
+
+// A computer says its own name, and a profile that has not been given one takes
+// it: "mac-mini" reads better in the switcher than the tailnet address, and
+// nobody had to type it. Only while the profile is still unnamed — a name typed
+// in Settings is the user's, not the server's to overwrite.
+function learnProfileHost(host) {
+  const p = activeProfile();
+  if (!host || !p || p.name) return;
+  updateProfile(p.id, { name: host });
+  syncProfileUI();
 }
 
 // Whether the server on the other end serves this feature. Unknown means yes:

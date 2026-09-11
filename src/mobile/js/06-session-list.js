@@ -46,15 +46,41 @@ function setBellState(btn, mode, name) {
 // keeps them; the in-memory baseline does not, so the first list after a
 // reload can never re-mark what is merely still waiting.
 const UNREAD_KEY = "pockettui_unread";
+// One map per profile, not one map: two computers can each have a session
+// called "work", and a mark left on one of them says nothing about the other.
+// The profile's own id is the key, and "-" stands for the device that has no
+// profile at all — nothing can be marked there, but nothing has to special-case
+// it either.
+function unreadProfileKey() { return activeProfileId() || "-"; }
+// Every profile's marks. Before profiles there was one flat map, session name
+// to when — that map was this device's one computer's, so it becomes that
+// profile's rather than being thrown away. The values tell the two shapes
+// apart: a timestamp, or a map of them.
+function unreadAll() {
+  let m = null;
+  try { m = JSON.parse(localStorage.getItem(UNREAD_KEY)); } catch (e) {}
+  if (!m || typeof m !== "object") return {};
+  const flat = Object.keys(m).some((k) => !m[k] || typeof m[k] !== "object");
+  if (!flat) return m;
+  const nested = {};
+  nested[unreadProfileKey()] = m;
+  return nested;
+}
 function unreadMap() {
-  try {
-    const m = JSON.parse(localStorage.getItem(UNREAD_KEY));
-    if (m && typeof m === "object") return m;
-  } catch (e) {}
-  return {};
+  const m = unreadAll()[unreadProfileKey()];
+  return m && typeof m === "object" ? m : {};
 }
 function saveUnread(m) {
-  try { localStorage.setItem(UNREAD_KEY, JSON.stringify(m)); } catch (e) {}
+  const all = unreadAll();
+  all[unreadProfileKey()] = m;
+  try { localStorage.setItem(UNREAD_KEY, JSON.stringify(all)); } catch (e) {}
+}
+// A forgotten computer takes its marks with it (removeProfile, 02-debug-log.js).
+function dropProfileUnread(id) {
+  const all = unreadAll();
+  if (!(id in all)) return;
+  delete all[id];
+  try { localStorage.setItem(UNREAD_KEY, JSON.stringify(all)); } catch (e) {}
 }
 // Opening the session is what marks it read — openTerminal calls this. The
 // row's class comes off in place too, so the clear never waits on a reload.
@@ -109,22 +135,28 @@ async function loadSessions(spin=false, quiet=false) {
   // Nothing to query yet — prompt instead of failing against the static host.
   if (needsSetup()) { openSettings(true); return; }
   const gen = ++sessListGen;
+  // Which computer this list was asked of. A switch retires the generation, and
+  // an answer from the machine that was left may not paint over the one that
+  // replaced it — nor send its 401 to a Settings sheet now about someone else.
+  const pgen = profileGen;
   const btn = $("btn-reload");
   if (spin) btn.classList.add("spin");
   // Out here so the catch can see what the server answered, if anything.
   let r = null;
   try {
     r = await fetch(apiURL("api/sessions"), { cache: "no-store", headers: authHeaders() });
+    if (pgen !== profileGen) return;
     if (r.status === 401) {
       // The server says why it refused; pass that through rather than guessing.
       let hint = "";
       try { hint = (await r.json()).hint || ""; } catch (e) {}
+      if (pgen !== profileGen) return;
       rejectToken(hint);
       return;
     }
     if (!r.ok) throw new Error("HTTP " + r.status);
     const data = await r.json();
-    if (gen !== sessListGen) return;
+    if (gen !== sessListGen || pgen !== profileGen) return;
     renderSessions(data.sessions || []);
     $("list-error").style.display = "none";
     sessionsEverLoaded = true;
@@ -133,14 +165,14 @@ async function loadSessions(spin=false, quiet=false) {
     // (openSessionByName); everyone else ignores it.
     return data.sessions || [];
   } catch (e) {
-    if (gen !== sessListGen) return;
+    if (gen !== sessListGen || pgen !== profileGen) return;
     $("list").innerHTML = "";
     if (needsSetup()) $("list").appendChild(demoCard());
     $("list-empty").style.display = "none";
     // Ask the health descriptor what is actually wrong, unless the device
     // itself is off the network and the answer is already known.
     const probe = netOffline() ? null : await probeServer();
-    if (gen !== sessListGen) return;
+    if (gen !== sessListGen || pgen !== profileGen) return;
     const v = classifyFailure(e, r, probe);
     renderListError(v);
     $("list-error").style.display = "block";
@@ -201,6 +233,18 @@ function demoCard() {
     ),
     el("div", { class: "item-meta" }, el("span", {}, "offline · nothing here is real")),
   );
+}
+
+// Everything the list holds about the computer it was showing, dropped for the
+// one it is about to show: the painted rows, the unread baseline (whose states
+// belong to another machine's sessions and must never be diffed against this
+// one's), and the error card a failed load may have left standing.
+function sessionsResetForProfile() {
+  $("list").innerHTML = "";
+  $("list-empty").style.display = "none";
+  $("list-error").style.display = "none";
+  lastStates = null;
+  sessionsEverLoaded = false;
 }
 
 function renderSessions(sessions) {
