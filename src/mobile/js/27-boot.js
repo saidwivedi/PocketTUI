@@ -75,7 +75,6 @@ if (wantDemo) {
   // start_url with no fragment at all; the parked copy is the deep link then.
   loadSessions().then(() => consumePendingSession("boot"));
 }
-initA2hsHint();
 
 const SW_VERSION = "__CACHE_VERSION__";
 

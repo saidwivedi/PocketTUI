@@ -176,10 +176,6 @@
     </div>
   </div>
   <div class="list-wrap" id="list-wrap">
-    <div class="a2hs-hint" id="a2hs-hint">
-      <span id="a2hs-hint-text"></span>
-      <button type="button" id="a2hs-hint-dismiss" aria-label="Dismiss">✕</button>
-    </div>
     <div class="list-new"><button class="pill-btn pill-alert" id="btn-update-rail" hidden></button><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg><span class="pill-label">New session</span></button></div>
     <div class="eyebrow" id="list-eyebrow">Sessions</div>
     <div id="list"></div>
@@ -646,6 +642,10 @@
     <label for="backend-port" class="opt">Port <span>optional</span></label>
     <input id="backend-port" type="text" inputmode="numeric" autocapitalize="off"
            autocorrect="off" spellcheck="false" placeholder="5560">
+    <!-- First run only, and only in a phone browser tab: the app is about to
+         be used full screen, and this is the last screen before it is. Text is
+         set per platform in showSetupStep(). -->
+    <p class="sheet-a2hs" id="sheet-a2hs" hidden><span id="sheet-a2hs-text"></span></p>
     <!-- The one destructive thing in the sheet, so it stays out of the footer
          where a thumb aiming at Save would pass over it. -->
     <button type="button" id="btn-settings-forget">Forget</button>
