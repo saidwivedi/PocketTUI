@@ -283,6 +283,24 @@ function filesTeardown() {
   filesDocked = false;
 }
 
+// Everything the explorer is holding about the computer being left, for a
+// switch to another one (switchProfile, 40-profiles.js): whatever shape the
+// view is in goes away, since a folder on that machine is not a folder on this
+// one, and the listings it cached go with it. The caller puts the session list
+// back on screen, so nothing is restored here.
+function filesResetForProfile() {
+  closeFilesMenus();
+  closePathEdit();
+  if (filesDocked) closeDockedFiles();
+  else filesTeardown();
+  filesPath = "";
+  filesHome = "";
+  filesSyncedCwd = "";
+  filesEntries = [];
+  filesSelected = null;
+  filesListCache.clear();
+}
+
 // The mirror of openExplorer's screen work, minus the history push — the
 // caller re-pushes every entry the stashed view owned, in one place.
 function filesRestore(s) {

@@ -383,6 +383,11 @@ function keepFileViews(names) {
   }
 }
 
+// Every stash at once, for a switch to another computer: the sessions they were
+// put away for are on the machine being left, and a name that happens to repeat
+// over there is a different session entirely.
+function dropAllFileViews() { fileViews.clear(); }
+
 // Which file view is holding the pane, or null for none. The explorer on its
 // own is not one — it carries nothing the user would lose, and it closes.
 function fileViewKind() {

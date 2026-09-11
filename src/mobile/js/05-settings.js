@@ -6,6 +6,10 @@ const SHEET_IDS = ["sheet-settings", "sheet-new", "sheet-session",
                    "sheet-file-actions", "sheet-files-add", "sheet-confirm",
                    "sheet-report"];
 function showSheet(on, id="sheet-settings") {
+  // The session list's computer switcher is a dropdown under this layer: a
+  // sheet coming up over it has to take it down, or closing the sheet uncovers
+  // a menu — and its scrim — that nobody left open on purpose.
+  showProfileMenu(false);
   // Closing the settings sheet ends the first-run voice step however it was
   // closed — Confirm, Cancel or the scrim. The device is paired by then, so
   // dismissing it is a real answer: keep the resolved engine unstored and let
@@ -155,10 +159,13 @@ function showSetupStep(step) {
 
 function openSettings(firstRun, tab) {
   setupMode = !!firstRun;
-  const parts = backendParts(cfg.backend);
-  $("backend-url").value = parts.url;
-  $("backend-port").value = parts.port;
-  $("backend-token").value = formatTokenDisplay(cfg.token);
+  // The Connection tab edits one computer, and opening the sheet is always
+  // about the one the app is talking to — "Add computer" is the only way into
+  // the blank fields, and it is a tap on the list below rather than a state the
+  // sheet can open in.
+  addingProfile = false;
+  fillConnectionFields(activeProfile());
+  renderProfileList();
   $("backend-devname").value = cfg.devname;
   syncVoicePicker();
   // Lazy, like the mic key's own use of it: the sheet is the other place the
@@ -261,6 +268,16 @@ function syncPairCard() {
     });
 }
 
+// The QR on screen is one computer's pairing code drawn by that computer, so a
+// switch to another one drops it rather than leaving the wrong machine's code
+// up until the card is next opened.
+function pairResetForProfile() {
+  pairQrAsked = false;
+  if (pairQrURL) { URL.revokeObjectURL(pairQrURL); pairQrURL = null; }
+  $("pair-qr").hidden = true;
+  $("sheet-pair").hidden = true;
+}
+
 // The first-run voice step: on or off. Off is also what every ordinary visit to
 // Settings looks like, so this is what returns the sheet to normal.
 function showVoiceStep(on) {
@@ -332,14 +349,17 @@ $("sheet-install").addEventListener("click", (e) => {
 // with that computer. The device name stays: it names this device, not the
 // computer, and keeping it means re-pairing lands on the same view session.
 $("btn-settings-forget").addEventListener("click", () => {
-  localStorage.removeItem("pockettui_backend");
-  localStorage.removeItem("pockettui_token");
-  $("backend-url").value = "";
-  $("backend-port").value = "";
-  $("backend-token").value = "";
+  const id = activeProfileId();
+  if (id) removeProfile(id);
+  blankConnectionFields();
   toast("Computer forgotten");
-  // Re-open in whichever mode we are now in: a public build with nothing stored
-  // is back to first-run setup, which is not dismissible.
+  // With another computer saved, this device is not unpaired — it is now
+  // talking to that one, which is a switch like any other. With none left it is
+  // back to first-run setup, which is not dismissible.
+  const next = readProfiles()[0];
+  if (next) { switchProfile(next.id); return; }
+  // Nothing left to switch between, so the switcher goes with the last row.
+  syncProfileSwitcher();
   openSettings(needsSetup());
 });
 $("btn-settings-cancel").addEventListener("click", () => showSheet(false));
@@ -348,16 +368,41 @@ $("sheet-scrim").addEventListener("click", () => {
 });
 $("btn-settings-save").addEventListener("click", () => {
   const v = normalizeBackend($("backend-url").value, $("backend-port").value);
-  if (setupMode && !v) { toast("Enter your computer address"); return; }
+  // A computer being added is a pairing like the first one, so it is held to
+  // the same two answers: an address with nothing at it, or no code, would save
+  // a machine this device could never reach.
+  if ((setupMode || addingProfile) && !v) { toast("Enter your computer address"); return; }
   const tok = normalizeToken($("backend-token").value);
-  if (setupMode && !isValidToken(tok)) { toast("Enter the 10-character pairing code"); return; }
+  if ((setupMode || addingProfile) && !isValidToken(tok)) {
+    toast("Enter the 10-character pairing code"); return;
+  }
+  const name = profileNameField();
   // Asked before the write, because the write is what makes it false.
   const wasUnpaired = needsSetup();
   // Also asked before the write: a re-pair onto a different backend/token needs
   // the same voice step as a first pairing, even though wasUnpaired is false.
-  const credsChanged = cfg.backend !== v || cfg.token !== tok;
-  cfg.backend = v;
-  cfg.token = tok;
+  // A computer being added is a new pairing by definition.
+  const adding = addingProfile;
+  const credsChanged = adding || cfg.backend !== v || cfg.token !== tok;
+  if (adding) {
+    // The computer just added is the one the app talks to from here: saving it
+    // is the switch, which is what makes its sessions the list underneath, and
+    // the switch is also what loads them — so the reload at the foot of this
+    // handler is the other path's.
+    addingProfile = false;
+    switchProfile(addProfile({ name: name, backend: v, token: tok }).id, true);
+  } else {
+    cfg.backend = v;
+    cfg.token = tok;
+    // The active profile is whatever the two writes above landed in — on a
+    // first run that is the profile they just created.
+    if (activeProfileId()) updateProfile(activeProfileId(), { name: name });
+    syncProfileUI();
+    // A computer that was just paired, or re-pointed somewhere else, is one
+    // this app has never asked anything of — and its answer carries the name
+    // an unnamed profile takes (learnProfileHost, 36-server-version.js).
+    if (credsChanged) fetchServerVersion();
+  }
   // Cleaning can empty the field outright ("!!!"), which would leave this device
   // unnamed — keep the previous name in that case rather than writing a blank.
   const dev = cleanDevName($("backend-devname").value);
@@ -393,7 +438,7 @@ $("btn-settings-save").addEventListener("click", () => {
   // awaited either way: the list is being built behind the voice step, and is
   // there the moment it closes. Probe first: an address that was typed a
   // moment ago is exactly the one worth naming the failure of.
-  loadSessionsAfterProbe();
+  if (!adding) loadSessionsAfterProbe();
 });
 // Ends the first-run voice step. The tap is the choice — including the one the
 // picker had already resolved on the user's behalf, which is written here so an

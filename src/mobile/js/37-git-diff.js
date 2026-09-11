@@ -98,6 +98,25 @@ function diffSetOpen(open) {
 
 function toggleDiffPane() { diffSetOpen(!diffOpen); }
 
+// The pane is a view of one computer's repo, so a switch to another closes it
+// and drops what both tabs last heard — the same clean slate a session change
+// gives it in diffPoll(), for the same reason one step further out.
+function diffResetForProfile() {
+  diffSetOpen(false);
+  diffSession = null;
+  diffRoot = "";
+  diffScope = "unstaged";
+  diffSelected = "";
+  diffTextKey = "";
+  diffNextAt = 0;
+  for (const st of Object.values(diffTabs)) {
+    st.key = ""; st.body = ""; st.data = null; st.every = DIFF_POLL_MS;
+  }
+  syncDiffTabs();
+  $("diff-files").textContent = "";
+  $("diff-body").textContent = "";
+}
+
 $("btn-diff-close").addEventListener("click", () => diffSetOpen(false));
 
 // Three rows of the list at the size the stylesheet sets it in — below that it

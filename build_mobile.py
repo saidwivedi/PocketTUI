@@ -97,6 +97,7 @@ JS_FRAGMENTS = (
     "37-git-diff.js",
     "38-scrollback-search.js",
     "39-type-command.js",
+    "40-profiles.js",
     "27-boot.js",
 )
 

@@ -13,11 +13,28 @@
 let pushStatus = null;
 
 async function fetchPushStatus() {
+  // Which computer is being asked: what one knows about push is not what the
+  // next one knows, so an answer landing after a switch is dropped rather than
+  // kept as the new machine's.
+  const pgen = profileGen;
   try {
     const r = await fetch(apiURL("api/push/status"), { cache: "no-store", headers: authHeaders() });
-    if (r.ok) pushStatus = await r.json();
+    if (r.ok && pgen === profileGen) pushStatus = await r.json();
   } catch (e) {}
   return pushStatus;
+}
+
+// A switch to another computer: the subscription this browser holds is
+// registered with the machine being left, so the new one is asked what it knows
+// and given this device's subscription in turn. Only where notifications have
+// already been allowed — permission can only be asked for inside a tap, and
+// switching computers is not that tap.
+async function pushResetForProfile() {
+  pushStatus = null;
+  await fetchPushStatus();
+  if ("Notification" in window && Notification.permission === "granted") {
+    await ensurePushSubscription();
+  }
 }
 
 // The server's VAPID public key, base64url, as the BufferSource
