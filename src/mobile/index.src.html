@@ -571,9 +571,7 @@
      ============================================================ -->
 <div class="sheet-scrim" id="sheet-scrim"></div>
 <div class="sheet" id="sheet-settings">
-  <button type="button" id="btn-sheet-demo">Try demo</button>
   <h2 id="sheet-title">Settings</h2>
-  <p class="sheet-note" id="sheet-note">Your computer's terminal, on your phone.</p>
   <!-- Four sections rather than one column. The sheet grew past the height it
        can show at once, and everything below the fold — the dictation picker,
        the quick-command box, the build line — was reachable only by scrolling
@@ -616,7 +614,7 @@
           <code id="cmd-ts-serve">sudo tailscale serve --bg --set-path /pockettui 5560</code>
           <button type="button" data-copy="cmd-ts-serve">Copy</button>
         </div>
-        <p>The first prints a sign-in URL; the second prints your address.</p>
+        <p>The first prints a sign-in link; the second may ask you to enable HTTPS.</p>
         <label>Install the backend</label>
         <div class="cmd">
           <code id="install-cmd">curl -fsSL https://pockettui.com/install.sh | bash</code>
@@ -624,12 +622,13 @@
         </div>
         <p>It prints the address and pairing code for the next screen.</p>
       </div>
-      <div class="sheet-faq" id="sheet-faq">
+      <details class="sheet-faq" id="sheet-faq">
+        <summary>About PocketTUI</summary>
         <p><b>What is this?</b> Your machine's tmux sessions, from any device.</p>
         <p><b>How does it work?</b> xterm.js relays keys over a WebSocket straight to
           your machine, authenticated by the pairing code the installer printed.
           Nothing is stored off-device.</p>
-      </div>
+      </details>
       <button type="button" id="btn-setup-ran">I ran it</button>
     </div>
     <!-- Step two's way back, for someone who came through before running the
