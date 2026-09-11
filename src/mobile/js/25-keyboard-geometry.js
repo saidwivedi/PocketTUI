@@ -13,8 +13,9 @@
 // "no keyboard" at the exact moment one was covering half the screen.
 //
 // So the full height is tracked instead of inferred: the tallest visible viewport
-// seen while nothing is focused. It is a measurement, never a stored constant,
-// and it is re-derived whenever the device geometry itself changes.
+// seen that the screen could actually have shown. It is a measurement, never a
+// stored constant, and it is re-derived whenever the device geometry itself
+// changes.
 let fullViewH = 0;
 // How much viewport a rounding artefact may swallow before it counts as a
 // keyboard. Not a device measurement — it is one CSS line-height, the smallest
@@ -47,13 +48,35 @@ for (const ev of ["touchstart", "pointerdown", "keydown", "focusin"]) {
 
 // The tallest the visible viewport has been, which is what "no keyboard" looks
 // like. Focus is not the test — xterm keeps its hidden textarea focused for the
-// whole session with no keyboard up — so the only frames rejected are the ones a
-// pan has already distorted. A keyboard can only ever shrink this, so taking the
-// maximum is what makes it self-correcting rather than a stored constant.
+// whole session with no keyboard up — so the only frames rejected on that count
+// are the ones a pan has already distorted.
+//
+// A keyboard can only ever shrink the viewport, so the maximum is the right
+// latch, but a maximum with no ceiling corrects in one direction only: a single
+// impossible reading is kept for good, and from then on every honest full height
+// looks like a keyboard covering most of the screen. iOS keeps an installed app's
+// process alive for days, so that one reading buys days of a terminal pinned
+// short with its bottom rows under the key bar. The visible viewport cannot be
+// taller than the screen it is drawn on, so the screen is the ceiling. iOS
+// reports screen.width/height at the portrait values however the device is held,
+// which is why it is the larger of the two in either orientation, and the spare
+// pixel absorbs the rounding.
+// Whether the current run of oversized readings has already said so in the log.
+let fullRefusedLogged = false;
 function noteFullHeight() {
   const vv = window.visualViewport;
   if (!vv || vv.offsetTop > 0) return;
-  fullViewH = Math.max(fullViewH, Math.round(vv.height));
+  const h = Math.round(vv.height);
+  const cap = Math.max(screen.width, screen.height);
+  if (h > cap + 1) {
+    if (!fullRefusedLogged) {
+      fullRefusedLogged = true;
+      dbg("kb ignored", "full reading above screen", "vv=" + h, "screen=" + cap);
+    }
+    return;
+  }
+  fullRefusedLogged = false;
+  fullViewH = Math.max(fullViewH, h);
 }
 
 // How much of the layout viewport is hidden below the visible rectangle. Anything
