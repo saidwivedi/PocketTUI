@@ -630,6 +630,10 @@
     <!-- Step two's way back, for someone who came through before running the
          command. -->
     <button type="button" id="btn-setup-back">&larr; Back</button>
+    <!-- First run only, and only in a phone browser tab: the app is about to
+         be used full screen, and this is the last screen before it is. Text is
+         set per platform in showSetupStep(). -->
+    <p class="sheet-a2hs" id="sheet-a2hs" hidden><span id="sheet-a2hs-text"></span></p>
     <label for="backend-url">Computer address</label>
     <input id="backend-url" type="url" inputmode="url" autocapitalize="off" autocorrect="off"
            spellcheck="false" placeholder="my-host.example.net/pockettui">
@@ -642,10 +646,6 @@
     <label for="backend-port" class="opt">Port <span>optional</span></label>
     <input id="backend-port" type="text" inputmode="numeric" autocapitalize="off"
            autocorrect="off" spellcheck="false" placeholder="5560">
-    <!-- First run only, and only in a phone browser tab: the app is about to
-         be used full screen, and this is the last screen before it is. Text is
-         set per platform in showSetupStep(). -->
-    <p class="sheet-a2hs" id="sheet-a2hs" hidden><span id="sheet-a2hs-text"></span></p>
     <!-- The one destructive thing in the sheet, so it stays out of the footer
          where a thumb aiming at Save would pass over it. -->
     <button type="button" id="btn-settings-forget">Forget</button>
