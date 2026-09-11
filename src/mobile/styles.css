@@ -1678,6 +1678,13 @@ html.term-open, body.term-open {
 .sheet-panels {
   flex: 1 1 auto;
   min-height: 0;
+  /* Scrolling vertically makes this a scrollport horizontally too, and a
+     scrollport clips anything reaching past its padding box — which is what
+     .cmd-long's full-bleed pull does. Carrying .sheet's own 22px as padding
+     here instead moves that edge out to the sheet's, leaving every other
+     child on exactly the same column it sat on before. */
+  margin: 0 -22px;
+  padding: 0 22px;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
@@ -1706,7 +1713,8 @@ html.term-open, body.term-open {
   padding: 9px 10px;
 }
 /* Wrapped, not scrolled: this gets piped into bash, so it should be readable
-   in full before anyone runs it. */
+   in full before anyone runs it — except the one line .cmd-long below takes
+   out of this rule. */
 .sheet-install code {
   flex: 1;
   min-width: 0;
@@ -1730,6 +1738,26 @@ html.term-open, body.term-open {
   cursor: pointer;
 }
 .sheet-install button:active { transform: scale(0.96); }
+/* The serve line is the only command that misses one line beside its Copy
+   button, so instead of wrapping a path it gets the sheet's full width — a
+   strip pulled out to both edges, .sheet's 22px padding cancelled — and a
+   smaller size, with Copy dropped underneath. */
+.sheet-install .cmd-long {
+  flex-direction: column;
+  align-items: flex-end;
+  margin: 0 -22px 8px;
+  border-left: 0;
+  border-right: 0;
+  border-radius: 0;
+  padding: 9px 22px;
+}
+.sheet-install .cmd-long code {
+  width: 100%;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  overflow-x: auto;
+  font-size: 10px;
+}
 /* A second block heading in the same run of prose; .sheet input + label's gap,
    for the same reason. */
 .sheet-install p + label { margin-top: 18px; }
