@@ -114,14 +114,14 @@ $("btn-profile-add").addEventListener("click", beginAddProfile);
 
 // ---- the session list's switcher -------------------------------------------
 
-// Which computer the list belongs to. Only from two computers on: with one
-// there is nothing to switch to, and a pill naming the only machine there is
-// would sit on every session list for the sake of a feature that user is not
-// using. Adding a second brings it out and forgetting back down to one puts it
-// away, both through syncProfileUI().
+// Which computer the list belongs to. Shown for one computer as much as for
+// several: what it carries is that computer's name — "studio", not the address
+// it is reached at — so it says whose sessions these are, which is worth a line
+// on the list of a device that has only ever had one. It is also the way to a
+// second, through the menu's last row.
 function syncProfileSwitcher() {
   const list = readProfiles();
-  $("btn-profile").hidden = list.length < 2;
+  $("btn-profile").hidden = !list.length;
   $("profile-name").textContent = profileLabel(activeProfile()) || "This computer";
 }
 
@@ -158,7 +158,9 @@ function renderProfileMenu() {
   }
   const add = el("button", { type: "button", class: "view-row profile-menu-add", role: "menuitem" },
     el("span", { class: "view-check", "aria-hidden": "true" }, "✓"),
-    el("span", {}, "Add computer…"),
+    // "another", because every row above it is already a computer — on a
+    // device with one, this row is the whole reason the menu opens.
+    el("span", {}, "Add another computer…"),
   );
   add.addEventListener("click", () => {
     showProfileMenu(false);
