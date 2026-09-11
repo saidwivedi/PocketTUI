@@ -242,11 +242,22 @@ function profileHost(backend) {
   try { return new URL(backend).host; } catch (e) { return backend; }
 }
 
-// The same address as a name: the host on its own. A port is part of where a
-// computer is, not of what it is called.
+// The same address read as a name: the first label of the host. A port is part
+// of where a computer is rather than of what it is called, and so is the rest of
+// the domain — "studio.example.net" is an address, "studio" is the
+// computer, and the whole string in a name field reads as the address it is.
+// A literal is kept entire: an IP has no first label worth taking, and a
+// quarter of one names nothing. Anything with nothing to cut — "localhost", a
+// bare hostname — comes back as itself.
 function profileHostname(backend) {
-  if (!backend) return location.hostname;
-  try { return new URL(backend).hostname; } catch (e) { return backend; }
+  let host = location.hostname;
+  if (backend) {
+    try { host = new URL(backend).hostname; } catch (e) { return backend; }
+  }
+  // URL.hostname hands back IPv6 bracketed, which is what makes it recognisable
+  // in one character; IPv4 is four numbers and nothing else.
+  if (host.indexOf("[") === 0 || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host;
+  return host.split(".")[0] || host;
 }
 
 // What a profile is called, everywhere it is named — the switcher, the menu,
