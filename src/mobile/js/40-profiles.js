@@ -59,6 +59,27 @@ function profileNameField() {
 
 // ---- the menu, drawn in two places -----------------------------------------
 
+// The trash at the end of a Settings row. It asks first, through the native
+// confirm() the explorer's delete uses rather than appConfirm(): that one is a
+// sheet, and the single-sheet rule would close the Settings sheet this was
+// asked from. stopPropagation, so forgetting a computer never also picks it.
+function profileTrashBtn(p) {
+  return el("button", {
+    type: "button", class: "icon-btn profile-menu-trash",
+    "aria-label": "Forget " + profileLabel(p),
+    onclick: (e) => {
+      e.stopPropagation();
+      if (!confirm("Forget " + profileLabel(p) +
+                   "? This device will need to be paired with it again.")) return;
+      forgetProfile(p.id);
+      // The row that was tapped is gone, so what is left is drawn again — and
+      // with nothing left the menu goes too, the sheet behind it being first-run
+      // setup by then.
+      showProfilePick(readProfiles().length > 0);
+    },
+  }, svgIcon("i-trash"));
+}
+
 // One row per computer, the one in force ticked. The two dropdowns differ in a
 // single row: Settings ends with the way to add a computer, because adding one
 // is a settings job, and the session list's does not, because a pill over a
@@ -68,17 +89,34 @@ function fillProfileMenu(menu, pick, withAdd) {
   const active = addingProfile ? "" : activeProfileId();
   for (const p of readProfiles()) {
     const on = p.id === active;
-    const row = el("button", {
-      type: "button", class: "view-row" + (on ? " on" : ""),
-      role: "menuitemradio", "aria-checked": on ? "true" : "false",
+    // A div and not a button: the Settings menu hangs a trash button off the end
+    // of each row, and a button inside a button is invalid markup that iOS
+    // Safari lays out and taps its own way. Enter and Space are wired below,
+    // since a div answers to neither on its own.
+    const row = el("div", {
+      class: "view-row profile-row" + (on ? " on" : ""),
+      role: "menuitemradio", "aria-checked": on ? "true" : "false", tabindex: "0",
     },
       el("span", { class: "view-check", "aria-hidden": "true" }, "✓"),
-      el("span", { class: "profile-menu-name" }, profileLabel(p)),
-      // Which address that name resolves to, for the two computers whose names
-      // do not tell them apart on their own.
-      el("span", { class: "profile-menu-addr" }, profileHost(p.backend)),
+      // Name over address rather than beside it: on one line the two split the
+      // row between them and both came out elided, and the name is the half
+      // being chosen.
+      el("span", { class: "profile-menu-text" },
+        el("span", { class: "profile-menu-name" }, profileLabel(p)),
+        // Which address that name resolves to, for the two computers whose names
+        // do not tell them apart on their own.
+        el("span", { class: "profile-menu-addr" }, profileHost(p.backend)),
+      ),
     );
     row.addEventListener("click", () => pick(p.id));
+    row.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      pick(p.id);
+    });
+    // Forgetting a computer is managing them, which is a Settings job — hence
+    // the same test as the "Add another computer…" row below.
+    if (withAdd) row.appendChild(profileTrashBtn(p));
     menu.appendChild(row);
   }
   if (!withAdd) return;
@@ -232,6 +270,35 @@ function switchProfile(id, probe) {
   // The subscription this browser holds is registered with the machine being
   // left, so the new one has to be told about it too.
   pushResetForProfile();
+}
+
+// ---- forgetting one ---------------------------------------------------------
+
+// This device stops being paired with that computer — the Forget button's job
+// and a chooser row's trash alike. Forgetting one it was not talking to changes
+// nothing but the two lists it was in; forgetting the one in force means the app
+// has to land somewhere, which is the next computer saved or, with none left,
+// the first run.
+function forgetProfile(id) {
+  const wasActive = !id || id === activeProfileId();
+  if (id) removeProfile(id);
+  toast("Computer forgotten");
+  if (!wasActive) {
+    // The fields are the active computer's and stay its — including anything
+    // typed into them and not yet saved.
+    syncProfileSwitcher();
+    syncProfilePick();
+    return;
+  }
+  blankConnectionFields();
+  // With another computer saved, this device is not unpaired — it is now
+  // talking to that one, which is a switch like any other. With none left it is
+  // back to first-run setup, which is not dismissible.
+  const next = readProfiles()[0];
+  if (next) { switchProfile(next.id); return; }
+  // Nothing left to switch between, so the switcher goes with the last row.
+  syncProfileSwitcher();
+  openSettings(needsSetup());
 }
 
 // A scanned pairing link (27-boot.js), applied to this device's profiles. The
