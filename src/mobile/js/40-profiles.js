@@ -50,9 +50,14 @@ function profileNameField() {
 // whichever computer the app is actually talking to.
 function renderProfileList() {
   const list = readProfiles();
-  // Nothing to choose between on a device that has never paired, and the first
-  // run asks one question — this is not it.
+  // Nothing to say on a device that has never paired, and the first run asks
+  // one question — this is not it.
   $("profile-block").hidden = !list.length || setupMode;
+  // The rows are a choice, and one computer is not a choice: below two of them
+  // the section is only the way to add another, and the fields underneath are
+  // that one computer's. Most people have one machine, and a row naming it says
+  // nothing the fields do not already say.
+  $("profile-rows").hidden = list.length < 2;
   const box = $("profile-list");
   box.innerHTML = "";
   const active = activeProfileId();
@@ -94,13 +99,14 @@ $("btn-profile-add").addEventListener("click", beginAddProfile);
 
 // ---- the session list's switcher -------------------------------------------
 
-// Which computer the list belongs to. Shown whenever this device holds a
-// profile at all, the single-computer case included: the menu is then that
-// computer plus the way to add a second, and a switch nobody can see is a
-// feature nobody finds.
+// Which computer the list belongs to. Only from two computers on: with one
+// there is nothing to switch to, and a pill naming the only machine there is
+// would sit on every session list for the sake of a feature that user is not
+// using. Adding a second brings it out and forgetting back down to one puts it
+// away, both through syncProfileUI().
 function syncProfileSwitcher() {
   const list = readProfiles();
-  $("btn-profile").hidden = !list.length;
+  $("btn-profile").hidden = list.length < 2;
   $("profile-name").textContent = profileLabel(activeProfile()) || "This computer";
 }
 
