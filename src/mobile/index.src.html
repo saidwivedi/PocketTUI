@@ -665,10 +665,12 @@
     <label for="backend-token">Pairing code</label>
     <input id="backend-token" type="text" inputmode="latin" autocapitalize="characters" autocorrect="off"
            spellcheck="false" placeholder="XXXXX-XXXXX" maxlength="11">
-    <!-- What this computer is called in the switcher. Filled in by the computer
-         itself the first time it answers /api/version, so the field is empty
-         until then and emptying it hands the name back to the machine. -->
-    <label for="backend-name" class="opt">Computer name <span>optional</span></label>
+    <!-- What this computer is called, wherever it is named. Never blank: it
+         arrives holding the name already in force — the machine's own hostname
+         where it reports one, the host out of the address where it does not —
+         so this is a rename rather than something to fill in, and clearing it
+         hands the name back to the machine (fillConnectionFields). -->
+    <label for="backend-name">Computer name</label>
     <input id="backend-name" type="text" autocapitalize="off" autocorrect="off"
            spellcheck="false" placeholder="my-laptop" maxlength="40">
     <label for="backend-devname">Device name</label>

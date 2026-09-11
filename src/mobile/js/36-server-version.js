@@ -124,15 +124,21 @@ function versionResetForProfile() {
   syncVersionRow();
 }
 
-// A computer says its own name, and a profile that has not been given one takes
-// it: "mac-mini" reads better in the switcher than the tailnet address, and
-// nobody had to type it. Only while the profile is still unnamed — a name typed
-// in Settings is the user's, not the server's to overwrite.
+// A computer says its own name, and the profile keeps it: "mac-mini" reads
+// better everywhere than the tailnet address, and nobody had to type it. It is
+// kept beside the user's rename rather than inside it (profileLabel,
+// 02-debug-log.js, where a rename still wins), so a server that starts
+// reporting a name — or reports a different one — is followed rather than
+// locked out by a Save that happened in between. A server too old to send the
+// field says nothing here, and a profile that has never heard one stays named
+// after its address.
 function learnProfileHost(host) {
   const p = activeProfile();
-  if (!host || !p || p.name) return;
-  updateProfile(p.id, { name: host });
-  syncProfileUI();
+  if (!host || !p || p.host === host) return;
+  updateProfile(p.id, { host: host });
+  syncProfileSwitcher();
+  renderProfileList();
+  syncConnectionName();
 }
 
 // Whether the server on the other end serves this feature. Unknown means yes:
