@@ -4768,6 +4768,11 @@ async def reap(pid: int, fd: int) -> None:
 #           window to the last active client, so a phone reconnecting on its
 #           backoff every few seconds would drag the laptop's window down to
 #           phone size over and over. Nothing tmux can see happens now.
+#           Adopting is only right for a client whose *terminal* is still the
+#           one tmux initialised: the modes it set (alternate screen, mouse
+#           tracking, bracketed paste, application cursor keys) live nowhere
+#           but there. A connection whose terminal was reset says so with
+#           ?fresh=1, and this PTY is reaped for a real attach instead.
 # Entries leave the dict only under the lock, so the linger timer expiring and
 # a reconnect adopting cannot both win.
 ATTACH_LOCKS: dict[str, asyncio.Lock] = {}
@@ -4997,6 +5002,28 @@ async def linger_pty(view: str, me: Attachment,
     log(f"linger over view={view} pid={me.pid} reason=timeout-or-pty-gone")
 
 
+async def reap_socketless(view: str, att: Attachment,
+                          loop: asyncio.AbstractEventLoop) -> None:
+    """Tear one lingering attachment down: timer, slot, reader, PTY.
+
+    The two callers below are the only ways a lingering PTY goes without its
+    own timer ending it — the server shutting down, and a reconnect whose
+    terminal no longer carries this tmux client — and they must not drift
+    apart. The view is deliberately not released: shutdown has no use for it,
+    and the fresh attach that calls this is about to reuse it.
+    """
+    if att.linger_task is not None:
+        att.linger_task.cancel()
+        att.linger_task = None
+    if ATTACHED.get(view) is att:
+        del ATTACHED[view]
+    try:
+        loop.remove_reader(att.fd)
+    except (OSError, ValueError):
+        pass
+    await reap(att.pid, att.fd)
+
+
 async def reap_lingering() -> None:
     """Tear down every socket-less PTY, for a server on its way down.
 
@@ -5007,15 +5034,7 @@ async def reap_lingering() -> None:
     for view, att in list(ATTACHED.items()):
         if att.live:
             continue
-        if att.linger_task is not None:
-            att.linger_task.cancel()
-        if ATTACHED.get(view) is att:
-            del ATTACHED[view]
-        try:
-            loop.remove_reader(att.fd)
-        except (OSError, ValueError):
-            pass
-        await reap(att.pid, att.fd)
+        await reap_socketless(view, att, loop)
 
 
 @app.websocket("/ws/attach/{session_name}")
@@ -5070,6 +5089,13 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
 
     loop = asyncio.get_running_loop()
 
+    # The client saying its terminal is a fresh one — reset on a session open,
+    # or newly built by a page load — so it carries none of the modes tmux set
+    # on the client we may still be holding for it. Adopting that client would
+    # hand it a terminal it has already been initialised for, which is how the
+    # phone ended up on the normal buffer with tmux painting the alternate one.
+    fresh = ws.query_params.get("fresh", "") == "1"
+
     # Everything below serialises on the *view*, not the target: that is what
     # lets two devices watch one session without retiring each other.
     view = view_name(session_name, dev)
@@ -5087,18 +5113,39 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
     target = resolve_target(session_name, dev)
     history = await asyncio.to_thread(capture_history, target) if target else ""
 
-    # Claim the view's PTY — adopt a lingering one, or retire a live one and
-    # spawn ours — as one atomic step, so two connections can never be pumping
-    # one view at once and nothing can reap a PTY this connection just took.
+    # Claim the view's PTY — adopt a lingering one the client's terminal can
+    # still use, or retire what is there (live or lingering) and spawn ours —
+    # as one atomic step, so two connections can never be pumping one view at
+    # once and nothing can reap a PTY this connection just took.
     async with attach_lock(view):
         prev = ATTACHED.get(view)
-        adopted = prev is not None and not prev.live
+        adopted = prev is not None and not prev.live and not fresh
         if adopted:
             me = prev
             me.adopt()
             log(f"conn {cid} adopting lingering pty={me.pid}")
         else:
-            if prev is not None:
+            if prev is not None and not prev.live:
+                # A lingering PTY nobody can use: this terminal was reset, so
+                # the client tmux initialised for it is worth nothing to it and
+                # the fresh attach below replaces it. Not the retired/done
+                # handshake — that wakes a live handler, and this one exited
+                # with its socket; only linger_pty would ever set `done`.
+                #
+                # Cancelling that timer from under the lock is safe in every
+                # state it can be in: waiting on its queue, it takes the
+                # CancelledError there and re-raises without reaping or
+                # releasing; already timed out and blocked on this very lock,
+                # it takes the CancelledError at the acquire, with the same
+                # outcome; and if it took the lock before us it has already
+                # deleted the slot and released the view, so `prev` above is
+                # None and this branch is not the one that runs.
+                log(f"conn {cid} retiring lingering pty={prev.pid} "
+                    "reason=client-terminal-fresh")
+                await reap_socketless(view, prev, loop)
+                # The view itself stays ours, exactly as it does when a live
+                # attachment is superseded: the attach below reuses it.
+            elif prev is not None:
                 del ATTACHED[view]
                 log(f"conn {cid} retiring previous attachment pid={prev.pid}")
                 prev.retire()

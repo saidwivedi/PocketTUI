@@ -470,6 +470,48 @@ def test_a_reconnect_inside_the_linger_adopts_and_releases_nothing(
         assert A.ATTACHED["phone-work"].live
 
 
+def test_a_reconnect_declaring_a_fresh_terminal_retires_the_lingering_pty_and_attaches_anew(
+        client, bridge, released):
+    # The other half of the adopt rule: a terminal that has been reset (a
+    # session reopened, a page reloaded) carries none of the modes tmux set on
+    # the client we are holding, so handing it back would leave it painting the
+    # alternate screen at a terminal that no longer has one. The client says so
+    # with ?fresh=1 and gets a real attach instead.
+    with client.websocket_connect("/ws/attach/work") as ws:
+        hello(ws)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        att = A.ATTACHED["phone-work"]
+    assert wait_for(lambda: not A.ATTACHED["phone-work"].live)
+
+    with client.websocket_connect("/ws/attach/work?fresh=1") as ws2:
+        hello(ws2)
+        # Nothing adopted: an "adopted" frame would be the first text frame on
+        # this socket, and collect_bytes fails the test on any text frame at
+        # all. What comes back is this attachment's own PTY echoing.
+        ws2.send_bytes(b"anew\n")
+        collect_bytes(ws2, b"anew")
+        assert A.ATTACHED["phone-work"] is not att
+        assert A.ATTACHED["phone-work"].pid != att.pid
+        assert A.ATTACHED["phone-work"].live
+        # The PTY nobody could use is reaped, not merely forgotten — a zombie
+        # would still be waitable.
+        assert wait_for(lambda: reaped(att.pid))
+        # The view is this connection's to reuse; releasing it would take the
+        # window the device is looking at with it.
+        assert released == []
+
+
+def test_the_fresh_flag_on_a_plain_attach_changes_nothing(client, bridge):
+    # With nothing lingering there is nothing to refuse to adopt, so the flag
+    # is a plain attach.
+    with client.websocket_connect("/ws/attach/work?fresh=1") as ws:
+        hello(ws)
+        assert wait_for(lambda: "phone-work" in A.ATTACHED)
+        assert A.ATTACHED["phone-work"].live
+        ws.send_bytes(b"plain\n")
+        collect_bytes(ws, b"plain")
+
+
 def test_a_superseded_connection_leaves_the_view_for_its_successor(
         client, bridge, released):
     with client.websocket_connect("/ws/attach/work") as first:

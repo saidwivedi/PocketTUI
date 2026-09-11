@@ -314,13 +314,6 @@ function refit(delay=60) {
   fitTimer = setTimeout(() => {
     if (!term || !$("screen-term").classList.contains("active")) return;
     try { fitAddon.fit(); } catch (e) {}
-    // A fit that grows the grid back (the keyboard leaving, 20 rows to 38)
-    // can leave xterm's viewport parked in its scrollback, exactly the added
-    // rows above the base, so the bottom of the live screen sits below the
-    // view until the next keystroke scrolls it home. tmux repaints the whole
-    // screen after every resize and the scrollback here is only its earlier
-    // paints, so the bottom is the one place the view belongs after a fit.
-    try { term.scrollToBottom(); } catch (e) {}
     dbgFit();
     sendResize();
   }, delay);
@@ -433,6 +426,22 @@ function restoreFileView(session) {
   else readerRestore(view.reader);
 }
 
+// The session whose tmux client initialised the terminal now on screen, or
+// null when the terminal carries nothing — it has just been reset, or it is a
+// brand-new xterm from a page load. Only a terminal that still holds what tmux
+// set on this client (alternate screen, mouse tracking, bracketed paste,
+// application cursor keys) may adopt that client back, so this is what connect()
+// declares to the server: equal to the session being connected to means adopting
+// is valid, anything else asks for a fresh attach and tmux initialises us again.
+let termCarries = null;
+
+// Every reset goes through here: the modes tmux believes it set on this client
+// are gone with it, so the terminal no longer carries that client.
+function resetTerm() {
+  term.reset();
+  termCarries = null;
+}
+
 // `resumed` marks the second half of a switch that had a file view to put away
 // first: its entries are spent and history already sits on the terminal's own.
 function openTerminal(name, resumed) {
@@ -518,7 +527,11 @@ function openTerminal(name, resumed) {
   // rather than at the next viewport event: a keyboard already up, or a pin
   // left over from a previous visit, must not wait for one.
   applyViewport();
-  term.reset();
+  // A reset terminal holds none of the modes tmux set on the client it last
+  // showed, so the connect below asks for a fresh attach rather than adopting
+  // a PTY still lingering from a moment ago — tmux initialises this terminal
+  // from scratch, alternate screen and all.
+  resetTerm();
   $("demo-badge").classList.toggle("show", demoMode);
   // Whether the strip's mic is offered depends on this session: the demo has no
   // backend to transcribe against.
@@ -670,7 +683,12 @@ function connect() {
   clearTimeout(retryTimer);
   probeCancel();
   const gen = ++sockGen;
-  const ws = new WebSocket(wsURL("ws/attach/" + encodeURIComponent(currentSession)));
+  // Whether this terminal still carries the tmux client the server may be
+  // holding for us: only then is adopting it right, and the server adopts
+  // nothing without hearing so.
+  const fresh = termCarries !== currentSession;
+  const ws = new WebSocket(wsURL("ws/attach/" + encodeURIComponent(currentSession)
+                                 + (fresh ? "?fresh=1" : "")));
   ws.binaryType = "arraybuffer";
   sock = ws;
   // Whether this connection has painted its first screenful. The old screen is
@@ -679,9 +697,14 @@ function connect() {
   // when the server sends one, otherwise the first binary attach output. An
   // "adopted" frame says the wipe must not happen at all.
   let painted = false;
+  // Whether the server handed this connection the tmux client the terminal
+  // already carries. A connection that attached instead is about to be
+  // initialised by tmux, and its first output is what makes the terminal carry
+  // that client — see the binary path below.
+  let adoptedConn = false;
 
   ws.onopen = () => {
-    dbg("ws open", "gen=" + gen);
+    dbg("ws open", "gen=" + gen, fresh ? "fresh" : "carrying");
     if (gen !== sockGen) { try { ws.close(); } catch (e) {} return; }
     retries = 0;
     hideConnBanner();
@@ -712,14 +735,21 @@ function connect() {
         // already taken what it was worth.
         if (ctl && ctl.type === "pong") return;
         // This reconnect took over the tmux client the dropped socket left
-        // behind, so tmux saw no detach and will not re-initialise us: the
-        // modes it turned on once — mouse tracking, bracketed paste,
-        // application cursor keys — exist only in this terminal, and a reset
-        // would drop them while tmux went on believing they were set (dead
-        // scroll until the next fresh attach). Keep the screen and the
-        // scrollback exactly as they are; the server's refresh-client repaint
-        // is on its way to bring the visible rows up to date.
-        if (ctl && ctl.type === "adopted") { dbg("ws adopted"); painted = true; return; }
+        // behind — which the server only does for a terminal that said it
+        // still carries that client. tmux saw no detach and will not
+        // re-initialise us: the modes it turned on once — alternate screen,
+        // mouse tracking, bracketed paste, application cursor keys — exist
+        // only in this terminal, and a reset would drop them while tmux went
+        // on believing they were set (dead scroll until the next fresh
+        // attach). Keep the screen exactly as it is; the server's
+        // refresh-client repaint is on its way to bring the visible rows up to
+        // date.
+        if (ctl && ctl.type === "adopted") {
+          dbg("ws adopted");
+          adoptedConn = true;
+          painted = true;
+          return;
+        }
         if (ctl && ctl.type === "replay") {
           dbg("ws replay", "lines=" + String(ctl.data || "").split("\n").length);
           // Scrollback from before the disconnect (and what arrived during
@@ -727,7 +757,7 @@ function connect() {
           // and push the replayed tail up out of the viewport — tmux's repaint
           // addresses the screen absolutely, so it must land on blank rows
           // rather than over the history tail.
-          term.reset();
+          resetTerm();
           let data = ctl.data || "";
           if (!data.endsWith("\r\n")) data += "\r\n";
           term.write(data);
@@ -750,7 +780,11 @@ function connect() {
     // First attach output with no replay before it (fresh session, alt-screen
     // TUI, old server): the reset that used to happen before the connect
     // happens here instead, so the stale screen survives the retry wait.
-    if (!painted) { term.reset(); painted = true; }
+    if (!painted) { resetTerm(); painted = true; }
+    // Output from a client tmux initialised for this terminal: from here on the
+    // terminal holds that client's modes, so an in-page reconnect with no reset
+    // in between (the iOS zombie socket) may adopt it back.
+    if (!adoptedConn) termCarries = currentSession;
     const bytes = new Uint8Array(ev.data);
     rzWatchFeed(bytes);
     term.write(bytes);
