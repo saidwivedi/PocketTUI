@@ -8,8 +8,11 @@ const SHEET_IDS = ["sheet-settings", "sheet-new", "sheet-session",
 function showSheet(on, id="sheet-settings") {
   // The session list's computer switcher is a dropdown under this layer: a
   // sheet coming up over it has to take it down, or closing the sheet uncovers
-  // a menu — and its scrim — that nobody left open on purpose.
+  // a menu — and its scrim — that nobody left open on purpose. The chooser
+  // inside the sheet goes the same way, so the sheet never comes back with a
+  // panel hanging open over its fields.
   showProfileMenu(false);
+  showProfilePick(false);
   // Closing the settings sheet ends the first-run voice step however it was
   // closed — Confirm, Cancel or the scrim. The device is paired by then, so
   // dismissing it is a real answer: keep the resolved engine unstored and let
@@ -160,12 +163,12 @@ function showSetupStep(step) {
 function openSettings(firstRun, tab) {
   setupMode = !!firstRun;
   // The Connection tab edits one computer, and opening the sheet is always
-  // about the one the app is talking to — "Add computer" is the only way into
-  // the blank fields, and it is a tap on the list below rather than a state the
-  // sheet can open in.
+  // about the one the app is talking to — the blank fields are a row in the
+  // chooser above them ("Add another computer…"), not a state the sheet can
+  // open in.
   addingProfile = false;
   fillConnectionFields(activeProfile());
-  renderProfileList();
+  syncProfilePick();
   $("backend-devname").value = cfg.devname;
   syncVoicePicker();
   // Lazy, like the mic key's own use of it: the sheet is the other place the
