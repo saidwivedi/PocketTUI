@@ -1776,7 +1776,7 @@ html.term-open, body.term-open {
 /* A reminder rather than a control: no border and no dismiss, since the screen
    it sits on is left behind as soon as the code is entered. */
 .sheet-a2hs {
-  margin: 14px 0 0;
+  margin: 0 0 14px;
   font-size: 12.5px;
   line-height: 1.45;
   color: var(--tertiary);
