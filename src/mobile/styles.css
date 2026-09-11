@@ -1664,7 +1664,6 @@ html.term-open, body.term-open {
   color: var(--secondary);
   margin: -6px 0 16px;
 }
-.sheet-note.hide { display: none; }
 /* The sheet is four sections now, not one column: past a certain length a
    settings list stops being a list and becomes something to hunt through.
    Text buttons rather than a segmented control — a bordered pill row at this
@@ -1803,6 +1802,15 @@ html.term-open, body.term-open {
   padding-top: 14px;
 }
 .sheet-faq.show { display: block; }
+/* Closed by default: the answers are here for whoever wants them, not in the
+   way of the command this screen exists to hand over. */
+.sheet-faq summary {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--secondary);
+  cursor: pointer;
+}
+.sheet-faq[open] summary { margin-bottom: 8px; }
 .sheet-faq p {
   font-size: 12.5px;
   line-height: 1.45;
@@ -2267,40 +2275,8 @@ html.term-open, body.term-open {
   opacity: 0.45;
   cursor: default;
 }
-/* On first run the demo reads as filled and Save outlined — most first-time
-   visitors are here to look before they connect. Past setup the emphasis flips
-   back: Save is the primary action and the demo is just still reachable.
-   Pinned to the sheet's own top-right corner rather than the actions row, so
-   it reads as an escape hatch from the whole screen, not one more button to
-   choose among Save/Cancel/Forget. The sheet is a fixed bottom panel that
-   never touches the safe-area strip, so no inset offset is needed here. */
-#btn-sheet-demo {
-  display: none;
-  position: absolute;
-  top: 16px; right: 22px;
-  font-family: var(--sans);
-  font-size: 13px;
-  font-weight: 500;
-  padding: 10px 14px;
-  min-height: 40px;
-  border-radius: 12px;
-  cursor: pointer;
-  border: 1px solid var(--hair-strong);
-  background: transparent;
-  border-color: var(--umber);
-  color: var(--umber);
-  white-space: nowrap;
-  transition: background 0.14s var(--ease-out), color 0.14s var(--ease-out);
-}
-#btn-sheet-demo.show { display: inline-block; }
-#btn-sheet-demo:active { transform: scale(0.96); }
-/* Room for the pinned demo button so the longer first-run title never runs
-   under it. */
-#sheet-title { padding-right: 84px; }
-#sheet-settings.setup #btn-sheet-demo {
-  background: var(--umber);
-  color: var(--paper);
-}
+/* On first run Save is outlined — nothing has been entered yet for it to
+   commit. Past setup it is the primary action and reads filled. */
 #sheet-settings.setup #btn-settings-save {
   border-color: var(--umber);
   color: var(--umber);

@@ -164,12 +164,8 @@ function openSettings(firstRun, tab) {
   syncVersionRow();
   fetchServerVersion();
   $("alt-toggle").checked = cfg.altKeyOn;
-  $("sheet-note").classList.toggle("hide", !firstRun);
   // First run has nothing to go back to, so there is no cancelling out of it.
   $("btn-settings-cancel").style.display = firstRun ? "none" : "";
-  // The demo is the way out of a first run with no backend to enter; past setup
-  // the list screen carries its own entry point.
-  $("btn-sheet-demo").classList.add("show");
   // Nothing to forget on a first run, and nothing to forget if the backend was
   // baked in at build time and no code has been entered yet.
   $("btn-settings-forget").classList.toggle("show", !firstRun && !!(cfg.backend || cfg.token));
@@ -303,12 +299,6 @@ function rejectToken(hint) {
 }
 
 $("btn-settings").addEventListener("click", () => openSettings(false));
-$("btn-sheet-demo").addEventListener("click", () => {
-  // Leaves setupMode set so the sheet comes back on the way out of the demo,
-  // and writes nothing to localStorage.
-  showSheet(false);
-  openDemo();
-});
 // "I ran it" is the user's answer, not a check: nothing on this device can see
 // the computer yet, and the address they are about to type is what will prove
 // it either way. Back for the case that answer was optimistic.
@@ -375,7 +365,6 @@ $("btn-settings-save").addEventListener("click", () => {
     // The tab strip names the step now, so the title goes back to naming the
     // sheet.
     $("sheet-title").textContent = "Settings";
-    $("sheet-note").classList.add("hide");
     $("btn-settings-cancel").style.display = "";
     showVoiceStep(true);
     syncVoicePicker();
