@@ -358,24 +358,46 @@ body {
   z-index: 60;
 }
 .profile-wrap.open .profile-menu { display: block; }
+/* Two lines, so the name has the whole row to itself: side by side, a name and
+   a tailnet address shared the width and both came out as three characters and
+   an ellipsis. Only the profile rows are taller — the explorer's .view-row
+   users are still one line and 44px. */
+.view-row.profile-row {
+  height: auto;
+  min-height: 56px;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.profile-menu-text { flex: 1 1 auto; min-width: 0; }
 /* A computer's name is one line however long it is, the way a branch name is
    in the explorer's picker, and the address it resolves to is the quiet half
    of the row — it is there to tell two alike names apart, not to be read. */
 .profile-menu-name {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .profile-menu-addr {
-  margin-left: auto;
-  padding-left: 10px;
-  flex: 0 1 auto;
+  display: block;
   font-size: 11.5px;
+  line-height: 1.35;
   color: var(--tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The way to forget one computer, at the end of its own row and in Settings
+   only — the session list's menu chooses between machines and manages none.
+   The session cards' trash glyph, in its quiet colour, a size down for a menu
+   row. */
+.profile-menu-trash {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  padding: 6px;
+  color: var(--whisper);
+}
+.profile-menu-trash svg { width: 16px; height: 16px; }
 /* The way out of the list rather than a row in it: set off by the hairline the
    rows already carry, and with the tick column kept so its label starts where
    theirs do. */
@@ -2316,7 +2338,12 @@ html.term-open, body.term-open {
    fields, which is why it needs no scrim — the sheet is already the only thing
    taking taps (see showProfilePick, 40-profiles.js). */
 #profile-block { margin-bottom: 20px; }
-#profile-pick-wrap { display: inline-flex; max-width: 100%; }
+/* Full width rather than the pill's, so the panel hanging off it can be told to
+   take the sheet's width and no more — a stacked name and address want more
+   room than a menu sized to the button that opened it. The pill itself is still
+   its own content's width, being one flex item in a row. */
+#profile-pick-wrap { display: flex; max-width: 100%; }
+#profile-pick-menu { min-width: 260px; max-width: 100%; }
 /* Room for a full hostname here, where the pill is not sharing a row with
    anything and the sheet is the width it is. */
 #profile-pick-name { max-width: 22ch; }

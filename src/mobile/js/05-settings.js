@@ -351,20 +351,9 @@ $("sheet-install").addEventListener("click", (e) => {
 // Drops the stored address and pairing code, so this device is no longer paired
 // with that computer. The device name stays: it names this device, not the
 // computer, and keeping it means re-pairing lands on the same view session.
-$("btn-settings-forget").addEventListener("click", () => {
-  const id = activeProfileId();
-  if (id) removeProfile(id);
-  blankConnectionFields();
-  toast("Computer forgotten");
-  // With another computer saved, this device is not unpaired — it is now
-  // talking to that one, which is a switch like any other. With none left it is
-  // back to first-run setup, which is not dismissible.
-  const next = readProfiles()[0];
-  if (next) { switchProfile(next.id); return; }
-  // Nothing left to switch between, so the switcher goes with the last row.
-  syncProfileSwitcher();
-  openSettings(needsSetup());
-});
+// This one forgets the computer the sheet is about; a chooser row's trash does
+// the same to any of them, through the same function (40-profiles.js).
+$("btn-settings-forget").addEventListener("click", () => forgetProfile(activeProfileId()));
 $("btn-settings-cancel").addEventListener("click", () => showSheet(false));
 $("sheet-scrim").addEventListener("click", () => {
   if (!setupMode) showSheet(false);   // the setup sheet is not dismissible
