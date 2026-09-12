@@ -1232,7 +1232,8 @@ $("btn-file-rename").addEventListener("click", async () => {
   const e = filesSelected;
   if (!e) return;
   showSheet(false);
-  const next = prompt("Rename " + e.name, e.name);
+  const next = await appPrompt("Rename " + e.name,
+                               { value: e.name, confirmLabel: "Rename" });
   if (next === null || !next.trim() || next.trim() === e.name) return;
   if (next.includes("/")) { toast("Names can't contain /"); return; }
   const res = await fsPost("api/fs/rename", {
@@ -1284,21 +1285,26 @@ const DOWNLOAD_BLOB_MAX = 30 * 1024 * 1024;
 // when the size is unknown, the browser has to do the downloading instead.
 function downloadFile(path, name, size) {
   if (typeof size === "number" && size <= DOWNLOAD_BLOB_MAX) {
-    return downloadAsBlob(path, name);
+    return downloadAsBlob(path, name, size);
   }
   return downloadViaLink(path, name);
 }
 
 // Through fetch rather than a plain link: /api/* only answers to the token
-// header, which a navigation cannot carry.
-async function downloadAsBlob(path, name) {
-  toast("Downloading…");
+// header, which a navigation cannot carry. The bytes are read off the stream
+// rather than taken whole from .blob(), because on a slow link the line this
+// counts into is the only thing on screen for the length of the transfer.
+async function downloadAsBlob(path, name, size) {
+  const label = name || baseName(path);
+  holdToast("Downloading " + label + "…");
   try {
     const r = await fetch(apiURL("api/fs/download?path=" + encodeURIComponent(path)),
                           { headers: authHeaders() });
-    if (r.status === 401) { rejectToken(); return; }
+    // rejectToken() says its own piece, so nothing is toasted over it — but the
+    // held line has no clock of its own and has to come down by hand.
+    if (r.status === 401) { hideToast(); rejectToken(); return; }
     if (!r.ok) throw new Error("HTTP " + r.status);
-    const url = URL.createObjectURL(await r.blob());
+    const url = URL.createObjectURL(await readWithProgress(r, label, size));
     const a = document.createElement("a");
     a.href = url;
     a.download = name || baseName(path);
@@ -1307,10 +1313,49 @@ async function downloadAsBlob(path, name) {
     a.remove();
     // Not straight away: Safari needs the URL alive until its save sheet is done.
     setTimeout(() => URL.revokeObjectURL(url), 60000);
+    toast("Downloaded " + label);
   } catch (e) {
     toast("Couldn't download");
   }
 }
+
+// Repainting the line per chunk would spend a fast transfer in layout, so it is
+// rewritten at most this often.
+const DOWNLOAD_TICK_MS = 100;
+
+// The body chunk by chunk, with the held line saying how far it has got.
+async function readWithProgress(r, label, size) {
+  // The listing's size where the caller had one, the header's where it did not,
+  // and no total at all when neither says — a response can arrive unmeasured.
+  const total = typeof size === "number" && size > 0
+    ? size : Number(r.headers.get("Content-Length")) || 0;
+  // No readable stream (an old browser, a synthesized response) still
+  // downloads; it just cannot be counted.
+  if (!r.body || !r.body.getReader) return r.blob();
+  const reader = r.body.getReader();
+  const chunks = [];
+  let got = 0, painted = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    got += value.length;
+    if (Date.now() - painted < DOWNLOAD_TICK_MS) continue;
+    painted = Date.now();
+    // A percentage where the size is known, and how much has landed where it is
+    // not. 100% is kept back for the save itself — the last chunk read is not
+    // the same moment as a file the browser has taken.
+    holdToast("Downloading " + label + "… " + (total
+      ? Math.min(99, Math.floor(got * 100 / total)) + "%"
+      : fmtSize(got)));
+  }
+  return new Blob(chunks, { type: r.headers.get("Content-Type") || "" });
+}
+
+// Whether the header download in a file view has anything to offer — the action
+// sheet's rule, asked per file: /api/fs/download only ever reads the working
+// tree, and a file being read at a ref is not what is on the disk.
+function canDownload(path) { return !refFor(path); }
 
 // The browser does the downloading, not us. So the token header only buys a
 // short-lived signed link (a navigation cannot carry the header, hence the
@@ -1347,9 +1392,9 @@ async function downloadViaLink(path, name) {
 
 $("btn-files-add").addEventListener("click", () => showSheet(true, "sheet-files-add"));
 
-$("btn-files-newfile").addEventListener("click", () => {
+$("btn-files-newfile").addEventListener("click", async () => {
   showSheet(false);
-  const name = prompt("New file name");
+  const name = await appPrompt("New file name", { confirmLabel: "Create" });
   if (name === null || !name.trim()) return;
   if (name.includes("/")) { toast("Names can't contain /"); return; }
   // Nothing is written yet: the editor opens empty and the first Save (hash "")
@@ -1359,7 +1404,7 @@ $("btn-files-newfile").addEventListener("click", () => {
 
 $("btn-files-newfolder").addEventListener("click", async () => {
   showSheet(false);
-  const name = prompt("New folder name");
+  const name = await appPrompt("New folder name", { confirmLabel: "Create" });
   if (name === null || !name.trim()) return;
   if (name.includes("/")) { toast("Names can't contain /"); return; }
   const res = await fsPost("api/fs/mkdir", { path: joinPath(filesPath, name.trim()) });
