@@ -124,6 +124,11 @@
       <path d="M6.5 3.5h7l4 4.5v12.5h-11z"/>
       <path d="M13.5 3.5V8h4"/>
     </symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.5v11"/>
+      <path d="M7.5 10.5l4.5 4.5 4.5-4.5"/>
+      <path d="M4.5 16.5v2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2"/>
+    </symbol>
     <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M18 8.5a6 6 0 0 0-12 0c0 6.4-2.5 7.5-2.5 7.5h17S18 14.9 18 8.5"/>
       <path d="M10.3 19.5a2 2 0 0 0 3.4 0"/>
@@ -522,6 +527,12 @@
     <div class="editor-name">
       <span id="editor-filename"></span><span class="editor-dirty" id="editor-dirty" aria-hidden="true"></span>
     </div>
+    <!-- The file itself, off the disk. Hidden while the buffer is a ref's:
+         /api/fs/download only ever reads the working tree, which is not what
+         is on screen then — the action sheet refuses the same download for the
+         same reason. -->
+    <button class="icon-btn" type="button" id="btn-editor-download"
+            aria-label="Download this file"><svg><use href="#i-download"/></svg></button>
     <!-- Off by default: long lines scroll sideways, same as today, until this
          is switched on. Lives beside Save rather than in Settings — it is a
          per-file reading preference, not a connection setting. -->
@@ -549,6 +560,8 @@
   <div class="topbar editor-bar">
     <button class="icon-btn" id="btn-reader-back" aria-label="Close the reader"><svg><use href="#i-back"/></svg></button>
     <div class="editor-name"><span id="reader-filename"></span></div>
+    <button class="icon-btn" type="button" id="btn-reader-download"
+            aria-label="Download this file"><svg><use href="#i-download"/></svg></button>
     <button type="button" id="btn-reader-edit">Edit</button>
   </div>
   <!-- The scroller, so the topbar stays put while the document moves. -->
@@ -952,6 +965,20 @@
   </div>
 </div>
 
+<!-- appPrompt()'s dialog, the confirm's twin: the same centered sheet, with a
+     field between the question and the actions. The question labels the field
+     rather than sitting above it unattached, and the yes is the plain action
+     button — this one names a thing, it does not destroy one. -->
+<div class="sheet centered" id="sheet-prompt" role="dialog" aria-modal="true">
+  <p class="sheet-note" id="prompt-msg"></p>
+  <input type="text" id="prompt-input" aria-labelledby="prompt-msg"
+         autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <div class="actions">
+    <button type="button" id="btn-prompt-cancel">Cancel</button>
+    <button type="button" class="primary" id="btn-prompt-ok"></button>
+  </div>
+</div>
+
 <!-- ============================================================
      REPORT A PROBLEM
      ============================================================ -->
@@ -1011,7 +1038,13 @@
      IMAGE VIEWER
      ============================================================ -->
 <div class="viewer" id="viewer">
-  <button class="icon-btn viewer-close" type="button" id="btn-viewer-close" aria-label="Close image">&times;</button>
+  <!-- Both controls ride one row rather than each being pinned to the corner:
+       the download then sits a gap from the X instead of at an offset measured
+       off the X's own width. -->
+  <div class="viewer-actions">
+    <button class="icon-btn viewer-btn" type="button" id="btn-viewer-download" aria-label="Download this file"><svg><use href="#i-download"/></svg></button>
+    <button class="icon-btn viewer-btn viewer-close" type="button" id="btn-viewer-close" aria-label="Close image">&times;</button>
+  </div>
   <img id="viewer-img" alt="">
   <video id="viewer-video" controls playsinline preload="metadata"></video>
 </div>

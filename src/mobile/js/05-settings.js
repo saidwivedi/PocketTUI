@@ -4,7 +4,7 @@
 // One scrim serves every sheet, so closing means closing whichever is open.
 const SHEET_IDS = ["sheet-settings", "sheet-new", "sheet-session",
                    "sheet-file-actions", "sheet-files-add", "sheet-confirm",
-                   "sheet-report"];
+                   "sheet-prompt", "sheet-report"];
 function showSheet(on, id="sheet-settings") {
   // The session list's computer switcher is a dropdown under this layer: a
   // sheet coming up over it has to take it down, or closing the sheet uncovers
@@ -18,11 +18,12 @@ function showSheet(on, id="sheet-settings") {
   // dismissing it is a real answer: keep the resolved engine unstored and let
   // it keep tracking the backend, which is what unset has always meant.
   if (voiceStep && !(on && id === "sheet-settings")) showVoiceStep(false);
-  // Every transition but the confirm sheet's own opening hides it, and a
-  // question dismissed without an answer — the scrim tap, another sheet
-  // taking over — is answered "no". settleConfirm() clears its resolver
-  // before calling back in here, so this cannot loop.
+  // Every transition but an asking sheet's own opening hides it, and a question
+  // dismissed without an answer — the scrim tap, another sheet taking over — is
+  // answered "no", or for the prompt, nothing typed. Both settle functions clear
+  // their resolver before calling back in here, so this cannot loop.
   if (!(on && id === "sheet-confirm")) settleConfirm(false);
+  if (!(on && id === "sheet-prompt")) settlePrompt(null);
   for (const s of SHEET_IDS) $(s).classList.toggle("show", on && id === s);
   $("sheet-scrim").classList.toggle("show", on);
 }

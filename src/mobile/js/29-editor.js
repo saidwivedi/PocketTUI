@@ -262,6 +262,7 @@ async function openEditor(path, opts) {
   // Read-only has nothing to save; hiding the button says so louder than
   // disabling it would.
   $("btn-editor-save").style.display = edReadOnly ? "none" : "";
+  $("btn-editor-download").style.display = canDownload(path) ? "" : "none";
   edBuild(content, path);
   edSetDirty(false);
   edSyncWrapButton();
@@ -347,6 +348,7 @@ function edRestore(s) {
   edVimComp = s.comps.vim;
   $("editor-filename").textContent = baseName(edPath);
   $("btn-editor-save").style.display = edReadOnly ? "none" : "";
+  $("btn-editor-download").style.display = canDownload(edPath) ? "" : "none";
   if (edView) edView.destroy();
   edView = new window.CM6.EditorView({ state: s.state, parent: $("editor-host") });
   // The theme, the wrap setting and vim can all have moved while the buffer was
@@ -447,6 +449,12 @@ function closeEditor() {
 
 $("btn-editor-back").addEventListener("click", () => history.back());
 $("btn-editor-save").addEventListener("click", () => editorSave());
+// The file as it is on the disk, not the buffer: an unsaved edit is not what
+// gets saved to the phone. No size to hand over here, so downloadFile() takes
+// the browser's way round.
+$("btn-editor-download").addEventListener("click", () => {
+  if (edPath) downloadFile(edPath, baseName(edPath));
+});
 // Applies immediately, same as the key-bar toggles in Settings: reconfigure
 // the compartment rather than rebuilding the buffer, so the cursor, selection
 // and undo history all survive the tap.
