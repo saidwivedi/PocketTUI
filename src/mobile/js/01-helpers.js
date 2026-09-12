@@ -30,6 +30,21 @@ function toast(msg, ms=1800) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toast._t); toast._t = setTimeout(()=>t.classList.remove("show"), ms);
 }
+// The same line with no clock on it: it stays until something replaces it.
+// For a transfer's progress, which has to sit on screen for as long as the
+// transfer takes and is over the moment its outcome is toasted — one element
+// and one timer, so a held line can neither stack with the outcome nor outlive
+// it. Off dbg() on purpose: a line per repaint would flush the debug tail with
+// a download nobody is debugging.
+function holdToast(msg) {
+  clearTimeout(toast._t);
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+}
+// For the way out that ends a held line without a word of its own.
+function hideToast() {
+  clearTimeout(toast._t);
+  $("toast").classList.remove("show");
+}
 // A themed stand-in for confirm(): the native dialog wears the OS's look, not
 // the app's. The question rides the app's own modal idiom — a bottom sheet
 // shown through showSheet(), whose single-sheet rule also closes whatever
@@ -56,6 +71,41 @@ function settleConfirm(answer) {
 }
 $("btn-confirm-ok").addEventListener("click", () => settleConfirm(true));
 $("btn-confirm-cancel").addEventListener("click", () => settleConfirm(false));
+
+// The same stand-in for prompt(), on the same resolver: one question at a time,
+// answered with what was typed, or null for every way out that is not OK —
+// Cancel, the scrim, Escape, another sheet taking the screen. showSheet()'s
+// settle hook is what covers the ones that never touch a button here.
+let promptResolve = null;
+function appPrompt(message, opts={}) {
+  return new Promise((resolve) => {
+    promptResolve = resolve;
+    $("prompt-msg").textContent = message;
+    $("btn-prompt-ok").textContent = opts.confirmLabel || "OK";
+    const input = $("prompt-input");
+    input.value = opts.value || "";
+    showSheet(true, "sheet-prompt");
+    input.focus();
+    // A rename opens on the name it is changing, selected: typing replaces it,
+    // and an edit still starts from the text that is there.
+    input.select();
+  });
+}
+function settlePrompt(answer) {
+  if (!promptResolve) return;
+  const resolve = promptResolve;
+  promptResolve = null;   // before showSheet: its settle hook must not loop
+  showSheet(false);
+  resolve(answer);
+}
+$("btn-prompt-ok").addEventListener("click", () => settlePrompt($("prompt-input").value));
+$("btn-prompt-cancel").addEventListener("click", () => settlePrompt(null));
+$("prompt-input").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  // There is no form here to submit; Enter is the OK button by hand.
+  e.preventDefault();
+  settlePrompt($("prompt-input").value);
+});
 
 
 // ============================================================

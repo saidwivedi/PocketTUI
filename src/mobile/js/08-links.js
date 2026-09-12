@@ -349,6 +349,7 @@ function showImage(path) {
     img.style.display = "";
     if (fresh) dropSrc(img);
   }
+  $("btn-viewer-download").style.display = canDownload(path) ? "" : "none";
   $("viewer").classList.add("show");
   if (fresh) fillViewer(path, isVideo);
 }
@@ -399,6 +400,13 @@ function hideImage() {
 }
 
 $("btn-viewer-close").addEventListener("click", hideImage);
+// The media as a file. stopPropagation because the overlay below reads any
+// click off the image or the video as a dismiss, and saving it is not leaving
+// it; the size is not known here, so downloadFile() takes the browser's route.
+$("btn-viewer-download").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (viewerPath) downloadFile(viewerPath, baseName(viewerPath));
+});
 // Anywhere off the image/video itself closes; the media keeps its own taps (and
 // the video its native controls) so interacting with it is not read as a dismiss.
 $("viewer").addEventListener("click", (e) => {

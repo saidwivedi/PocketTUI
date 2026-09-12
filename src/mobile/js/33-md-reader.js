@@ -540,6 +540,7 @@ async function openReader(path) {
   if (!data) return;
   readerPath = path;
   $("reader-filename").textContent = baseName(path);
+  $("btn-reader-download").style.display = canDownload(path) ? "" : "none";
   const body = $("reader-body");
   // Emptying an element is the one thing innerHTML is allowed to do here; not
   // one byte of the file ever goes through it.
@@ -583,6 +584,7 @@ function readerStash() {
 function readerRestore(s) {
   readerPath = s.path;
   $("reader-filename").textContent = baseName(readerPath);
+  $("btn-reader-download").style.display = canDownload(readerPath) ? "" : "none";
   const body = $("reader-body");
   body.innerHTML = "";
   body.appendChild(s.page);
@@ -597,6 +599,11 @@ function readerRestore(s) {
 }
 
 $("btn-reader-back").addEventListener("click", () => history.back());
+// The .md file itself rather than the page rendered from it. No size here, so
+// downloadFile() takes the browser's way round.
+$("btn-reader-download").addEventListener("click", () => {
+  if (readerPath) downloadFile(readerPath, baseName(readerPath));
+});
 
 // The editor takes the screen the reader is holding, and its history entry
 // with it: one entry serves whichever of the two is up, so back from the

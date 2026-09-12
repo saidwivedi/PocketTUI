@@ -2499,26 +2499,37 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* showImage() picks one of these per open; this is just the at-rest default so
    they never both render before the first tap sets it explicitly. */
 .viewer video { display: none; }
-.viewer .viewer-close {
+/* Download and close, in the corner the X alone used to hold. */
+.viewer .viewer-actions {
   position: absolute;
-  /* A zoomed image is a transformed box that paints over the button and swallows
-     its taps; at high zoom the X is the only way out, so it stays on top. */
+  /* A zoomed image is a transformed box that paints over the buttons and
+     swallows their taps; at high zoom the X is the only way out, so they stay
+     on top. */
   z-index: 1;
   top: calc(6px + var(--safe-top)); right: 10px;
+  display: flex; align-items: center; gap: 8px;
+}
+.viewer .viewer-btn {
   color: rgba(243, 237, 224, 0.82);
+  padding: 10px 12px;
+  /* The X's own height, so the icon beside it does not sit in a shorter box. */
+  min-height: 44px;
+  box-sizing: border-box;
+  /* They are pale, and the media under them is not always dark — white footage
+     or a bright photo edge would swallow them. Their own scrim in the
+     backdrop's colour keeps them readable whatever is behind. */
+  background: rgba(12, 10, 7, 0.6);
+  border-radius: 8px;
+}
+.viewer .viewer-close {
   font-family: var(--sans);
   font-size: 24px;
   line-height: 1;
   padding: 10px 14px;
-  /* The X is pale, and the media it sits over is not always dark — white
-     footage or a bright photo edge would swallow it. Its own scrim in the
-     backdrop's colour keeps it readable whatever is behind it. */
-  background: rgba(12, 10, 7, 0.6);
-  border-radius: 8px;
 }
 /* Hover deepens the scrim rather than lightening it: a pale wash would undo
    the contrast the resting state exists for. */
-.viewer .viewer-close:hover { color: #f3ede0; background: rgba(12, 10, 7, 0.75); }
+.viewer .viewer-btn:hover { color: #f3ede0; background: rgba(12, 10, 7, 0.75); }
 
 /* ============================================================
    FILE EXPLORER
