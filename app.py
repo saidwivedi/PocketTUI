@@ -1520,10 +1520,18 @@ def api_session_rename(request: Request, body: dict = Body(...)) -> Response:
 # A phone holding the mic key open still has to produce a request this server
 # will look at. 20 MB of AAC is far longer than anyone dictates in one breath.
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
-MAX_AUDIO_SECONDS = 90
+# Five minutes. A long take is allowed and simply takes longer to transcribe:
+# the decode costs ~0.08 s per second of audio up to 90 s and ~0.16 s/s at the
+# cap on a CPU box, so a full one is ~50 s of work. MAX_AUDIO_BYTES is ~43 min
+# of 64 kbps AAC, so seconds are the real limiter, not bytes. The client's
+# REC_MAX_SECONDS mirrors this number, so the phone stops recording before
+# ffmpeg would cut the take short here.
+MAX_AUDIO_SECONDS = 300
 
-# whisper on CPU runs roughly real-time on base.en, so a 90 s cap needs well
-# under 30 s; past that something is wrong and the phone is already waiting.
+# whisper on CPU runs roughly real-time on base.en, so this covers a take of
+# about half a minute; past that something is wrong and the phone is already
+# waiting. Takes longer than that are the Parakeet path's, whose deadline
+# scales with the audio (see parakeet_deadline).
 WHISPER_TIMEOUT_S = 30
 FFMPEG_TIMEOUT_S = 15
 
@@ -1630,12 +1638,27 @@ PARAKEET_DECODING = "modified_beam_search"
 # many-core server does not hand one utterance every core it owns.
 PARAKEET_THREADS = min(4, os.cpu_count() or 4)
 
-# The deadline whisper's subprocess timeout is for this engine, and it has to
-# clear two hurdles: stay under the phone's 30 s fetch abort, so the server is
-# the half that decides a decode has failed, and leave room for a request that
-# spent part of its budget queued behind another decode (a typical one is
-# ~0.3 s, so the queue is not what spends this).
+# The deadline whisper's subprocess timeout is for this engine. It is a floor
+# plus a per-second rate, because a take may now run to MAX_AUDIO_SECONDS and a
+# fixed figure would fail the long ones on time rather than on trouble.
+#
+# The floor has to clear two hurdles: stay under the phone's 30 s fetch abort,
+# so the server is the half that decides a decode has failed, and leave room for
+# a request that spent part of its budget queued behind another decode (a
+# typical one is ~0.3 s, so the queue is not what spends this).
+#
+# The rate is several times the measured cost — the decode runs ~0.08 s per
+# second of audio up to 90 s and ~0.16 s/s at the cap (47 s for a 300 s take on
+# this box), so it leaves ~3x headroom where the audio is longest and a loaded
+# machine still finishes inside it, while a wedged decode still trips within
+# ~2.5 min at the cap.
 PARAKEET_TIMEOUT_S = 20
+PARAKEET_TIMEOUT_PER_S = 0.5
+
+
+def parakeet_deadline(duration_s: float) -> float:
+    """How long a decode of `duration_s` of audio gets before it is failed."""
+    return max(PARAKEET_TIMEOUT_S, duration_s * PARAKEET_TIMEOUT_PER_S)
 
 
 def parakeet_model_dir() -> Path | None:
@@ -1786,7 +1809,7 @@ _parakeet_recognizer: tuple[str, object] | None = None
 # uncontended case one submit round-trip.
 _parakeet_pool: concurrent.futures.ThreadPoolExecutor | None = None
 
-# Set when a decode outlives PARAKEET_TIMEOUT_S. There is no killing the native
+# Set when a decode outlives its deadline. There is no killing the native
 # thread that is still inside onnxruntime, so the worker it holds is gone for
 # the life of the process and every later decode would queue behind it forever.
 # The flag retires the engine instead: parakeet_available() reads it, and the
@@ -2082,8 +2105,9 @@ def run_parakeet(model_dir: Path, wav: Path,
     for one: a result that carries no per-piece log-probs, or one whose pieces
     and log-probs do not line up, yields None rather than failing the decode.
 
-    Raises subprocess.TimeoutExpired past PARAKEET_TIMEOUT_S, which is whisper's
-    shape for the same failure and reaches the phone as transcribe_timeout.
+    Raises subprocess.TimeoutExpired past parakeet_deadline() for this take,
+    which is whisper's shape for the same failure and reaches the phone as
+    transcribe_timeout.
     """
     with wave.open(str(wav)) as w:
         if w.getnchannels() != 1 or w.getsampwidth() != 2:
@@ -2098,6 +2122,9 @@ def run_parakeet(model_dir: Path, wav: Path,
     samples = [s / 32768.0 for s in pcm]
     if not samples:
         return "", None
+    # The take's own duration, off the samples already read — the same number
+    # the silence gate logged — so the deadline scales with what was recorded.
+    deadline = parakeet_deadline(len(samples) / rate)
 
     # The build too, not only the decode: the first request after a restart
     # builds the recognizer, and two of them arriving together must not race to
@@ -2122,7 +2149,7 @@ def run_parakeet(model_dir: Path, wav: Path,
     global _parakeet_pool, _parakeet_dead
     future = parakeet_pool().submit(decode)
     try:
-        return future.result(timeout=PARAKEET_TIMEOUT_S)
+        return future.result(timeout=deadline)
     except concurrent.futures.TimeoutError:
         # The worker is still inside the native decode and cannot be
         # interrupted, so the executor is abandoned rather than shut down —
@@ -2131,7 +2158,7 @@ def run_parakeet(model_dir: Path, wav: Path,
         # which is the shorter of the two now that the engine is retired.
         _parakeet_dead = True
         _parakeet_pool = None
-        raise subprocess.TimeoutExpired("parakeet decode", PARAKEET_TIMEOUT_S)
+        raise subprocess.TimeoutExpired("parakeet decode", deadline)
 
 
 def _is_common_english(word: str) -> bool:
@@ -2792,9 +2819,9 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
                                                     hotwords=hotwords or None)
                 except subprocess.TimeoutExpired:
                     # A deadline is not a hotword problem, and retrying without
-                    # them would queue a second 20 s wait behind the worker that
-                    # is already stuck — the phone would wait 40 s for the
-                    # answer the first failure already knew.
+                    # them would queue a second full wait behind the worker that
+                    # is already stuck — the phone would wait twice as long for
+                    # the answer the first failure already knew.
                     raise
                 except Exception:  # noqa: BLE001
                     hotword_count = 0

@@ -12,11 +12,19 @@
 // MediaRecorder, an old backend with no /api/transcribe, a slow or broken one —
 // each falls back to the phone's own dictation, which is what this app did
 // before and always works.
-const REC_TIMEOUT = 30000;   // ms before an upload is abandoned
+const REC_TIMEOUT = 30000;   // ms before an upload is abandoned, floor of the scaled wait
+// What the scaled wait is built from: a fixed allowance for the upload itself
+// plus 0.5s per second of audio, which is the server's own decode deadline. See
+// recUploadTimeout().
+const REC_TIMEOUT_BASE_MS = 10000;
+const REC_TIMEOUT_PER_S_MS = 500;
 // Must match MAX_AUDIO_SECONDS in app.py: the server's ffmpeg decode silently
 // drops anything past that cap, so the client stops the take itself rather
 // than let the user keep talking into audio that will never be transcribed.
-const REC_MAX_SECONDS = 90;
+// Five minutes, because a take is now a dictated paragraph rather than a
+// sentence and the decode behind it costs about 0.08s per second of audio —
+// even a full one is transcribed in well under a minute.
+const REC_MAX_SECONDS = 300;
 // How long before the cap the elapsed label switches to a countdown, so the
 // stop is never a surprise.
 const REC_WARN_SECONDS = 10;
@@ -223,6 +231,62 @@ let recDeadRuns = 0;
 
 function recording() {
   return recorder !== null;
+}
+
+// --- Screen wake lock -----------------------------------------------------
+// An open microphone does not keep an iPhone awake. A five-minute take is long
+// enough for auto-lock to dim and lock the screen, which backgrounds the
+// home-screen app and kills the track mid-sentence, and the user gets a parked
+// take instead of the paragraph they just spoke. So the take holds a screen
+// wake lock for exactly as long as a recorder is live — never through the idle
+// mic-retained window, never through the upload, both of which are over in
+// seconds and neither of which is worth keeping a phone lit for.
+let recWakeLock = null;
+// Whether the take that asked for the lock still wants it. request("screen")
+// settles a turn or two after the tap, so a take cancelled in that gap would
+// otherwise have its sentinel arrive after the release and stay held with no
+// recorder behind it. The flag is what the arriving sentinel checks.
+let recWakeWanted = false;
+
+// Asked for from inside the tap, because the request needs transient user
+// activation — which is also why nothing here is awaited. Every rejection is
+// swallowed: a browser without the API, an iOS home-screen app older than 18.4,
+// a request that raced the activation away. None of that is news the user can
+// act on, and none of it changes what the take does.
+function recWakeAcquire() {
+  const wl = navigator.wakeLock;
+  if (!wl || typeof wl.request !== "function") return;
+  recWakeWanted = true;
+  try {
+    wl.request("screen").then((s) => {
+      if (!recWakeWanted) { recWakeRelease(s); return; }
+      recWakeLock = s;
+      // The browser releases the lock itself whenever the document hides. The
+      // listener is what keeps this side honest about that, so the return to
+      // visible knows to ask again rather than assume it is still held.
+      try {
+        s.addEventListener("release", () => {
+          if (recWakeLock === s) recWakeLock = null;
+        });
+      } catch (e) { /* the sentinel is still usable without it */ }
+    }).catch(() => {});
+  } catch (e) { /* no lock is no worse than the auto-lock we had before */ }
+}
+
+// Every ending of a live take runs this, so the phone goes back to locking on
+// its own schedule the moment there is nothing being recorded.
+function recWakeDrop() {
+  recWakeWanted = false;
+  const s = recWakeLock;
+  recWakeLock = null;
+  if (s) recWakeRelease(s);
+}
+
+function recWakeRelease(s) {
+  try {
+    const p = s.release();
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch (e) { /* already released, or the document went away with it */ }
 }
 
 // Whether a tap arriving now is the stop tap's own echo rather than a new
@@ -503,6 +567,10 @@ function recRelease() {
   // Nobody is waiting on a stop any more: the recorder this would have spoken
   // for is going away with the stream.
   recStopWatchdogOff();
+  // And nothing is being recorded, so the screen may lock again. This is the
+  // catch-all end: every cancel, salvage and lost-take teardown comes through
+  // here, whether or not a recorder ever existed.
+  recWakeDrop();
   // The nudges belong to a take that is over: firing them now would resume the
   // context this is about to suspend and bounce a track it is about to stop.
   clearTimeout(recReviveTimer);
@@ -536,6 +604,9 @@ function recRetire() {
   recorder = null;
   // The stop this retirement follows has been answered, however it was answered.
   recStopWatchdogOff();
+  // The take is over even though the microphone is not: the upload that follows
+  // is seconds of network, not something to hold a phone awake for.
+  recWakeDrop();
   // The analyser tap and the wake-up nudges both belong to the take that just
   // ended; the context stays running so the re-record this retains the stream
   // for starts hot.
@@ -709,6 +780,13 @@ function startRecording() {
   // thrown away whole — including any recorder built on it.
   const reuse = recStreamUsable();
   if (!reuse) recRelease();
+  // Same window as recAudioWake() and the same rule — a screen wake lock needs
+  // transient user activation — but after the release above, which is a
+  // teardown and drops the lock along with everything else. Only the asking has
+  // to happen inside the tap; the sentinel may arrive whenever it arrives. A
+  // path that reaches this without a gesture behind it gets a rejection, which
+  // costs nothing and is swallowed.
+  recWakeAcquire();
   const acquire = reuse ? Promise.resolve(recStream) : recAcquire();
   acquire.then(async (s) => {
     recStarting = false;
@@ -835,6 +913,16 @@ function recDeadCapture() {
   recFallback("Mic is muted by iOS — close and reopen the app");
 }
 
+// How long the take that just ended ran for, in seconds. Read after the stop
+// rather than measured at it, so a stop the watchdog had to finish counts the
+// waiting too — erring long is free here, it only lengthens an upload's wait.
+// Clamped to the cap the ticker enforces, which is the longest a take can
+// honestly be and the bound a clock that moved under us would otherwise escape.
+function recTakeSeconds() {
+  const s = (performance.now() - recStarted) / 1000;
+  return Math.min(REC_MAX_SECONDS, Math.max(0, s || 0));
+}
+
 // The tail of a stop that is keeping what it heard: the teardown, then the
 // upload. Factored out because onstop is no longer the only thing that runs it —
 // a stop the watchdog gave up waiting for finishes its take through here too, so
@@ -850,6 +938,7 @@ function recFinishTake(r) {
   // take the user abandoned is dropped either way, and its blob with it.
   if (!recBusy || recCancelled) { recClearUI(); return; }
   const blob = new Blob(recChunks, { type: r.mimeType || "audio/webm" });
+  const seconds = recTakeSeconds();
   recChunks = null;
   // Everything the recorder collected goes up, however quiet it looks from
   // here. The failure this used to gate on — 62KB of well-formed AAC whose
@@ -859,7 +948,7 @@ function recFinishTake(r) {
   // rules on the decoded audio instead, and an empty transcript is its
   // answer; see codeMicFinish().
   // The indicator stays up, now reading "Transcribing…", until this lands.
-  uploadRecording(blob);
+  uploadRecording(blob, seconds);
 }
 
 // Nobody is waiting on a stop any more. Every teardown says so: a watchdog left
@@ -957,10 +1046,22 @@ function stopRecording() {
 // over. Those keep the blob, because re-recording a sentence the microphone
 // already captured perfectly is the one thing the user should never be asked to
 // do, and offer it back through the retry hint.
-async function uploadRecording(blob) {
+// How long this take's upload is given before it is abandoned. One constant
+// cannot serve both ends of a five-minute cap: 30s abandons a long take while
+// the server is still decoding it, and a wait long enough for that take would
+// leave a failed short one hanging for minutes. The server's decode deadline
+// scales at 0.5s per second of audio, so this mirrors it and adds a fixed
+// allowance for pushing the bytes up; REC_TIMEOUT stays the floor, which is
+// what a short take still gets.
+function recUploadTimeout(seconds) {
+  const s = seconds > 0 ? seconds : 0;
+  return Math.max(REC_TIMEOUT, REC_TIMEOUT_BASE_MS + s * REC_TIMEOUT_PER_S_MS);
+}
+
+async function uploadRecording(blob, seconds) {
   const ctl = new AbortController();
   recAbort = ctl;
-  const timer = setTimeout(() => ctl.abort(), REC_TIMEOUT);
+  const timer = setTimeout(() => ctl.abort(), recUploadTimeout(seconds));
   // Whether this attempt handed the take on to a second one rather than ending
   // it. Read by the teardown below, which must not tidy away state the attempt
   // it scheduled still needs.
@@ -1018,7 +1119,7 @@ async function uploadRecording(blob) {
       if (recServerFails >= 2) {
         voiceFallToPhone("Voice server unavailable — using phone dictation");
       } else {
-        recKeepPending(blob, "Transcription failed");
+        recKeepPending(blob, seconds, "Transcription failed");
       }
       return;
     }
@@ -1033,11 +1134,12 @@ async function uploadRecording(blob) {
     codeMicFinish(text, !!(data && data.truncated));
   } catch (e) {
     if (!recBusy) return;      // our own abort unwinding
-    // The 30s timer fired. The audio is fine and the server may simply be slow
-    // on a long take, so this neither latches nor retries by itself — a second
-    // automatic 30s wait is a minute of nothing. The user decides.
+    // The abort timer fired, having already allowed for the take's own length.
+    // The audio is fine and the server may simply be slower than that, so this
+    // neither latches nor retries by itself — a second automatic wait of the
+    // same size is minutes of nothing. The user decides.
     if (e && e.name === "AbortError") {
-      recKeepPending(blob, "Transcription timed out");
+      recKeepPending(blob, seconds, "Transcription timed out");
       return;
     }
     // fetch() rejecting for any other reason is the network: no response ever
@@ -1052,11 +1154,11 @@ async function uploadRecording(blob) {
         // teardown in the meantime all clear recBusy, and the retry must not
         // resurrect audio the user has already walked away from.
         if (!recBusy) return;
-        uploadRecording(blob);
+        uploadRecording(blob, seconds);
       }, REC_RETRY_DELAY);
       return;
     }
-    recKeepPending(blob, "Voice server unreachable");
+    recKeepPending(blob, seconds, "Voice server unreachable");
   } finally {
     clearTimeout(timer);
     if (recAbort === ctl) recAbort = null;
@@ -1081,11 +1183,14 @@ async function uploadRecording(blob) {
 // recSyncMic() and the hint it raises there must see a screen that is already
 // quiet — a bar that only appeared on the next state change would leave the
 // failure toast as the sole trace of a take still sitting in hand.
-function recKeepPending(blob, why, reason) {
+function recKeepPending(blob, seconds, why, reason) {
   recBusy = false;
   recAbort = null;
   recPending = {
     blob: blob,
+    // Carried so the retry waits as long as the take deserves rather than
+    // falling back to the floor and abandoning a decode already under way.
+    seconds: seconds,
     engine: recEngine,
     caretStart: recCaretStart,
     caretEnd: recCaretEnd,
@@ -1151,9 +1256,11 @@ function salvageRecording() {
 // is the answer they get, on a page they are actually looking at.
 function salvageStopped(r) {
   const blob = new Blob(recChunks || [], { type: r.mimeType || "audio/webm" });
+  const seconds = recTakeSeconds();
   recChunks = null;
   recPending = {
     blob: blob,
+    seconds: seconds,
     engine: recEngine,
     caretStart: recCaretStart,
     caretEnd: recCaretEnd,
@@ -1197,7 +1304,7 @@ function retryPendingTake() {
   // No take is running, so the counter left over from the one that failed would
   // be a stopped clock sitting beside a live label.
   rec.querySelector(".elapsed").textContent = "";
-  uploadRecording(p.blob);
+  uploadRecording(p.blob, p.seconds);
 }
 
 // The hint is offered only when there is nothing else going on. While a take is
@@ -1300,7 +1407,7 @@ function codeMicFinish(text, truncated) {
   // The server cuts the decode at MAX_AUDIO_SECONDS and drops the rest without
   // saying so in the transcript itself — the only way the user learns their
   // recording was cut short is this toast.
-  if (truncated) toast("Recording was cut at 90 seconds");
+  if (truncated) toast("Recording was cut at five minutes");
 }
 
 // The pre-audio behaviour, kept whole as the fallback: the browser's own
@@ -1484,6 +1591,11 @@ async function startLocalRecording(engine) {
 // completion for the one in flight.
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
+    // A wake lock is released for us the moment the document hides, so a take
+    // that came back still running — one nothing here stopped — has to ask for
+    // it again or the phone auto-locks on it a second time. No user activation
+    // is needed to re-take it after a visibility change.
+    if (recording() && !recWakeLock) recWakeAcquire();
     // Returning. Whatever was parked while the app was away is offered now: the
     // salvage ran with the page hidden and its recSyncMic() painted a screen
     // nobody was looking at.

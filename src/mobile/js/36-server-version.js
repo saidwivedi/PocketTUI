@@ -443,4 +443,13 @@ $("btn-update-server").addEventListener("click", startServerUpdate);
 if (!needsSetup()) {
   fetchServerVersion();
   fetchLatestVersion();
+  // And which engines that computer can hear with. The mic key resolves its
+  // engine from this answer and a device whose user has never opened Settings
+  // has nothing else to resolve it from — without the ask here it would spend
+  // its life on phone dictation while the computer sits there with Parakeet
+  // installed. Silent on failure like the two above, and once per launch: a
+  // computer switched to re-asks through the picker, as it always has. The
+  // demo talks to no computer, and an answer of "unknown" cached against it
+  // would outlive the demo.
+  if (!demoMode) fetchVoiceStatus();
 }
