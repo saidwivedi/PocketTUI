@@ -154,13 +154,17 @@ function toggleCompose(dictateOnly) {
     else stopListening();                                    // keep the transcript up for editing/sending
     return;
   }
+  // The boot fetch normally has the status in hand by now; this covers the tap
+  // that beat it and the one whose fetch failed. Asked before the engine is
+  // resolved rather than inside the branch below, because an unanswered status
+  // is exactly what resolves to "phone" on a device that has never opened
+  // Settings — warmed only there, the tap that needs it could never reach it.
+  // Deliberately not awaited: iOS grants the microphone only inside the
+  // gesture, so this take resolves without the answer — which the upload's own
+  // 503 covers — and the taps after it have it.
+  if (!voiceStatusChecked) fetchVoiceStatus();
   const engine = resolveVoiceEngine();
   if (engine !== "phone") {
-    // The status fetch is lazy and this is the first thing that needs it, so a
-    // tap before it lands resolves without it — the answer only ever vetoes an
-    // engine, and the upload's own 503 catches what it would have caught. Warmed
-    // here for the taps after this one, and for the picker.
-    if (!voiceStatusChecked) fetchVoiceStatus();
     // Must be reached straight from the tap: iOS grants the microphone only
     // inside the gesture, so nothing of ours may await before startRecording().
     startLocalRecording(engine);
