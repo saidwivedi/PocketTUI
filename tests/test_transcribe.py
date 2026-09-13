@@ -995,6 +995,16 @@ def test_a_parakeet_crash_answers_a_shape_not_a_traceback(parakeet_installed,
     assert body(response) == {"error": "transcribe_failed"}
 
 
+def test_the_decode_deadline_scales_with_the_take():
+    """A short take keeps the floor; a capped one gets room to finish.
+
+    The floor stays under the phone's fetch abort, and 300 s of audio decodes
+    in ~25 s here, so 150 s is trouble rather than a slow machine.
+    """
+    assert A.parakeet_deadline(10.0) == 20
+    assert A.parakeet_deadline(300.0) == 150
+
+
 def parakeet_wav(path):
     """A one-second mono 16-bit wav — what decode_audio would have written."""
     with wave.open(str(path), "wb") as w:
@@ -1429,6 +1439,21 @@ def test_silence_skips_whisper_entirely(installed, monkeypatch, no_tmux):
     assert body(response) == {"text": "", "raw": "", "ms": 0}
 
 
+def test_the_decode_cap_is_what_ffmpeg_is_given(tmp_path, monkeypatch):
+    """The cap the client mirrors is the one the decode actually enforces."""
+    assert A.MAX_AUDIO_SECONDS == 300
+    seen = {}
+
+    def spy(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+    monkeypatch.setattr(A.subprocess, "run", spy)
+    A._decode_to_wav(tmp_path / "in.m4a", tmp_path / "out.wav")
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("-t") + 1] == str(A.MAX_AUDIO_SECONDS)
+
+
 def test_a_clip_that_hit_the_decode_cap_is_flagged_truncated(installed, monkeypatch,
                                                               at_a_shell):
     """ffmpeg's `-t MAX_AUDIO_SECONDS` silently drops anything past the cap —
@@ -1437,7 +1462,7 @@ def test_a_clip_that_hit_the_decode_cap_is_flagged_truncated(installed, monkeypa
     monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "is_silent",
-                        lambda wav: A.SilenceCheck(False, duration_s=A.MAX_AUDIO_SECONDS))
+                        lambda wav: A.SilenceCheck(False, duration_s=300.0))
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
     response = A.transcribe(b"audio bytes", "work", "phone")
     assert body(response)["truncated"] is True
