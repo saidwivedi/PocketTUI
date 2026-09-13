@@ -7,6 +7,7 @@ populated, because it is the only thing that proves the pieces fit together.
 """
 
 import array
+import json
 import math
 import shutil
 import subprocess
@@ -135,6 +136,17 @@ def fresh_parakeet_state(monkeypatch):
     monkeypatch.setattr(A, "_parakeet_recognizer", None)
     monkeypatch.setattr(A, "_parakeet_pool", None)
     monkeypatch.setattr(A, "_parakeet_dead", False)
+
+
+@pytest.fixture(autouse=True)
+def no_voice_keep(tmp_path, monkeypatch):
+    """No take corpus unless the test asks for one, whatever the shell set.
+
+    Both halves matter: the env var decides whether takes are kept at all, and
+    the redirected directory keeps a test that turns it on out of the checkout.
+    """
+    monkeypatch.delenv("POCKETTUI_VOICE_KEEP", raising=False)
+    monkeypatch.setattr(A, "VOICE_KEEP_DIR", tmp_path / ".voice_takes")
 
 
 # ---------------------------------------------------------------------------
@@ -2271,3 +2283,89 @@ def test_version_carries_a_capability_map():
     assert all(isinstance(v, bool) for v in caps.values()), caps
     assert caps["fs"] is True
     assert caps["update"] == (A.update_command() is not None)
+
+
+# ---------------------------------------------------------------------------
+# Take corpus
+# ---------------------------------------------------------------------------
+
+def decodes_to_speech(monkeypatch, text="git status"):
+    """ffmpeg and whisper stubbed into one take of real, non-silent audio."""
+    def decode(raw, wav, content_type=""):
+        write_wav(wav, tone(2.0, 12000))
+        return ""
+
+    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "decode_audio", decode)
+    monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: text)
+
+
+def newest_take():
+    """The stem of the take written last, which sorts highest by construction."""
+    return max(p.stem for p in A.VOICE_KEEP_DIR.glob("*.json"))
+
+
+def take_files(stem):
+    return {suffix: A.VOICE_KEEP_DIR / f"{stem}{suffix}"
+            for suffix in (".orig", ".wav", ".json")}
+
+
+def test_no_corpus_is_written_when_the_env_var_is_unset(installed, monkeypatch,
+                                                        at_a_shell):
+    """The default costs an unaware install nothing, not even a directory."""
+    decodes_to_speech(monkeypatch)
+    assert body(A.transcribe(b"audio bytes", "work", "phone"))["raw"] == "git status"
+    assert not A.VOICE_KEEP_DIR.exists()
+
+
+def test_the_corpus_keeps_the_newest_takes_and_prunes_the_rest(installed,
+                                                               monkeypatch,
+                                                               at_a_shell):
+    """POCKETTUI_VOICE_KEEP=2, three takes: the oldest goes, all three files."""
+    monkeypatch.setenv("POCKETTUI_VOICE_KEEP", "2")
+    decodes_to_speech(monkeypatch)
+
+    stems = []
+    for n in range(3):
+        payload = body(A.transcribe(f"take {n}".encode(), "work", "phone",
+                                    content_type="audio/mp4"))
+        stems.append(newest_take())
+    assert len(set(stems)) == 3
+
+    assert sorted({p.stem for p in A.VOICE_KEEP_DIR.iterdir()}) == sorted(stems[1:])
+    for stem in stems[1:]:
+        assert all(path.exists() for path in take_files(stem).values())
+    assert not any(path.exists() for path in take_files(stems[0]).values())
+
+    files = take_files(stems[2])
+    assert files[".orig"].read_bytes() == b"take 2"
+    assert wave.open(str(files[".wav"]), "rb").getframerate() == 16000
+    meta = json.loads(files[".json"].read_text())
+    assert meta["session"] == "work"
+    assert meta["dev"] == "phone"
+    assert meta["engine"] == "whisper"
+    assert meta["content_type"] == "audio/mp4"
+    assert meta["bytes"] == len(b"take 2")
+    assert meta["duration"] == 2.0
+    assert meta["silent"] is False
+    assert meta["raw"] == "git status"
+    assert meta["text"] == payload["text"]
+
+
+def test_a_silent_take_is_kept_and_marked(installed, monkeypatch, no_tmux):
+    """The gated clips are the useful negatives: kept, with silent true."""
+    monkeypatch.setenv("POCKETTUI_VOICE_KEEP", "5")
+    decodes_to_speech(monkeypatch)
+    monkeypatch.setattr(A, "is_silent",
+                        lambda wav: A.SilenceCheck(True, duration_s=0.4))
+
+    assert body(A.transcribe(b"a tap", "work", "phone")) == {"text": "", "raw": "",
+                                                             "ms": 0}
+    files = take_files(newest_take())
+    assert all(path.exists() for path in files.values())
+    assert files[".orig"].read_bytes() == b"a tap"
+    meta = json.loads(files[".json"].read_text())
+    assert meta["silent"] is True
+    assert meta["duration"] == 0.4
+    assert meta["raw"] == ""
+    assert meta["text"] == ""

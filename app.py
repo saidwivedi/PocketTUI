@@ -1563,6 +1563,16 @@ VOICE_DEBUG = os.environ.get("POCKETTUI_VOICE_DEBUG", "0") == "1"
 VOICE_DEBUG_ORIG_PATH = HERE / ".last_voice.orig"
 VOICE_DEBUG_WAV_PATH = HERE / ".last_voice.wav"
 
+# A corpus of real takes, so an engine can be benchmarked against this user's
+# own voice and phone rather than against read-aloud fixtures. Opt-in and off
+# by default: POCKETTUI_VOICE_KEEP=<n> keeps the newest n takes here, each as
+# the upload it arrived as, its decoded wav and a json sidecar. The limit is
+# read per request rather than at import, so collecting can be turned on
+# without restarting the server.
+VOICE_KEEP_DIR = HERE / ".voice_takes"
+VOICE_KEEP_SUFFIXES = (".orig", ".wav", ".json")
+VOICE_KEEP_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
+
 
 def whisper_paths() -> tuple[Path | None, Path | None]:
     """(binary, model) for the local whisper install, or (None, None) if absent.
@@ -2505,6 +2515,112 @@ def decode_audio(raw: bytes, wav: Path, content_type: str = "") -> str:
     return "undecodable_audio"
 
 
+def voice_keep_limit() -> int:
+    """How many takes POCKETTUI_VOICE_KEEP asks to keep; 0 (the default) is off.
+
+    Unparseable reads as "unset", the way hotword_score() treats a malformed
+    number: a typo in the environment must not cost a user their dictation.
+    """
+    raw = os.environ.get("POCKETTUI_VOICE_KEEP", "").strip()
+    try:
+        return max(0, int(raw)) if raw else 0
+    except ValueError:
+        return 0
+
+
+def voice_keep_stem(dev: str) -> str:
+    """`<YYYYMMDD-HHMMSS>-<dev>`, the name a take's three files share.
+
+    Local time, to line up with the journal the take is read alongside. The
+    counter is for two takes inside one second — rare from a single phone, but
+    the second one would otherwise overwrite the first; it sorts after the bare
+    stem and before the next second, which is the order the prune reads.
+    """
+    dev = VOICE_KEEP_UNSAFE_RE.sub("", dev)[:32] or "unknown"
+    stem = f"{time.strftime('%Y%m%d-%H%M%S')}-{dev}"
+    if not (VOICE_KEEP_DIR / f"{stem}.orig").exists():
+        return stem
+    for n in range(1, 100):
+        if not (VOICE_KEEP_DIR / f"{stem}-{n:02d}.orig").exists():
+            return f"{stem}-{n:02d}"
+    return stem
+
+
+def voice_keep_audio(stem: str, raw: bytes, wav: Path) -> None:
+    """Save the upload as received and the 16 kHz wav it decoded to.
+
+    Written while the decode's temp dir is still alive, since the wav dies with
+    it; the json sidecar follows once the text is known. OSError is swallowed
+    like the VOICE_DEBUG snapshots — a corpus is a diagnostic, never a reason
+    to fail somebody's dictation.
+    """
+    try:
+        VOICE_KEEP_DIR.mkdir(parents=True, exist_ok=True)
+        (VOICE_KEEP_DIR / f"{stem}.orig").write_bytes(raw)
+        shutil.copyfile(wav, VOICE_KEEP_DIR / f"{stem}.wav")
+    except OSError:
+        pass
+
+
+def voice_keep_meta(stem: str, limit: int, *, session: str, dev: str,
+                    engine: str, content_type: str, nbytes: int,
+                    duration: float, silent: bool, raw_text: str = "",
+                    text: str = "", confidence: dict[str, float] | None = None,
+                    unsure: list[str] | None = None) -> None:
+    """Write the take's json sidecar, then prune the corpus to `limit` takes.
+
+    One place defines the record, so all three exits that can produce a take —
+    the silence gate, an empty transcript, a resolved one — describe it the
+    same way. Silent takes are kept and marked rather than skipped: a gate that
+    fired on real speech is exactly what a benchmark is looking for.
+    """
+    meta = {
+        "session": session,
+        "dev": dev,
+        "engine": engine,
+        "content_type": content_type,
+        "bytes": nbytes,
+        "duration": round(duration, 2),
+        "silent": silent,
+        "raw": raw_text,
+        "text": text,
+        "doubted": _doubted_summary(confidence),
+        "unsure": unsure or [],
+    }
+    try:
+        VOICE_KEEP_DIR.mkdir(parents=True, exist_ok=True)
+        part = VOICE_KEEP_DIR / f"{stem}.json.part"
+        part.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+        part.replace(VOICE_KEEP_DIR / f"{stem}.json")
+    except OSError:
+        pass
+    log(f"voice keep stem={stem} silent={str(silent).lower()} "
+        f"dropped={voice_keep_prune(limit)}")
+
+
+def voice_keep_prune(limit: int) -> int:
+    """Delete every file of the takes older than the newest `limit` stems.
+
+    Stems sort chronologically by construction, so the newest are the tail of
+    the sorted set. A take whose sidecar never made it still counts as one, so
+    an interrupted request cannot leave audio behind forever. Returns how many
+    takes were dropped, for the log line.
+    """
+    if limit <= 0:
+        return 0
+    dropped = 0
+    try:
+        stems = sorted({p.stem for p in VOICE_KEEP_DIR.iterdir()
+                        if p.suffix in VOICE_KEEP_SUFFIXES})
+        for stem in stems[:-limit]:
+            for suffix in VOICE_KEEP_SUFFIXES:
+                (VOICE_KEEP_DIR / f"{stem}{suffix}").unlink(missing_ok=True)
+            dropped += 1
+    except OSError:
+        pass
+    return dropped
+
+
 @app.get("/api/voice_status")
 def api_voice_status() -> Response:
     """Which engines this install has, and which one a request would get.
@@ -2593,6 +2709,13 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
                 except OSError:
                     pass
 
+            # The take's audio is saved here, where the wav still exists; its
+            # sidecar is written at whichever exit this request ends up taking.
+            keep_limit = voice_keep_limit()
+            keep_stem = voice_keep_stem(dev) if keep_limit else ""
+            if keep_stem:
+                voice_keep_audio(keep_stem, raw, wav)
+
             # An accidental tap costs nothing here, rather than a second of CPU
             # and a hallucinated sentence in the user's compose bar.
             check = is_silent(wav)
@@ -2610,6 +2733,11 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
                     f"duration={duration_s:.2f}s peak={peak_rms:.4f} "
                     f"max_frame_rms={max_frame_rms:.4f} silent=yes "
                     f"truncated={truncated} ms=0 raw=''")
+                if keep_stem:
+                    voice_keep_meta(keep_stem, keep_limit, session=session,
+                                    dev=dev, engine=engine,
+                                    content_type=content_type, nbytes=len(raw),
+                                    duration=duration_s, silent=True)
                 payload = {"text": "", "raw": "", "ms": 0}
                 if truncated:
                     payload["truncated"] = True
@@ -2687,6 +2815,11 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
             f"doubted={_doubted_summary(confidence)} raw={text[:80]!r}")
 
         if not text:
+            if keep_stem:
+                voice_keep_meta(keep_stem, keep_limit, session=session, dev=dev,
+                                engine=engine, content_type=content_type,
+                                nbytes=len(raw), duration=check.duration_s,
+                                silent=False, confidence=confidence)
             payload = {"text": "", "raw": "", "ms": ms}
             if truncated:
                 payload["truncated"] = True
@@ -2714,6 +2847,12 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
                     unsure.append(word)
         if unsure:
             log(f"transcribe unsure={','.join(unsure)}")
+        if keep_stem:
+            voice_keep_meta(keep_stem, keep_limit, session=session, dev=dev,
+                            engine=engine, content_type=content_type,
+                            nbytes=len(raw), duration=check.duration_s,
+                            silent=False, raw_text=text, text=result["text"],
+                            confidence=confidence, unsure=unsure)
         payload = {"text": result["text"], "raw": text, "ms": ms}
         if truncated:
             payload["truncated"] = True
