@@ -26,8 +26,9 @@ const REC_WARN_SECONDS = 10;
 const REC_MIMES = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
 // How long a finished recording's microphone is kept open for a quick re-record
 // before the idle timer releases it. Long enough to cover "read it, clear it,
-// say it again", short enough that a forgotten strip does not hold the mic.
-const REC_IDLE_RELEASE = 45000;
+// say it again", and short enough that iOS's orange recording indicator is not
+// left lit for most of a minute after the last word.
+const REC_IDLE_RELEASE = 15000;
 // How often the analyser is sampled while recording. Fast enough that the level
 // bar tracks speech rather than lagging behind it, slow enough to be free.
 const REC_LEVEL_MS = 100;
@@ -36,6 +37,13 @@ const REC_LEVEL_MS = 100;
 // before it — a just-granted iOS track reports muted until something consumes
 // it, so the bounce has to land on a track the recorder is already reading.
 const REC_REVIVE_MS = 700;
+// How long a freshly granted track that reports itself muted is given to say
+// otherwise before the recorder starts on it anyway. Only ever spent on a track
+// the tap had to ask for — the retained one is never muted-by-grant — and only
+// after the analyser is already consuming it, which is what the unmute is
+// waiting on. Long enough for the WebKit round trip, short enough that a track
+// which is never coming back still gets recorded rather than dropped.
+const REC_UNMUTE_WAIT = 1500;
 // How long after the tap that stopped a recording the same key stops meaning
 // "cancel". The mic key is the compose key is the stop key, so the tap that ends
 // a take lands on the button that is about to mean "abandon the upload" — and
@@ -226,12 +234,12 @@ function recInFlight() {
 // start. Returns whether the capture spent the tap.
 function composeDiscardCapture() {
   if (!recInFlight()) return false;
-  // setCompose(false) is the whole teardown: closing cancels the take, and it
-  // keeps whatever was typed before it, like every other close. A take started
-  // from a closed strip has no close to inherit that from, so it stands down
-  // on its own.
+  // The take stands down first and on its own: a docked strip does not close,
+  // so the teardown can no longer be inherited from setCompose(false). The
+  // close after it is what puts the strip away where there is a close to be
+  // had, and it keeps whatever was typed before the take, like every other one.
+  cancelRecording();
   if (composeOpen) setCompose(false);
-  else cancelRecording();
   return true;
 }
 
@@ -622,6 +630,32 @@ function recAcquire() {
   return navigator.mediaDevices.getUserMedia({ audio: true });
 }
 
+// The freshly granted muted track's one chance to come good before the recorder
+// is built on it. Resolves the moment "unmute" fires and otherwise at
+// REC_UNMUTE_WAIT — never rejects, because a track that stays muted is still
+// recorded rather than thrown away. Only the recorder's start waits on this;
+// the getUserMedia that produced the track already happened inside the tap.
+function recWaitUnmute(track) {
+  return new Promise((resolve) => {
+    let timer = null;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { track.removeEventListener("unmute", onUnmute); } catch (e) {}
+      resolve();
+    };
+    const onUnmute = () => finish();
+    timer = setTimeout(finish, REC_UNMUTE_WAIT);
+    try {
+      track.addEventListener("unmute", onUnmute);
+    } catch (e) {
+      finish();
+    }
+  });
+}
+
 // Must be called straight from the tap: iOS grants the microphone and resumes
 // an AudioContext only from inside a user gesture, so neither call can be
 // deferred behind any await of ours. Nothing else is interposed either — grant,
@@ -654,7 +688,7 @@ function startRecording() {
   const reuse = recStreamUsable();
   if (!reuse) recRelease();
   const acquire = reuse ? Promise.resolve(recStream) : recAcquire();
-  acquire.then((s) => {
+  acquire.then(async (s) => {
     recStarting = false;
     // The gesture may have been spent by the time permission came back — the
     // user closed the strip, or tapped the key again. Release and stand down.
@@ -664,6 +698,27 @@ function startRecording() {
       for (const t of s.getTracks()) { try { t.stop(); } catch (e) {} }
       if (recStream === s) recStream = null;
       return;
+    }
+    // The muted fresh track, and the one thing known to clear it: something
+    // consuming the stream. The analyser tap normally happens after r.start(),
+    // but here it has to come first — the unmute being waited for is caused by
+    // that consumption, so a wait with nothing reading the track would have
+    // nothing to wait on. Nothing waits on the retained stream, which was never
+    // muted by a grant it did not have to make.
+    const track = s.getAudioTracks()[0];
+    let monitored = false;
+    if (!reuse && track && track.muted) {
+      recMonitor(s);
+      monitored = !!recAnalyser;
+      await recWaitUnmute(track);
+      // The wait is the one gap in this path a cancel can land in, and the
+      // grant it would have released is the one still in hand here.
+      if (recCancelled) {
+        recUnmonitor();
+        for (const t of s.getTracks()) { try { t.stop(); } catch (e) {} }
+        if (recStream === s) recStream = null;
+        return;
+      }
     }
     const mime = recMime();
     // Always a new MediaRecorder, even on a reused stream: a stopped one cannot
@@ -711,8 +766,10 @@ function startRecording() {
     recStarted = performance.now();
     // Tapped after start() so the analyser and the recorder see the same audio
     // from the same moment. A browser without Web Audio simply gets no level
-    // bar; nothing else depends on the analyser having run.
-    recMonitor(s);
+    // bar; nothing else depends on the analyser having run. Already tapped on
+    // the path that waited for an unmute, and re-tapping there would drop the
+    // consumption that unmuted the track.
+    if (!monitored) recMonitor(s);
     if (recAnalyser) recLevelTimer = setInterval(recLevelTick, REC_LEVEL_MS);
     // The wake-up nudges, once per take, now that the recorder is consuming the
     // track they bounce.
@@ -1115,11 +1172,19 @@ function codeMicFinish(text, truncated) {
   // ambiguous — there is no telling which one an edit belongs to — so the
   // second one poisons the slot rather than replacing it.
   learnHeard = learnHeard === null ? text : "";
-  // The keyboard comes up now, and only now: reviewing is a typing job, and this
-  // is the point where the terminal no longer has to stay visible. The caret is
-  // left at the end of what was just inserted, so resuming prose dictation
-  // carries on from there rather than from the end of the line.
-  ta.focus();
+  // The other landing point: words the user spoke are in the box now, so the
+  // button stops offering the microphone and offers the way to send them.
+  composeDictated = true;
+  // The keyboard stays down. A take is spoken at a terminal the user is
+  // watching, and nothing about the transcript arriving says they want half the
+  // screen back under a keyboard — tapping the box is how they ask for that.
+  // Focusing here also costs more than the keyboard it does not raise on iOS:
+  // it leaves the field as the active element, which is what a later Send tap
+  // would read as licence to raise one. The caret is parked at the end of what
+  // was just inserted, so whoever taps in next — to edit, or to speak the rest
+  // of the sentence — carries on from there rather than from the end of the
+  // line. Setting the selection on an unfocused field is allowed, and the try
+  // stays for the browsers that disagree.
   const caret = start + lead.length + text.length;
   try { ta.setSelectionRange(caret, caret); } catch (e) {}
   composeGrow();
@@ -1141,41 +1206,38 @@ function startDictation() {
   startListening();
 }
 
-// The mic key and the strip's Send button both reflect the capture state
+// The strip's button and the key bar's mic both reflect the capture state
 // machine and nothing else, so every path that changes it — start, stop,
 // cancel, a failure, an engine change in Settings — lands here rather than
-// reaching for their classes itself. The key is never hidden: it is the compose
-// key too, and an engine that cannot record still has the phone's dictation to
-// fall through to.
+// reaching for their classes itself. Where the key exists it is never hidden:
+// it is the compose key too, and an engine that cannot record still has the
+// phone's dictation to fall through to. On touch it is not built at all.
 function recSyncMic() {
-  // The stop control, and the only one: Send takes the fill and the square
-  // while the take runs, then holds them dimmed while the upload does, where a
-  // tap cancels instead. .armed is composeGrow()'s and left alone — it says
-  // there is text to send, which is still true underneath.
-  const send = $("compose-send");
-  const stopping = composeStopping();
-  send.classList.toggle("stop", stopping);
-  send.classList.toggle("busy", recBusy);
-  send.setAttribute("aria-label",
-    stopping ? "Stop recording and transcribe"
-    : recBusy ? "Cancel transcription"
-    : "Send");
+  // The strip's button is the stop control, and the only one: it takes the fill
+  // and the square while the take runs, then holds them dimmed while the upload
+  // does, where a tap cancels instead. Which of its faces that comes out as is
+  // composeArm()'s single answer — this is the path that tells it the capture
+  // state machine moved.
+  composeArm();
+  // Absent on touch, where the strip's own button is the microphone and the key
+  // is not built. Everything below is the bar's half of the same reading.
   const btn = $("keybar").querySelector(".k-compose");
-  if (!btn) return;
-  const live = recording();
-  btn.classList.toggle("listening", live || listening());
-  btn.classList.toggle("busy", recBusy);
-  // A corner dot for the whole of a session that has fallen back: the toast that
-  // announced the failure is long gone by the third tap, and without this the
-  // only sign the local engine is being skipped is that the transcripts read
-  // differently. Settings says the rest — this just says look there.
-  btn.classList.toggle("forced-phone", voiceLatchVisible());
-  // Lit, the key is the way out of a take rather than the way to end one: the
-  // transcribing stop is Send's now, and this is what drops the take and the
-  // strip together. The spoken label has to say which of the two it is.
-  btn.setAttribute("aria-label",
-    live || recBusy ? "Discard recording and close"
-    : "Show or hide compose bar");
+  if (btn) {
+    const live = recording();
+    btn.classList.toggle("listening", live || listening());
+    btn.classList.toggle("busy", recBusy);
+    // A corner dot for the whole of a session that has fallen back: the toast
+    // that announced the failure is long gone by the third tap, and without this
+    // the only sign the local engine is being skipped is that the transcripts
+    // read differently. Settings says the rest — this just says look there.
+    btn.classList.toggle("forced-phone", voiceLatchVisible());
+    // Lit, the key is the way out of a take rather than the way to end one: the
+    // transcribing stop is the strip's now, and this is what drops the take and
+    // the strip together. The spoken label has to say which of the two it is.
+    btn.setAttribute("aria-label",
+      live || recBusy ? "Discard recording and close"
+      : "Show or hide the message bar");
+  }
   // Every path that moves the capture state machine already lands here, which
   // makes it the one place the retry hint has to be told the screen got busy or
   // quiet again — rather than each of those paths remembering to say so.
@@ -1266,6 +1328,16 @@ async function startLocalRecording(engine) {
   const ta = $("compose-text"), btn = $("compose-send");
   ta.addEventListener("input", composeGrow);
   ta.addEventListener("blur", composeBlurred);
+  // Return sends, the way a message box does; shift+Return takes a new line.
+  // isComposing keeps the IME's own Enter — the one that accepts a candidate —
+  // out of it. The document's keydown handler below turns hardware keys into
+  // terminal sequences, but only ones carrying an armed key-bar modifier and a
+  // single character to send, so an Enter from this field never reaches it.
+  ta.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    e.preventDefault();
+    composeSend(true);
+  });
   // Tapping into the text to edit it hands over to the keyboard: dictating and
   // typing into the same field at once would fight over the caret.
   ta.addEventListener("focus", () => { if (listening()) stopListening(); });
@@ -1273,7 +1345,14 @@ async function startLocalRecording(engine) {
   // so no blur fires mid-tap and composeSend() owns the close outright.
   btn.addEventListener("pointerdown", e => e.preventDefault());
   btn.addEventListener("mousedown", e => e.preventDefault());
-  btn.addEventListener("click", composeSend);
+  // One button, and the face it wears says which errand the tap is. Stopping a
+  // take, cancelling an upload and sending are all composeSend()'s; an empty
+  // idle box is the microphone, which is the mic key's own routine, so the
+  // engine is still chosen in exactly one place.
+  btn.addEventListener("click", () => {
+    if (btn.classList.contains("mic")) { toggleCompose(true); return; }
+    composeSend();
+  });
   // Same trick again for Clear, for the same reason: emptying the box must not
   // also drop the keyboard the user is about to carry on typing with.
   const clear = $("compose-clear");
@@ -1339,13 +1418,16 @@ window.addEventListener("pagehide", () => {
 function termInput() {
   return term ? term.textarea : null;
 }
-// The compose textarea raises the same keyboard, so it counts as up too. Only
-// applyViewport reads this now, as its stand-in before a full viewport height has
-// been measured; tapping the terminal is what raises the keyboard, and iOS or the
-// compose close routine is what puts it away.
+// The compose textarea raises the same keyboard, so it counts as up too — but
+// only while it actually holds the caret. The strip stays open after a Send and
+// after the keyboard is dismissed from within it, so the strip being on screen
+// says nothing about a keyboard being up; the focused field is the only thing
+// that does. Only applyViewport reads this, as its stand-in before a full
+// viewport height has been measured.
 function keyboardUp() {
   const ta = termInput();
-  return composeOpen || (!!ta && document.activeElement === ta);
+  const a = document.activeElement;
+  return a === $("compose-text") || (!!ta && a === ta);
 }
 
 // One-shot modifiers: a tap arms the modifier (lit), the next key consumes it and
@@ -1420,11 +1502,20 @@ function buildKeybar() {
   const bar = $("keybar");
   bar.textContent = "";
   bar.classList.toggle("no-alt", !cfg.altKeyOn);
+  // The mic key's own grid column, which the expanded layout has to close up
+  // when the key is not built — see the .no-compose rule in styles.css.
+  bar.classList.toggle("no-compose", touchOnly());
   // modButtons is about to be rebuilt from scratch, and turning Alt off can
   // drop its button while it is still armed — nothing would be left to tap to
   // release it, so every one-shot modifier is cleared rather than left stuck.
   releaseMods();
   for (const k of KEYS) {
+    // The one key a phone does without: the strip is always up there and its own
+    // button is the microphone, so a second one on the bar would be two controls
+    // for one errand. Skipped rather than hidden, unlike alt — the collapsed row
+    // is flex and closes up for free, and the expanded grid is told by the class
+    // above rather than by a renumbering, since only this column is affected.
+    if (k.compose && touchOnly()) continue;
     const b = el("button", { type: "button" }, k.icon ? svgIcon(k.icon) : k.label);
     if (k.narrow) b.classList.add("narrow");
     if (k.aria) b.setAttribute("aria-label", k.aria);
@@ -1597,7 +1688,7 @@ function pasteClipboardItems(items) {
     if (!t) continue;
     dbg("paste: image on clipboard type=" + t);
     item.getType(t)
-      .then(blob => uploadPastedImage(blob))
+      .then(blob => uploadImage(blob))
       .catch(err => { dbg("paste: getType failed:", err); toast("Clipboard blocked"); });
     return;
   }
@@ -1700,6 +1791,12 @@ document.addEventListener("keydown", (e) => {
 // selectEndedAt, and a click just after one is not a request for the keyboard.
 $("term-host").addEventListener("click", () => {
   if (Date.now() - selectEndedAt < 350) return;
-  if (term && !dragScrolled && !edgeSwipe && !termGesture) term.focus();
+  if (!term || dragScrolled || edgeSwipe || termGesture) return;
+  // Type where you tap: the target decides where the keys go. The strip stands
+  // on touch whatever this does, so the box is one tap away whenever a line
+  // wants reading back, fixing or dictating before it runs. The grid is for the
+  // keys the shell has to see one at a time, which is tab completion, history
+  // and everything inside vim.
+  term.focus();
 });
 

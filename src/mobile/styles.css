@@ -899,47 +899,70 @@ html.term-open, body.term-open {
 #conn-banner button:active { background: color-mix(in srgb, var(--paper) 26%, transparent); }
 
 /* ============================================================
-   COMPOSE STRIP — dictation staging, above the key bar
+   COMPOSE STRIP — the message composer, above the key bar
    ============================================================ */
 /* Dictating straight into xterm's hidden textarea duplicates the text: xterm's
    IME handling re-sends what the composition already delivered. So dictation
    lands in a textarea of our own and reaches the terminal only on Send, as one
-   paste. Shares the key bar's material — the two read as one docked surface. */
+   paste. Thumb-typing wants the same box for its own reason — a line read back
+   and fixed before it runs — which is why on touch this is what a tap on the
+   terminal opens. Shares the key bar's material: the two read as one docked
+   surface. */
 #compose {
   display: none;
   flex: 0 0 auto;
   gap: 8px;
+  /* The outer inset is kept no narrower than the gap between the field and the
+     button: an edge margin narrower than the row's own spacing reads as the
+     row sliding off the screen, whatever the two sides measure against each
+     other. Symmetric on its own terms too, since nothing here takes a margin
+     and the row has no safe-area inset of its own to spend. */
   padding: 6px 8px;
   background: rgba(255, 253, 247, 0.94);
   backdrop-filter: saturate(1.4) blur(14px);
   -webkit-backdrop-filter: saturate(1.4) blur(14px);
   border-top: 1px solid var(--hair);
   z-index: 20;
-  /* Single source for each button's own box: both the "code" chip and Send
-     read these two, so they are the same rendered box by construction rather
-     than by one button's content happening to measure out to match the
-     other's. Width clears the "code" chip's widest content (13px icon + 5px
-     gap + the "code" label + 22px of horizontal padding) with room to spare
-     across fonts. */
-  --compose-btn-w: 72px;
+  /* One row's height, read by everything on it: the field at one line, the
+     recording indicator and Send. They are the same box by
+     construction rather than by each one's content happening to measure out to
+     the same number. */
   --compose-btn-h: 38px;
-  /* The actions column's resting height, derived from the button height above
-     so it can never drift out of sync: two stacked buttons plus the 8px gap
-     between them. The field's starting min-height reads this same variable. */
-  --compose-actions-h: calc(2 * var(--compose-btn-h) + 8px);
 }
 :root[data-theme="dark"] #compose { background: rgba(31, 28, 22, 0.94); }
-#compose.open { display: flex; align-items: flex-start; }
-/* The "code" chip and Send, stacked into one column at the strip's right edge
-   instead of sitting beside the field — the textarea keeps the width both used
-   to split. Top-aligned with the field, which is fixed to this same height, so
-   the two always read as one row regardless of how much text the field holds. */
-#compose-actions {
+/* Bottom-aligned: the field grows upward as the message gets longer, and Send
+   beside it stays on the line the caret is on. */
+#compose.open { display: flex; align-items: flex-end; }
+/* Attach, the strip's left end. The same capsule as the mic in the key chips'
+   material, narrower because it carries a lighter glyph and the mic's extra
+   width was bought for a thumb reaching up to it. Hidden where the
+   computer on the other end serves neither upload route, which is
+   syncComposeAttach()'s answer in 32-image-paste.js. */
+#compose-attach {
   flex: 0 0 auto;
+  width: 46px;
+  height: var(--compose-btn-h);
+  padding: 0;
+  border-radius: calc(var(--compose-btn-h) / 2);
+  background: var(--card-2);
+  border: 1px solid var(--hair-strong);
+  color: var(--tertiary);
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  -webkit-user-select: none; user-select: none;
+}
+#compose-attach svg { width: 19px; height: 19px; }
+#compose-attach:active { transform: scale(0.94); }
+#compose.no-attach #compose-attach { display: none; }
+/* The field: the box, the recording indicator that stands in for it, and the
+   cross that rides inside whichever of the two is showing. Positioned so the
+   cross can sit at that box's right edge; the field itself is the flex child
+   that takes whatever width Send leaves. */
+.compose-field {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: var(--compose-actions-h);
 }
 /* A well to speak into: recessed surface, hairline rim, capsule at one line. The
    radius stays put as the field grows, so it eases into a soft rounded rect
@@ -956,15 +979,16 @@ html.term-open, body.term-open {
   background: var(--paper-rec);
   border: 1px solid var(--hair);
   border-radius: 18px;
-  padding: 8px 14px;
-  /* Fixed at the actions column's height rather than at one text row with
-     46px of the button stack left dangling below it — and fixed rather than
-     growing, so the strip's height never moves as you type. Longer text
-     scrolls inside the box instead; the browser's own textarea scrolling
-     keeps the caret in view as it goes. */
-  height: var(--compose-actions-h);
+  /* Right padding clears the cross, which is inside the box: reserved whether
+     or not the cross is showing, so text never reflows as it appears. */
+  padding: 7px 38px 7px 14px;
+  /* One line to start with, the same height as the keys beside it. Everything
+     above that is composeGrow()'s inline height, up to its five-line ceiling;
+     the floor is here so an empty box can never measure out shorter than the
+     row it sits in. */
+  min-height: var(--compose-btn-h);
   resize: none;
-  overflow-y: auto;
+  overflow-y: hidden;
   caret-color: var(--umber);
   -webkit-appearance: none;
 }
@@ -973,19 +997,35 @@ html.term-open, body.term-open {
    on permanently and say nothing. */
 #compose-text:focus { outline: none; }
 
-/* The one lit control on the bar. Empty it recedes into the same well material
-   as the field; the moment there is something to send it fills with umber. */
+/* The one lit control on the bar. At rest it recedes into the same well
+   material as the field; the moment a transcript is in the box waiting to go it
+   fills with umber. Typed text does not light it — the keyboard's own send key
+   is how that is sent, and the button is still the way into dictation. */
 #compose-send {
   flex: 0 0 auto;
-  /* Height and width both come from the shared variables the "code" chip
-     below uses, so at rest the two are the same box exactly, not a circle
-     floating 2px shy of the capsule's top and a different width besides. */
-  width: var(--compose-btn-w);
+  /* The fallback dot below hangs off this box. */
+  position: relative;
+  /* A capsule on the row's own height, so it reads as the end of the field
+     rather than as a second bar stacked beside it. Wider than tall because it
+     is the one control on the strip and a thumb aimed at it from the key bar
+     below arrives with more room to spare sideways than up: the extra width
+     comes out of the box, which has plenty, and the strip's own height — the
+     rows it costs the terminal — does not move. The radius is half the height,
+     so the ends stay true half-circles. */
+  width: 54px;
   height: var(--compose-btn-h);
   padding: 0;
-  border-radius: 19px;
-  background: var(--paper-rec);
-  border: 1px solid var(--hair);
+  border-radius: calc(var(--compose-btn-h) / 2);
+  /* The key chips' material rather than the field's well. At rest the two sat
+     on the same fill and the same hairline, and beside a wide filled box the
+     small capsule read as floating in the strip rather than ending it: the
+     chips' stronger rim gives its edge the weight the field's has, in both
+     themes, where the fill alone is nearly invisible against the strip. It is
+     also what the row below is made of, which is the right family for a
+     control docked above it. The lit states overrule both — see .armed and
+     .stop/.busy. */
+  background: var(--card-2);
+  border: 1px solid var(--hair-strong);
   color: var(--tertiary);
   cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
@@ -996,26 +1036,36 @@ html.term-open, body.term-open {
   -webkit-user-select: none; user-select: none;
 }
 #compose-send > span { display: inline-flex; align-items: center; }
-#compose-send svg { width: 17px; height: 17px; }
-/* The square is filled where the arrow is drawn in line, and a filled shape
-   reads heavier at the same box, so it is drawn smaller to match. */
-#compose-send .stop svg { width: 14px; height: 14px; }
+/* Drawn at the size the wider box can carry — the glyph is the whole target's
+   face, and at 17px it read as a small mark floating in a large button. */
+#compose-send svg { width: 19px; height: 19px; }
+/* The square is filled where the arrow and the microphone are drawn in line,
+   and a filled shape reads heavier at the same box, so it is drawn smaller to
+   match, in the same proportion it always was. */
+#compose-send .stop svg { width: 16px; height: 16px; }
 #compose-send.armed {
   background: var(--umber);
   border-color: var(--umber);
   color: var(--paper);
 }
-/* While a local take is running this button IS the stop control — the mic key
-   only says the microphone is open — so it takes the armed fill whether or not
-   there is text, wears the square, and breathes: the slow pulse says live
-   rather than merely lit. One stop on screen, and it is the obvious button.
-   Uploading keeps the fill, since the take is still the app's to finish, but
-   drops the breath and dims, to say the tap now cancels rather than stops. */
-#compose-send > .stop { display: none; }
+/* While a capture is running this button IS the stop control — either engine's,
+   since interim words arriving from the phone's recogniser must not turn it back
+   into a send mid-sentence — so it takes the armed fill whether or not there is
+   text, wears the square, and breathes: the slow pulse says live rather than
+   merely lit. One stop on screen, and it is the obvious button. Uploading keeps
+   the fill, since the take is still the app's to finish, but drops the breath
+   and dims, to say the tap now cancels rather than stops. */
+#compose-send > .stop, #compose-send > .mic { display: none; }
 #compose-send.stop > .idle,
-#compose-send.busy > .idle { display: none; }
+#compose-send.busy > .idle,
+#compose-send.mic > .idle { display: none; }
 #compose-send.stop > .stop,
 #compose-send.busy > .stop { display: inline-flex; }
+/* The microphone, which an empty box wears. With no mic key on the bar of a
+   phone this button is the way into dictation, and an arrow over an empty box
+   was offering the one thing there was nothing to do. composeArm() never sets
+   .mic while a capture runs, so the square above is never argued with. */
+#compose-send.mic > .mic { display: inline-flex; }
 #compose-send.stop,
 #compose-send.busy {
   background: var(--umber);
@@ -1033,25 +1083,51 @@ html.term-open, body.term-open {
   #compose-send.stop { animation: none; }
 }
 #compose-send:active { transform: scale(0.94); }
+/* The footnote the key bar's mic carries, here for the phone where that key is
+   gone: the local engine failed and the session is on the phone's recogniser
+   instead. Warm amber rather than the umber the live states use, so it reads as
+   a caveat beside them, and inset far enough to stay inside the circle. The ring
+   is whatever the button is painted with, so the dot keeps an edge on the fill
+   as well as on the well. */
+#compose-send.forced-phone::after {
+  content: "";
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 1.5px var(--paper-rec);
+}
+#compose-send.armed.forced-phone::after,
+#compose-send.stop.forced-phone::after,
+#compose-send.busy.forced-phone::after { box-shadow: 0 0 0 1.5px var(--umber); }
 
-/* Clear. Same box as Send exactly — the two are one stacked column and any
-   difference between them would read as a mistake — but it never lights: it
-   undoes, and an undo that draws the eye competes with the thing it sits under. */
+/* Clear, inside the box at its right edge. It never lights: it undoes, and an
+   undo that draws the eye competes with the thing it sits beside. Hidden on an
+   empty box — there is nothing to undo — and pinned to the bottom corner, which
+   at one line is the middle of the field and at five is the line being typed.
+   6px on a 26px key inside a 38px row is centred exactly. */
 #compose-clear {
-  flex: 0 0 auto;
-  width: var(--compose-btn-w);
-  height: var(--compose-btn-h);
+  display: none;
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 26px;
+  height: 26px;
   padding: 0;
-  border-radius: 19px;
-  background: var(--paper-rec);
-  border: 1px solid var(--hair);
+  border-radius: 50%;
+  background: transparent;
+  border: 0;
   color: var(--tertiary);
   cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: background 0.14s var(--ease-out), border-color 0.14s var(--ease-out),
-              color 0.14s var(--ease-out);
+  align-items: center; justify-content: center;
   -webkit-user-select: none; user-select: none;
 }
+#compose.has-text #compose-clear { display: inline-flex; }
+/* And while a take is running, whatever the box holds: the cross is what throws
+   the recording away and leaves the box as it was, so it has to be there before
+   there is a word in it. */
+#compose.recording #compose-clear { display: inline-flex; }
 #compose-clear svg { width: 15px; height: 15px; }
 #compose-clear:active { transform: scale(0.94); }
 
@@ -1074,8 +1150,8 @@ html.term-open, body.term-open {
   background: var(--paper-rec);
   border: 1px solid var(--hair);
   border-radius: 18px;
-  padding: 8px 14px;
-  min-height: var(--compose-actions-h);
+  padding: 7px 38px 7px 14px;
+  min-height: var(--compose-btn-h);
   -webkit-user-select: none; user-select: none;
 }
 #compose.recording #compose-rec { display: flex; }
@@ -1401,6 +1477,11 @@ html.term-open, body.term-open {
 .keybar.expanded > .k-compose { grid-column: 11; grid-row: 2; }
 .keybar.expanded.no-alt > .k-close   { grid-column: 10; }
 .keybar.expanded.no-alt > .k-compose { grid-column: 10; }
+/* On a phone the mic key is not built at all — the strip is always up there and
+   its own button is the microphone — which leaves close the column's only
+   tenant, so it takes both rows rather than leaving the bottom half of the grid
+   an empty gap. The collapsed row needs nothing: flex closes up on its own. */
+.keybar.expanded.no-compose > .k-close { grid-row: 1 / span 2; }
 
 /* ============================================================
    KEY PILL — what the key bar becomes beside a hardware keyboard
