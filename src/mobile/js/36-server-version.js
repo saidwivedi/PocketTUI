@@ -105,6 +105,7 @@ async function fetchServerVersion() {
   // whether to poll at all, and this is the moment that becomes knowable.
   syncGitCap();
   syncSearchCap();
+  syncComposeAttach();
   syncRefCap();
   syncPairCard();
 }

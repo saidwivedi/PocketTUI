@@ -283,52 +283,68 @@
     <button type="button" id="voice-retry-dismiss" aria-label="Discard the recording">✕</button>
   </div>
   <div id="compose">
-    <!-- Deliberately an exact mirror of the attribute set xterm puts on its own
-         hidden textarea: autocorrect off, autocapitalize off, spellcheck false.
-         The terminal's keyboard is the reference — on the affected device it
-         provably raises no accessory strip, while this field did, and these
-         attributes were the only difference left. autocapitalize in particular is
-         reported to keep iOS's predictive bar even with the other two off.
-         autocomplete=off is ours; xterm predates it. iOS honours these only in
-         part, so this is a best effort rather than a guarantee. The cost is
-         autocapitalisation of thumb-typed text only: dictation does its own, since
-         the mic key runs its own speech-to-text. -->
-    <textarea id="compose-text" rows="1" placeholder="Dictate or type…"
-              autocapitalize="off" autocorrect="off" spellcheck="false"
-              autocomplete="off" enterkeyhint="enter"
-              aria-label="Compose text to send"></textarea>
-    <!-- Takes the textarea's place while the mic key is recording. aria-live so a
-         screen reader announces the state change the pulsing dot signals visually;
-         the ticking seconds are marked off, or every tick would be announced. -->
-    <div id="compose-rec" role="status" aria-live="polite">
-      <span class="dot" aria-hidden="true"></span>
-      <!-- Live input level, driven by the analyser's RMS. Decoration to a screen
-           reader, but the only thing on screen that says the microphone is
-           actually hearing something rather than merely being open. -->
-      <span class="level" aria-hidden="true"><span class="level-fill"></span></span>
-      <span class="label">Recording…</span>
-      <span class="elapsed" aria-hidden="true">0:00</span>
-    </div>
-    <!-- Clear and Send. There used to be a third control here — a "code" chip
-         that ran the local recorder while the key bar's mic ran the phone's
-         dictation — and having two microphones on screen meant the user had to
-         know which engine each one was before speaking. One mic key on the bar
-         chooses its engine from Settings now, and the slot it vacated goes to
-         the thing the strip actually lacked: a way to empty the box without
-         selecting its contents by thumb. -->
-    <div id="compose-actions">
+    <!-- The way in for a photo or a file. The picker hands the bytes to the
+         computer, which stages them and answers with a path, and the path is
+         what goes in the box: an agent reads a picture by being told where it
+         is. Outermost on the left, so a thumb aimed at it never crosses the
+         field on the way. -->
+    <button type="button" id="compose-attach" aria-label="Attach a photo or file">
+      <svg aria-hidden="true"><use href="#i-plus"/></svg>
+    </button>
+    <!-- No accept= and no capture=: an unfiltered input is what gives iOS all
+         three doors (Photo Library, Take Photo or Video, Choose File), and
+         either attribute closes the ones this button exists for. -->
+    <input type="file" id="compose-attach-input" multiple style="display:none">
+    <!-- The box and the cross that empties it, which sits inside the box at its
+         right edge rather than beside it: the strip is one row now, and the row
+         belongs to the field and Send. -->
+    <div class="compose-field">
+      <!-- Deliberately an exact mirror of the attribute set xterm puts on its own
+           hidden textarea: autocorrect off, autocapitalize off, spellcheck false.
+           The terminal's keyboard is the reference — on the affected device it
+           provably raises no accessory strip, while this field did, and these
+           attributes were the only difference left. autocapitalize in particular is
+           reported to keep iOS's predictive bar even with the other two off.
+           autocomplete=off is ours; xterm predates it. iOS honours these only in
+           part, so this is a best effort rather than a guarantee. The cost is
+           autocapitalisation of thumb-typed text only: dictation does its own, since
+           the mic key runs its own speech-to-text. -->
+      <!-- The return key sends and says so, which is the keydown handler in
+           bindCompose(): Enter submits the message, shift+Enter takes a new
+           line. -->
+      <textarea id="compose-text" rows="1" placeholder="Say or type…"
+                autocapitalize="off" autocorrect="off" spellcheck="false"
+                autocomplete="off" enterkeyhint="send"
+                aria-label="Compose a message to send to the terminal"></textarea>
+      <!-- Takes the textarea's place while the mic key is recording, inside the
+           same wrapper so the cross below keeps its place over whichever of the
+           two boxes is showing. aria-live so a screen reader announces the state
+           change the pulsing dot signals visually; the ticking seconds are marked
+           off, or every tick would be announced. -->
+      <div id="compose-rec" role="status" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span>
+        <!-- Live input level, driven by the analyser's RMS. Decoration to a screen
+             reader, but the only thing on screen that says the microphone is
+             actually hearing something rather than merely being open. -->
+        <span class="level" aria-hidden="true"><span class="level-fill"></span></span>
+        <span class="label">Recording…</span>
+        <span class="elapsed" aria-hidden="true">0:00</span>
+      </div>
       <button type="button" id="compose-clear" aria-label="Clear composed text">
         <svg aria-hidden="true"><use href="#i-close"/></svg>
       </button>
-      <!-- Two faces, both shipped here and swapped by CSS: the arrow that sends,
-           and the square this button wears while a local recording runs, when it
-           is the one stop control on screen. Swapping in the markup rather than
-           in the state machine keeps a running take clear of DOM work. -->
-      <button type="button" id="compose-send" aria-label="Send">
-        <span class="idle"><svg aria-hidden="true"><use href="#i-send"/></svg></span>
-        <span class="stop"><svg aria-hidden="true"><use href="#i-stop"/></svg></span>
-      </button>
     </div>
+    <!-- The control at the end of the row the field starts, and on a phone the
+         only one: three faces, all shipped here and swapped by CSS, so
+         composeArm() picks one with a class rather than with DOM work a running
+         take would have to wait on. The microphone on an empty box, the arrow
+         once there is something to send, and the square while a capture runs,
+         when this is the one stop control on screen. -->
+    <button type="button" id="compose-send" aria-label="Send">
+      <span class="mic"><svg aria-hidden="true"><use href="#i-mic"/></svg></span>
+      <span class="idle"><svg aria-hidden="true"><use href="#i-send"/></svg></span>
+      <span class="stop"><svg aria-hidden="true"><use href="#i-stop"/></svg></span>
+    </button>
   </div>
   <!-- Prompt chips: when the pane watcher detects the session waiting on a
        question, its answers land here (plus ⏎ and esc, which every prompt

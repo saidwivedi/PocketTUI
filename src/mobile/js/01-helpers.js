@@ -25,6 +25,13 @@ function svgIcon(id) {
   svg.appendChild(use);
   return svg;
 }
+// Whether a finger is the only pointer this device has. It is what separates a
+// phone, where a tap on the terminal opens the message composer, from a laptop,
+// where the same tap hands the keyboard straight to xterm. Asked rather than
+// latched: a tablet that picks up a trackpad mid-session changes the answer.
+function touchOnly() {
+  return window.matchMedia("(pointer: coarse), (hover: none)").matches;
+}
 function toast(msg, ms=1800) {
   dbg("toast:", msg);
   const t = $("toast"); t.textContent = msg; t.classList.add("show");

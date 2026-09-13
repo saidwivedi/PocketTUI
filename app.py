@@ -1275,6 +1275,7 @@ def server_capabilities() -> dict:
     return {
         "fs": True,             # /api/fs/* — the explorer and the editor
         "image_paste": True,    # /api/image
+        "upload": True,         # /api/upload — the composer's "+" attachment
         "voice": True,          # /api/transcribe + /api/voice_status; which
                                 # engine is live is still /api/voice_status's
                                 # answer, not this map's
@@ -4503,21 +4504,22 @@ def sniff_image(raw: bytes) -> str:
     return ""
 
 
-def prune_images(d: Path) -> None:
-    """Keep the newest IMAGE_KEEP staged pastes; unlink the rest.
+def prune_staged(d: Path, pattern: str, keep: int) -> None:
+    """Keep the newest `keep` files matching `pattern` in `d`; unlink the rest.
 
-    Count rather than age: one rule, no clock math. Pasting more than
-    IMAGE_KEEP images before Claude Code has read the first would evict an
-    unread one — a wide enough window to accept that. Each unlink stands alone
-    because a file deleted underneath us is not a reason to fail the upload
-    that just succeeded.
+    Count rather than age: one rule, no clock math. Staging more than `keep`
+    files before Claude Code has read the first would evict an unread one — a
+    wide enough window to accept that. Each unlink stands alone because a file
+    deleted underneath us is not a reason to fail the upload that just
+    succeeded. Shared by the paste and attachment directories, which stage for
+    the same reason and go stale the same way.
     """
     try:
-        staged = sorted(d.glob("paste-*"), key=lambda p: p.stat().st_mtime,
+        staged = sorted(d.glob(pattern), key=lambda p: p.stat().st_mtime,
                         reverse=True)
     except OSError:
         return
-    for stale in staged[IMAGE_KEEP:]:
+    for stale in staged[keep:]:
         try:
             stale.unlink()
         except OSError:
@@ -4553,7 +4555,7 @@ def store_image(raw: bytes, session: str, dev: str) -> Response:
     except OSError:
         return JSONResponse({"error": "not_writable"}, status_code=500)
     # After the write, so the file just staged counts as one of the survivors.
-    prune_images(IMAGE_DIR)
+    prune_staged(IMAGE_DIR, "paste-*", IMAGE_KEEP)
     log(f"image session={session!r} dev={dev!r} bytes={len(raw)} name={p.name}")
     return no_store(JSONResponse({"path": str(p), "bytes": len(raw)}))
 
@@ -4575,6 +4577,88 @@ async def api_image(request: Request) -> Response:
     dev = str(request.query_params.get("dev", ""))
     return await run_in_threadpool(
         store_image, raw, session, dev if DEV_RE.match(dev) else "")
+
+
+# Attachments
+# ---------------------------------------------------------------------------
+# The composer's "+" button: any file the user picks on the phone, staged here
+# so its path can be typed at the prompt. Images keep their own route, because
+# a paste has no filename to preserve and /api/image sniffs the bytes instead.
+
+# Under $HOME for the reason IMAGE_DIR is, and capped where /api/fs/upload is:
+# both are a file picked on a phone, so one limit answers for both.
+UPLOAD_DIR = Path.home() / ".pockettui" / "uploads"
+UPLOAD_KEEP = 30
+# An extension worth carrying through: short, alphanumeric, and recognisable to
+# whatever reads the file at the other end. Anything else is dropped rather
+# than repaired.
+UPLOAD_EXT_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
+
+
+def upload_name(name: str) -> str:
+    """`name` as a stem this server is willing to put on disk.
+
+    The client sends the name the phone gave it, which may hold spaces, path
+    separators, or a leading dot. The path goes back to be typed at a prompt
+    that may not be bracketing it, so everything outside [A-Za-z0-9._-] becomes
+    a dash, and a dot or dash at either end goes too: a leading dot would hide
+    the file, a leading dash would read as a flag, and a trailing one only
+    doubles up with the stamp. A name that survives none of that is "file",
+    since the stamp the caller appends is what actually makes it unique.
+    """
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-")
+    # Long enough for the name to still mean something, short enough that the
+    # stamp and extension cannot push the whole thing past a filesystem limit.
+    return stem[:64].rstrip(".-") or "file"
+
+
+def store_upload(raw: bytes, name: str, session: str, dev: str) -> Response:
+    """Stage an attachment, off the event loop.
+
+    Split from the route the way store_image is, and staged the same way: the
+    directory is created rather than 404'd, because the client names no
+    directory to have got wrong. The bytes are never sniffed, because this
+    route carries whatever the user picked; the name is the only thing the
+    server has an opinion about.
+    """
+    if not raw:
+        return JSONResponse({"error": "empty"}, status_code=400)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        return JSONResponse({"error": "too_large"}, status_code=413)
+
+    root, ext = os.path.splitext(name)
+    ext = ext.lower() if UPLOAD_EXT_RE.match(ext) else ""
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    p = UPLOAD_DIR / f"{upload_name(root)}-{stamp}-{secrets.token_hex(3)}{ext}"
+    try:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        atomic_write(p, raw, None)
+    except OSError:
+        return JSONResponse({"error": "not_writable"}, status_code=500)
+    # After the write, so the file just staged counts as one of the survivors.
+    prune_staged(UPLOAD_DIR, "*", UPLOAD_KEEP)
+    log(f"upload session={session!r} dev={dev!r} bytes={len(raw)} name={p.name}")
+    return no_store(JSONResponse({"path": str(p), "name": p.name,
+                                  "bytes": len(raw)}))
+
+
+@app.post("/api/upload")
+async def api_upload(request: Request) -> Response:
+    """Stage a file the user attached, and answer with its path.
+
+    The body is the file itself rather than a multipart form, the shape
+    /api/image and /api/fs/upload already take. ?name= is the phone's own name
+    for it, kept only as far as upload_name allows.
+    """
+    refusal = throttled("file", RATE_FILE, request)
+    if refusal is not None:
+        return refusal
+    raw = await request.body()
+    name = str(request.query_params.get("name", ""))
+    session = str(request.query_params.get("session", ""))
+    dev = str(request.query_params.get("dev", ""))
+    return await run_in_threadpool(
+        store_upload, raw, name, session, dev if DEV_RE.match(dev) else "")
 
 
 # How much of one flush this server will take. The client batches a second of
