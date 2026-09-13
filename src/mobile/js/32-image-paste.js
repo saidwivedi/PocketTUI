@@ -11,7 +11,10 @@
 // Two ways in. The desktop's Ctrl+V arrives here as a paste event, caught in
 // the capture phase below. The phone has no paste event to catch, so it comes
 // through pasteFromClipboard() in 19-voice-capture.js, which reads the
-// clipboard itself and hands an image blob to uploadPastedImage().
+// clipboard itself and hands an image blob to uploadImage().
+// A third arrives from the "+" on the composer strip, which picks files rather
+// than reading a clipboard and sends anything that is not a picture the other
+// way, to /api/upload. See the attach section at the foot of this file.
 
 // The server's own cap (MAX_IMAGE_BYTES, app.py), checked here so a 12-megapixel
 // screenshot on a phone link is refused in a millisecond rather than after a
@@ -33,12 +36,14 @@ function imageUploadURL() {
 // One upload, and one silent retry if the network — rather than the server —
 // is what went wrong. `retried` marks the second attempt: it neither re-toasts
 // the start nor tries again, so a phone with no signal reports once.
-async function uploadPastedImage(blob, retried) {
-  if (!blob) return;
+// Answers true when a path landed in the box, so a batch of attachments can
+// count what got through.
+async function uploadImage(blob, retried) {
+  if (!blob) return false;
   // Size and type only. The clipboard may be holding a screenshot of something
   // private, and the debug panel is on screen.
   dbg("image: uploading type=" + (blob.type || "?") + " bytes=" + blob.size);
-  if (blob.size > IMG_MAX_BYTES) { toast("Image too large"); return; }
+  if (blob.size > IMG_MAX_BYTES) { toast("Image too large"); return false; }
   if (!retried) toast("Uploading image…");
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), IMG_TIMEOUT);
@@ -51,34 +56,39 @@ async function uploadPastedImage(blob, retried) {
       body: blob,
       signal: ctl.signal,
     });
-    if (r.status === 413) { toast("Image too large"); return; }
+    if (r.status === 413) { toast("Image too large"); return false; }
     // The server sniffed it and it was not an image after all — a clipboard
     // entry that claimed image/png and held something else.
-    if (r.status === 422) { toast("Not an image"); return; }
-    if (!r.ok) { dbg("image: upload failed status=" + r.status); toast("Image upload failed"); return; }
+    if (r.status === 422) { toast("Not an image"); return false; }
+    if (!r.ok) { dbg("image: upload failed status=" + r.status); toast("Image upload failed"); return false; }
     const data = await r.json();
     const path = data && typeof data.path === "string" ? data.path : "";
-    if (!path) { toast("Image upload failed"); return; }
+    if (!path) { toast("Image upload failed"); return false; }
     insertImagePath(path);
+    return true;
   } catch (e) {
     // The 60s timer fired, or fetch() rejected with no response at all. Only
     // the second is worth another go — a phone changing cells is back within
     // the second, a timeout would just be another minute of waiting.
     if (e && e.name !== "AbortError" && !retried) {
-      setTimeout(() => uploadPastedImage(blob, true), IMG_RETRY_DELAY);
-      return;
+      // Awaited rather than left on a timer, so a caller counting attachments
+      // is told how the second attempt went.
+      await new Promise(r => setTimeout(r, IMG_RETRY_DELAY));
+      return uploadImage(blob, true);
     }
     dbg("image: upload error:", e);
     toast("Image upload failed");
+    return false;
   } finally {
     clearTimeout(timer);
   }
 }
 
-// Where the staged path lands. With the strip open it is a thing to edit before
-// sending, so it goes in at the caret like a transcript does; with the strip
-// shut the terminal is what the user is looking at, so it goes there.
-function insertImagePath(path) {
+// Where a staged path lands, whichever route staged it. With the strip open it
+// is a thing to edit before sending, so it goes in at the caret like a
+// transcript does; with the strip shut the terminal is what the user is looking
+// at, so it goes there.
+function insertPathIntoCompose(path) {
   if (composeOpen) {
     const ta = $("compose-text"), v = ta.value;
     // Unlike codeMicFinish's captured caret, this field was never hidden — the
@@ -104,6 +114,12 @@ function insertImagePath(path) {
     // colons. (A $HOME containing a space would defeat that — out of scope.)
     term.paste(path + " ");
   }
+}
+
+// The paste's own word for it. A batch from the "+" says its piece once at the
+// end instead, so the line is here rather than in the splice above.
+function insertImagePath(path) {
+  insertPathIntoCompose(path);
   toast("Image attached");
 }
 
@@ -146,5 +162,129 @@ document.addEventListener("paste", (e) => {
   if (hasText && document.activeElement === $("compose-text")) return;
   e.preventDefault();
   e.stopPropagation();
-  uploadPastedImage(image.getAsFile());
+  uploadImage(image.getAsFile());
 }, true);
+
+// ============================================================
+// Attach: the "+" on the composer strip
+// ============================================================
+// The same errand as a paste, started from the picker instead: on a phone the
+// thing to attach is in Photos or Files, and there is no clipboard step worth
+// making the user take. Pictures keep the sniffing route above, since an agent
+// wants them staged the way a pasted screenshot is; everything else goes to
+// /api/upload, which keeps the name and asks no questions about the bytes.
+
+// MAX_UPLOAD_BYTES in app.py, checked here for the reason IMG_MAX_BYTES is: a
+// video picked by mistake is refused before it spends a minute on the wire.
+const ATTACH_MAX_BYTES = 50 * 1024 * 1024;
+// What the picker hands over with no type on it is still recognisable by its
+// name, which is the only other thing there is to go on.
+const ATTACH_IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i;
+
+// Mirrors /api/image's query, plus the one thing that route has no use for:
+// the picker's own name for the file, which the server keeps as far as it can.
+function attachUploadURL(name) {
+  return apiURL("api/upload") +
+    "?name=" + encodeURIComponent(name) +
+    "&session=" + encodeURIComponent(currentSession) +
+    "&dev=" + encodeURIComponent(cfg.devname);
+}
+
+function attachIsImage(f) {
+  return !!((f.type && f.type.startsWith("image/")) || ATTACH_IMAGE_RE.test(f.name || ""));
+}
+
+// Whether the computer on the other end serves either route. hasCapStrict
+// rather than hasCap: a server old enough to send no map at all has neither,
+// and a "+" that can only fail is worse than no "+".
+function syncComposeAttach() {
+  const on = hasCapStrict("image_paste") || hasCapStrict("upload");
+  $("compose").classList.toggle("no-attach", !on);
+}
+
+// One file up, and the same single retry the image route takes, for the same
+// reason. Answers true when a path landed in the box.
+async function uploadAttachment(f, retried) {
+  dbg("attach: uploading type=" + (f.type || "?") + " bytes=" + f.size);
+  if (f.size > ATTACH_MAX_BYTES) { toast("Too large to attach (50 MB max)"); return false; }
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), IMG_TIMEOUT);
+  try {
+    const r = await fetch(attachUploadURL(f.name || "file"), {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": f.type || "application/octet-stream" }),
+      body: f,
+      signal: ctl.signal,
+    });
+    if (r.status === 413) { toast("Too large to attach (50 MB max)"); return false; }
+    if (!r.ok) {
+      dbg("attach: upload failed status=" + r.status);
+      toast("Couldn't attach " + f.name);
+      return false;
+    }
+    const data = await r.json();
+    const path = data && typeof data.path === "string" ? data.path : "";
+    if (!path) { toast("Couldn't attach " + f.name); return false; }
+    insertPathIntoCompose(path);
+    return true;
+  } catch (e) {
+    if (e && e.name !== "AbortError" && !retried) {
+      await new Promise(r => setTimeout(r, IMG_RETRY_DELAY));
+      return uploadAttachment(f, true);
+    }
+    dbg("attach: upload error:", e);
+    toast("Couldn't attach " + f.name);
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// A pick, one file at a time: the paths have to land in the box in the order
+// they were chosen, and a pile of parallel uploads over a phone link would
+// finish in whatever order the network decided.
+async function attachFiles(files) {
+  const canImage = hasCapStrict("image_paste"), canFile = hasCapStrict("upload");
+  if (!canImage && !canFile) { toast("This server can't take attachments yet"); return; }
+  let done = 0, failed = 0;
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    // Held rather than timed: the line has to stand for as long as the upload
+    // takes, and the outcome below is what replaces it.
+    holdToast(files.length > 1 ? "Attaching " + (i + 1) + " of " + files.length + "…"
+                               : "Attaching…");
+    let ok;
+    if (attachIsImage(f) && canImage) ok = await uploadImage(f);
+    else if (canFile) ok = await uploadAttachment(f);
+    else ok = false;      // a picture-only server, handed something else
+    if (ok) done++; else failed++;
+  }
+  // One line for the batch. Nothing through at all is the one case with no
+  // summary: every failure above already said what went wrong, and a count
+  // would only wipe the reason off the screen.
+  if (!done) return;
+  if (!failed) toast(files.length > 1 ? "Attached " + done + " files" : "Attached");
+  else toast("Attached " + done + ", " + failed + " failed");
+}
+
+(function bindComposeAttach() {
+  const btn = $("compose-attach"), input = $("compose-attach-input");
+  // The strip's rule for every button on it: a tap must not pull focus out of
+  // the textarea, or the keyboard drops while the picker is opening.
+  btn.addEventListener("pointerdown", e => e.preventDefault());
+  btn.addEventListener("mousedown", e => e.preventDefault());
+  btn.addEventListener("click", () => {
+    // The demo has no machine to stage anything on, and a picker that leads
+    // nowhere is worse than a word saying so.
+    if (demoMode) { toast("Attachments need a real computer"); return; }
+    // Inside the tap: iOS opens a file picker only from the gesture itself.
+    input.click();
+  });
+  input.addEventListener("change", (ev) => {
+    // The FileList empties with the input, so the pick is copied out before the
+    // reset that lets the same file fire change a second time.
+    const files = Array.from(ev.target.files || []);
+    ev.target.value = "";
+    if (files.length) attachFiles(files);
+  });
+})();

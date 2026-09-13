@@ -31,6 +31,10 @@ function stopListening() {
   if (!recog) return;
   const r = recog;
   recog = null;              // cleared first: onend must not re-enter this
+  // A take that ends with words in the box is a transcript that has landed, and
+  // the button becomes the way to send it. Asked here rather than of the
+  // recogniser, because this is the one exit every path out of a take takes.
+  if ($("compose-text").value.trim()) composeDictated = true;
   recSyncMic();
   try { r.stop(); } catch (e) {}
 }
@@ -128,7 +132,15 @@ function startListening() {
 // before speaking. Now the key is the only one, and Settings says what it talks
 // to. In-flight states come first, because while a capture is running the key is
 // the way out of it and nothing else.
-function toggleCompose() {
+//
+// `dictateOnly` is the strip's own mic face asking. That button is not a toggle:
+// the strip it would put away is the terminal's typing surface and never goes
+// anywhere, so the two branches below that answer a tap with "away, then" would
+// spend the tap on nothing and make dictation cost a second one. Everything
+// else — the engine choice, the capture already in flight — is the same tap the
+// key bar's key makes, and it stays on this one path so the engine is still
+// resolved in exactly one place.
+function toggleCompose(dictateOnly) {
   // A tap while a take — or the upload it turned into — is in flight discards
   // it and puts the strip away. Stopping a take and keeping what it heard is
   // the Send button's job now, so what is left for this key is the way out of
@@ -154,8 +166,15 @@ function toggleCompose() {
     startLocalRecording(engine);
     return;
   }
-  if (!SpeechRec || recogBroken) { setCompose(!composeOpen); return; }
-  if (composeOpen && document.activeElement === $("compose-text")) {
+  if (!SpeechRec || recogBroken) {
+    // No recogniser to start, so the tap is worth only the keyboard and its own
+    // dictation key — which on the strip is already showing, and wants the
+    // caret rather than the toggle.
+    if (dictateOnly) { $("compose-text").focus(); return; }
+    setCompose(!composeOpen);
+    return;
+  }
+  if (!dictateOnly && composeOpen && document.activeElement === $("compose-text")) {
     // Already typing: the tap means "put this away", not "start talking".
     setCompose(false);
     return;

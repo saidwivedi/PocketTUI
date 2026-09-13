@@ -196,16 +196,25 @@ function send(data) {
   if (demoMode) { demoInput(data); return; }
   if (sock && sock.readyState === WebSocket.OPEN) sock.send(data);
 }
-// The size the server was last told about, so a resize that changes nothing
-// does not arm a probe. Separate from rzLastRows, which only moves while the
-// debug log is on.
+// The size the server was last told about, which now gates the frame itself as
+// well as the probe: refit() runs on every viewport tick and on every keystroke
+// that grows the compose box, and a resize frame carrying the size tmux is
+// already at is work for both ends and news for neither. Zeroed wherever a
+// socket is built, so a reconnect at the same size still states it. Separate
+// from rzLastRows, which only moves while the debug log is on.
 let rzSentRows = 0, rzSentCols = 0;
-function sendResize() {
+// `force` is the new socket's case: a connection that has just opened has been
+// told nothing, whatever the one before it heard.
+function sendResize(force) {
   if (!term || !sock || sock.readyState !== WebSocket.OPEN) return;
+  const moved = term.rows !== rzSentRows || term.cols !== rzSentCols;
+  // Nothing said means nothing to watch for either: the watchdog below is
+  // waiting on tmux's answer to a frame that was never sent.
+  if (!force && !moved) return;
   sock.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows, token: cfg.token, dev: cfg.devname }));
   // A size tmux has not seen before always makes it repaint, so a socket that
   // answers a real resize with nothing at all is the half-dead one.
-  if (term.rows !== rzSentRows || term.cols !== rzSentCols) {
+  if (moved) {
     rzSentRows = term.rows;
     rzSentCols = term.cols;
     probeSocket("resize");
@@ -528,6 +537,11 @@ function openTerminal(name, resumed) {
   $("screen-term").classList.add("active");
   syncChrome();
   ensureTerm();
+  // On touch the composer is furniture rather than a mode, so it is up before
+  // the first fit rather than after the first tap: xterm counts its rows against
+  // a box the strip is already taking its share of. Quiet — opening a session
+  // must not raise a keyboard.
+  if (touchOnly()) setCompose(true, true);
   // The screen comes on view here, so its keyboard geometry is decided now
   // rather than at the next viewport event: a keyboard already up, or a pin
   // left over from a previous visit, must not wait for one.
@@ -696,6 +710,9 @@ function connect() {
                                  + (fresh ? "?fresh=1" : "")));
   ws.binaryType = "arraybuffer";
   sock = ws;
+  // This connection has heard no geometry, whatever the last one was told, so
+  // the size onopen states below is a change again.
+  rzSentRows = rzSentCols = 0;
   // Whether this connection has painted its first screenful. The old screen is
   // kept up during the connect (no blind reset — see scheduleReconnect), so the
   // first frame of the new connection is what wipes it: a replay control frame
@@ -713,8 +730,9 @@ function connect() {
     if (gen !== sockGen) { try { ws.close(); } catch (e) {} return; }
     retries = 0;
     hideConnBanner();
-    // Size first, so tmux paints straight into the phone's geometry.
-    sendResize();
+    // Size first, so tmux paints straight into the phone's geometry. Forced:
+    // a new socket knows nothing about what the terminal measures.
+    sendResize(true);
     // A hidden that never made it out (the socket was already gone when the
     // screen locked) is replayed here, immediately ahead of the current state:
     // the server needs the False to be on record for the True to read as the

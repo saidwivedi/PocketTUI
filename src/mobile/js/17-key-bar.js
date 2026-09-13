@@ -53,9 +53,10 @@ const KEYS = [
   // strip and puts the caret in it, so it shares the keyboard toggle's exemption
   // from the focus-preserving preventDefault below. It keeps the mic face while
   // a take runs: it is what the microphone being open looks like, while ending
-  // the take belongs to the strip's Send button.
+  // the take belongs to the strip's Send button. Not built at all on touch (see
+  // buildKeybar()): there the strip is always up and its own button is the mic.
   { icon: "i-mic", compose: true, focusing: true, narrow: true,
-    cls: "k-compose", aria: "Show or hide compose bar" },
+    cls: "k-compose", aria: "Show or hide the message bar" },
   // Pill only, and only once there is a backend to report about — the phone
   // never shows this key, because the Settings row is its way in and the
   // docked row has no width to spare. Collapsed-row only for the reason the
@@ -96,6 +97,26 @@ function setArrows(open) {
 // gesture, not a preference to restore on launch.
 let composeOpen = false;
 let composeBlurTimer = null;
+// Whether what is in the box came out of a microphone. Typed text is sent with
+// the keyboard's own send key, so the button stays the microphone while a thumb
+// is writing — turning it into an arrow there would leave a typed box with no
+// way into dictation at all. A transcript is the other case: it arrives with no
+// keyboard on screen to send it with, so the button becomes that arrow the
+// moment one lands, and stays it while the transcript is edited. Set at the two
+// landing points (stopListening, codeMicFinish) and cleared in composeArm() the
+// moment the box is empty again, whoever emptied it.
+let composeDictated = false;
+
+// Whether the strip is furniture rather than a mode right now. On touch it is
+// the terminal's typing surface — a tap on the grid puts the caret in it and it
+// stays whatever the keyboard then does — so nothing on that screen may take it
+// away; beside a real keyboard it is still summoned by the mic key and leaves
+// with the blur. Leaving the terminal screen is the one close that stands, and
+// it needs no exception: closeTerminal() drops the screen's class before it
+// asks, so this answers false by then.
+function composeDocked() {
+  return touchOnly() && $("screen-term").classList.contains("active");
+}
 
 // The single close routine — every path in and out of the strip goes through it.
 // Closing keeps whatever is typed: dismissing the keyboard is not a discard, and
@@ -106,6 +127,12 @@ function setCompose(open, quiet) {
   // A deliberate toggle settles the question a pending blur was about to answer.
   clearTimeout(composeBlurTimer);
   composeBlurTimer = null;
+  // Docked, a close is at most a request to put the keyboard away: the strip
+  // stays, with whatever is in it. The one guard every close path inherits,
+  // rather than each of them asking on its own. What the close would otherwise
+  // have torn down — a running take — now stands down at its own call site; see
+  // composeDiscardCapture().
+  if (!open && composeDocked()) { $("compose-text").blur(); return; }
   if (open === composeOpen) return;
   composeOpen = open;
   const strip = $("compose"), ta = $("compose-text");
@@ -114,7 +141,7 @@ function setCompose(open, quiet) {
   // only way to put that keyboard away again. Reopening can bring back text kept
   // from last time, so the button is told again rather than assumed empty.
   if (open) {
-    $("compose-send").classList.toggle("armed", ta.value.length > 0);
+    composeArm();
     if (!quiet) ta.focus();
   } else {
     ta.blur();
@@ -134,15 +161,69 @@ function setCompose(open, quiet) {
   refit(0);
 }
 
-// The field's height is fixed in CSS now (matches the actions column), so
-// there is nothing left to grow — longer text scrolls inside the box via the
-// browser's own textarea scrolling, which also keeps the caret in view as you
-// type. Runs on every input regardless, since it is where the Send button
-// learns whether it has anything to send — presentation only, the empty
-// button is still there and still a no-op.
+// The button's three faces and the one order that settles them: a capture in
+// flight owns it outright — the tap ends the take, or cancels the upload it
+// turned into, whatever is in the box — then a transcript waiting to go, and
+// otherwise the microphone. Both engines count as a capture, or the phone
+// recogniser's interim words would turn the stop back into a send mid-sentence.
+// Typed text is deliberately not the send case: see composeDictated. The cross
+// inside the box is read off the plainer question, and still means what it
+// always did — there is something in the box to clear.
+//
+// Every path that moves either the box (composeGrow, setCompose) or the capture
+// state machine (recSyncMic, which every start, stop, cancel and failure already
+// lands on) comes here, so no two of them can leave the button saying different
+// things.
+function composeArm() {
+  const has = $("compose-text").value.length > 0;
+  // An empty box has no transcript in it, however it came to be empty — sent,
+  // cleared, or backspaced away by hand. One place to clear the flag, since one
+  // place is where every one of those paths ends up.
+  if (!has) composeDictated = false;
+  const send = $("compose-send");
+  const stopping = composeStopping() || listening();
+  const sending = has && composeDictated && !stopping && !recBusy;
+  send.classList.toggle("stop", stopping);
+  send.classList.toggle("busy", recBusy);
+  send.classList.toggle("mic", !stopping && !recBusy && !sending);
+  send.classList.toggle("armed", sending);
+  // The engine the session fell back to is the button's footnote on a phone,
+  // where the key that used to carry it is not built.
+  send.classList.toggle("forced-phone", voiceLatchVisible());
+  $("compose").classList.toggle("has-text", has);
+  // What this tap does, in the words of the state it lands in.
+  send.setAttribute("aria-label",
+    stopping ? "Stop recording and keep what was heard"
+    : recBusy ? "Cancel transcription"
+    : sending ? "Send to the terminal"
+    : "Start dictation");
+}
+
+// How many lines the box may grow to before it scrolls instead. Five is about
+// where a message stops being a line and starts being a screen, and the rows it
+// costs the terminal are rows the user is looking away from anyway.
+const COMPOSE_MAX_LINES = 5;
+
+// The field starts at one line and grows with what is typed, up to the ceiling
+// above, after which the browser's own textarea scrolling takes over and keeps
+// the caret in view. Measured rather than counted: the height is released to
+// "auto" first, or scrollHeight would report the height already set rather than
+// what the text needs. Runs on every input, which is also where the Send button
+// and the cross learn whether there is anything to act on.
 function composeGrow() {
   const ta = $("compose-text");
-  $("compose-send").classList.toggle("armed", ta.value.length > 0);
+  composeArm();
+  ta.style.height = "auto";
+  const cs = getComputedStyle(ta);
+  const line = parseFloat(cs.lineHeight) || 22;
+  const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  // Everything in this app is border-box, so scrollHeight is content plus
+  // padding and the border is what has to be added back to get a height to set.
+  const border = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+  const max = Math.round(COMPOSE_MAX_LINES * line + pad + border);
+  const want = Math.round(ta.scrollHeight + border);
+  ta.style.height = Math.min(want, max) + "px";
+  ta.style.overflowY = want > max ? "auto" : "hidden";
   refit(0);
 }
 
@@ -156,15 +237,21 @@ function composeGrow() {
 // so it is never framed as pasted text and the docked explorer still sees it
 // as an Enter. Under bracketed paste the app receives the message whole and
 // then the Enter, which is the same sequence a typed paste plus ⏎ produces.
-function composeSend() {
+// `keepCaret` is the keyboard send saying so: Enter was pressed in the box, the
+// keyboard is up, and the caret belongs back in the emptied field for the next
+// line. A tap on the button never asks for it — after a dictation there is no
+// keyboard on screen, and focusing a field inside a tap is exactly what raises
+// one, which is the thing talking to the terminal is meant to avoid.
+function composeSend(keepCaret) {
   // A capture in flight owns this button before any of that: while a take runs
   // it is the stop control, and while its upload runs it is the cancel. Neither
   // tap sends, and neither closes the strip — the transcript is on its way into
   // the box the user is looking at.
   if (composeStopTap()) return;
-  // Stop before reading: the recogniser is mid-utterance and whatever is already
-  // in the box is what the user meant to send.
-  stopListening();
+  // The phone's recogniser is the other capture that owns this button: while it
+  // runs the button wears the same stop face, and the tap that ends the take
+  // leaves what it heard in the box to read before sending it.
+  if (listening()) { stopListening(); return; }
   const ta = $("compose-text");
   const text = ta.value;
   if (!text || !term) return;
@@ -188,13 +275,31 @@ function composeSend() {
   // full. Blurring ends the composition first, which discards that buffer and
   // makes the clear final. Typed text has no pending composition and does not
   // care either way, so the ordering costs the working path nothing.
-  ta.blur();
+  //
+  // iOS only, though: nothing else has that composition buffer, and Android's
+  // keyboard reads the blur as the field going away and closes — which the
+  // refocus below would then reopen, a whole keyboard animation on every
+  // message sent. Everywhere else the plain assignment sticks.
+  if (a2hsPlatform() === "ios") ta.blur();
   ta.value = "";
   recogText = "";
   composeGrow();
-  // Sending is the end of the errand: the strip closes and takes the keyboard
-  // with it, so the terminal gets its rows back to show what just landed.
-  setCompose(false);
+  // The strip stays for the next message, the way any messaging app's does:
+  // sending one line is rarely the end of the errand, and closing here would
+  // cost a tap on the terminal and a keyboard animation to say the next one.
+  // The caret goes straight back into the emptied box, for a keyboard send;
+  // see keepCaret.
+  if (keepCaret) ta.focus();
+  // The blur above scheduled a close, on the reading that a keyboard leaving is
+  // the strip's cue to go. The refocus is the answer that pending close was
+  // waiting for, and it is the same cancel setCompose() makes for a deliberate
+  // toggle.
+  clearTimeout(composeBlurTimer);
+  composeBlurTimer = null;
+  // The microphone goes with the message: sending is the clearest sign the take
+  // is over, and a stream retained for a quick re-record keeps iOS's recording
+  // indicator lit until the idle timer gets round to it.
+  recRelease();
 }
 
 // Empty the box and stay in it. What Send does minus the paste and minus the
@@ -218,8 +323,11 @@ function composeClear() {
   // iOS holds an open composition on a dictated field, and assigning "" to it
   // does not stick until the blur has ended that composition. Focus is handed
   // straight back afterwards — the point of clearing is to type or speak again.
-  const refocus = document.activeElement === ta;
-  ta.blur();
+  // And iOS only, for the reason given there as well: elsewhere the round trip
+  // would flap the keyboard for nothing, so the caret simply stays where it is.
+  const ios = a2hsPlatform() === "ios";
+  const refocus = ios && document.activeElement === ta;
+  if (ios) ta.blur();
   ta.value = "";
   recogText = "";
   // Nothing was sent, so there is no edit to learn from — and what the backend
@@ -251,6 +359,9 @@ function composeBlurred() {
   composeBlurTimer = setTimeout(() => {
     composeBlurTimer = null;
     if (recStarting || recording() || recBusy) return;
+    // And on touch the strip is not the keyboard's antechamber but the terminal's
+    // typing surface, so a dropped keyboard leaves it exactly where it is.
+    if (composeDocked()) return;
     if (composeOpen && document.activeElement !== $("compose-text")) setCompose(false);
   }, 0);
 }
