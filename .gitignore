@@ -31,6 +31,7 @@ voice/
 .whisper-build/
 # Opt-in voice debug captures (see resolver.py).
 .last_voice.*
+.voice_takes/
 # Corrections learned from edited transcripts (see resolver.py). Personal
 # vocabulary, local to this machine.
 .voice_learned.json
