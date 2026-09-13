@@ -52,6 +52,17 @@ const REC_UNMUTE_WAIT = 1500;
 // double-tap behind it, short enough that a user who genuinely changes their
 // mind about a slow upload is not made to wait.
 const REC_CANCEL_GRACE = 700;
+// How long the stop tap waits for the recorder's own onstop before treating it
+// as overdue. The recorder runs without a timeslice, so WebKit encodes the whole
+// take at stop and a long one honestly takes a moment — generous enough to cover
+// that, short enough that a stop which is never coming is caught while the user
+// is still looking at the strip.
+const REC_STOP_WATCHDOG = 4000;
+// And how long after the requestData() nudge before the take is finished from
+// the watchdog instead of waited on further. WebKit is documented to drop stop
+// and dataavailable outright on a long recording or after an audio-session
+// interruption, and an onstop that has not arrived by now is not arriving.
+const REC_STOP_NUDGE = 2000;
 // How long a failed upload waits before its one automatic retry. Only the
 // network failure gets that retry — a phone that lost the tailnet for a second
 // while walking between rooms is back a moment later, and asking the user to tap
@@ -147,6 +158,12 @@ let recPending = null;
 // arrives — iOS is under no obligation to run one while the page is hidden —
 // must not leave the next stop reading a stale instruction.
 let recSalvage = false;
+// The pending stop watchdog, and the recorder a fired one gave up on. onstop is
+// the only route from a stop to the upload and WebKit does not always run it, so
+// the timer is what notices; the reference is what lets a late onstop for that
+// one recorder be ignored without also silencing the next take's.
+let recStopTimer = null;
+let recAbandoned = null;
 // Whether the take in hand has already spent its one automatic network retry.
 // Per take, not per session: the next recording deserves the same second chance.
 let recNetRetried = false;
@@ -483,6 +500,9 @@ function recLevelTick() {
 function recRelease() {
   clearTimeout(recReleaseTimer);
   recReleaseTimer = null;
+  // Nobody is waiting on a stop any more: the recorder this would have spoken
+  // for is going away with the stream.
+  recStopWatchdogOff();
   // The nudges belong to a take that is over: firing them now would resume the
   // context this is about to suspend and bounce a track it is about to stop.
   clearTimeout(recReviveTimer);
@@ -514,6 +534,8 @@ function recRelease() {
 // never restarted, startRecording() builds a new one on the retained stream.
 function recRetire() {
   recorder = null;
+  // The stop this retirement follows has been answered, however it was answered.
+  recStopWatchdogOff();
   // The analyser tap and the wake-up nudges both belong to the take that just
   // ended; the context stays running so the re-record this retains the stream
   // for starts hot.
@@ -730,6 +752,14 @@ function startRecording() {
     };
     r.onerror = () => recFallback("Recording failed — using phone dictation");
     r.onstop = () => {
+      // First of all, before any branch can return: the stop this answers is
+      // not overdue after all.
+      recStopWatchdogOff();
+      // A stop the watchdog already gave up on. Its take has been dealt with —
+      // uploaded or torn down — and acting on this late arrival would do it a
+      // second time. Checked by identity, so it can only ever silence the one
+      // recorder it was raised for and never the next take's.
+      if (recAbandoned === r) { recAbandoned = null; return; }
       // The backgrounding stop, taken before anything else so a take the phone
       // interrupted is parked rather than read as an abandoned one. Its own
       // teardown is a full release, not recRetire(): the app is going away, and
@@ -739,29 +769,25 @@ function startRecording() {
         salvageStopped(r);
         return;
       }
-      // recorder is nulled by both stop paths; only the uploading one leaves
-      // recBusy set, so that is what tells the two apart. The microphone is kept
-      // open either way, for the re-record that usually follows.
-      recRetire();
-      // recBusy tells the uploading stop from the cancelling one; recCancelled
-      // catches the cancel that landed in the gap between stop() and this, when
-      // recBusy was already set and there was no recorder left to clear it. A
-      // take the user abandoned is dropped either way, and its blob with it.
-      if (!recBusy || recCancelled) { recClearUI(); return; }
-      const blob = new Blob(recChunks, { type: r.mimeType || "audio/webm" });
-      recChunks = null;
-      // Everything the recorder collected goes up, however quiet it looks from
-      // here. The failure this used to gate on — 62KB of well-formed AAC whose
-      // every sample is zero — is written by a muted track and by an iPhone
-      // gating a silent room alike, so the one reading available on this side
-      // punishes the quiet user for the muted one. The backend's silence gate
-      // rules on the decoded audio instead, and an empty transcript is its
-      // answer; see codeMicFinish().
-      // The indicator stays up, now reading "Transcribing…", until this lands.
-      uploadRecording(blob);
+      recFinishTake(r);
     };
     recorder = r;
     recStream = s;
+    // An audio-session interruption — a call, Siri, another app taking the
+    // microphone — ends the track under a live recorder, and everything said
+    // after that is spoken into nothing. So the take ends with the track: what
+    // was captured before the interruption goes up rather than being extended
+    // with silence the user thinks is being recorded. Guarded by identity
+    // instead of being removed anywhere, since every teardown nulls recorder,
+    // and one-shot because a track only ends once.
+    if (track) {
+      try {
+        track.addEventListener("ended", () => {
+          if (recorder !== r) return;
+          stopRecording();
+        }, { once: true });
+      } catch (e) { /* no listener is worse than a throw here */ }
+    }
     r.start();
     recStarted = performance.now();
     // Tapped after start() so the analyser and the recorder see the same audio
@@ -809,6 +835,80 @@ function recDeadCapture() {
   recFallback("Mic is muted by iOS — close and reopen the app");
 }
 
+// The tail of a stop that is keeping what it heard: the teardown, then the
+// upload. Factored out because onstop is no longer the only thing that runs it —
+// a stop the watchdog gave up waiting for finishes its take through here too, so
+// the two endings cannot drift apart.
+function recFinishTake(r) {
+  // recorder is nulled by both stop paths; only the uploading one leaves
+  // recBusy set, so that is what tells the two apart. The microphone is kept
+  // open either way, for the re-record that usually follows.
+  recRetire();
+  // recBusy tells the uploading stop from the cancelling one; recCancelled
+  // catches the cancel that landed in the gap between stop() and this, when
+  // recBusy was already set and there was no recorder left to clear it. A
+  // take the user abandoned is dropped either way, and its blob with it.
+  if (!recBusy || recCancelled) { recClearUI(); return; }
+  const blob = new Blob(recChunks, { type: r.mimeType || "audio/webm" });
+  recChunks = null;
+  // Everything the recorder collected goes up, however quiet it looks from
+  // here. The failure this used to gate on — 62KB of well-formed AAC whose
+  // every sample is zero — is written by a muted track and by an iPhone
+  // gating a silent room alike, so the one reading available on this side
+  // punishes the quiet user for the muted one. The backend's silence gate
+  // rules on the decoded audio instead, and an empty transcript is its
+  // answer; see codeMicFinish().
+  // The indicator stays up, now reading "Transcribing…", until this lands.
+  uploadRecording(blob);
+}
+
+// Nobody is waiting on a stop any more. Every teardown says so: a watchdog left
+// armed on a recorder that has been cancelled, released or already answered
+// would finish a take that is over.
+function recStopWatchdogOff() {
+  clearTimeout(recStopTimer);
+  recStopTimer = null;
+}
+
+// The stop tap's safety net. onstop is the only route from a stop to the upload,
+// and WebKit does not always run it — a long take, or a track an interruption
+// ended under the recorder — which leaves the strip reading "Transcribing…" over
+// an upload that was never issued and a tap that does nothing. The user's
+// sentence is still worth sending in that case, and where it is not they are
+// owed the news rather than a label that never changes.
+function recArmStopWatchdog(r) {
+  recStopWatchdogOff();
+  recStopTimer = setTimeout(() => recStopOverdue(r, false), REC_STOP_WATCHDOG);
+}
+
+// The stop is late. One nudge first: requestData() is the documented way to ask
+// for what the recorder has buffered, and asking sometimes shakes the missing
+// stop loose along with it. A second window for that to land, and then the take
+// is finished from here rather than waited on any longer.
+function recStopOverdue(r, nudged) {
+  recStopTimer = null;
+  if (!nudged) {
+    try { r.requestData(); } catch (e) { /* inactive, or nothing buffered */ }
+    recStopTimer = setTimeout(() => recStopOverdue(r, true), REC_STOP_NUDGE);
+    return;
+  }
+  // Whatever this recorder says from here on is about a take already settled.
+  recAbandoned = r;
+  // Audio in hand is audio worth sending. The dataavailable callbacks may well
+  // have run even though the stop did not, and what they collected goes up
+  // exactly as a normal stop would have sent it.
+  if (recChunks && recChunks.length) { recFinishTake(r); return; }
+  // Nothing was ever handed over, so there is no take to save. The stream goes
+  // with it — a recorder that never finished says nothing good about the track
+  // it was reading, and the next tap acquires a fresh one. Deliberately not
+  // recFallback(): one WebKit stop that went missing is not a reason to spend
+  // the rest of the session on phone dictation.
+  recRelease();
+  recBusy = false;
+  recClearUI();
+  toast("The browser lost the recording — try again");
+}
+
 // Second tap: stop the capture and let onstop hand the blob to the upload.
 function stopRecording() {
   if (!recorder) return;
@@ -830,7 +930,16 @@ function stopRecording() {
   const bar = rec.querySelector(".level");
   if (bar) bar.style.visibility = "hidden";
   try {
-    r.stop();
+    // Armed before the stop, not after it: an onstop delivered while stop() is
+    // still on the stack would otherwise be followed by the arming of a
+    // watchdog nothing is left to disarm, and that watchdog would tear down a
+    // take that had already been uploaded.
+    recArmStopWatchdog(r);
+    // Already inactive is the interrupted take, not a broken recorder: the
+    // track ended and WebKit stopped the recorder itself, so there is nothing
+    // to stop and stop() would only throw. Its onstop may still be coming, and
+    // the watchdog is what finishes the take if it is not.
+    if (r.state !== "inactive") r.stop();
   } catch (e) {
     recBusy = false;
     recFallback("Recording failed — using phone dictation");
