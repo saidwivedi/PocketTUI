@@ -639,10 +639,10 @@ function recClearUI() {
   recSetLabel("Recording…");
   const rec = $("compose-rec");
   const dot = rec.querySelector(".dot");
-  dot.style.visibility = "";
+  dot.style.display = "";
   dot.style.opacity = "";
   const level = rec.querySelector(".level");
-  if (level) level.style.visibility = "";
+  if (level) level.style.display = "";
   const fill = rec.querySelector(".level-fill");
   if (fill) fill.style.transform = "";
 }
@@ -1015,9 +1015,13 @@ function stopRecording() {
   recLevelTimer = null;
   recSetLabel("Transcribing…");
   const rec = $("compose-rec");
-  rec.querySelector(".dot").style.visibility = "hidden";
+  // display, not visibility: the two live-capture ornaments have to give up
+  // their slots in the flex row as well as their ink, or "Transcribing…" sits
+  // indented behind a blank gap where the dot used to pulse. Put back by
+  // recClearUI() before the next take.
+  rec.querySelector(".dot").style.display = "none";
   const bar = rec.querySelector(".level");
-  if (bar) bar.style.visibility = "hidden";
+  if (bar) bar.style.display = "none";
   try {
     // Armed before the stop, not after it: an onstop delivered while stop() is
     // still on the stack would otherwise be followed by the arming of a
@@ -1298,9 +1302,9 @@ function retryPendingTake() {
   recSyncMic();
   recSetLabel("Transcribing…");
   const rec = $("compose-rec");
-  rec.querySelector(".dot").style.visibility = "hidden";
+  rec.querySelector(".dot").style.display = "none";
   const bar = rec.querySelector(".level");
-  if (bar) bar.style.visibility = "hidden";
+  if (bar) bar.style.display = "none";
   // No take is running, so the counter left over from the one that failed would
   // be a stopped clock sitting beside a live label.
   rec.querySelector(".elapsed").textContent = "";
