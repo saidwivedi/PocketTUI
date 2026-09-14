@@ -35,10 +35,12 @@ function imageUploadURL() {
 
 // One upload, and one silent retry if the network — rather than the server —
 // is what went wrong. `retried` marks the second attempt: it neither re-toasts
-// the start nor tries again, so a phone with no signal reports once.
+// the start nor tries again, so a phone with no signal reports once. `target`
+// is carried from the gesture that started this to the path that comes back,
+// the upload being the one hop long enough for the caret to have moved.
 // Answers true when a path landed in the box, so a batch of attachments can
 // count what got through.
-async function uploadImage(blob, retried) {
+async function uploadImage(blob, target, retried) {
   if (!blob) return false;
   // Size and type only. The clipboard may be holding a screenshot of something
   // private, and the debug panel is on screen.
@@ -64,7 +66,7 @@ async function uploadImage(blob, retried) {
     const data = await r.json();
     const path = data && typeof data.path === "string" ? data.path : "";
     if (!path) { toast("Image upload failed"); return false; }
-    insertImagePath(path);
+    insertImagePath(path, target);
     return true;
   } catch (e) {
     // The 60s timer fired, or fetch() rejected with no response at all. Only
@@ -74,7 +76,7 @@ async function uploadImage(blob, retried) {
       // Awaited rather than left on a timer, so a caller counting attachments
       // is told how the second attempt went.
       await new Promise(r => setTimeout(r, IMG_RETRY_DELAY));
-      return uploadImage(blob, true);
+      return uploadImage(blob, target, true);
     }
     dbg("image: upload error:", e);
     toast("Image upload failed");
@@ -84,17 +86,22 @@ async function uploadImage(blob, retried) {
   }
 }
 
-// Where a staged path lands, whichever route staged it. With the strip open it
-// is a thing to edit before sending, so it goes in at the caret like a
-// transcript does; with the strip shut the terminal is what the user is looking
-// at, so it goes there.
-function insertPathIntoCompose(path) {
-  if (composeOpen) {
+// Where a staged path lands, whichever route staged it, on the rule
+// insertPastedText() follows: the caret decides. With it in the box the path is
+// a thing to edit before sending, so it goes in there like a transcript does;
+// anywhere else the terminal is what the user is looking at, so it goes there.
+// The strip being open says nothing about this — on touch it is always open.
+// A `target` overrules the caret where the gesture belongs to one surface: the
+// long-press pill is the terminal's own, the "+" on the strip the composer's,
+// and the picker the "+" opens hands focus back to the page body rather than
+// to the box it was pressed on.
+function insertPathIntoCompose(path, target) {
+  if (pasteGoesToCompose(target)) {
     const ta = $("compose-text"), v = ta.value;
     // Unlike codeMicFinish's captured caret, this field was never hidden — the
     // live selection is the one the user is looking at. Focus is left alone:
-    // a paste over the terminal with the strip open should not raise the
-    // keyboard the user had put away.
+    // a paste over the terminal must not raise the keyboard the user had put
+    // away.
     const start = Math.min(typeof ta.selectionStart === "number" ? ta.selectionStart : v.length, v.length);
     const end = Math.min(typeof ta.selectionEnd === "number" ? ta.selectionEnd : start, v.length);
     // One space on whichever side is jammed against a word, none where there
@@ -118,8 +125,8 @@ function insertPathIntoCompose(path) {
 
 // The paste's own word for it. A batch from the "+" says its piece once at the
 // end instead, so the line is here rather than in the splice above.
-function insertImagePath(path) {
-  insertPathIntoCompose(path);
+function insertImagePath(path, target) {
+  insertPathIntoCompose(path, target);
   toast("Image attached");
 }
 
@@ -225,7 +232,7 @@ async function uploadAttachment(f, retried) {
     const data = await r.json();
     const path = data && typeof data.path === "string" ? data.path : "";
     if (!path) { toast("Couldn't attach " + f.name); return false; }
-    insertPathIntoCompose(path);
+    insertPathIntoCompose(path, "compose");
     return true;
   } catch (e) {
     if (e && e.name !== "AbortError" && !retried) {
@@ -254,7 +261,7 @@ async function attachFiles(files) {
     holdToast(files.length > 1 ? "Attaching " + (i + 1) + " of " + files.length + "…"
                                : "Attaching…");
     let ok;
-    if (attachIsImage(f) && canImage) ok = await uploadImage(f);
+    if (attachIsImage(f) && canImage) ok = await uploadImage(f, "compose");
     else if (canFile) ok = await uploadAttachment(f);
     else ok = false;      // a picture-only server, handed something else
     if (ok) done++; else failed++;

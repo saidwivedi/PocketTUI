@@ -373,8 +373,13 @@
   // The click is the user gesture the clipboard read needs, so pasteFromClipboard()
   // is called from inside it — the same function the key bar's ctrl+shift+V uses,
   // which already frames the text for bracketed paste and toasts on refusal.
+  // The terminal is named outright rather than left to the caret: this pill only
+  // ever comes up from a press on the grid, and on touch the compose strip is
+  // always open and often still holds the focus. A long press inside the box
+  // raises the browser's own paste menu and never reaches here, so there is
+  // nothing ambiguous about where this one goes.
   $("btn-sel-paste").addEventListener("click", () => {
-    pasteFromClipboard();
+    pasteFromClipboard("term");
     exitSelection();
   });
   $("btn-sel-cancel").addEventListener("click", exitSelection);
