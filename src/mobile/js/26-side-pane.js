@@ -56,7 +56,10 @@ function sideClaim(who) {
   if (sideOwner === "diff") diffSetOpen(false);
   else if (sideOwner === "files") closeDockedFiles();
   sideOwner = who;
-  cfg.sidePane = who;
+  // Remembered against the session it was opened in, not against the app: the
+  // slot is that session's (see fileViews, 09-image-viewer.js), and a reload
+  // only puts the pane back when that same session is opened again.
+  cfg.sidePane = { owner: who, session: currentSession || "" };
   // Half the main pane the first time, and whatever was dragged after that.
   applySideWidth(cfg.sideWidth || Math.round(sideMainW() / 2));
   $("screen-term").classList.add("side-open");
@@ -68,7 +71,7 @@ function sideClaim(who) {
 function sideDrop(who) {
   if (sideOwner !== who) return;
   sideOwner = null;
-  cfg.sidePane = "";
+  cfg.sidePane = null;
   $("screen-term").classList.remove("side-open", "side-full");
   refit(0);
 }
