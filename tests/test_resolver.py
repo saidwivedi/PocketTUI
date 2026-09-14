@@ -276,6 +276,57 @@ def test_rules_are_reduced_outside_shell():
     assert R.apply_rules("tests slash test dot py", "claude") == "tests/test.py"
 
 
+@pytest.mark.parametrize("register", ["claude", "editor"])
+def test_a_spoken_dot_chain_joins_outside_the_shell_too(register):
+    """"apps dot side dot in slash organizer" is a host being spelled out.
+
+    A lone "." is held back in the strict registers because a spoken one is
+    usually the mark. The second separator two words after the first is the
+    evidence that overrules that, and it is evidence about the words, not
+    about where they are being typed.
+    """
+    spoken = "when I said something like apps dot side dot in slash organizer it just wrote it"
+    assert R.apply_rules(spoken, register) == \
+        "when I said something like apps.side.in/organizer it just wrote it"
+
+
+@pytest.mark.parametrize("register", ["shell", "claude", "editor"])
+def test_the_last_label_of_a_dot_chain_joins_on_the_chain_it_extends(register):
+    """"foo dot bar dot baz" is one name; the final label is not a loose word."""
+    assert R.apply_rules("foo dot bar dot baz", register) == "foo.bar.baz"
+
+
+@pytest.mark.parametrize("text", [
+    "the dot at the end",
+    "put a dot in there",
+    "dot dot dot",
+    "version two dot three",
+])
+def test_a_spoken_dot_in_prose_survives_the_chain_rule(text):
+    """The chain is the whole licence: without one the strict registers keep
+    the word, which is what these sentences are made of."""
+    assert R.apply_rules(text, "claude") == text
+    assert R.apply_rules(text, "editor") == text
+
+
+@pytest.mark.parametrize("spoken,expected", [
+    # The shell register never needed the chain: every joiner already lands
+    # there, and this rule must not have moved any of it.
+    ("when I said something like apps dot side dot in slash organizer it just wrote it",
+     "when I said something like apps.side.in/organizer it just wrote it"),
+    # The prose guard is the shell's, unchanged: two ordinary words around a
+    # lone "." stay words there as well.
+    ("the dot at the end", "the dot at the end"),
+    ("put a dot in there", "put a dot in there"),
+    ("version two dot three", "version two dot three"),
+    # And what it did read as syntax, it still reads as syntax.
+    ("dot dot dot", "dot.dot"),
+    ("foo dot bar dot baz", "foo.bar.baz"),
+])
+def test_the_shell_register_reads_a_dot_exactly_as_it_did(spoken, expected):
+    assert R.apply_rules(spoken, "shell") == expected
+
+
 @pytest.mark.parametrize("spoken,expected", [
     # The mark closes the word on its left and keeps its space on the right.
     ("ls semicolon pwd", "ls; pwd"),
@@ -1442,6 +1493,39 @@ def test_resolve_survives_a_broken_screen_payload(project):
     """Garbage from the client degrades to an echo rather than a 500."""
     result = R.resolve("hello there", screen=[None, 12, {"a": 1}], cwd=project)
     assert result["text"] == "hello there"
+
+
+# A composer with the word the rooted path is about to collide with sitting
+# right there on screen: "organiser" is one normalize() away from "/organiser".
+ORGANISER_SCREEN = ["Claude Code", "organiser app", "\u203a "]
+
+
+@pytest.mark.parametrize("confidence", [None, {"organiser": 0.24}])
+def test_resolve_keeps_a_rooted_path_the_rules_built(confidence):
+    """The index pass may not phonetically re-read a path off the screen.
+
+    The rules root "slash organiser" on the filesystem's own separator; the
+    screen word "organiser" then scores against it on the separator-only rung
+    and the "correction" deletes the root. Doubting the word only lowers the
+    floor the match already cleared, so it changes nothing here either.
+    """
+    spoken = ("when I open the link apps.saidivedi dot in slash organiser "
+              "it should give me the page")
+    expected = ("when I open the link apps.saidivedi.in/organiser "
+                "it should give me the page")
+    assert R.resolve(spoken, screen=ORGANISER_SCREEN, asr=True,
+                     confidence=confidence)["text"] == expected
+    # Without the word on screen there is nothing to be tempted by, and the
+    # answer has to be the same one.
+    assert R.resolve(spoken, screen=[], asr=True)["text"] == expected
+
+
+def test_resolve_spells_a_dot_chain_in_a_composer():
+    """The chain rule reaches resolve(), where detect_register([]) is "claude"."""
+    spoken = ("when I said something like apps dot side dot in slash organizer "
+              "it just wrote it")
+    assert R.resolve(spoken, screen=[], asr=True)["text"] == \
+        "when I said something like apps.side.in/organizer it just wrote it"
 
 
 # ---------------------------------------------------------------------------
