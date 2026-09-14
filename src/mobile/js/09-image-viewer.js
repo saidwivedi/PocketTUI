@@ -345,10 +345,14 @@ function openDemo() {
 // Per-session file views
 // ============================================================
 // A reader or an editor opened from a terminal belongs to that terminal's
-// session. Switching sessions from the rail puts the whole view away — buffer,
-// caret, undo history, the folder it was opened from — hands the pane to the
-// session that was tapped, and brings back whatever that one had put away
-// itself. Held in memory only: a reload drops a stashed view exactly as it
+// session, and so does the pane beside it — the docked explorer or the git
+// changes, whichever holds the slot (26-side-pane.js). Switching sessions from
+// the rail puts the whole lot away — buffer, caret, undo history, the folder it
+// was opened from, the pane itself — and brings back whatever the session that
+// was tapped had put away itself. A session that put away nothing comes up full
+// width: a pane opened in one session is open in that session and nowhere else.
+// Held in memory only, bar the one line a reload restores (cfg.sidePane, read
+// at the bottom of 37-git-diff.js): a reload drops a stashed view exactly as it
 // drops an open one.
 //
 // A view is two things, and both have to be put away together: the screens'
@@ -408,12 +412,20 @@ function fileViewKind() {
 function stashFileView(session, kind) {
   // The browsing underneath is read before the screen above it is taken down,
   // and goes into the same entry: coming back to a file view that had lost its
-  // folder would be half a restore. A null kind is the docked explorer on its
-  // own — there the folder is the whole view, and it is worth keeping because
-  // the pane it is in stays open across the switch.
-  const view = { files: filesStash() };
+  // folder would be half a restore. A null kind is the pane on its own — there
+  // the folder is the whole view, and it is worth keeping because the pane
+  // comes back with the session. With no explorer in any shape there is no
+  // folder to keep, and an entry with one would restore a pane nobody opened.
+  const view = {};
+  if (kind || filesDocked || $("screen-files").classList.contains("active")) {
+    view.files = filesStash();
+  }
   if (kind === "editor") view.editor = edStash();
   else if (kind === "reader") view.reader = readerStash();
+  // The pane goes down with the session it belongs to, both halves of it: the
+  // slot is given back here (diffSetOpen, and filesTeardown's own sideDrop) and
+  // the record above is the whole of what puts it up again.
+  if (diffOpen) { view.diff = true; diffSetOpen(false); }
   filesTeardown();
   fileViews.set(session, view);
 }
@@ -421,19 +433,33 @@ function stashFileView(session, kind) {
 function restoreFileView(session) {
   const view = fileViews.get(session);
   fileViews.delete(session);
-  filesRestore(view.files);
-  // Every entry the view owned, in the order it was pushed and in the shape
-  // its own push site uses: openExplorer's, one per level navigated into
-  // (navigateDir's), then the single one the reader and the editor share.
-  // Nothing reads these back — the unwind goes by filesStack and the screen
-  // classes — but the count is what back spends, and it has to be exact. A
-  // docked pane pushed none of its own, so it gets none back.
-  if (!view.files.docked) {
-    history.pushState({ files: true }, "", location.href);
-    for (const path of view.files.stack.slice(1)) {
-      history.pushState({ files: true, path: path }, "", location.href);
+  // A record a reload left behind names the pane rather than carrying one:
+  // nothing was ever stashed, so the pane opens the way opening it by hand
+  // does — the changes of this session's repo, the explorer at its cwd.
+  if (view.boot) {
+    if (!isWideLayout()) return;
+    if (view.boot === "diff") diffSetOpen(true);
+    else filesFollowSession();
+    return;
+  }
+  if (view.files) {
+    filesRestore(view.files);
+    // Every entry the view owned, in the order it was pushed and in the shape
+    // its own push site uses: openExplorer's, one per level navigated into
+    // (navigateDir's), then the single one the reader and the editor share.
+    // Nothing reads these back — the unwind goes by filesStack and the screen
+    // classes — but the count is what back spends, and it has to be exact. A
+    // docked pane pushed none of its own, so it gets none back.
+    if (!view.files.docked) {
+      history.pushState({ files: true }, "", location.href);
+      for (const path of view.files.stack.slice(1)) {
+        history.pushState({ files: true, path: path }, "", location.href);
+      }
     }
   }
+  // The other thing that can hold the slot, back in it against this session's
+  // repo — diffSetOpen's own poll asks for it.
+  if (view.diff) diffSetOpen(true);
   if (!view.editor && !view.reader) return;
   history.pushState(view.editor ? { editor: true } : { reader: true }, "", location.href);
   if (view.editor) edRestore(view.editor);
@@ -490,10 +516,11 @@ function openTerminal(name, resumed) {
       closeEditor();
     }
     // The docked explorer is the terminal's own pane rather than a screen over
-    // it, so a switch does not close it: the folder goes into the leaving
-    // session's stash and the pane stays for the tapped session to fill (the
-    // restore at the end of this function, or filesFollowSession()). With no
-    // session to keep it for, the folder is simply dropped.
+    // it, and the pane is the leaving session's: the folder and the claim on
+    // the slot both go into that session's stash, and the tapped session
+    // arrives to whatever it had itself — its own pane, restored at the end of
+    // this function, or none and a full-width terminal. With no session to keep
+    // it for, the folder is simply dropped.
     if (filesDocked) {
       if (name !== currentSession) {
         closePathEdit();
@@ -505,6 +532,14 @@ function openTerminal(name, resumed) {
       // open) just closes and the screen follows.
       closePathEdit();
       closeExplorer();
+    }
+    // The diff pane holds the same slot under the same rule, and reaches here
+    // with no screen of its own to have been dealt with above — the branches
+    // that stash it have already closed it, so this is the case where it was
+    // the only thing the leaving session had open.
+    if (diffOpen && name !== currentSession) {
+      if (currentSession) stashFileView(currentSession, null);
+      else diffSetOpen(false);
     }
   }
   // Whether this open is a switch inside an already-open terminal pane —
@@ -569,13 +604,12 @@ function openTerminal(name, resumed) {
   }
   markSelectedSession();
   clearUnread(name);   // opening is what marks a session read
-  // The diff pane, if it is open, is showing the repo of the session being
-  // left; its own poll would take up to two seconds to notice.
-  diffPoll();
-  // Whatever this session had put away when the rail last left it, back on top
-  // of the terminal it was opened over — which is live again underneath it.
+  // Whatever this session had put away when the rail last left it — the pane
+  // beside the terminal, and any view on top of that — back over the terminal
+  // it was opened over, which is live again underneath it. A session with
+  // nothing put away opens full width: the pane that was on screen a moment ago
+  // was the other session's, and went away with it.
   if (fileViews.has(name)) restoreFileView(name);
-  else filesFollowSession();
   requestAnimationFrame(() => {
     if (demoMode) {
       // Fit before the banner is written: demoStart() wraps its prose to
@@ -606,6 +640,11 @@ function closeTerminal(skipReload) {
   // swipe never pushed a second one, so there is nothing left to unwind first.
   if (fromURL) { location.replace("/"); return; }
   demoStop();
+  // The pane beside the terminal is this session's own, and the session list is
+  // not it: the slot goes back here, into the session's own record, so the list
+  // is never left holding a pane and reopening this session — and only this
+  // session — brings it up again.
+  if (currentSession && (filesDocked || diffOpen)) stashFileView(currentSession, null);
   currentSession = null;
   // Same as the session switch above: an intentional close is a hidden, or
   // reopening within the linger window claims nothing.

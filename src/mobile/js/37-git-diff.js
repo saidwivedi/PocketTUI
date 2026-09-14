@@ -99,8 +99,9 @@ function diffSetOpen(open) {
 function toggleDiffPane() { diffSetOpen(!diffOpen); }
 
 // The pane is a view of one computer's repo, so a switch to another closes it
-// and drops what both tabs last heard — the same clean slate a session change
-// gives it in diffPoll(), for the same reason one step further out.
+// and drops what both tabs last heard. The per-session records that would have
+// reopened it go the same way, in switchProfile's own dropAllFileViews(): they
+// are the sessions of the machine being left.
 function diffResetForProfile() {
   diffSetOpen(false);
   diffSession = null;
@@ -872,12 +873,11 @@ document.addEventListener("visibilitychange", () => {
 // the pane never opens with neither button pressed.
 syncDiffTabs();
 
-// Restored before anything opens, so a reload that lands straight in a terminal
-// comes up split exactly as it was left. The poll declines until there is a
-// terminal and a token to ask with.
-// The slot on the terminal's right, as it was left. One restore rather than
-// two: only one pane can hold it (see cfg.sidePane), and the explorer's half is
-// only the claim — what it lists is the open session's cwd, and there is no
-// session open yet, so openTerminal fills the pane it finds claimed.
-if (cfg.sidePane === "diff") diffSetOpen(true);
-else if (cfg.sidePane === "files" && isWideLayout()) sideClaim("files");
+// The slot on the terminal's right, as it was left — for the session that had
+// it and for no other. Nothing opens here: the pane is that session's (see
+// fileViews, 09-image-viewer.js) and no session is on screen yet, so the record
+// goes into the map as a pane to open and openTerminal takes it out if and when
+// that session is the one opened. A name the server no longer lists is pruned
+// with every other stale entry, off the first session list to arrive.
+const sideBoot = cfg.sidePane;
+if (sideBoot && sideBoot.session) fileViews.set(sideBoot.session, { boot: sideBoot.owner });
