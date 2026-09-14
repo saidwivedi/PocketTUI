@@ -1884,7 +1884,11 @@ const PASTE_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"]
 // started later. That rule is why read() is called here rather than after any
 // check that could await: by the time an async hop resolved, the grant is gone.
 // term.paste() applies bracketed-paste framing when tmux asked for it.
-function pasteFromClipboard() {
+// `target` is threaded through the whole chain rather than latched in a module
+// variable, since a clipboard read is asynchronous and a second paste could
+// start before the first one landed. The long-press pill names the terminal;
+// the key bar's ctrl+shift+V leaves it off and lets the caret decide.
+function pasteFromClipboard(target) {
   dbg("paste: reading clipboard");
   if (!navigator.clipboard || (!navigator.clipboard.read && !navigator.clipboard.readText)) {
     dbg("paste: no clipboard API");
@@ -1896,24 +1900,24 @@ function pasteFromClipboard() {
   // here is not the end — it falls through to the text-only path.
   if (navigator.clipboard.read) {
     navigator.clipboard.read()
-      .then(items => pasteClipboardItems(items))
-      .catch(err => { dbg("paste: read() refused:", err); pasteClipboardText(); });
+      .then(items => pasteClipboardItems(items, target))
+      .catch(err => { dbg("paste: read() refused:", err); pasteClipboardText(target); });
     return;
   }
-  pasteClipboardText();
+  pasteClipboardText(target);
 }
 
 // A clipboard read that came back. An image is the interesting case and takes
 // precedence: a screenshot copied from Photos carries no text worth pasting,
 // and one copied from a web page is what the user pointed at.
-function pasteClipboardItems(items) {
+function pasteClipboardItems(items, target) {
   const list = items || [];
   for (const item of list) {
     const t = PASTE_IMAGE_TYPES.find(x => item.types.includes(x));
     if (!t) continue;
     dbg("paste: image on clipboard type=" + t);
     item.getType(t)
-      .then(blob => uploadImage(blob))
+      .then(blob => uploadImage(blob, target))
       .catch(err => { dbg("paste: getType failed:", err); toast("Clipboard blocked"); });
     return;
   }
@@ -1923,27 +1927,31 @@ function pasteClipboardItems(items) {
       // Length only, never the text: a clipboard on this device may well be holding
       // a password, and the panel is on screen.
       dbg("paste: got " + (text ? text.length : 0) + " chars");
-      insertPastedText(text);
-    }).catch(err => { dbg("paste: getType failed:", err); pasteClipboardText(); });
+      insertPastedText(text, target);
+    }).catch(err => { dbg("paste: getType failed:", err); pasteClipboardText(target); });
     return;
   }
   // A clipboard holding only types we have no use for. readText() may still
   // make something of it.
   dbg("paste: no image or text among " + list.length + " items");
-  pasteClipboardText();
+  pasteClipboardText(target);
 }
 
-// Where pasted text lands, on the same rule insertImagePath() follows: with the
-// strip open the user is writing a message and the clipboard belongs at their
-// caret, replacing whatever was selected there; with it shut the terminal is
-// what they are looking at, so term.paste() sends it to the pty with bracketed
-// framing. Unlike a staged image path the text goes in verbatim — no padding
-// spaces — since it is what the user copied, not a token being attached. Focus
-// is left where it was: a paste over the terminal must not raise the keyboard
-// the user had put away.
-function insertPastedText(text) {
+// Where pasted text lands, on the same rule insertImagePath() follows: the caret
+// decides. With it in the box the user is writing a message and the clipboard
+// belongs at that caret, replacing whatever was selected there; anywhere else
+// the terminal is what they are looking at, so term.paste() sends it to the pty
+// with bracketed framing. The strip being open says nothing about this — on
+// touch it is always open. A `target` overrules the caret where the gesture
+// belongs to one surface: the long-press pill is the terminal's own, a long
+// press inside the box raising the browser's own paste menu instead and never
+// reaching here. Unlike a staged image path the text goes in verbatim — no
+// padding spaces — since it is what the user copied, not a token being
+// attached. Focus is left where it was: a paste over the terminal must not
+// raise the keyboard the user had put away.
+function insertPastedText(text, target) {
   if (!text) return;
-  if (composeOpen) {
+  if (pasteGoesToCompose(target)) {
     const ta = $("compose-text"), v = ta.value;
     const start = Math.min(typeof ta.selectionStart === "number" ? ta.selectionStart : v.length, v.length);
     const end = Math.min(typeof ta.selectionEnd === "number" ? ta.selectionEnd : start, v.length);
@@ -1960,7 +1968,7 @@ function insertPastedText(text) {
 // The original path, unchanged in what it does. On iOS this may already be
 // outside the gesture window that read() spent — acceptable, since it only ever
 // runs once read() has failed, and a blocked read is what the toast reports.
-function pasteClipboardText() {
+function pasteClipboardText(target) {
   if (!navigator.clipboard || !navigator.clipboard.readText) {
     dbg("paste: no readText fallback");
     toast("Clipboard blocked");
@@ -1970,7 +1978,7 @@ function pasteClipboardText() {
     // Length only, never the text: a clipboard on this device may well be holding
     // a password, and the panel is on screen.
     dbg("paste: got " + (text ? text.length : 0) + " chars");
-    insertPastedText(text);
+    insertPastedText(text, target);
   }).catch(err => { dbg("paste failed:", err); toast("Clipboard blocked"); });
 }
 
