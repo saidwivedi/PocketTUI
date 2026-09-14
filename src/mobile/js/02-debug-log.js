@@ -356,20 +356,29 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_alt_on", "1");
     else localStorage.removeItem("pockettui_alt_on");
   },
-  // Which pane, if either, is split out beside the terminal on a wide layout:
-  // the git changes ("diff"), the file explorer ("files"), or neither. One key
-  // rather than one per pane because it is one slot (26-side-pane.js) —
-  // whichever was opened last is the one a reload brings back. Empty by
-  // default: the whole pane is the terminal's until something asks for the
-  // split. The width is shared for the same reason, and is 0 until one has
-  // been dragged, which reads as "half the main pane" at the next open.
+  // Which pane, if either, is split out beside the terminal on a wide layout —
+  // the git changes ("diff"), the file explorer ("files"), or neither — and the
+  // session it was open in. One key rather than one per pane because it is one
+  // slot (26-side-pane.js). The session is half the answer because the pane is
+  // that session's own: a reload brings it back for that session and for no
+  // other. Null by default: the whole pane is the terminal's until something
+  // asks for the split. The width is shared for the same reason, and is 0 until
+  // one has been dragged, which reads as "half the main pane" at the next open.
+  //
+  // An older build wrote the owner here as a bare string, with no session to
+  // reopen it in — JSON.parse rejects it, and a pane belonging to nobody is a
+  // pane that is not reopened.
   get sidePane() {
-    const v = localStorage.getItem("pockettui_side_pane");
-    return v === "diff" || v === "files" ? v : "";
+    let v = null;
+    try { v = JSON.parse(localStorage.getItem("pockettui_side_pane")); } catch (e) {}
+    if (!v || (v.owner !== "diff" && v.owner !== "files")) return null;
+    return { owner: v.owner, session: typeof v.session === "string" ? v.session : "" };
   },
   set sidePane(v) {
-    if (v === "diff" || v === "files") localStorage.setItem("pockettui_side_pane", v);
-    else localStorage.removeItem("pockettui_side_pane");
+    if (v && (v.owner === "diff" || v.owner === "files") && v.session) {
+      localStorage.setItem("pockettui_side_pane",
+                           JSON.stringify({ owner: v.owner, session: v.session }));
+    } else localStorage.removeItem("pockettui_side_pane");
   },
   get sideWidth() {
     const v = parseInt(localStorage.getItem("pockettui_side_w"), 10);

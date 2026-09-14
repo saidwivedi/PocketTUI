@@ -238,12 +238,15 @@ $("btn-files-expand").addEventListener("click", () => {
 });
 $("btn-files-close").addEventListener("click", () => closeDockedFiles());
 
-// The pane after a rail switch that left it holding the slot with nothing in
-// it: this session stashed no folder, so it opens at the session's own cwd.
+// The pane a session comes back to with no folder to put in it: a reload
+// remembered that this session had the explorer docked (cfg.sidePane), and the
+// explorer's half of that is a claim on the slot rather than a folder — so it
+// opens at the session's own cwd, exactly as the folder key would. The only
+// caller is restoreFileView's reload path; a rail switch always has a folder.
 // The demo has no files to open at all, so it gives the slot back instead of
 // leaving the terminal narrowed against an empty pane.
 function filesFollowSession() {
-  if (!isWideLayout() || sideOwner !== "files" || filesDocked) return;
+  if (!isWideLayout() || filesDocked) return;
   if (demoMode) { sideDrop("files"); return; }
   openFilesAtCwd();
 }
@@ -277,10 +280,14 @@ function filesTeardown() {
   filesOrigin = null;
   filesStack = [];
   clearRefState();
-  // Docked, the slot stays claimed — the pane is the terminal's and the
-  // terminal is only changing hands — but nothing is in it until it is filled
-  // again, by a restore or by filesFollowSession().
+  const wasDocked = filesDocked;
   filesDocked = false;
+  // Docked, the slot goes back with the folder: the pane was the leaving
+  // session's, and the terminal is about to be another session's. Whatever that
+  // one had put away claims it again (restoreFileView), and a session that had
+  // nothing gets the whole width. Same tail as closeDockedFiles, which is the
+  // other way the pane ends.
+  if (wasDocked) { syncFilesExpand(); sideDrop("files"); }
 }
 
 // Everything the explorer is holding about the computer being left, for a
@@ -358,8 +365,13 @@ async function openFilesAtCwd() {
   // Docked, the folder key is a toggle: the pane it opened is the pane it puts
   // away. Full screen there is nothing to toggle — back is how that one leaves.
   if (filesDocked) { closeDockedFiles(); return; }
+  const from = currentSession;
   const cwd = await fetchPaneCwd();
   if (cwd === null) return;
+  // The rail can move on while tmux is being asked, and the answer is about the
+  // session it was asked of: opening now would put one session's folder in
+  // another session's slot, which is the one thing the pane must never do.
+  if (currentSession !== from) return;
   const ok = await openExplorer(cwd);
   // The folder that actually resolved, not the string asked for: a cwd tmux
   // could not give lands at $HOME, and that is where the pane is. Docked only —
