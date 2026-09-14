@@ -118,6 +118,29 @@ function composeDocked() {
   return touchOnly() && $("screen-term").classList.contains("active");
 }
 
+// Whether the caret is in the box right now. Docked, the strip is furniture and
+// composeOpen is true for the whole session, so being open no longer says
+// anything about where an unaddressed paste belongs — only focus does. See
+// pasteGoesToCompose() for the gestures that answer the question themselves.
+function composeFocused() {
+  return composeOpen && document.activeElement === $("compose-text");
+}
+
+// Where a paste belongs, for the two routines that insert one. A gesture that
+// belongs to a surface names it and the caret has no say: the long-press pill is
+// the terminal's own ("term"), the "+" on the strip is the composer's
+// ("compose"), and a picker that hands focus back to the page body must not
+// turn the second into the first. A clipboard key or a paste event belongs to
+// neither, names nothing, and the caret answers for it. "compose" still asks
+// whether the strip is open at all, the question the whole rule used to be:
+// beside a real keyboard it closes, and a path written into a box nobody can
+// see would be lost.
+function pasteGoesToCompose(target) {
+  if (target === "term") return false;
+  if (target === "compose") return composeOpen;
+  return composeFocused();
+}
+
 // The single close routine — every path in and out of the strip goes through it.
 // Closing keeps whatever is typed: dismissing the keyboard is not a discard, and
 // reopening should show the half-dictated sentence again. Only Send clears.
