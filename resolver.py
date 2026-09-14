@@ -1861,6 +1861,9 @@ def apply_rules(text: str, register: str) -> str:
     # would be a character the user has to go back and delete.
     rooted_paths = register in ("shell", "claude")
     out: list[str] = []
+    # Where the joiner rule last wrote, so a chain can tell its own work from a
+    # token the recognizer already delivered with punctuation in it.
+    joined = -1
     i = 0
     n = len(tokens)
 
@@ -1981,14 +1984,26 @@ def apply_rules(text: str, register: str) -> str:
             # what lets the guard below stay on for prose while a path built
             # out of ordinary words still joins.
             chain_case = i + 2 < n and tokens[i + 2].lower().strip(",.") in JOINERS
+            # The last link of such a chain has no joiner two words behind it,
+            # but the left side it joins onto was built by this pass and
+            # already carries the character: "foo dot bar dot baz" is one name
+            # down to its last label, not two labels and a loose word.
+            tail_case = joined == len(out) - 1 and char in left
             # "the dot at the end" is someone describing punctuation, not naming
             # a file: joining two ordinary English words is never right unless
             # one of the shapes above says this is a token after all.
             prose = (left.lower().strip(",.") in COMMON_WORDS
                      and right.lower().strip(",.") in COMMON_WORDS
                      and not ext_case and not num_case and not chain_case)
+            # A "." is otherwise held out of the strict registers, where a
+            # spoken one is usually the mark. The chain is what overrules
+            # that, on the same evidence the prose guard above trusts, and it
+            # is evidence about the words rather than about where they are
+            # going — so a composer and an editor read it alike.
+            dot_chain = char == "." and (chain_case or tail_case)
             if _is_wordish_left(left) and _is_wordish(right) and not prose \
-                    and (not strict or ext_case or num_case or char in "/_"):
+                    and (not strict or ext_case or num_case or dot_chain
+                         or char in "/_"):
                 if ext_case:
                     right = right.lower().strip(",.")
                 elif num_case:
@@ -2000,6 +2015,7 @@ def apply_rules(text: str, register: str) -> str:
                 # final segment's trailing punctuation is genuine sentence
                 # punctuation and must survive.
                 out[-1] = left.rstrip(",.") + char + right
+                joined = len(out) - 1
                 i += 2
                 continue
 
@@ -2948,6 +2964,12 @@ def resolve_tokens(text: str, index: Index, register: str,
             # word `grep` and scores 0.95 against it — the "correction" would
             # delete the pipe the user asked for.
             if any(w in OPERATORS for w in words):
+                continue
+            # Nor a path the rules rooted. normalize() drops the "/" as well,
+            # so "/organiser" reads as exactly the word `organiser` and scores
+            # against a screen spelling of it — and the "correction" would
+            # delete the root the user spoke.
+            if any(_PATH_TOKEN_RE.match(w) for w in words):
                 continue
             # Command position: the start of the line, or just after something
             # that ends one (a pipe, a semicolon, &&). Only there is a $PATH
