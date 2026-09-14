@@ -642,9 +642,17 @@
         <!-- Network first, backend second: a machine the phone cannot reach is
              not fixed by an installer. -->
         <label>Reach the machine</label>
-        <p>Skip this if both devices are on the same network. Otherwise install
-          <a href="https://pkgs.tailscale.com/stable/" target="_blank"
-          rel="noopener">Tailscale</a> on both, then on the computer:</p>
+        <p>Skip this if both devices are on the same network. Otherwise:</p>
+        <!-- Installing Tailscale is the first step, and it was the one people
+             missed: a sentence above two command boxes reads as preamble, and
+             the eye went straight to `sudo tailscale up`. So it gets a box of
+             its own, in the row the commands use. No command to copy, since
+             the install line differs per OS and the phone needs an app store,
+             so the button opens the download page, which picks per device. -->
+        <div class="cmd cmd-step">
+          <span>Install Tailscale on both devices, then on the computer:</span>
+          <a href="https://tailscale.com/download" target="_blank" rel="noopener">Open</a>
+        </div>
         <div class="cmd">
           <code id="cmd-ts-up">sudo tailscale up</code>
           <button type="button" data-copy="cmd-ts-up">Copy</button>
@@ -653,7 +661,7 @@
           <code id="cmd-ts-serve">sudo tailscale serve --bg --set-path /pockettui 5560</code>
           <button type="button" data-copy="cmd-ts-serve">Copy</button>
         </div>
-        <p>The first prints a sign-in link; the second may ask you to enable HTTPS.</p>
+        <p>The first command prints a sign-in link; the second may ask you to enable HTTPS.</p>
         <label>Install the backend</label>
         <div class="cmd">
           <code id="install-cmd">curl -fsSL https://pockettui.com/install.sh | bash</code>

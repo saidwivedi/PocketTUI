@@ -1902,7 +1902,8 @@ html.term-open, body.term-open {
   line-height: 1.5;
   color: var(--ink-2);
 }
-.sheet-install button {
+.sheet-install button,
+.sheet-install .cmd a {
   flex-shrink: 0;
   font-family: var(--sans);
   font-size: 12px;
@@ -1913,8 +1914,19 @@ html.term-open, body.term-open {
   background: transparent;
   color: var(--secondary);
   cursor: pointer;
+  text-decoration: none;
 }
-.sheet-install button:active { transform: scale(0.96); }
+.sheet-install button:active,
+.sheet-install .cmd a:active { transform: scale(0.96); }
+/* The install step's row: prose in the command box, so the step carries the
+   same weight as the commands under it. */
+.sheet-install .cmd-step span {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
 .sheet-install .cmd-long code {
   white-space: nowrap;
   overflow-wrap: normal;
