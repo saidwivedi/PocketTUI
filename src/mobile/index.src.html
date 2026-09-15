@@ -643,12 +643,18 @@
              not fixed by an installer. -->
         <label>Reach the machine</label>
         <p>Skip this if both devices are on the same network. Otherwise:</p>
-        <!-- Installing Tailscale is a step, not a command, so it is prose:
-             two short lines, the first with the download link (the install
-             differs per OS and the phone needs an app store, so the page
-             picks per device), the second saying where the commands go. -->
-        <p>Install <a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a> on both devices.</p>
-        <p>Then on the computer, run:</p>
+        <!-- Installing Tailscale is the first step, and it was the one people
+             missed: a sentence above two command boxes reads as preamble, and
+             the eye went straight to `sudo tailscale up`. So it gets a box of
+             its own, in the row the commands use, but written as a comment in
+             two lines, since it is a step and not a command. No command to
+             copy, since the install line differs per OS and the phone needs
+             an app store, so the button opens the download page, which picks
+             per device. -->
+        <div class="cmd cmd-step">
+          <span># Install Tailscale on both devices<br># Then on the computer, run:</span>
+          <a href="https://tailscale.com/download" target="_blank" rel="noopener">Open</a>
+        </div>
         <div class="cmd">
           <code id="cmd-ts-up">sudo tailscale up</code>
           <button type="button" data-copy="cmd-ts-up">Copy</button>
