@@ -98,6 +98,7 @@ JS_FRAGMENTS = (
     "38-scrollback-search.js",
     "39-type-command.js",
     "40-profiles.js",
+    "41-appearance.js",
     "27-boot.js",
 )
 

@@ -1854,6 +1854,16 @@ html.term-open, body.term-open {
   color: var(--ink);
   border-bottom-color: var(--umber);
 }
+/* Five labels now. At phone width they do not fit the row at the size the other
+   four were set in, and a tab that has to be scrolled to is a tab nobody finds.
+   So on a phone the labels step down and the equal-width basis gives way to the
+   words' own: a fifth of a 320px strip is narrower than "Connection", and five
+   labels sized to a fifth each run into one another. Past 460px an even fifth
+   is wider than the longest word again, so wide layouts keep the even split
+   they have always had. */
+@media (max-width: 460px) {
+  .sheet-tab { flex: 1 1 auto; font-size: 11.5px; padding: 9px 3px; }
+}
 /* The sections scroll inside a box of one fixed size: a sheet that took the
    height of whatever tab was up jumped on every switch. 580px clears the
    paired Connection tab, the tallest everyday one, without a scroll; the
@@ -2081,6 +2091,113 @@ html.term-open, body.term-open {
   accent-color: var(--umber);
   transform: scale(1.1);
 }
+/* The Appearance tab. Three words of equal weight and no second line to carry,
+   so a segmented row rather than the stacked radios the dictation engines need:
+   the whole choice reads at a glance. */
+.sheet .seg {
+  display: flex;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--paper-rec);
+  overflow: hidden;
+}
+.sheet .seg button {
+  flex: 1 1 0;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 9px 4px;
+  border: none;
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+.sheet .seg button + button { border-left: 1px solid var(--hair); }
+.sheet .seg button[aria-checked="true"] { background: var(--umber-soft); color: var(--ink); }
+/* The palette list: one scheme per row, in the same recessed well and hairline
+   rim the engine rows above it use, so it reads as one more thing in the sheet. */
+#palette-list {
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.palette-item { display: flex; align-items: center; background: var(--paper-rec); }
+.palette-item + .palette-item { border-top: 1px solid var(--hair); }
+.palette-pick {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  border: none;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.palette-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* The scheme itself, painted on its own background: the foreground as a two
+   letter sample, then the sixteen slots in the order they are numbered. The
+   names mean nothing to anyone who has not already run the scheme, so the
+   swatches are what the choice is actually made on. */
+.palette-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 5px;
+  border-radius: 5px;
+}
+.palette-strip b {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  margin-right: 3px;
+}
+.palette-strip i { width: 6px; height: 13px; border-radius: 1.5px; }
+/* The tick on the row in force, in the accent every other selected thing wears. */
+.palette-pick svg { flex: 0 0 auto; width: 15px; height: 15px; color: var(--umber); }
+.palette-item .list-row-del { margin-right: 6px; padding: 8px; }
+.palette-item .list-row-del svg { display: block; width: 13px; height: 13px; }
+/* The import row. Three equal buttons in the row the report and update buttons
+   are set in, because none of the three is the one to press. */
+.palette-actions { display: flex; gap: 8px; margin-top: 12px; }
+.palette-actions button {
+  flex: 1 1 0;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+.palette-actions button:active { transform: scale(0.96); }
+/* One line, under the box it is about. */
+.palette-error {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--bad);
+}
+/* Phone width: the swatches give up what the longest name needs. At 320px the
+   strip at its full size left "Paper (follows app theme)" four lines deep. */
+@media (max-width: 460px) {
+  .palette-pick { gap: 7px; padding: 9px 10px; }
+  .palette-strip { gap: 1px; padding: 3px 4px; }
+  .palette-strip b { margin-right: 2px; }
+  .palette-strip i { width: 4px; }
+}
+/* .sheet label only gets a top margin after an input; every heading in this
+   panel follows a block instead. */
+#panel-appearance label { margin-top: 18px; }
 /* The shortcuts block in the Keys tab, gated on a real keyboard by the same
    test the editor's Vim button wears (see #btn-editor-vim): a touch device has
    no chords to be told about, and it already pinches the terminal's size. */

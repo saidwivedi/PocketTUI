@@ -111,7 +111,7 @@ let voiceStep = false;
 // Which section the sheet comes back to. Held for the session rather than
 // stored: a tab is where the user was a moment ago, not a preference, and a
 // fresh load has no reason to open anywhere but the connection.
-const SETTINGS_TABS = ["connection", "dictation", "keys", "about"];
+const SETTINGS_TABS = ["connection", "dictation", "appearance", "keys", "about"];
 let settingsTab = "connection";
 
 function selectSettingsTab(name) {
@@ -127,6 +127,9 @@ function selectSettingsTab(name) {
   // than beside the other paints in openSettings(): a tab is also switched to
   // with the sheet already up.
   if (name === "keys") syncShortcuts();
+  // Same reason: the header's theme button can have moved the chrome since the
+  // last look, and the Paper row previews whatever it resolves to now.
+  if (name === "appearance") syncAppearance();
 }
 $("settings-tabs").addEventListener("click", (e) => {
   const tab = e.target && e.target.closest("[role=tab]");
@@ -203,8 +206,9 @@ function openSettings(firstRun, tab) {
   // while the sheet is closed.
   pairQrAsked = false;
   // A first run is one question — which computer — and the step after it is the
-  // dictation one, so those are the only two tabs offered. The other two are
-  // about a session there is not one of yet.
+  // dictation one, so those are the only two tabs offered. The rest are about a
+  // session there is not one of yet.
+  $("tab-appearance").hidden = !!firstRun;
   $("tab-keys").hidden = !!firstRun;
   $("tab-about").hidden = !!firstRun;
   // A caller may name the tab it is sending the user to (the rail's Update

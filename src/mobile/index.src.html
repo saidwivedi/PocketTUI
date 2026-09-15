@@ -611,17 +611,19 @@
 <div class="sheet-scrim" id="sheet-scrim"></div>
 <div class="sheet" id="sheet-settings">
   <h2 id="sheet-title">Settings</h2>
-  <!-- Four sections rather than one column. The sheet grew past the height it
+  <!-- Sections rather than one column. The sheet grew past the height it
        can show at once, and everything below the fold — the dictation picker,
        the quick-command box, the build line — was reachable only by scrolling
        past settings nobody was looking for. The strip says what is in here;
-       Save and Cancel sit under all four, since the only thing Save commits
+       Save and Cancel sit under all of them, since the only thing Save commits
        lives on the first one. -->
   <div class="sheet-tabs" id="settings-tabs" role="tablist" aria-label="Settings sections">
     <button type="button" class="sheet-tab" role="tab" id="tab-connection" data-tab="connection"
             aria-controls="panel-connection" aria-selected="true">Connection</button>
     <button type="button" class="sheet-tab" role="tab" id="tab-dictation" data-tab="dictation"
             aria-controls="panel-dictation" aria-selected="false">Dictation</button>
+    <button type="button" class="sheet-tab" role="tab" id="tab-appearance" data-tab="appearance"
+            aria-controls="panel-appearance" aria-selected="false">Appearance</button>
     <button type="button" class="sheet-tab" role="tab" id="tab-keys" data-tab="keys"
             aria-controls="panel-keys" aria-selected="false">Keys</button>
     <button type="button" class="sheet-tab" role="tab" id="tab-about" data-tab="about"
@@ -776,6 +778,39 @@
       <p id="learned-empty">Nothing learned yet.</p>
       <button type="button" id="btn-learned-clear">Clear all</button>
     </div>
+  </div>
+
+  <div class="sheet-panel" id="panel-appearance" role="tabpanel" aria-labelledby="tab-appearance" hidden>
+    <!-- Three named choices rather than the header button's cycle: the button
+         is a quick swap from the session list, this is where the answer is
+         read back. Both write the same stored preference. -->
+    <label id="app-theme-label">App theme</label>
+    <div class="seg" id="app-theme" role="radiogroup" aria-labelledby="app-theme-label">
+      <button type="button" role="radio" data-theme="auto" aria-checked="true">Auto</button>
+      <button type="button" role="radio" data-theme="light" aria-checked="false">Light</button>
+      <button type="button" role="radio" data-theme="dark" aria-checked="false">Dark</button>
+    </div>
+    <!-- The terminal's own sixteen colours, which are not the app's. A prompt,
+         LS_COLORS or a tmux status line was tuned against one of these schemes
+         on the computer, so the way to make them read right here is to hand the
+         terminal the same scheme — whichever way the app's chrome is set. Paper
+         is what this app has always painted, and it stays the default. -->
+    <label>Terminal palette</label>
+    <div id="palette-list"></div>
+    <!-- For a scheme that is not in the list. Three formats, told apart by what
+         they are: this app's own xterm theme JSON, a Windows Terminal scheme,
+         and an iTerm2 .itermcolors export. -->
+    <label for="palette-paste">Paste a scheme</label>
+    <textarea id="palette-paste" rows="3" spellcheck="false" autocapitalize="off"
+              autocorrect="off" placeholder="xterm, Windows Terminal or iTerm2"></textarea>
+    <p class="palette-error" id="palette-error" hidden></p>
+    <div class="palette-actions">
+      <button type="button" id="btn-palette-file">Choose file</button>
+      <button type="button" id="btn-palette-use">Use scheme</button>
+      <button type="button" id="btn-palette-reset">Reset</button>
+    </div>
+    <!-- Never rendered, only clicked — the explorer's upload input's pattern. -->
+    <input type="file" id="palette-file-input" accept=".json,.itermcolors" style="display:none">
   </div>
 
   <div class="sheet-panel" id="panel-keys" role="tabpanel" aria-labelledby="tab-keys" hidden>
