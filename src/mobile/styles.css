@@ -1918,6 +1918,16 @@ html.term-open, body.term-open {
 }
 .sheet-install button:active,
 .sheet-install .cmd a:active { transform: scale(0.96); }
+/* The install step's row: a two-line comment in the command box, so the step
+   carries the same weight as the commands under it and reads as a note. */
+.sheet-install .cmd-step span {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--secondary);
+}
 .sheet-install .cmd-long code {
   white-space: nowrap;
   overflow-wrap: normal;
