@@ -59,8 +59,21 @@ const TERM_THEME_LIGHT = {
 function resolvedDark() {
   return document.documentElement.getAttribute("data-theme") === "dark";
 }
+// Either the palette the user picked in Settings, or — when that is Paper, the
+// default — the ramp that follows the app theme. storedTermPalette() is
+// 41-appearance.js's; it answers null for Paper, which is what keeps a chosen
+// scheme independent of light/dark chrome.
 function currentTermTheme() {
-  return resolvedDark() ? TERM_THEME_DARK : TERM_THEME_LIGHT;
+  return storedTermPalette() || (resolvedDark() ? TERM_THEME_DARK : TERM_THEME_LIGHT);
+}
+
+// The one route a new palette takes to the screen, whether it came from the
+// header's theme button or the Appearance tab: onto xterm, then the chrome,
+// which has to follow because the status-bar tint and the safe-area strip are
+// painted from the terminal's own background.
+function applyTermTheme() {
+  if (term) term.options.theme = currentTermTheme();
+  syncChrome();
 }
 
 // The fixed terminal screen does not reliably paint the iOS safe-area strip, so
@@ -183,6 +196,13 @@ function ensureTerm() {
     cursorBlink: true,
     scrollback: 2000,
     theme: currentTermTheme(),
+    // Floor every cell's contrast against its own background, whatever palette
+    // is up. The 16 slots a scheme carries can be retuned; truecolor cannot —
+    // Claude Code paints its UI with 24-bit greys chosen for its own dark
+    // theme, and on a light terminal those came out as the grey-on-white a
+    // tester could not read. xterm recomputes this on a live theme swap and
+    // the WebGL renderer honours it, so it holds through both.
+    minimumContrastRatio: 4.5,
     allowProposedApi: true,
     // tmux owns the mouse, so a drag is a mouse report unless a modifier holds
     // it back: Shift elsewhere, Option on a Mac -- and only if this is on.
