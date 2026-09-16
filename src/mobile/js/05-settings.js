@@ -194,6 +194,10 @@ function openSettings(firstRun, tab) {
   // baked in at build time and no code has been entered yet.
   $("btn-settings-forget").classList.toggle("show", !firstRun && !!(cfg.backend || cfg.token));
   $("sheet-settings").classList.toggle("setup", !!firstRun);
+  // A same-origin shell was served by the backend it is about to talk to, so
+  // the address fields have nothing to ask: the first run is the pairing code
+  // and nothing else.
+  $("sheet-settings").classList.toggle("setup-same-origin", !!firstRun && SAME_ORIGIN);
   // Where the first run starts. The install command is only worth a screen of
   // its own to someone who has nothing: a scanned pairing link arrives with both
   // halves, and an address baked in at build time could only have come off a
@@ -367,8 +371,13 @@ $("btn-settings-save").addEventListener("click", () => {
   const v = normalizeBackend($("backend-url").value, $("backend-port").value);
   // A computer being added is a pairing like the first one, so it is held to
   // the same two answers: an address with nothing at it, or no code, would save
-  // a machine this device could never reach.
-  if ((setupMode || addingProfile) && !v) { toast("Enter your computer address"); return; }
+  // a machine this device could never reach. The exception is a first run on a
+  // shell the backend served itself, where the address is known by being this
+  // origin and an empty field is the right answer — a second computer added
+  // from that same shell is still somewhere else, so it is asked for as usual.
+  if (((setupMode && !SAME_ORIGIN) || addingProfile) && !v) {
+    toast("Enter your computer address"); return;
+  }
   const tok = normalizeToken($("backend-token").value);
   if ((setupMode || addingProfile) && !isValidToken(tok)) {
     toast("Enter the 10-character pairing code"); return;

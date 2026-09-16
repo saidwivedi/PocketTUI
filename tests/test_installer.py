@@ -1042,3 +1042,34 @@ def test_the_shipped_scripts_parse_under_the_bash_macos_ships(tmp_path):
             r = subprocess.run([shell, "-n", str(path)], capture_output=True, text=True,
                                timeout=60)
             assert r.returncode == 0, f"{path.name} does not parse under {shell}:\n{r.stderr}"
+
+
+# The LAN summary offers the hosted app against http://localhost only where a
+# browser could plausibly be opened on this machine — and an install over ssh
+# is not that machine, however many displays it reports.
+BROWSER_SECTION = ("has_local_browser() {", "}")
+
+CLEAR_SESSION = {"DISPLAY": "", "WAYLAND_DISPLAY": "", "SSH_CONNECTION": "", "SSH_TTY": ""}
+
+
+def browser_gate(tmp_path, env):
+    body = (slice_sh(*BROWSER_SECTION, include_end=True)
+            + "if has_local_browser; then echo YES; else echo NO; fi\n")
+    r = run_bash(tmp_path, body, env=env, name="browser_gate.sh")
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def test_the_hosted_app_is_only_offered_where_a_browser_could_open_it(tmp_path):
+    assert browser_gate(tmp_path, CLEAR_SESSION) == "NO"
+    assert browser_gate(tmp_path, dict(CLEAR_SESSION, DISPLAY=":0")) == "YES"
+    assert browser_gate(tmp_path, dict(CLEAR_SESSION, WAYLAND_DISPLAY="wayland-0")) == "YES"
+    assert browser_gate(tmp_path, dict(CLEAR_SESSION, DISPLAY=":0",
+                                       SSH_CONNECTION="203.0.113.2 52 203.0.113.9 22")) == "NO"
+    assert browser_gate(tmp_path, dict(CLEAR_SESSION, DISPLAY=":0",
+                                       SSH_TTY="/dev/pts/0")) == "NO"
+    # A Mac has a browser and no DISPLAY, so the gate asks the system first.
+    fake = tmp_path / "unamebin"
+    make_exe(fake / "uname", "#!/bin/bash\necho Darwin\n")
+    assert browser_gate(tmp_path, dict(CLEAR_SESSION,
+                                       PATH=f"{fake}:{os.environ['PATH']}")) == "YES"
