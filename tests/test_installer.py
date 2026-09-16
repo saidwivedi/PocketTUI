@@ -15,6 +15,7 @@ restarted with the default KillMode, taking every tmux session with it.
 """
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -966,3 +967,78 @@ def test_a_finished_record_is_left_alone(tmp_path):
                  env=with_curl(tmp_path, "0.9.13"))
     assert r.returncode == 1
     assert state_of(inst) == '{"status":"rolled_back","exit":1}\n'
+
+
+# ---------------------------------------------------------------------------
+# (f) the scripts still parse on the bash macOS ships
+# ---------------------------------------------------------------------------
+#
+# macOS /bin/bash is 3.2, and `curl … | bash` runs the installer under it. 3.2
+# scans a $( … ) for its closing paren character by character — heredoc bodies
+# included — so a stray apostrophe in a comment inside the generated wrapper
+# silently swallows the rest of the file and the parse error surfaces hundreds
+# of lines later. Nothing in a modern bash -n catches that, so the gate is a
+# real 3.2 binary. Build one with:
+#
+#   curl -O https://ftp.gnu.org/gnu/bash/bash-3.2.tar.gz && tar xzf bash-3.2.tar.gz
+#   cd bash-3.2 && ./configure --without-bash-malloc && make
+#   cp bash ~/.local/bin/bash-3.2
+#
+# It must fail, not skip, when that binary is missing: a gate nobody runs is
+# the failure mode this closes.
+
+SHIPPED_SCRIPTS = ("install.sh", "setup_voice.sh", "run.sh")
+WRAPPER_SECTION = ('WRAPPER_CONTENT="$(cat <<EOF', ')"')
+
+BASH32_HELP = (
+    "no bash 3.2 to check the installer against — set $POCKETTUI_BASH32, put a "
+    "`bash-3.2` on $PATH, or build one into ~/.local/bin/bash-3.2 (see the "
+    "recipe above this test). macOS ships bash 3.2 and the installer runs under "
+    "it, so this check is not optional."
+)
+
+
+def bash32():
+    """The bash 3.2 binary this gate runs, by the three names it may go under."""
+    env = os.environ.get("POCKETTUI_BASH32")
+    if env:
+        return Path(env)
+    found = shutil.which("bash-3.2")
+    if found:
+        return Path(found)
+    return Path.home() / ".local" / "bin" / "bash-3.2"
+
+
+def rendered_wrapper(tmp_path):
+    """The `pockettui` wrapper as install.sh writes it, expansions and all."""
+    harness = (
+        'INSTALL_DIR="/tmp/pockettui"\n'
+        'BASE_URL="https://pockettui.invalid"\n'
+        'SERVICE_NAME="pockettui"\n'
+        'USER_BIN="/tmp/bin"\n'
+        "PORT=5560\n"
+        + slice_sh(*WRAPPER_SECTION, include_end=True)
+        + 'printf "%s\\n" "$WRAPPER_CONTENT"\n'
+    )
+    script = tmp_path / "render_wrapper.sh"
+    script.write_text(harness)
+    r = subprocess.run(["bash", str(script)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    out = tmp_path / "pockettui"
+    out.write_text(r.stdout)
+    return out
+
+
+def test_the_shipped_scripts_parse_under_the_bash_macos_ships(tmp_path):
+    b32 = bash32()
+    assert b32.is_file() and os.access(b32, os.X_OK), f"{BASH32_HELP} (looked at {b32})"
+    version = subprocess.run([str(b32), "--version"], capture_output=True, text=True).stdout
+    assert "version 3.2" in version, f"{b32} is not bash 3.2: {version.splitlines()[:1]}"
+
+    root = INSTALL_SH.parent
+    targets = [root / name for name in SHIPPED_SCRIPTS] + [rendered_wrapper(tmp_path)]
+    for path in targets:
+        for shell in (str(b32), "bash"):
+            r = subprocess.run([shell, "-n", str(path)], capture_output=True, text=True,
+                               timeout=60)
+            assert r.returncode == 0, f"{path.name} does not parse under {shell}:\n{r.stderr}"
