@@ -915,6 +915,20 @@
   </div>
 
   <div class="sheet-panel" id="panel-about" role="tabpanel" aria-labelledby="tab-about" hidden>
+    <!-- What this is, ahead of the three rows that are about this particular
+         install. The name, the line under it and the sentence after that are the
+         landing page's own, said once in the app so the tab answers "what am I
+         looking at" before it answers "which build". The address this shell is
+         connected to is not here: that is a setting, and Connection has it. -->
+    <div id="about-identity">
+      <p class="about-name">PocketTUI</p>
+      <p class="about-tagline">Your terminal, in any browser.</p>
+      <p class="about-privacy">A real terminal running on your computer, reached over your Tailscale network. Nothing is routed through our servers.</p>
+      <!-- The report dialog's link register. New tab for the two pages, since
+           leaving would take the session list with it; the mailto hands off to
+           whatever the device sends mail with. -->
+      <p class="about-links"><a href="https://pockettui.com/" target="_blank" rel="noopener">pockettui.com</a><a href="https://github.com/saidwivedi/PocketTUI" target="_blank" rel="noopener">Source</a><a href="mailto:support@pockettui.com">Support</a></p>
+    </div>
     <div class="toggle-row">
       <label for="dbg-toggle">Debug log</label>
       <input id="dbg-toggle" type="checkbox">
