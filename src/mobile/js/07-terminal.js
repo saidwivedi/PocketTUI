@@ -87,7 +87,7 @@ function syncChrome() {
   // screens that are not the terminal — they are --paper, which a chosen
   // palette overwrites and Paper does not.
   const bg = open || storedTermPalette() ? termBg
-    : (resolvedDark() ? "#16140f" : "#FAF8F3");
+    : (resolvedDark() ? PAPER_BG_DARK : PAPER_BG_LIGHT);
   document.documentElement.style.setProperty("--term-bg", termBg);
   // background-color only — the shorthand would drop body's paper-grain image.
   document.documentElement.style.backgroundColor = bg;
