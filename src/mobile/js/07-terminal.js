@@ -82,7 +82,12 @@ function applyTermTheme() {
 function syncChrome() {
   const open = $("screen-term").classList.contains("active");
   const termBg = currentTermTheme().background;
-  const bg = open ? termBg : (resolvedDark() ? "#16140f" : "#FAF8F3");
+  // A palette is the whole app's background as well as the terminal's, so the
+  // two cases collapse into one. Paper keeps its own two constants for the
+  // screens that are not the terminal — they are --paper, which a chosen
+  // palette overwrites and Paper does not.
+  const bg = open || storedTermPalette() ? termBg
+    : (resolvedDark() ? "#16140f" : "#FAF8F3");
   document.documentElement.style.setProperty("--term-bg", termBg);
   // background-color only — the shorthand would drop body's paper-grain image.
   document.documentElement.style.backgroundColor = bg;
