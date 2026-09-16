@@ -176,7 +176,12 @@
     <div class="right">
       <button class="icon-btn" id="btn-files" aria-label="Browse files"><svg><use href="#i-folder"/></svg></button>
       <button class="icon-btn" id="btn-reload" aria-label="Reload sessions"><svg><use href="#i-reload"/></svg></button>
-      <button class="icon-btn" id="btn-theme" aria-label="Toggle theme"><svg><use href="#i-theme"/></svg></button>
+      <!-- Three named choices rather than a cycle: with one palette chosen for
+           light and another for dark, a press has to say which of the two it is
+           switching to, and a cycle that shows neither name cannot. The panel is
+           the switcher's below (#profile-menu), hung off this button's own edge
+           and filled by 04-theme.js. -->
+      <div id="theme-wrap"><button class="icon-btn" id="btn-theme" aria-label="Theme" aria-haspopup="true" aria-expanded="false"><svg><use href="#i-theme"/></svg></button><div id="theme-menu" role="menu"></div></div>
       <button class="icon-btn" id="btn-settings" aria-label="Settings"><svg><use href="#i-gear"/></svg></button>
     </div>
   </div>
@@ -208,6 +213,10 @@
        a position:fixed child — the scrim has to cover the window, not the list.
        Inside #screen-list, so leaving the list takes it with it. -->
   <div id="profile-scrim"></div>
+  <!-- The theme menu's, on the same recipe and out here for a reason of its
+       own: .topbar carries a backdrop-filter, which would make that bar the
+       containing block for a position:fixed child. -->
+  <div id="theme-scrim"></div>
   <!-- Pinned under the list on the wide layout, and only where a pointer says
        there is a keyboard to press these on — both gates are the stylesheet's.
        The key names are filled in per platform, and the card's open/closed
@@ -781,21 +790,23 @@
   </div>
 
   <div class="sheet-panel" id="panel-appearance" role="tabpanel" aria-labelledby="tab-appearance" hidden>
-    <!-- Three named choices rather than the header button's cycle: the button
-         is a quick swap from the session list, this is where the answer is
-         read back. Both write the same stored preference. -->
+    <!-- The same three choices the header's menu offers: that is a quick swap
+         from the session list, this is where the answer is read back. Both
+         write the same stored preference, and it is what decides which half of
+         the pair below the app is actually wearing. -->
     <label id="app-theme-label">App theme</label>
     <div class="seg" id="app-theme" role="radiogroup" aria-labelledby="app-theme-label">
       <button type="button" role="radio" data-theme="auto" aria-checked="true">Auto</button>
       <button type="button" role="radio" data-theme="light" aria-checked="false">Light</button>
       <button type="button" role="radio" data-theme="dark" aria-checked="false">Dark</button>
     </div>
-    <p class="seg-hint" id="app-theme-hint" hidden>Paper follows this. Other palettes bring their own light or dark.</p>
     <!-- The terminal's own sixteen colours, which are not the app's. A prompt,
          LS_COLORS or a tmux status line was tuned against one of these schemes
          on the computer, so the way to make them read right here is to hand the
-         terminal the same scheme — whichever way the app's chrome is set. Paper
-         is what this app has always painted, and it stays the default. -->
+         terminal the same scheme. Two of them, because a scheme is a light one
+         or a dark one by its own background: the groups are which to wear each
+         way round, and the row above says which way round it is. Paper is what
+         this app has always painted, and it heads both groups as the default. -->
     <label>Terminal palette</label>
     <div id="palette-list"></div>
     <!-- For a scheme that is not in the list. Three formats, told apart by what

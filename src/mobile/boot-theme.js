@@ -177,26 +177,69 @@ function clearPaletteChrome() {
   appliedChromeTokens = [];
 }
 
-(function() {
-  // The chosen palette carries its resolved ITheme alongside the choice for
-  // exactly this moment: the preset table lives in the app's script, which has
-  // not run yet, and asking the user to watch a Paper flash first is not an
-  // option.
-  var palette = null;
-  try {
-    var choice = JSON.parse(localStorage.getItem("pockettui_term_theme") || "null");
-    if (choice && choice.theme && choice.theme.background) palette = choice.theme;
-  } catch (e) {}
-  var bg;
-  if (palette) {
-    applyPaletteChrome(palette);
-    bg = palette.background;
-  } else {
-    var pref = localStorage.getItem("pockettui_theme") || "auto";
-    var dark = pref === "dark" || (pref === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+// ------------------------------------------------------------
+// The chosen pair
+// ------------------------------------------------------------
+// A palette is a light one or a dark one — its background says which — so the
+// choice is two of them: one for each way the app can be painted, with
+// pockettui_theme deciding which half is live. Both halves carry their resolved
+// ITheme alongside the choice for exactly this moment: the preset table lives in
+// the app's script, which has not run yet, and asking the user to watch a Paper
+// flash first is not an option.
+var TERM_THEME_KEY = "pockettui_term_theme";
+// Paper's own two backgrounds. Not the terminal ramps' — these are the shell's
+// --paper, which is what every screen but the terminal is painted in.
+var PAPER_BG_LIGHT = "#FAF8F3", PAPER_BG_DARK = "#16140f";
+
+function prefIsDark(pref) {
+  return pref === "dark" || (pref === "auto" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches);
+}
+
+// Paper is the one choice that is not a derived skin — it hands the document
+// back to the stylesheet's own two :root blocks — so it is the one this script
+// has to know by name. A missing or unreadable half is Paper too, which is also
+// what a fresh install has.
+function entryIsPaper(e) {
+  return !e || !e.theme || !e.theme.background ||
+    e.preset === "paper-light" || e.preset === "paper-dark";
+}
+
+// What is stored, read forgivingly. Before the pair there was one palette for
+// both ways round; it becomes the half its own background puts it in and the
+// other stays Paper, so a device already running Gruvbox Dark keeps it as its
+// dark one. Anything else — absent, garbage — is the default pair, both Paper.
+function readTermPair() {
+  var raw = null;
+  try { raw = JSON.parse(localStorage.getItem(TERM_THEME_KEY) || "null"); } catch (e) {}
+  if (!raw || typeof raw !== "object") return { light: null, dark: null };
+  if (raw.light || raw.dark) return { light: raw.light || null, dark: raw.dark || null };
+  if (!raw.theme || !raw.theme.background) return { light: null, dark: null };
+  var one = raw.custom ? { custom: true, name: raw.name, theme: raw.theme }
+                       : { preset: raw.preset, theme: raw.theme };
+  return paletteIsDark(raw.theme) ? { light: null, dark: one }
+                                  : { light: one, dark: null };
+}
+
+// The one paint, taken by the first frame and by every later swap: a Paper half
+// is data-theme and nothing else, so the stylesheet's blocks take over; any
+// other half writes the derived tokens over them. The half itself already
+// agrees with data-theme — it was sorted into this slot by its own luminance.
+function applyEntryChrome(entry, dark) {
+  if (entryIsPaper(entry)) {
+    clearPaletteChrome();
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
-    bg = dark ? "#16140f" : "#FAF8F3";
+  } else {
+    applyPaletteChrome(entry.theme);
   }
+}
+
+(function() {
+  var dark = prefIsDark(localStorage.getItem("pockettui_theme") || "auto");
+  var entry = readTermPair()[dark ? "dark" : "light"];
+  applyEntryChrome(entry, dark);
+  var bg = entryIsPaper(entry) ? (dark ? PAPER_BG_DARK : PAPER_BG_LIGHT)
+                               : entry.theme.background;
   document.documentElement.style.backgroundColor = bg;
   document.getElementById("meta-theme-color").content = bg;
 })();

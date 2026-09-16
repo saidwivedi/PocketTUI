@@ -317,7 +317,7 @@ body {
    them. Button, panel and rows are the file bar's dropdown (see
    #btn-files-view), since it asks the same shape of question. A relative box,
    so the panel hangs off the button rather than off whatever is around it. */
-.profile-wrap { position: relative; }
+.profile-wrap, #theme-wrap { position: relative; }
 /* The session list's row is right-aligned for its two pills; the auto margin is
    what holds this one to the left of them without changing the rule that lays
    them out. Nothing to hold when the pill is hidden, so the wrap goes too. */
@@ -343,7 +343,8 @@ body {
 /* #files-view-menu's floating panel, anchored under the button on the left
    since that is the edge it shares with it, and its rows are .view-row — the
    app has one dropdown, drawn wherever one is needed. */
-.profile-menu {
+.profile-menu,
+#theme-menu {
   display: none;
   position: absolute;
   top: 100%; left: 0;
@@ -357,7 +358,11 @@ body {
   box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
   z-index: 60;
 }
-.profile-wrap.open .profile-menu { display: block; }
+.profile-wrap.open .profile-menu,
+#theme-wrap.open #theme-menu { display: block; }
+/* The header row is right-aligned, so this one hangs off the edge it shares
+   with its button rather than off the left. */
+#theme-menu { left: auto; right: 0; }
 /* Two lines, so the name has the whole row to itself: side by side, a name and
    a tailnet address shared the width and both came out as three characters and
    an ellipsis. Only the profile rows are taller — the explorer's .view-row
@@ -404,7 +409,7 @@ body {
 .view-row.profile-menu-add { border-top: 1px solid var(--hair); color: var(--umber); }
 /* #files-view-scrim's recipe: dim the list under the menu, take the tap that
    closes it, and stay under the topbar so the header above is still readable. */
-#profile-scrim {
+#profile-scrim, #theme-scrim {
   position: fixed; inset: 0;
   background: rgba(20, 16, 10, 0.16);
   opacity: 0;
@@ -412,7 +417,7 @@ body {
   transition: opacity 0.2s var(--ease-out);
   z-index: 45;
 }
-#profile-scrim.show { opacity: 1; pointer-events: auto; }
+#profile-scrim.show, #theme-scrim.show { opacity: 1; pointer-events: auto; }
 
 .item {
   background: var(--card);
@@ -2110,16 +2115,6 @@ html.term-open, body.term-open {
 }
 .sheet .seg button + button { border-left: 1px solid var(--hair); }
 .sheet .seg button[aria-checked="true"] { background: var(--umber-soft); color: var(--ink); }
-/* Inert while a palette is up: the row still says which way Paper is set, but
-   pressing it would change nothing that is on screen. */
-.sheet .seg button[disabled] { color: var(--whisper); cursor: default; }
-.sheet .seg button[disabled][aria-checked="true"] { color: var(--secondary); }
-.seg-hint {
-  margin: 8px 0 0;
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--tertiary);
-}
 /* The palette list: one scheme per row, in the same recessed well and hairline
    rim the engine rows above it use, so it reads as one more thing in the sheet. */
 #palette-list {
@@ -2129,6 +2124,18 @@ html.term-open, body.term-open {
 }
 .palette-item { display: flex; align-items: center; background: var(--paper-rec); }
 .palette-item + .palette-item { border-top: 1px solid var(--hair); }
+/* Which half of the pair the rows under it are: the tick in each group is that
+   half's answer, not the list's. The dropdown's .view-cap, set in the well. */
+.palette-cap {
+  padding: 8px 12px 5px;
+  background: var(--paper-rec);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tertiary);
+}
+.palette-item + .palette-cap { border-top: 1px solid var(--hair); }
 .palette-pick {
   flex: 1 1 auto;
   min-width: 0;
@@ -3543,11 +3550,11 @@ html.term-open #dbg-panel { opacity: 0.85; }
     background-size: 200px 200px;
   }
 
-  /* The switcher's scrim belongs to the rail rather than to the window, the
+  /* The rail's two scrims belong to the rail rather than to the window, the
      same way the file bar's dropdown scrims belong to their pane: the terminal
      beside the rail is live, and a menu over the session list has no business
      dimming it. The rail is position:fixed, so absolute is its own box. */
-  #profile-scrim { position: absolute; }
+  #profile-scrim, #theme-scrim { position: absolute; }
 
   /* Main-pane screens start past the rail and its gutter: the fixed screens
      move their left edge, the explorer — a page-scrolling screen — shifts
