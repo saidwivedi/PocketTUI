@@ -24,3 +24,11 @@ sherpa-onnx>=1.13.6
 # push:false / 503 push_unavailable without it — the server must still boot
 # and the ntfy transport still works on an install that skipped this wheel.
 pywebpush>=2.0
+
+# ffmpeg as a wheel: transcription decodes the phone's recording with it, and a
+# laptop that had never installed one answered no_ffmpeg to every dictation.
+# 0.6 is the floor because it is the first release whose macOS wheel carries an
+# arm64 binary. Platforms it ships no wheel for (musl, BSD) install the sdist,
+# which has no binary — app.py's ffmpeg_exe() falls back to a system ffmpeg
+# there, so this is a convenience, not a dependency of the decode path.
+imageio-ffmpeg>=0.6

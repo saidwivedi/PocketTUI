@@ -72,7 +72,20 @@ if [ "$DO_WHISPER" = 1 ]; then
   command -v c++ >/dev/null || { echo "need a C++ compiler (apt install g++)"; exit 1; }
   command -v git >/dev/null || { echo "need git"; exit 1; }
 fi
-command -v ffmpeg >/dev/null || echo "warning: ffmpeg missing — voice needs it at runtime"
+# app.py decodes with the ffmpeg wheel requirements.txt puts in the environment
+# it runs from and falls back to a system ffmpeg, so the warning only belongs
+# where neither is in — the env is either a venv or a micromamba prefix.
+ffmpeg_missing() {
+  if command -v ffmpeg >/dev/null 2>&1; then return 1; fi
+  for py in "$HERE/.venv/bin/python" "$HERE/.micromamba/bin/python"; do
+    if [ -x "$py" ] \
+      && "$py" -c "import imageio_ffmpeg; imageio_ffmpeg.get_ffmpeg_exe()" >/dev/null 2>&1; then
+      return 1
+    fi
+  done
+  return 0
+}
+ffmpeg_missing && echo "warning: ffmpeg missing — voice needs it at runtime"
 
 mkdir -p "$VOICE"
 
