@@ -170,7 +170,34 @@
     <div class="brand">
       <a href="https://pockettui.com/">
         <span class="glyph"><svg><use href="#i-logo"/></svg></span>
-        <span class="name">PocketTUI</span>
+        <!-- Prompt, the film's mascot, standing on the I of the wordmark — the
+             landing masthead's own glyph in the same relation (its ink about
+             1.2x the cap height, its board just clear of the cap line), inlined
+             as static markup so the bar carries no script. Sized in em off the
+             brand, so it follows the wordmark from the phone's 18px down to the
+             rail's 15px, and it is taller than the line it stands on: rather
+             than growing the bar, it overflows upward into the bar's own top
+             padding. -->
+        <span class="name">PocketTU<span class="brand-i">I<svg class="brand-mascot" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+          <defs>
+            <clipPath id="brand-mascot-shade"><rect x="0" y="64" width="100" height="36"/></clipPath>
+          </defs>
+          <rect x="16" y="88" width="56" height="10" rx="5" fill="var(--bm-board)"/>
+          <rect x="16" y="94" width="66" height="4" rx="2" fill="rgba(0, 0, 0, 0.1)"/>
+          <path d="M 72 50 L 37.33 22.91" stroke="var(--bm-coral)" stroke-width="26" stroke-linecap="round" fill="none"/>
+          <path d="M 72 50 L 34.97 78.93" stroke="var(--bm-coral)" stroke-width="26" stroke-linecap="round" fill="none"/>
+          <path d="M 72 50 L 34.97 78.93" stroke="rgba(0, 0, 0, 0.1)" stroke-width="26" stroke-linecap="round" fill="none" clip-path="url(#brand-mascot-shade)"/>
+          <circle cx="72" cy="50" r="13.5" fill="var(--bm-coral)"/>
+          <path d="M 51.5 43 L 58 43" stroke="var(--bm-navy)" stroke-width="2.8" stroke-linecap="round" fill="none"/>
+          <path d="M 74.5 43 L 68 43" stroke="var(--bm-navy)" stroke-width="2.8" stroke-linecap="round" fill="none"/>
+          <rect x="53.6" y="47" width="8.8" height="11" rx="3.5" fill="var(--bm-navy)"/>
+          <rect x="63.6" y="47" width="8.8" height="11" rx="3.5" fill="var(--bm-navy)"/>
+          <circle cx="58" cy="52.5" r="2.5" fill="var(--bm-pupil)"/>
+          <circle cx="68" cy="52.5" r="2.5" fill="var(--bm-pupil)"/>
+          <circle cx="58.9" cy="51.4" r="0.9" fill="var(--bm-glint)"/>
+          <circle cx="68.9" cy="51.4" r="0.9" fill="var(--bm-glint)"/>
+          <rect x="57" y="61.5" width="12" height="3" rx="1.5" fill="var(--bm-navy)"/>
+        </svg></span></span>
       </a>
     </div>
     <div class="right">

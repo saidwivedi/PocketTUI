@@ -160,6 +160,46 @@ body {
 }
 .topbar .brand .glyph svg { width: 100%; height: 100%; }
 .topbar .brand a { display: flex; align-items: center; gap: 9px; color: inherit; text-decoration: none; }
+
+/* Prompt on the I of the wordmark, the landing masthead's own arrangement: a
+   span around the final letter is the box it is placed on, so it stays centred
+   on that I whatever the serif measures, and every number is in em off the
+   brand so the rail's 15px gets the same drawing as the phone's 18px. It is
+   taller than the line it stands on and overflows upward into the bar's 16px
+   of top padding (10px on the rail) rather than growing the bar; nothing on the
+   way up clips — the bar's backdrop-filter makes a stacking context, not a
+   clipping one. */
+.topbar .brand .brand-i { position: relative; }
+
+.topbar .brand .brand-mascot {
+  position: absolute;
+  /* the board is centred on x 49 of the 100-box, so the box centres a hair off */
+  left: 50%;
+  transform: translateX(-32%);
+  /* baseline -> box bottom: the font's descent, plus the cap height, plus a
+     hairline gap, less the 2% of canvas below the board's own underside. */
+  bottom: 1.10em;
+  width: 0.97em;
+  height: 0.97em;
+  display: block;
+  pointer-events: none;
+
+  /* The film's own colours whatever the app is skinned in: the founder wants
+     the character to look exactly as it does in the video, so the coral and the
+     navy are fixed rather than mapped onto the palette's accent. */
+  --bm-coral: #d4865a;
+  --bm-navy: #0f0e0b;
+  --bm-board: #3b362a;
+  --bm-pupil: #9c988f;
+  --bm-glint: #f3ede0;
+}
+
+/* On paper the film's dark board reads as a heavy bar; a mid-tone keeps it a
+   shadow under the feet. data-theme is enough on its own here — boot-theme.js
+   writes it before the first paint, and a chosen palette is sorted into light
+   or dark by its own luminance. */
+:root[data-theme="light"] .topbar .brand .brand-mascot { --bm-board: #c9bfa9; }
+
 .topbar .right { display: flex; gap: 4px; align-items: center; padding-left: 8px; }
 .icon-btn {
   background: transparent; border: none;
