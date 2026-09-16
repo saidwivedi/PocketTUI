@@ -307,15 +307,27 @@ function storedTermPalette() {
   return p ? p.theme : null;
 }
 
-// Stored, then straight onto the screen through the same call the theme button
-// makes: xterm takes the new object and the chrome follows it, so the status
+// Stored, then straight onto the screen: the app's own tokens first, then xterm
+// and the chrome through the same call the theme button makes, so the status
 // bar and the safe-area strip change with the terminal underneath the sheet
 // rather than at the next open.
+//
+// The resolved ITheme is written next to the choice. boot-theme.js is what
+// paints the first frame and it runs long before this file exists, so it cannot
+// look a preset id up in the table above; the copy is there for that one read.
+// Everything after boot resolves through storedTermPalette() instead, so a
+// preset retuned in a later build reaches a device that already picked it.
 function setTermChoice(choice) {
   try {
-    if (choice) localStorage.setItem(TERM_THEME_KEY, JSON.stringify(choice));
-    else localStorage.removeItem(TERM_THEME_KEY);
+    if (choice) {
+      const preset = TERM_PRESETS.find((p) => p.id === choice.preset);
+      localStorage.setItem(TERM_THEME_KEY, JSON.stringify(
+        Object.assign({}, choice, { theme: choice.custom || (preset && preset.theme) })));
+    } else {
+      localStorage.removeItem(TERM_THEME_KEY);
+    }
   } catch (e) {}
+  applyChrome();
   applyTermTheme();
   syncAppearance();
 }
@@ -332,12 +344,6 @@ function hexColor(v) {
   }
   if (/^[0-9a-f]{6}$/i.test(s)) return ("#" + s).toLowerCase();
   return "";
-}
-
-function hexAlpha(hex, a) {
-  const h = hex.slice(1);
-  return "rgba(" + parseInt(h.slice(0, 2), 16) + ", " + parseInt(h.slice(2, 4), 16)
-    + ", " + parseInt(h.slice(4, 6), 16) + ", " + a + ")";
 }
 
 // The one gate every import passes: 16 ANSI slots, a background and a
@@ -360,7 +366,7 @@ function schemeToTheme(name, raw) {
   t.foreground = fg;
   t.cursor = hexColor(raw.cursor) || fg;
   t.cursorAccent = hexColor(raw.cursorAccent) || bg;
-  t.selectionBackground = hexAlpha(hexColor(raw.selectionBackground) || fg, 0.3);
+  t.selectionBackground = rgbaHex(hexColor(raw.selectionBackground) || fg, 0.3);
   const selFg = hexColor(raw.selectionForeground);
   if (selFg) t.selectionForeground = selFg;
   return { name: String(name || "").trim() || "Imported", theme: t };
@@ -493,9 +499,15 @@ function renderPalettes() {
 // chrome since the last look.
 function syncAppearance() {
   const pref = themePref();
+  // Still showing which way Paper is set, but inert: a palette decides its own
+  // light or dark from its background, so the three buttons have nothing to say
+  // until Paper is back.
+  const locked = !!storedTermPalette();
   for (const b of $("app-theme").querySelectorAll("[data-theme]")) {
     b.setAttribute("aria-checked", b.dataset.theme === pref ? "true" : "false");
+    b.disabled = locked;
   }
+  $("app-theme-hint").hidden = !locked;
   renderPalettes();
 }
 
