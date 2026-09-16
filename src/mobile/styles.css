@@ -691,7 +691,7 @@ html.term-open, body.term-open {
   cursor: pointer;
   -webkit-user-select: none; user-select: none;
 }
-#sel-pill button:active { background: rgba(250, 248, 243, 0.16); }
+#sel-pill button:active { background: color-mix(in srgb, var(--paper) 16%, transparent); }
 /* A long press on empty space has nothing to copy, so the pill comes up as
    Paste/Cancel alone rather than offering a Copy that would return "". A press
    that did select something is the mirror image: Copy/Cancel, without a Paste
@@ -787,13 +787,12 @@ html.term-open, body.term-open {
   gap: 6px;
   padding: 6px 8px;
   border-radius: 12px;
-  background: rgba(255, 253, 247, 0.94);
+  background: color-mix(in srgb, var(--card) 94%, transparent);
   backdrop-filter: saturate(1.4) blur(14px);
   -webkit-backdrop-filter: saturate(1.4) blur(14px);
   border: 1px solid var(--hair);
   box-shadow: 0 6px 20px rgba(20, 16, 10, 0.18);
 }
-:root[data-theme="dark"] #search-bar { background: rgba(31, 28, 22, 0.94); }
 .search-icon {
   flex: 0 0 auto;
   width: 15px; height: 15px;
@@ -918,7 +917,7 @@ html.term-open, body.term-open {
      other. Symmetric on its own terms too, since nothing here takes a margin
      and the row has no safe-area inset of its own to spend. */
   padding: 6px 8px;
-  background: rgba(255, 253, 247, 0.94);
+  background: color-mix(in srgb, var(--card) 94%, transparent);
   backdrop-filter: saturate(1.4) blur(14px);
   -webkit-backdrop-filter: saturate(1.4) blur(14px);
   border-top: 1px solid var(--hair);
@@ -929,7 +928,6 @@ html.term-open, body.term-open {
      the same number. */
   --compose-btn-h: 38px;
 }
-:root[data-theme="dark"] #compose { background: rgba(31, 28, 22, 0.94); }
 /* Bottom-aligned: the field grows upward as the message gets longer, and Send
    beside it stays on the line the caret is on. */
 #compose.open { display: flex; align-items: flex-end; }
@@ -1221,7 +1219,7 @@ html.term-open, body.term-open {
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  background: rgba(255, 253, 247, 0.94);
+  background: color-mix(in srgb, var(--card) 94%, transparent);
   backdrop-filter: saturate(1.4) blur(14px);
   -webkit-backdrop-filter: saturate(1.4) blur(14px);
   /* Whichever docked surface is topmost owns the line against the terminal, and
@@ -1230,7 +1228,6 @@ html.term-open, body.term-open {
   border-top: 1px solid var(--hair);
   z-index: 20;
 }
-:root[data-theme="dark"] #voice-retry { background: rgba(31, 28, 22, 0.94); }
 #voice-retry.show { display: flex; }
 /* The offer itself is the whole width of the bar: the instruction is "tap to
    retry", and a target the size of the sentence is what that promises. */
@@ -1276,13 +1273,12 @@ html.term-open, body.term-open {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
-  background: rgba(255, 253, 247, 0.94);
+  background: color-mix(in srgb, var(--card) 94%, transparent);
   backdrop-filter: saturate(1.4) blur(14px);
   -webkit-backdrop-filter: saturate(1.4) blur(14px);
   border-top: 1px solid var(--hair);
   z-index: 20;
 }
-:root[data-theme="dark"] .chipbar { background: rgba(31, 28, 22, 0.94); }
 .chipbar.show { display: flex; }
 .chipbar::-webkit-scrollbar { display: none; }
 /* Answers carry an accent the key bar's own keys do not: this row only exists
@@ -1317,13 +1313,12 @@ html.term-open, body.term-open {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
-  background: rgba(255, 253, 247, 0.94);
+  background: color-mix(in srgb, var(--card) 94%, transparent);
   backdrop-filter: saturate(1.4) blur(14px);
   -webkit-backdrop-filter: saturate(1.4) blur(14px);
   border-top: 1px solid var(--hair);
   z-index: 20;
 }
-:root[data-theme="dark"] .keybar { background: rgba(31, 28, 22, 0.94); }
 .keybar::-webkit-scrollbar { display: none; }
 .keybar button {
   font-family: var(--mono);
@@ -1593,7 +1588,8 @@ html.term-open, body.term-open {
      the mix at a seventh rather than a third.
      Light only needs the warmth — its base is already a shade above the
      terminal's paper. */
-  #keybar { background: color-mix(in srgb, var(--umber) 14%, rgba(255, 253, 247, 0.94)); }
+  #keybar { background: color-mix(in srgb, var(--umber) 14%,
+                                color-mix(in srgb, var(--card) 94%, transparent)); }
   /* Dark needs the other half of the same idea. The docked bar's dark material
      sits at the depth of the grid it docks against, which is right for
      furniture and wrong for an object lying on top: unlit, it reads as a hole
@@ -2114,6 +2110,16 @@ html.term-open, body.term-open {
 }
 .sheet .seg button + button { border-left: 1px solid var(--hair); }
 .sheet .seg button[aria-checked="true"] { background: var(--umber-soft); color: var(--ink); }
+/* Inert while a palette is up: the row still says which way Paper is set, but
+   pressing it would change nothing that is on screen. */
+.sheet .seg button[disabled] { color: var(--whisper); cursor: default; }
+.sheet .seg button[disabled][aria-checked="true"] { color: var(--secondary); }
+.seg-hint {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--tertiary);
+}
 /* The palette list: one scheme per row, in the same recessed well and hairline
    rim the engine rows above it use, so it reads as one more thing in the sheet. */
 #palette-list {
