@@ -2,11 +2,12 @@
 // Appearance
 // ============================================================
 // Two settings that both end up as colours on the terminal, and they are not
-// the same question. The app theme is this shell's own light/dark chrome; a
+// the same question. The app theme is which way round this shell is painted; a
 // palette is the 16 ANSI slots plus a background, which is what a prompt,
-// LS_COLORS or a tmux status line was tuned against on the computer. Someone
-// running Gruvbox everywhere wants Gruvbox here whichever way the phone's
-// chrome is set, so picking a palette never touches data-theme.
+// LS_COLORS or a tmux status line was tuned against on the computer. A scheme
+// is a light one or a dark one by its own background and there is no arguing
+// with it, so the choice is two schemes — one worn each way round — and the app
+// theme picks which of them is live.
 //
 // The schemes below are transcribed from mbadolato/iTerm2-Color-Schemes'
 // windowsterminal/*.json (its purple/brightPurple are xterm's magenta and
@@ -19,6 +20,12 @@
 // of one of these — several are the foreground colour itself — swallows the
 // line it is highlighting.
 const TERM_PRESETS = [
+  // Paper, the app's own pair and the default, listed as two ordinary schemes
+  // so each group has one. Picked, they are the only entries that are not a
+  // derived skin: the stylesheet's two :root blocks paint the app and these
+  // ramps paint the terminal, exactly as they always have.
+  { id: "paper-light", name: "Paper", theme: TERM_THEME_LIGHT },
+  { id: "paper-dark", name: "Paper", theme: TERM_THEME_DARK },
   { id: "solarized-dark", name: "Solarized Dark", theme: {
     background: "#002b36",
     foreground: "#839496",
@@ -274,11 +281,6 @@ const TERM_PRESETS = [
   } },
 ];
 
-// Where a chosen palette lives. Holds {preset:"<id>"} for one of the above or
-// {custom:{...ITheme}, name:"..."} for an imported one; absent is Paper, the
-// default, which is the pair of ramps in 07-terminal.js following the chrome.
-const TERM_THEME_KEY = "pockettui_term_theme";
-
 // xterm's ANSI slots in the order iTerm2 numbers them, which is also the order
 // the swatch strip paints and the order "Ansi N Color" indexes.
 const ANSI_SLOTS = [
@@ -287,49 +289,77 @@ const ANSI_SLOTS = [
   "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
 ];
 
-function storedTermChoice() {
-  try {
-    const raw = localStorage.getItem(TERM_THEME_KEY);
-    if (!raw) return null;
-    const o = JSON.parse(raw);
-    return o && typeof o === "object" ? o : null;
-  } catch (e) { return null; }
+// ------------------------------------------------------------
+// The chosen pair
+// ------------------------------------------------------------
+// One palette for the app's light and one for its dark, under TERM_THEME_KEY as
+// {light: <half>, dark: <half>} where a half is {preset, theme} or
+// {custom, name, theme}. readTermPair() (boot-theme.js) does the reading and
+// the migration off the single choice this replaced. This side resolves a
+// preset through the table above rather than trusting the stored copy, so a
+// scheme retuned in a later build reaches a device that already picked it; the
+// copy is there for boot, which runs before the table exists.
+function paletteSlot(theme) { return paletteIsDark(theme) ? "dark" : "light"; }
+
+// A stored half, made whole: a name to show and an ITheme to paint. A scheme
+// that is not the half it is filed under — a hand-edited key, or a preset that
+// changed sides in a later build — falls back to Paper rather than painting the
+// app light when it was asked for dark.
+function slotEntry(e, slot) {
+  if (e && e.custom && e.theme && e.theme.background
+      && paletteSlot(e.theme) === slot) {
+    return { custom: true, name: e.name || "Imported", theme: e.theme };
+  }
+  const p = TERM_PRESETS.find((x) => x.id === (e && e.preset));
+  if (p && paletteSlot(p.theme) === slot) {
+    return { preset: p.id, name: p.name, theme: p.theme };
+  }
+  return paperEntry(slot);
+}
+function paperEntry(slot) {
+  const p = TERM_PRESETS.find((x) => x.id === "paper-" + slot);
+  return { preset: p.id, name: p.name, theme: p.theme };
 }
 
-// The palette in force, or null for Paper. currentTermTheme() (07-terminal.js)
-// is the only caller that matters: null there means "follow the app theme",
-// which is what every install had before this tab existed.
+function termPair() {
+  const raw = readTermPair();
+  return { light: slotEntry(raw.light, "light"), dark: slotEntry(raw.dark, "dark") };
+}
+
+// Which half the app is wearing right now.
+function liveSlot() { return prefIsDark(themePref()) ? "dark" : "light"; }
+
+// The palette in force, or null when that half is Paper. currentTermTheme()
+// (07-terminal.js) reads null as "follow the app theme", which is exactly what
+// the two Paper entries are.
 function storedTermPalette() {
-  const c = storedTermChoice();
-  if (!c) return null;
-  if (c.custom) return c.custom;
-  const p = TERM_PRESETS.find((x) => x.id === c.preset);
-  return p ? p.theme : null;
+  const e = termPair()[liveSlot()];
+  return entryIsPaper(e) ? null : e.theme;
 }
 
 // Stored, then straight onto the screen: the app's own tokens first, then xterm
-// and the chrome through the same call the theme button makes, so the status
-// bar and the safe-area strip change with the terminal underneath the sheet
-// rather than at the next open.
+// and the chrome through the same call the header menu makes, so the status bar
+// and the safe-area strip change with the terminal underneath the sheet rather
+// than at the next open. Writing the half that is not live paints nothing, and
+// the caller says so instead — see slotNote().
 //
-// The resolved ITheme is written next to the choice. boot-theme.js is what
-// paints the first frame and it runs long before this file exists, so it cannot
-// look a preset id up in the table above; the copy is there for that one read.
-// Everything after boot resolves through storedTermPalette() instead, so a
-// preset retuned in a later build reaches a device that already picked it.
-function setTermChoice(choice) {
+// The resolved ITheme is written beside each choice for boot-theme.js, which
+// paints the first frame and cannot look a preset id up in the table above.
+function setPair(pair) {
+  const stored = (e) => e.custom ? { custom: true, name: e.name, theme: e.theme }
+                                 : { preset: e.preset, theme: e.theme };
   try {
-    if (choice) {
-      const preset = TERM_PRESETS.find((p) => p.id === choice.preset);
-      localStorage.setItem(TERM_THEME_KEY, JSON.stringify(
-        Object.assign({}, choice, { theme: choice.custom || (preset && preset.theme) })));
-    } else {
-      localStorage.removeItem(TERM_THEME_KEY);
-    }
+    localStorage.setItem(TERM_THEME_KEY, JSON.stringify(
+      { light: stored(pair.light), dark: stored(pair.dark) }));
   } catch (e) {}
   applyChrome();
   applyTermTheme();
   syncAppearance();
+}
+function setSlotChoice(slot, entry) {
+  const pair = termPair();
+  pair[slot] = entry;
+  setPair(pair);
 }
 
 // ------------------------------------------------------------
@@ -451,7 +481,7 @@ function paletteError(msg) {
 // foreground as a two-letter sample, then the 16 slots in order. A preview
 // small enough to sit in a list is still the only honest way to choose, since
 // the names mean nothing to anyone who has not already run the scheme.
-function paletteRow(id, name, theme, selected) {
+function paletteRow(id, slot, name, theme, selected) {
   const strip = el("span", { class: "palette-strip",
                              style: "background:" + theme.background });
   strip.appendChild(el("b", { style: "color:" + theme.foreground }, "Aa"));
@@ -459,77 +489,97 @@ function paletteRow(id, name, theme, selected) {
     strip.appendChild(el("i", { style: "background:" + theme[k] }));
   }
   const pick = el("button", {
-    type: "button", class: "palette-pick", "data-id": id,
+    type: "button", class: "palette-pick", "data-id": id, "data-slot": slot,
     "aria-pressed": selected ? "true" : "false",
   }, el("span", { class: "palette-name" }, name), strip);
   if (selected) pick.appendChild(svgIcon("i-check"));
   return pick;
 }
 
+// Paper first, then by name: it is the default and the way back, not one more
+// scheme in an alphabet.
+function paletteOrder(a, b) {
+  const paper = (x) => (x.id.indexOf("paper-") === 0 ? 0 : 1);
+  return paper(a) - paper(b) || a.name.localeCompare(b.name);
+}
+
+// Two groups, because the choice is two choices: what the app wears light and
+// what it wears dark. A scheme's own background files it under one of them, so
+// nothing is listed twice and the tick in each group is that half's answer.
 function renderPalettes() {
-  const choice = storedTermChoice() || {};
+  const pair = termPair();
   const list = $("palette-list");
   list.textContent = "";
-  if (choice.custom) {
-    const item = el("div", { class: "palette-item" });
-    item.appendChild(paletteRow("custom", "Custom: " + (choice.name || "Imported"),
-                                choice.custom, true));
-    // The way back out of an imported scheme, which is also the only way to
-    // drop it: it is stored as the choice, so unchoosing it is removing it.
-    item.appendChild(el("button", {
-      type: "button", class: "list-row-del", id: "btn-palette-drop",
-      "aria-label": "Remove this scheme",
-    }, svgIcon("i-x")));
-    list.appendChild(item);
-  }
-  // Paper previews as whatever the app theme currently resolves to, since that
-  // is exactly what it does on the terminal.
-  const paper = resolvedDark() ? TERM_THEME_DARK : TERM_THEME_LIGHT;
-  list.appendChild(el("div", { class: "palette-item" },
-    paletteRow("", "Paper (follows app theme)", paper,
-               !choice.custom && !choice.preset)));
-  for (const p of TERM_PRESETS) {
-    list.appendChild(el("div", { class: "palette-item" },
-      paletteRow(p.id, p.name, p.theme, choice.preset === p.id)));
+  for (const slot of ["light", "dark"]) {
+    const chosen = pair[slot];
+    list.appendChild(el("div", { class: "palette-cap" },
+                        slot === "light" ? "Light" : "Dark"));
+    if (chosen.custom) {
+      const item = el("div", { class: "palette-item" });
+      item.appendChild(paletteRow("custom", slot, "Custom: " + chosen.name,
+                                  chosen.theme, true));
+      // The way back out of an imported scheme, which is also the only way to
+      // drop it: it is stored as this half's choice, so unchoosing it is
+      // removing it, and what is left is Paper.
+      item.appendChild(el("button", {
+        type: "button", class: "list-row-del", "data-drop": slot,
+        "aria-label": "Remove this scheme",
+      }, svgIcon("i-x")));
+      list.appendChild(item);
+    }
+    for (const p of TERM_PRESETS.filter((x) => paletteSlot(x.theme) === slot)
+                                .sort(paletteOrder)) {
+      list.appendChild(el("div", { class: "palette-item" },
+        paletteRow(p.id, slot, p.name, p.theme, chosen.preset === p.id)));
+    }
   }
 }
 
 // Painted when the tab is shown rather than when the sheet opens, the same way
-// the Keys tab's steppers are: the header's theme button can have moved the
+// the Keys tab's steppers are: the header's theme menu can have moved the
 // chrome since the last look.
 function syncAppearance() {
   const pref = themePref();
-  // Still showing which way Paper is set, but inert: a palette decides its own
-  // light or dark from its background, so the three buttons have nothing to say
-  // until Paper is back.
-  const locked = !!storedTermPalette();
   for (const b of $("app-theme").querySelectorAll("[data-theme]")) {
     b.setAttribute("aria-checked", b.dataset.theme === pref ? "true" : "false");
-    b.disabled = locked;
   }
-  $("app-theme-hint").hidden = !locked;
   renderPalettes();
 }
 
+// setThemePref() repaints and re-syncs this panel itself, since the header menu
+// is the other way into the same setting.
 $("app-theme").addEventListener("click", (e) => {
   const b = e.target.closest("[data-theme]");
-  if (!b) return;
-  setThemePref(b.dataset.theme);
-  // The palette rows under this one preview Paper, which has just changed.
-  syncAppearance();
+  if (b) setThemePref(b.dataset.theme);
 });
+
+// A choice made in the half that is not live moves a tick and nothing else, so
+// it says which half it changed rather than leaving the tap looking dropped.
+function slotNote(slot) {
+  return slot === liveSlot() ? "" : " — used when the app is " + slot;
+}
 
 $("palette-list").addEventListener("click", (e) => {
-  if (e.target.closest("#btn-palette-drop")) { setTermChoice(null); return; }
+  const drop = e.target.closest("[data-drop]");
+  if (drop) {
+    paletteError("");
+    setSlotChoice(drop.dataset.drop, paperEntry(drop.dataset.drop));
+    return;
+  }
   const pick = e.target.closest(".palette-pick");
-  if (!pick) return;
+  // The imported row is only ever drawn as its half's choice, so pressing it
+  // chooses what is already chosen; the x beside it is the only thing that acts.
+  if (!pick || pick.dataset.id === "custom") return;
   paletteError("");
-  setTermChoice(pick.dataset.id ? { preset: pick.dataset.id } : null);
+  const slot = pick.dataset.slot, note = slotNote(slot);
+  setSlotChoice(slot, slotEntry({ preset: pick.dataset.id }, slot));
+  if (note) toast(pick.querySelector(".palette-name").textContent + note);
 });
 
+// Both halves, since this is the way back to the app as it ships.
 $("btn-palette-reset").addEventListener("click", () => {
   paletteError("");
-  setTermChoice(null);
+  setPair({ light: paperEntry("light"), dark: paperEntry("dark") });
 });
 
 // One import path for both ways in: the file picker drops the file's text into
@@ -546,8 +596,12 @@ function useScheme(nameHint) {
   paletteError("");
   $("palette-paste").value = "";
   paletteFileName = "";
-  setTermChoice({ custom: parsed.theme, name: parsed.name });
-  toast("Palette: " + parsed.name);
+  // Which half it lands in is the scheme's own to say: a cream background is a
+  // light one whatever it was exported from.
+  const slot = paletteSlot(parsed.theme);
+  const note = slotNote(slot);
+  setSlotChoice(slot, { custom: true, name: parsed.name, theme: parsed.theme });
+  toast("Palette: " + parsed.name + note);
 }
 
 // The name the last picked file carried, since .itermcolors holds none of its
