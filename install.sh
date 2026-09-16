@@ -994,9 +994,9 @@ run_installer() {
     elif [[ -f "$INSTALL_DIR/install.sh" ]]; then
         echo "Could not fetch $BASE_URL/install.sh — using the copy in $INSTALL_DIR." >&2
         # Copied out before it runs, for the same reason the installer renames
-        # this wrapper into place: the install dir's install.sh is overwritten
-        # by the payload it is unpacking, and a bash reading its own script by
-        # file offset would resume inside the new bytes.
+        # this wrapper into place: the install.sh in the install dir is
+        # overwritten by the payload it is unpacking, and a bash reading its
+        # own script by file offset would resume inside the new bytes.
         cp "$INSTALL_DIR/install.sh" "$FRESH_INSTALLER" 2>/dev/null || return 1
         env "${INSTALLER_ENV[@]}" bash "$FRESH_INSTALLER" --update ${@+"$@"}
     else
