@@ -2523,12 +2523,13 @@ PYEOF
     fi
 }
 
-# What to open depends on the route. The hosted app is https, and a browser
-# will not let an https page call a plain-http backend, so a LAN address can
-# never be typed into $BASE_URL/app/ — but the backend serves the same shell
-# itself, so on a LAN the phone opens it directly and only the code is left to
-# type. A verified serve is https end to end, so there the hosted app plus the
-# address works. The URL comes first because it is the first thing to do.
+# What to open depends on the route. A verified serve is https end to end, so
+# there the hosted app plus the address works. On a LAN there are two answers:
+# this computer can use the hosted app against http://localhost, which Chromium
+# and Firefox allow because a loopback address counts as trustworthy (Safari
+# does not), while the phone has no loopback to the backend and opens the shell
+# the backend serves itself, where only the code is left to type. The URL comes
+# first because it is the first thing to do.
 #
 # The QR payload mirrors that: #pair=<base64url JSON {v,a,t}>, built by
 # app.pair_url() so the one shape lives in one place — the Settings card's
@@ -2539,6 +2540,20 @@ PYEOF
 # Python-in-heredoc rule as the box below it: anyone who scans the code gets
 # this machine's shell, so the warning is printed right under it.
 RULE="─────────────────────────────────────"
+
+# Is there plausibly a browser on this machine to open the hosted app in? A Mac
+# or a desktop session says yes; an install over ssh says no whatever displays
+# the box reports, because the browser would be on the other machine.
+has_local_browser() {
+    if [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_TTY:-}" ]]; then
+        return 1
+    fi
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        return 0
+    fi
+    [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]
+}
+
 say ""
 if [[ "$TS_SERVED" == "1" ]]; then
     QR_URL="$("$VENV_PY" - "$INSTALL_DIR" "$BASE_URL/app/" "$TS_HOST/pockettui" <<'PYEOF' || true
@@ -2574,12 +2589,23 @@ PYEOF
         say "  machine's shell. Don't screenshot or share it.$C_RESET"
         say ""
     fi
-    say "  On your phone open  ${C_CODE}http://$LAN_IP:$PORT/$C_RESET"
+    if has_local_browser; then
+        say "  On this computer, open  ${C_CODE}$BASE_URL/app/$C_RESET"
+        say "  ${C_DIM}Chrome or Firefox; Safari blocks this.$C_RESET"
+        say ""
+        say "  $C_RULE$RULE$C_RESET"
+        printf '   Address   %s%s%s\n' "$C_CODE" "http://localhost:$PORT" "$C_RESET"
+        printf '   Code      %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
+        say "  $C_RULE$RULE$C_RESET"
+        say ""
+    fi
+    say "  On your phone on the same Wi-Fi, open  ${C_CODE}http://$LAN_IP:$PORT/$C_RESET"
     say ""
     say "  $C_RULE$RULE$C_RESET"
     printf '   Code      %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
     say "  $C_RULE$RULE$C_RESET"
     say "  ${C_DIM}(that page is the backend itself — no address to enter)$C_RESET"
+    say "  ${C_DIM}$BASE_URL/app/ on the phone needs Tailscale.$C_RESET"
 else
     say "  $C_RULE$RULE$C_RESET"
     printf '   Code      %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"

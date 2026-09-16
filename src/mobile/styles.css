@@ -2067,6 +2067,13 @@ html.term-open, body.term-open {
 #sheet-settings.setup-run #panel-connection > :not(#setup-step-run) { display: none; }
 #sheet-settings.setup-run .sheet-tabs,
 #sheet-settings.setup-run .actions { display: none; }
+/* The address rows on a first run that has no address to ask for: this page
+   came off the backend, so the API is this origin and the only thing still
+   missing is the code. */
+#sheet-settings.setup-same-origin label[for="backend-url"],
+#sheet-settings.setup-same-origin #backend-url,
+#sheet-settings.setup-same-origin label[for="backend-port"],
+#sheet-settings.setup-same-origin #backend-port { display: none; }
 /* The one thing to do on step one once the command has run. Full width because
    it is the only action on the screen, filled because it is the way forward. */
 #btn-setup-ran {

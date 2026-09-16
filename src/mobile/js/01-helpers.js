@@ -128,8 +128,10 @@ const FAILURE_COPY = {
     hint: "This device has no network right now. It will pick up where it left off once one is back.",
   },
   mixed_content: {
-    title: "Address must be https",
-    hint: "This page is served over https, so the browser refuses to call an http address. Use the https form of the address in Settings.",
+    title: "This page can't call an http address",
+    hint: () => "This page is https and cannot call a plain-http address on your "
+      + "network. Open " + (cfg.backend || "").replace(/\/+$/, "") + "/ directly in "
+      + "the browser instead, or publish the computer on your tailnet.",
   },
   unreachable: {
     title: "Can't reach your computer",
@@ -160,6 +162,17 @@ const FAILURE_COPY = {
     command: "journalctl --user -u pockettui -n 50 --no-pager",
   },
 };
+
+// A backend on this machine, which the browser lets an https page call even
+// over plain http: Chromium and Firefox count a loopback address as
+// trustworthy, so pockettui.com/app/ works against one. Safari does not, and
+// every other http address is blocked whatever the browser — which is what the
+// hint above is about.
+function loopbackBackend(url) {
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase(); } catch (e) { return false; }
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+}
 
 // The device's own answer about its network. Only a definite no counts:
 // browsers report true whenever an interface is up, captive portal or not.
@@ -213,7 +226,8 @@ async function probeServer(timeoutMs = 2500) {
 function classifyFailure(err, response, probe) {
   let kind = "unreachable";
   if (netOffline()) kind = "offline";
-  else if (location.protocol === "https:" && /^http:/i.test(cfg.backend || "")) kind = "mixed_content";
+  else if (location.protocol === "https:" && /^http:/i.test(cfg.backend || "")
+           && !loopbackBackend(cfg.backend)) kind = "mixed_content";
   else if (response && response.status === 403) kind = "blocked";
   else if (probe && FAILURE_COPY[probe.kind]) kind = probe.kind;
   else if (probe && (probe.kind === "ok" || probe.kind === "old_server")) kind = "server_error";
@@ -221,7 +235,7 @@ function classifyFailure(err, response, probe) {
   return {
     kind: kind,
     title: c.title,
-    hint: c.hint,
+    hint: typeof c.hint === "function" ? c.hint() : c.hint,
     command: typeof c.command === "function" ? c.command() : (c.command || ""),
   };
 }
