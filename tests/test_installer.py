@@ -15,6 +15,7 @@ restarted with the default KillMode, taking every tmux session with it.
 """
 
 import os
+import pty
 import shutil
 import subprocess
 from pathlib import Path
@@ -1073,3 +1074,122 @@ def test_the_hosted_app_is_only_offered_where_a_browser_could_open_it(tmp_path):
     make_exe(fake / "uname", "#!/bin/bash\necho Darwin\n")
     assert browser_gate(tmp_path, dict(CLEAR_SESSION,
                                        PATH=f"{fake}:{os.environ['PATH']}")) == "YES"
+
+
+# The voice question, and the two ways a run can miss it. A first run that dies
+# after unpacking leaves an install dir behind, so the retry is an update — and
+# an update used to print a hint instead of asking, which is how a tester ended
+# up with no voice engine and no menu. An update that already has an engine is
+# still silent, and a run with nobody at the keyboard still only prints a hint.
+VOICE_SECTION = ("voice_ask_engine() {", "# Where the phone should point")
+
+EOF_KEY = "\x04"  # what a terminal sends for ctrl-D, which is how EOF reaches read
+
+
+def voice_run(tmp_path, reply, update="0", interactive="1",
+              have_whisper=False, have_parakeet=False):
+    """The voice block with setup_voice.sh stubbed, the menu driven over a pty.
+
+    install.sh asks on fd 3 (`exec 3<>/dev/tty`), so the harness opens a pty
+    there — a pipe cannot be both read and written the way that fd is. Returns
+    the script's own output and, separately, what went to the "terminal".
+    """
+    inst = tmp_path / "pockettui"
+    inst.mkdir(exist_ok=True)
+    script = inst / "setup_voice.sh"
+    script.write_text('echo "CALLED: setup_voice.sh $1"\n')
+    master, slave = pty.openpty()
+    try:
+        os.write(master, reply.encode())
+        body = (
+            f'INSTALL_DIR="{inst}"\n'
+            f'VOICE_SCRIPT="{script}"\n'
+            'VOICE_HINT="cd $INSTALL_DIR && ./setup_voice.sh"\n'
+            f'UPDATE={update}\nINTERACTIVE={interactive}\nVERBOSE=1\n'
+            'SERVICE_INSTALLED=0\nBACKGROUND_STARTED=0\n'
+            'VENV_PY="/nonexistent/python"\n'
+            f'voice_installed_whisper() {{ return {0 if have_whisper else 1}; }}\n'
+            f'voice_installed_parakeet() {{ return {0 if have_parakeet else 1}; }}\n'
+            'voice_check_tools() { return 1; }\n'
+            f'exec 3<>{os.ttyname(slave)}\n'
+            + slice_sh(*VOICE_SECTION)
+        )
+        harness = tmp_path / "voice.sh"
+        harness.write_text(PRELUDE + body)
+        r = subprocess.run(["bash", str(harness)], capture_output=True,
+                           text=True, timeout=60)
+        assert r.returncode == 0, r.stderr
+        os.set_blocking(master, False)
+        try:
+            asked = os.read(master, 65536).decode(errors="replace")
+        except BlockingIOError:
+            asked = ""
+    finally:
+        os.close(slave)
+        os.close(master)
+    return r.stdout, asked
+
+
+def test_an_update_with_no_engine_still_gets_the_question(tmp_path):
+    out, asked = voice_run(tmp_path, "1\n", update="1")
+    assert "Which voice engine should PocketTUI use?" in asked
+    assert "CALLED: setup_voice.sh --parakeet" in out
+
+
+def test_an_update_that_already_has_an_engine_asks_nothing(tmp_path):
+    out, asked = voice_run(tmp_path, EOF_KEY, update="1", have_parakeet=True)
+    assert "Which voice engine" not in asked
+    assert "CALLED:" not in out
+
+
+def test_a_non_interactive_update_still_only_prints_the_hint(tmp_path):
+    out, asked = voice_run(tmp_path, EOF_KEY, update="1", interactive="0")
+    assert "Which voice engine" not in asked
+    assert "NOTE: left voice setup alone (update)" in out
+
+
+def test_a_bare_enter_takes_the_recommended_engine(tmp_path):
+    """The menu marks Parakeet recommended, so Enter has to mean Parakeet."""
+    out, asked = voice_run(tmp_path, "\n")
+    assert "choice [1-4] (1): " in asked
+    assert "CALLED: setup_voice.sh --parakeet" in out
+
+
+def test_four_and_eof_are_still_none(tmp_path):
+    for reply in ("4\n", EOF_KEY):
+        out, _ = voice_run(tmp_path, reply)
+        assert "CALLED:" not in out
+        assert "NOTE: skipped voice setup (declined)" in out
+
+# The LAN summary. Chrome 142 gates an https page's calls to localhost behind a
+# permission prompt and Safari refuses them, so the computer is sent to the
+# backend's own address rather than to the hosted app with localhost typed in.
+SUMMARY_SECTION = ("    if has_local_browser; then",
+                   '    say "  ${C_DIM}$BASE_URL/app/ on the phone needs Tailscale.$C_RESET"')
+
+
+def lan_summary(tmp_path, env):
+    body = (
+        'BASE_URL="https://pockettui.example.net"\n'
+        'LAN_IP="192.0.2.7"\nPORT=5560\nTOKEN_DISPLAY="1234-5678"\n'
+        'RULE="---"\n'
+        + slice_sh(*BROWSER_SECTION, include_end=True)
+        + slice_sh(*SUMMARY_SECTION, include_end=True)
+    )
+    r = run_bash(tmp_path, body, env=env, name="lan_summary.sh")
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def test_the_lan_summary_sends_this_computer_to_the_backend_itself(tmp_path):
+    desktop = lan_summary(tmp_path, dict(CLEAR_SESSION, DISPLAY=":0"))
+    assert "On this computer, open  http://localhost:5560/" in desktop
+    assert "On your phone on the same Wi-Fi, open  http://192.0.2.7:5560/" in desktop
+    # No address to type means no Address row, and no browser caveat to give.
+    assert "Address" not in desktop
+    assert "Safari" not in desktop
+    assert "https://pockettui.example.net/app/ on the phone needs Tailscale." in desktop
+
+    over_ssh = lan_summary(tmp_path, dict(CLEAR_SESSION, SSH_TTY="/dev/pts/0"))
+    assert "On this computer" not in over_ssh
+    assert "On your phone on the same Wi-Fi, open  http://192.0.2.7:5560/" in over_ssh

@@ -2491,6 +2491,25 @@ def _looks_like_aac_in_mp4(content_type: str) -> bool:
     return "mp4" in ct or "aac" in ct
 
 
+def ffmpeg_exe() -> str | None:
+    """The ffmpeg this install decodes with, or None if it has none.
+
+    imageio-ffmpeg carries a static build inside its wheel, so the venv
+    requirements.txt builds already has an ffmpeg and nobody has to install
+    one by hand — a machine without one answered no_ffmpeg to every dictation.
+    A system ffmpeg is the fallback, for the platforms that wheel ships no
+    binary for; with neither in, the transcribe route still answers no_ffmpeg.
+    """
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        exe = ""
+    if exe and os.path.isfile(exe) and os.access(exe, os.X_OK):
+        return exe
+    return shutil.which("ffmpeg")
+
+
 def _extract_aac(src: Path, aac: Path) -> bool:
     """Pull the raw AAC stream out of a (possibly fragmented) mp4 container.
 
@@ -2501,7 +2520,7 @@ def _extract_aac(src: Path, aac: Path) -> bool:
     output size say whether it worked.
     """
     proc = subprocess.run(
-        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        [ffmpeg_exe() or "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
          "-y", "-i", str(src), "-c", "copy", "-f", "adts", str(aac)],
         capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_S)
     return (proc.returncode == 0 and aac.exists()
@@ -2510,7 +2529,7 @@ def _extract_aac(src: Path, aac: Path) -> bool:
 
 def _decode_to_wav(src: Path, wav: Path) -> bool:
     proc = subprocess.run(
-        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        [ffmpeg_exe() or "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
          "-t", str(MAX_AUDIO_SECONDS), "-i", str(src),
          "-ar", "16000", "-ac", "1", "-f", "wav", "-y", str(wav)],
         capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_S)
@@ -2706,7 +2725,7 @@ def transcribe(raw: bytes, session: str, dev: str, content_type: str = "",
     if not engine:
         return JSONResponse({"error": "not_setup"}, status_code=503)
     binary, model = whisper_paths() if engine == "whisper" else (None, None)
-    if not shutil.which("ffmpeg"):
+    if not ffmpeg_exe():
         return JSONResponse({"error": "no_ffmpeg"}, status_code=503)
 
     if not raw:

@@ -1944,8 +1944,9 @@ voice_check_tools() {
 }
 
 # Ask which engine(s) to install, the same four choices setup_voice.sh offers
-# when run with no flag — this is the interactive equivalent of that menu. Any
-# reply other than 1-3 (including EOF) reads as choice 4, None. Only
+# when run with no flag — this is the interactive equivalent of that menu. An
+# empty reply takes the recommended engine the menu marks, choice 1; any other
+# reply that is not 2 or 3 (including EOF) reads as choice 4, None. Only
 # INTERACTIVE (fd 3 open) calls this; a non-interactive run never does.
 voice_ask_engine() {
     local reply
@@ -1955,10 +1956,10 @@ voice_ask_engine() {
         printf '    %s2) Whisper%s %s(~142 MB, builds whisper.cpp)%s\n' "$C_STEP" "$C_RESET" "$C_DIM" "$C_RESET"
         printf '    %s3) Both%s\n' "$C_STEP" "$C_RESET"
         printf '    %s4) None%s %s— use phone dictation%s\n' "$C_STEP" "$C_RESET" "$C_DIM" "$C_RESET"
-        printf '  choice %s[1-4]%s: ' "$C_DIM" "$C_RESET"
+        printf '  choice %s[1-4] (1)%s: ' "$C_DIM" "$C_RESET"
     } >&3
     IFS= read -r reply <&3 || reply=4
-    printf '%s' "$reply"
+    printf '%s' "${reply:-1}"
 }
 
 if [[ -f "$VOICE_SCRIPT" ]]; then
@@ -1977,12 +1978,17 @@ if [[ -f "$VOICE_SCRIPT" ]]; then
         else
             vsay "  Transcribes dictation locally — nothing leaves this machine."
         fi
-        if [[ "$UPDATE" == "1" ]]; then
+        if [[ "$UPDATE" == "1" ]] \
+            && [[ "$HAVE_WHISPER" == "1" || "$HAVE_PARAKEET" == "1" || "$INTERACTIVE" != "1" ]]; then
             # An update installs the version that is on offer, nothing else. A
             # 600 MB download is not part of that, and someone updating has
             # already had this question once — one line, and on with it. One
             # engine installed is a complete setup (the menu below offers a
             # single engine), so there's nothing to say unless neither is in.
+            # Neither in and someone there to ask is the exception: a first run
+            # that fails after unpacking turns the retry into an update, and the
+            # question would then never be asked at all — that case falls
+            # through to the menu below.
             if [[ "$HAVE_WHISPER" == "0" && "$HAVE_PARAKEET" == "0" ]]; then
                 say "  ${C_DIM}Voice-to-text (local dictation) is not set up. To add it:"
                 say "      $VOICE_HINT$C_RESET"
@@ -2037,8 +2043,13 @@ if [[ -f "$VOICE_SCRIPT" ]]; then
                     note "skipped voice setup ($VOICE_MISSING missing)"
                 else
                     # Only needed once someone actually dictates, so it is said
-                    # and then setup goes ahead regardless.
-                    if ! command -v ffmpeg >/dev/null 2>&1; then
+                    # and then setup goes ahead regardless. requirements.txt
+                    # brings an ffmpeg wheel into the env, so this only fires
+                    # where that wheel ships no binary for the platform and the
+                    # machine has no ffmpeg of its own — app.py looks in the
+                    # same two places, in the same order.
+                    if ! "$VENV_PY" -c "import imageio_ffmpeg; imageio_ffmpeg.get_ffmpeg_exe()" >/dev/null 2>&1 \
+                        && ! command -v ffmpeg >/dev/null 2>&1; then
                         say "  ${C_WARN}NOTE${C_RESET} ffmpeg is not installed — transcription needs it at"
                         say "  runtime. Install it before using the mic:  $(pkg_install_cmd ffmpeg)"
                     fi
@@ -2524,12 +2535,13 @@ PYEOF
 }
 
 # What to open depends on the route. A verified serve is https end to end, so
-# there the hosted app plus the address works. On a LAN there are two answers:
-# this computer can use the hosted app against http://localhost, which Chromium
-# and Firefox allow because a loopback address counts as trustworthy (Safari
-# does not), while the phone has no loopback to the backend and opens the shell
-# the backend serves itself, where only the code is left to type. The URL comes
-# first because it is the first thing to do.
+# there the hosted app plus the address works. On a LAN both devices open the
+# shell the backend serves itself — this computer at http://localhost, the
+# phone at the LAN address — and only the code is left to type. The hosted app
+# against localhost is no longer an instruction that works: Chrome 142 puts a
+# permission prompt between an https page and a loopback address (WebSockets
+# since 147) and Safari refuses the call outright. The URL comes first because
+# it is the first thing to do.
 #
 # The QR payload mirrors that: #pair=<base64url JSON {v,a,t}>, built by
 # app.pair_url() so the one shape lives in one place — the Settings card's
@@ -2541,9 +2553,9 @@ PYEOF
 # this machine's shell, so the warning is printed right under it.
 RULE="─────────────────────────────────────"
 
-# Is there plausibly a browser on this machine to open the hosted app in? A Mac
-# or a desktop session says yes; an install over ssh says no whatever displays
-# the box reports, because the browser would be on the other machine.
+# Is there plausibly a browser on this machine to open the app in? A Mac or a
+# desktop session says yes; an install over ssh says no whatever displays the
+# box reports, because the browser would be on the other machine.
 has_local_browser() {
     if [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_TTY:-}" ]]; then
         return 1
@@ -2590,13 +2602,12 @@ PYEOF
         say ""
     fi
     if has_local_browser; then
-        say "  On this computer, open  ${C_CODE}$BASE_URL/app/$C_RESET"
-        say "  ${C_DIM}Chrome or Firefox; Safari blocks this.$C_RESET"
+        say "  On this computer, open  ${C_CODE}http://localhost:$PORT/$C_RESET"
         say ""
         say "  $C_RULE$RULE$C_RESET"
-        printf '   Address   %s%s%s\n' "$C_CODE" "http://localhost:$PORT" "$C_RESET"
         printf '   Code      %s%s%s\n' "$C_CODE" "$TOKEN_DISPLAY" "$C_RESET"
         say "  $C_RULE$RULE$C_RESET"
+        say "  ${C_DIM}(that page is the backend itself — no address to enter)$C_RESET"
         say ""
     fi
     say "  On your phone on the same Wi-Fi, open  ${C_CODE}http://$LAN_IP:$PORT/$C_RESET"

@@ -698,14 +698,14 @@ def test_empty_body_is_refused(installed):
 
 
 def test_missing_ffmpeg_reads_as_not_setup(installed, monkeypatch):
-    monkeypatch.setattr(A.shutil, "which", lambda name: None)
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: None)
     response = A.transcribe(b"audio bytes", "work", "phone")
     assert response.status_code == 503
     assert body(response) == {"error": "no_ffmpeg"}
 
 
 def test_undecodable_audio_is_refused(installed, monkeypatch, no_tmux):
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "undecodable_audio")
     response = A.transcribe(b"not audio at all", "work", "phone")
     assert response.status_code == 422
@@ -714,7 +714,7 @@ def test_undecodable_audio_is_refused(installed, monkeypatch, no_tmux):
 
 def test_success_shape(installed, monkeypatch, at_a_shell):
     """text/raw/ms, with the resolver's repair in text and the transcript in raw."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(
         A, "run_whisper",
@@ -733,7 +733,7 @@ def test_the_parakeet_route_answers_the_same_shape(parakeet_installed,
                                                    sherpa_importable,
                                                    monkeypatch, at_a_shell):
     """Different engine, identical contract: the resolver's repair in text."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(
         A, "run_parakeet",
@@ -752,7 +752,7 @@ def test_the_parakeet_route_answers_the_same_shape(parakeet_installed,
 def test_a_surviving_doubted_word_is_flagged(parakeet_installed, sherpa_importable,
                                              monkeypatch, at_a_shell):
     """A low-confidence word that reaches the final text ends up in `unsure`."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(
         A, "run_parakeet",
@@ -767,7 +767,7 @@ def test_no_unsure_key_when_everything_is_confident(parakeet_installed,
                                                      sherpa_importable, monkeypatch,
                                                      at_a_shell):
     """All confidences comfortably above ASR_CONF_LOW: no `unsure` key at all."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(
         A, "run_parakeet",
@@ -779,7 +779,7 @@ def test_no_unsure_key_when_everything_is_confident(parakeet_installed,
 
 def test_no_unsure_key_on_the_whisper_path(installed, monkeypatch, at_a_shell):
     """Whisper never reports confidence, so `unsure` cannot be computed there."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "hello world")
 
@@ -791,7 +791,7 @@ def test_a_doubted_word_the_resolver_rewrote_is_not_flagged(parakeet_installed,
                                                              sherpa_importable,
                                                              monkeypatch, at_a_shell):
     """Doubt the resolver already erased must not resurface in `unsure`."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(
         A, "run_parakeet",
@@ -813,7 +813,7 @@ def test_the_engine_parameter_picks_the_engine(installed, parakeet_installed,
     """Both installed, so only the request decides which of them decodes."""
     monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
     monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
     monkeypatch.setattr(A, "run_parakeet",
@@ -830,7 +830,7 @@ def test_the_engine_parameter_picks_the_engine(installed, parakeet_installed,
 def test_asking_for_an_engine_this_install_lacks_is_not_setup(installed,
                                                               monkeypatch):
     """whisper could have answered, but the client is the half that falls back."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     response = A.transcribe(b"audio bytes", "work", "phone", engine="parakeet")
     assert response.status_code == 503
     assert body(response) == {"error": "not_setup"}
@@ -838,7 +838,7 @@ def test_asking_for_an_engine_this_install_lacks_is_not_setup(installed,
 
 def test_an_unknown_engine_parameter_is_ignored(installed, monkeypatch,
                                                 at_a_shell):
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
     payload = body(A.transcribe(b"audio bytes", "work", "phone", engine="nonesuch"))
@@ -852,7 +852,7 @@ def test_the_env_force_outranks_the_engine_parameter(installed,
     monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
     monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
     monkeypatch.setenv("POCKETTUI_VOICE_ENGINE", "whisper")
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
 
@@ -869,7 +869,7 @@ def test_parakeet_is_asked_for_hotwords_not_a_prompt(parakeet_installed,
                                                      monkeypatch, at_a_shell):
     """Parakeet takes no --prompt; the same vocabulary rides hotwords instead."""
     seen = {}
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(R, "history_vocabulary", lambda: ["micromamba"])
     monkeypatch.setattr(R, "ssh_hosts", lambda: [])
@@ -892,7 +892,7 @@ def test_no_vocabulary_means_no_hotwords_argument(parakeet_installed,
                                                   monkeypatch, at_a_shell):
     """A fresh box has no history and nothing learned: it must not pass ""."""
     seen = {}
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(R, "history_vocabulary", lambda: [])
     monkeypatch.setattr(R, "ssh_hosts", lambda: [])
@@ -912,7 +912,7 @@ def test_a_broken_vocabulary_still_gets_a_transcript(parakeet_installed,
                                                      sherpa_importable,
                                                      monkeypatch, at_a_shell):
     """Biasing is an improvement to the decode, never a precondition for one."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
 
     def explode(*a, **k):
@@ -928,7 +928,7 @@ def test_hotwords_the_decoder_rejects_fall_back_to_a_plain_decode(
         parakeet_installed, sherpa_importable, monkeypatch, at_a_shell):
     """sherpa-onnx refusing the hotwords costs them, not the user's transcript."""
     calls = []
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(R, "history_vocabulary", lambda: ["micromamba"])
     monkeypatch.setattr(R, "ssh_hosts", lambda: [])
@@ -951,7 +951,7 @@ def test_the_log_line_names_the_engine(parakeet_installed, sherpa_importable,
     """Which model ran, and what it cost, has to be readable from the log."""
     lines = []
     monkeypatch.setattr(A, "log", lines.append)
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_parakeet",
                         lambda d, w, hotwords=None: ("git status", None))
@@ -971,7 +971,7 @@ def test_the_log_line_names_the_engine(parakeet_installed, sherpa_importable,
 def test_the_log_line_names_whisper_too(installed, monkeypatch, at_a_shell):
     lines = []
     monkeypatch.setattr(A, "log", lines.append)
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
 
@@ -983,7 +983,7 @@ def test_the_log_line_names_whisper_too(installed, monkeypatch, at_a_shell):
 def test_a_parakeet_crash_answers_a_shape_not_a_traceback(parakeet_installed,
                                                           sherpa_importable,
                                                           monkeypatch, no_tmux):
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
 
     def boom(*a, **k):
@@ -1057,7 +1057,7 @@ def test_a_wedged_decode_times_out_and_retires_the_engine(parakeet_installed,
 def test_the_route_answers_transcribe_timeout_for_a_wedged_decode(
         parakeet_installed, wedged_recognizer, monkeypatch, no_tmux):
     """The same shape whisper's timeout answers with — the phone knows only one."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio",
                         lambda raw, wav, content_type="": parakeet_wav(wav) or "")
     response = A.transcribe(b"audio bytes", "work", "phone")
@@ -1072,7 +1072,7 @@ def test_a_timed_out_hotword_decode_is_not_retried(parakeet_installed,
     """The plain-decode retry is for hotwords the decoder rejected. Taking a
     deadline down that path would queue a second wait behind the stuck worker."""
     calls = []
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio",
                         lambda raw, wav, content_type="": parakeet_wav(wav) or "")
     monkeypatch.setattr(R, "history_vocabulary", lambda: ["micromamba"])
@@ -1099,7 +1099,7 @@ def test_a_retired_engine_falls_back_to_whisper(installed, parakeet_installed,
     transcript, because the retired engine reads as one that is not there."""
     monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
     monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
 
@@ -1116,7 +1116,7 @@ def test_asking_for_a_retired_engine_is_not_setup(installed, parakeet_installed,
     """The client that names an engine owns the fallback, wedged or uninstalled."""
     monkeypatch.setenv("POCKETTUI_WHISPER_BIN", str(installed / "whisper-cli"))
     monkeypatch.setenv("POCKETTUI_WHISPER_MODEL", str(installed / "ggml-base.en.bin"))
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "_parakeet_dead", True)
     response = A.transcribe(b"audio bytes", "work", "phone", engine="parakeet")
     assert response.status_code == 503
@@ -1271,7 +1271,7 @@ def test_the_confidences_stay_out_of_the_response(parakeet_installed,
                                                   monkeypatch, at_a_shell):
     """The raw per-word probabilities are a decode detail, never handed over
     whole — only a surviving low-confidence word's surface form, via `unsure`."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_parakeet",
                         lambda d, w, hotwords=None: ("git status", {"git": 0.3}))
@@ -1286,7 +1286,7 @@ def test_the_log_line_names_the_doubted_words(parakeet_installed,
     was least sure of, so those are what the line carries."""
     lines = []
     monkeypatch.setattr(A, "log", lines.append)
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_parakeet",
                         lambda d, w, hotwords=None: ("run camerahmr", {
@@ -1300,7 +1300,7 @@ def test_the_whisper_path_has_no_confidences(installed, monkeypatch, at_a_shell)
     """whisper offers none, and the line says so rather than going missing."""
     lines = []
     monkeypatch.setattr(A, "log", lines.append)
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
     A.transcribe(b"audio bytes", "work", "phone")
@@ -1310,7 +1310,7 @@ def test_the_whisper_path_has_no_confidences(installed, monkeypatch, at_a_shell)
 def test_the_asr_rules_run_on_the_transcript(installed, monkeypatch,
                                              at_a_shell):
     """The route must ask for the ASR pass; without it the pipe stays a "pip"."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper",
                         lambda b, m, w, p: "git status pip grep main")
@@ -1320,7 +1320,7 @@ def test_the_asr_rules_run_on_the_transcript(installed, monkeypatch,
 
 def test_silence_answers_empty_rather_than_failing(installed, monkeypatch, no_tmux):
     """whisper heard nothing: an empty compose bar, not an error the user sees."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "")
     response = A.transcribe(b"audio bytes", "work", "phone")
@@ -1330,7 +1330,7 @@ def test_silence_answers_empty_rather_than_failing(installed, monkeypatch, no_tm
 
 def test_a_whisper_crash_answers_a_shape_not_a_traceback(installed, monkeypatch,
                                                          no_tmux):
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
 
     def boom(*a, **k):
@@ -1343,7 +1343,7 @@ def test_a_whisper_crash_answers_a_shape_not_a_traceback(installed, monkeypatch,
 
 
 def test_a_whisper_timeout_answers_a_shape(installed, monkeypatch, no_tmux):
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
 
     def stall(*a, **k):
@@ -1426,7 +1426,7 @@ def test_real_speech_is_never_gated():
 
 def test_silence_skips_whisper_entirely(installed, monkeypatch, no_tmux):
     """The whole point: no transcription call, and ms reported as 0."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "is_silent", lambda wav: True)
 
@@ -1459,7 +1459,7 @@ def test_a_clip_that_hit_the_decode_cap_is_flagged_truncated(installed, monkeypa
     """ffmpeg's `-t MAX_AUDIO_SECONDS` silently drops anything past the cap —
     the phone can only know its recording was cut short if the reply says so.
     """
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "is_silent",
                         lambda wav: A.SilenceCheck(False, duration_s=300.0))
@@ -1469,7 +1469,7 @@ def test_a_clip_that_hit_the_decode_cap_is_flagged_truncated(installed, monkeypa
 
 
 def test_a_short_clip_is_not_flagged_truncated(installed, monkeypatch, at_a_shell):
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "is_silent",
                         lambda wav: A.SilenceCheck(False, duration_s=3.0))
@@ -1916,7 +1916,7 @@ def recording_capture(monkeypatch, no_tmux):
 
 def test_the_prompt_gets_its_own_wider_capture(installed, monkeypatch,
                                                recording_capture):
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
 
@@ -1930,7 +1930,7 @@ def test_the_resolver_only_ever_sees_the_visible_screen(installed, monkeypatch,
     """Register detection and window matching are entitled to exactly the pane
     the user is looking at; the wider capture is prompt vocabulary alone."""
     seen: dict = {}
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: "git status")
 
@@ -1974,7 +1974,7 @@ def test_the_prompt_degrades_to_the_old_behaviour_without_scrollback(no_tmux):
 
 def test_ssh_hosts_ride_the_history_channel(installed, monkeypatch, at_a_shell):
     """One combined list, so they reach both the prompt and the resolver."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A.resolver, "history_vocabulary", lambda: ["sdwivedi"])
     monkeypatch.setattr(A.resolver, "ssh_hosts", lambda: ["galtonhost"])
@@ -2005,7 +2005,7 @@ def test_ssh_hosts_ride_the_history_channel(installed, monkeypatch, at_a_shell):
 def test_dotfile_names_ride_the_history_channel(installed, monkeypatch,
                                                 at_a_shell):
     """"open bashrc" has no other source: a zsh user's history never held it."""
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(A.resolver, "history_vocabulary", lambda: ["sdwivedi"])
     monkeypatch.setattr(A.resolver, "ssh_hosts", lambda: ["galtonhost"])
@@ -2034,7 +2034,7 @@ def test_dotfile_names_reach_the_parakeet_hotwords(parakeet_installed,
                                                    monkeypatch, at_a_shell):
     """The engine that missed this word takes vocabulary by hotwords, not prompt."""
     seen = {}
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(R, "history_vocabulary", lambda: [])
     monkeypatch.setattr(R, "ssh_hosts", lambda: [])
@@ -2059,7 +2059,7 @@ def test_the_word_confidences_reach_the_resolver(parakeet_installed,
     them over, and hand over None when the engine had nothing to say.
     """
     seen = {}
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", lambda raw, wav, content_type="": "")
     monkeypatch.setattr(R, "history_vocabulary", lambda: [])
     monkeypatch.setattr(R, "ssh_hosts", lambda: [])
@@ -2320,7 +2320,7 @@ def decodes_to_speech(monkeypatch, text="git status"):
         write_wav(wav, tone(2.0, 12000))
         return ""
 
-    monkeypatch.setattr(A.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(A, "ffmpeg_exe", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(A, "decode_audio", decode)
     monkeypatch.setattr(A, "run_whisper", lambda b, m, w, p: text)
 
