@@ -292,11 +292,42 @@ function localizeUrl(raw, loc) {
   return u.href;
 }
 
+// Rewriting the host is only half of it: the dev server that printed the URL
+// has most likely bound 127.0.0.1 (Vite, Flask, uvicorn, Gradio, Jupyter and
+// TensorBoard all do), so the rewritten link is refused. This asks the computer
+// to bind the same port number on the address the link now names and relay it
+// to that loopback listener — the URL itself stays exactly as rewritten.
+//
+// Fired and not awaited: the anchor click below has to happen inside this tap's
+// own gesture or iOS Safari swallows the new tab. keepalive so the request
+// survives the page going to the background behind the tab that just opened.
+// Nothing is shown either way — the answer arrives after the link has opened,
+// and a failed relay leaves the tap doing exactly what it did before.
+// hasCapStrict, not hasCap: a server too old for the map 404s this POST.
+function requestRelay(url) {
+  if (demoMode || needsSetup() || !hasCapStrict("relay")) return;
+  let u;
+  try { u = new URL(url); } catch (e) { return; }
+  const port = u.port ? parseInt(u.port, 10) : (u.protocol === "https:" ? 443 : 80);
+  try {
+    fetch(apiURL("api/relay"), {
+      method: "POST", cache: "no-store", keepalive: true,
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ host: u.hostname, port: port }),
+    }).catch(() => {});
+  } catch (e) {
+    // An unreachable backend is the terminal banner's news, not this tap's.
+  }
+}
+
 // Opens in the phone's browser. Not window.open: Safari's noopener path opens
 // a blank tab and returns null, so we go straight for a synchronous anchor
 // click, which iOS still counts as a user gesture from this handler.
 function openUrl(raw) {
   const url = localizeUrl(raw, location);
+  // Only when the host actually moved. A same-origin desktop tapping its own
+  // localhost link reaches the dev server directly, and there is nothing to relay.
+  if (url !== raw) requestRelay(url);
   const a = document.createElement("a");
   a.href = url;
   a.target = "_blank";
