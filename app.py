@@ -28,6 +28,7 @@ import getpass
 import hashlib
 import hmac
 import importlib
+import ipaddress
 import json
 import math
 import mimetypes
@@ -1306,6 +1307,11 @@ def server_capabilities() -> dict:
         # older server answers the POST with a 404, and offering a button that
         # cannot work is worse than leaving the command to be read and typed.
         "type": True,
+        # /api/relay — binds a loopback-only dev server's port on the address
+        # the phone's link names, so a tapped http://localhost:3000 opens. See
+        # "Port forwarding". Strictly checked by the shell: an older server
+        # 404s the POST, and the tap must not wait on it to find that out.
+        "relay": True,
     }
 
 
@@ -4650,6 +4656,266 @@ def api_search(request: Request, body: dict = Body(...)) -> Response:
     if not state["in_mode"]:
         search_unpaint(pane)
     return no_store(JSONResponse(state))
+
+
+# ---------------------------------------------------------------------------
+# Port forwarding
+# ---------------------------------------------------------------------------
+# A dev server prints http://localhost:3000 and the phone taps it. The shell
+# rewrites the host to the name this phone reaches the machine by — the tailnet
+# name, or the LAN address — and keeps the port, which works only for as long
+# as the dev server bound 0.0.0.0. Vite, Flask, uvicorn, Gradio, Jupyter and
+# TensorBoard all bind 127.0.0.1 instead, so the rewritten link is refused and
+# the tap is a dead end.
+#
+# So the tap asks here first, and this server binds the *same port number* on
+# the address the phone is about to use, then pumps bytes to the loopback
+# listener. Nothing collides: 127.0.0.1:3000 and laptop.example.net:3000 are
+# two different endpoints, and the dev server holds only the first of them.
+# The URL the phone opens is left exactly as the shell rewrote it, which is the
+# point — no port table, no second port number to tell the user about, no step
+# for them to take. VS Code's forwarded ports work the same way.
+#
+# Not `tailscale serve`: that is one persistent per-machine configuration, it
+# terminates TLS and rewrites the path space, it needs a tailnet at all (a
+# LAN-only install has none), and taking it down again is another command the
+# user has to know. A relay that lives and dies with this process leaves
+# nothing behind to clean up.
+
+# The loopback listener is on this machine, so whatever is going to answer
+# answers at once; the timeout only stops a port held by something that accepts
+# and then says nothing from holding the request open.
+RELAY_PROBE_TIMEOUT = 1.0
+# Per-minute allowance. One tap is one call, and the shell calls on every tap
+# of the same link because the answer is idempotent.
+RATE_RELAY = 60
+# port -> the relay listening on it. Never persisted: a relay is a pair of
+# listening sockets this process owns, and a restart drops the lot.
+RELAYS: dict[int, "PortRelay"] = {}
+
+
+async def relay_pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
+    """Pump one direction until it ends, then half-close the far side.
+
+    write_eof rather than close, because the other direction may still have the
+    answer to deliver: a client that shuts down its write side and waits — what
+    curl does on a plain GET — must not have the response half torn down with it.
+    """
+    try:
+        while True:
+            data = await src.read(65536)
+            if not data:
+                break
+            dst.write(data)
+            await dst.drain()
+    except OSError:
+        pass
+    try:
+        if dst.can_write_eof():
+            dst.write_eof()
+    except OSError:
+        pass
+
+
+class PortRelay:
+    """Listeners on this machine's reachable addresses, fed to one loopback port."""
+
+    def __init__(self, port: int, target: tuple[str, int]) -> None:
+        self.port = port
+        self.target = target
+        self.servers: list[asyncio.AbstractServer] = []
+
+    @property
+    def alive(self) -> bool:
+        return any(s.sockets for s in self.servers)
+
+    def close(self) -> None:
+        """Drop the listening sockets. Synchronous, and the port is free after it."""
+        for s in self.servers:
+            s.close()
+
+    async def handle(self, reader: asyncio.StreamReader,
+                     writer: asyncio.StreamWriter) -> None:
+        try:
+            up_reader, up_writer = await asyncio.wait_for(
+                asyncio.open_connection(*self.target), RELAY_PROBE_TIMEOUT)
+        except (OSError, asyncio.TimeoutError):
+            # The dev server is gone. Holding the port would keep it from
+            # whatever wants it next, so the relay retires itself here, on the
+            # evidence of a connection that could not be served, rather than
+            # from a sweeper that would have to guess when to look.
+            writer.close()
+            if RELAYS.get(self.port) is self:
+                del RELAYS[self.port]
+            self.close()
+            log(f"relay port={self.port} target gone, closed")
+            return
+        await asyncio.gather(relay_pipe(reader, up_writer),
+                             relay_pipe(up_reader, writer))
+        for w in (writer, up_writer):
+            try:
+                w.close()
+            except OSError:
+                pass
+
+
+async def tcp_answers(host: str, port: int) -> bool:
+    """Whether anything accepts a connection at host:port, right now.
+
+    A connect rather than a bind, because the question is about somebody else's
+    socket: "is a server there" is the only evidence that separates a port held
+    by a live listener from one merely remembered by the kernel.
+    """
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), RELAY_PROBE_TIMEOUT)
+    except (OSError, asyncio.TimeoutError):
+        return False
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except OSError:
+        pass
+    return True
+
+
+async def loopback_listener(port: int) -> tuple[str, int] | None:
+    """The loopback address something answers on for `port`, or None.
+
+    Both families are tried because "bound to localhost" means v4 on one dev
+    server and v6 on the next, and the relay has to connect to the one that is
+    actually there rather than to the name.
+    """
+    for host in ("127.0.0.1", "::1"):
+        if await tcp_answers(host, port):
+            return (host, port)
+    return None
+
+
+def relay_bind(addrs: list[tuple[int, tuple]], reuse: bool) -> list[socket.socket]:
+    """Bind the port on every address, or raise having closed what it opened."""
+    socks: list[socket.socket] = []
+    try:
+        for family, sockaddr in addrs:
+            s = socket.socket(family, socket.SOCK_STREAM)
+            if family == socket.AF_INET6:
+                # Otherwise the v6 bind takes the v4 address with it on Linux,
+                # and the v4 bind that follows collides with our own socket.
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            if reuse:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(sockaddr)
+            socks.append(s)
+    except OSError:
+        for s in socks:
+            s.close()
+        raise
+    return socks
+
+
+@app.post("/api/relay")
+async def api_relay(request: Request, body: dict = Body(...)) -> Response:
+    """Make a loopback-only port reachable at `host`, on the same port number.
+
+    `host` is the hostname the phone's link already carries — say
+    laptop.example.net — and it is resolved rather than trusted, because what
+    gets bound is every address it names. The answer is one of three states:
+    "relayed" (a relay is up, or was already), "direct" (something is listening
+    on that address and port already, so the link works as printed), or a
+    refusal.
+
+    Idempotent on purpose: the shell fires this on every tap, without waiting
+    for it and without showing anything, so the second tap of a link must cost
+    nothing and say the same thing as the first.
+    """
+    refusal = throttled("relay", RATE_RELAY, request)
+    if refusal is not None:
+        return refusal
+
+    try:
+        port = int(body.get("port"))
+    except (TypeError, ValueError):
+        return fs_error("bad_port", 400)
+    if not 1 <= port <= 65535:
+        return fs_error("bad_port", 400)
+
+    # The brackets a v6 literal wears in a URL are not part of the address.
+    host = str(body.get("host", "")).strip().strip("[]")
+    if not host or host.lower() in LOOPBACK_HOSTS:
+        return fs_error("bad_host", 400)
+
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        infos = []
+    addrs: list[tuple[int, tuple]] = []
+    for family, _type, _proto, _canon, sockaddr in infos:
+        if family not in (socket.AF_INET, socket.AF_INET6):
+            continue
+        try:
+            ip = ipaddress.ip_address(str(sockaddr[0]).split("%")[0])
+        except ValueError:
+            continue
+        # The one answer that must be refused rather than bound: on loopback
+        # the relay would fight the dev server for the address it is already
+        # on, and on the wildcard it would take every address at once —
+        # including the loopback the dev server chose deliberately.
+        if ip.is_loopback or ip.is_unspecified:
+            return fs_error("bad_host", 400)
+        if (family, sockaddr) not in addrs:
+            addrs.append((family, sockaddr))
+    if not addrs:
+        return fs_error("unknown_host", 400)
+
+    target = await loopback_listener(port)
+    if target is None:
+        return fs_error("not_listening", 404)
+
+    existing = RELAYS.get(port)
+    if existing is not None and existing.alive:
+        return no_store(JSONResponse({"state": "relayed"}))
+    RELAYS.pop(port, None)
+
+    # Whether to bind at all is settled by asking, not by trying: something
+    # already answering at the address the phone is about to use — this app
+    # itself on 0.0.0.0, or a dev server that bound every address after all —
+    # means the printed link works as it stands, and a relay laid over it could
+    # only take its traffic away. EADDRINUSE would answer the same question on
+    # Linux, but not on BSD, where SO_REUSEADDR lets a bind of
+    # laptop.example.net:3000 land beside a listener on 0.0.0.0:3000.
+    for _family, sockaddr in addrs:
+        if await tcp_answers(str(sockaddr[0]), port):
+            return no_store(JSONResponse({"state": "direct"}))
+
+    relay = PortRelay(port, target)
+    # SO_REUSEADDR, now that nothing is listening there: what it reuses is the
+    # kernel's memory of a closed relay's connections, which sit in TIME_WAIT
+    # for a minute afterwards. Without it that debris would hold the port shut
+    # against everyone — including the dev server the user just restarted on
+    # 0.0.0.0, which is the opposite of freeing a port when a relay dies.
+    try:
+        socks = relay_bind(addrs, reuse=True)
+    except OSError as exc:
+        if exc.errno == errno.EADDRNOTAVAIL:
+            return fs_error("not_this_machine", 400)
+        if exc.errno == errno.EADDRINUSE:
+            # Something claimed the port between the probe and the bind.
+            return no_store(JSONResponse({"state": "direct"}))
+        return fs_error("bind_failed", 500, detail=exc.strerror or str(exc))
+
+    try:
+        for s in socks:
+            relay.servers.append(await asyncio.start_server(relay.handle, sock=s))
+    except OSError as exc:
+        relay.close()
+        for s in socks:
+            s.close()
+        return fs_error("bind_failed", 500, detail=exc.strerror or str(exc))
+
+    RELAYS[port] = relay
+    log(f"relay port={port} host={host} -> {target[0]}:{port}")
+    return no_store(JSONResponse({"state": "relayed"}))
 
 
 # ---------------------------------------------------------------------------
