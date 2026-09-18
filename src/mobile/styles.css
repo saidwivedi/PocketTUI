@@ -3251,6 +3251,42 @@ html.term-open #dbg-panel { opacity: 0.85; }
   display: none;
 }
 
+/* ---- drag and drop (pointer devices only; 28-file-explorer.js) -------------
+   Two states in one idiom: the accent ring for "this is where it lands". Inset
+   rather than a border, so nothing on screen shifts by a pixel as it appears
+   and disappears under the cursor. */
+.files-wrap.drop-files {
+  position: relative;
+  border-radius: 12px;
+  background: var(--umber-tint);
+  box-shadow: inset 0 0 0 2px var(--umber);
+}
+/* Says what the drop will do, in #files-empty's own italic-serif aside. On a
+   chip of the card colour rather than straight over the listing, so it reads
+   as a label and not as a line of the folder. pointer-events off: a label
+   under the cursor would read as a dragleave. */
+.files-wrap.drop-files::after {
+  content: "Drop to upload here";
+  position: absolute;
+  top: 8px; left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--umber-soft);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--umber);
+  pointer-events: none;
+}
+/* The folder, tile or crumb a dragged entry would move into. */
+.file-row.drop-into, .file-tile.drop-into, .crumb.drop-into {
+  background: var(--umber-soft);
+  box-shadow: inset 0 0 0 2px var(--umber);
+  border-radius: 8px;
+}
+
 /* ---- docked beside the terminal (wide layouts) ----------------------------
    The same screen seated in the slot on the terminal's right, on the diff
    pane's geometry: same width variable, same seam, one of the two at a time
