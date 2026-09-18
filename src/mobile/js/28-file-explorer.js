@@ -667,11 +667,15 @@ async function navigateDir(path) {
 }
 
 function crumbBtn(label, target, current) {
-  return el("button", {
+  const btn = el("button", {
     type: "button",
     class: "crumb" + (current ? " current" : ""),
     onclick: () => { if (!current) navigateDir(target); },
   }, label);
+  // An ancestor crumb is how a dragged entry moves up out of here. The current
+  // folder's own crumb is where the entry already is, so it takes nothing.
+  if (!current && !touchOnly()) wireMoveTarget(btn, target);
+  return btn;
 }
 
 function renderCrumbs(path) {
@@ -1152,6 +1156,13 @@ function wireRow(row, entry) {
     if (Date.now() - filesPressedAt < 500) return;  // the long-press's own click
     openEntry(entry);
   });
+  // The pointer device's second way to move a file, wired nowhere near the
+  // listeners above — see the drag-and-drop section for why a phone gets none
+  // of it. A folder is both something to drag and somewhere to drop.
+  if (!touchOnly()) {
+    wireEntryDrag(row, entry);
+    if (entry.type === "dir") wireMoveTarget(row, joinPath(filesPath, entry.name));
+  }
 }
 
 function openEntry(e, dir=filesPath) {
@@ -1482,6 +1493,182 @@ async function uploadFile(f, overwrite) {
   } catch (e) {
     return "Couldn't upload";
   }
+}
+
+// ---- drag and drop (pointer devices only) ----------------------------------
+// Two drags, told apart by what the dataTransfer carries. One from the OS
+// carries "Files" and drops onto the listing as an upload into the folder on
+// screen — the same uploadFiles() the Upload row picks for. One that started on
+// a row carries FILES_DRAG_TYPE and drops onto a folder row, a folder tile or
+// an ancestor crumb as a move, which is the rename the action sheet already
+// posts with a folder in dst instead of a new name.
+//
+// None of it is wired on a touch device: a phone has no second pointer to drag
+// with, and draggable=true can take a long press away from the row on some
+// Android builds. touchOnly() is asked per render and per event rather than
+// latched, for the tablet that picks up a trackpad mid-session.
+
+// Ours, not the OS's — the one thing that says the drag started in this app.
+const FILES_DRAG_TYPE = "application/x-pockettui-entry";
+
+// What a row drag is carrying: the entry, and the folder it was picked up in.
+// Held here because dataTransfer.getData() is unreadable until the drop, and
+// every dragover before it has to know what is in flight to answer at all.
+let filesDragEntry = null;
+// dragenter/dragleave fire once per element crossed, children included, so the
+// listing's highlight rides a depth count rather than the last event seen.
+let filesDropDepth = 0;
+
+function hasDragType(dt, type) {
+  return !!dt && Array.from(dt.types || []).includes(type);
+}
+
+// Clears both highlights at once — what dragend and every drop end on, so a
+// drag that ends anywhere at all leaves nothing lit behind it.
+function clearDropHints() {
+  filesDropDepth = 0;
+  filesDropZone.classList.remove("drop-files");
+  for (const n of document.querySelectorAll(".drop-into")) n.classList.remove("drop-into");
+}
+
+// The source half: every row and tile, wired by wireRow.
+function wireEntryDrag(node, entry) {
+  node.draggable = true;
+  node.addEventListener("dragstart", (ev) => {
+    // A listing read at a ref is a commit, not the disk. Nothing in it moves,
+    // so the drag never starts.
+    if (refFor(filesPath)) { ev.preventDefault(); return; }
+    filesDragEntry = { name: entry.name, type: entry.type, dir: filesPath };
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData(FILES_DRAG_TYPE, entry.name);
+    ev.dataTransfer.setData("text/plain", joinPath(filesPath, entry.name));
+  });
+  node.addEventListener("dragend", () => {
+    filesDragEntry = null;
+    clearDropHints();
+    // A drag the browser cancels can still be followed by a click on the row,
+    // and that click is not a tap. Same stamp the long press sets, read by the
+    // same check in wireRow.
+    filesPressedAt = Date.now();
+  });
+}
+
+// Whether the entry in flight can land in `dir`. Everything that would be a
+// no-op or a nonsense move is refused here, and this same answer is what
+// decides whether the target lights up — nothing offers a drop it will refuse.
+function canMoveInto(dir, dt) {
+  const d = filesDragEntry;
+  if (!d || !dir || !hasDragType(dt, FILES_DRAG_TYPE)) return false;
+  // Read-only at a ref; and a listing that navigated under the drag is no
+  // longer the folder the entry was picked up in.
+  if (refFor(filesPath) || d.dir !== filesPath) return false;
+  const src = joinPath(d.dir, d.name);
+  // Where it already is (the current folder's crumb), itself, or its own
+  // subtree — a folder cannot be moved inside itself.
+  return dir !== d.dir && dir !== src && !dir.startsWith(src + "/");
+}
+
+// The destination half: a folder row, a folder tile, an ancestor crumb.
+function wireMoveTarget(node, dir) {
+  node.addEventListener("dragover", (ev) => {
+    if (!canMoveInto(dir, ev.dataTransfer)) return;
+    ev.preventDefault();          // the one thing that makes this a drop target
+    ev.dataTransfer.dropEffect = "move";
+    node.classList.add("drop-into");
+  });
+  node.addEventListener("dragleave", () => node.classList.remove("drop-into"));
+  node.addEventListener("drop", (ev) => {
+    node.classList.remove("drop-into");
+    if (!canMoveInto(dir, ev.dataTransfer)) return;
+    ev.preventDefault();
+    ev.stopPropagation();         // not also an upload into the folder on screen
+    moveEntry(filesDragEntry, dir);   // read now: dragend is about to clear it
+  });
+}
+
+// One rename, so the backend's refusal to clobber arrives as the same 409 the
+// rename sheet already reads.
+async function moveEntry(d, dir) {
+  if (!d) return;
+  const res = await fsPost("api/fs/rename", {
+    src: joinPath(d.dir, d.name),
+    dst: joinPath(dir, d.name),
+  });
+  if (!res) return;
+  if (!res.ok) {
+    toast(res.status === 409 ? "Something with that name already exists there"
+                             : "Couldn't move");
+    return;
+  }
+  toast("Moved " + d.name + " to " + baseName(dir));
+  loadDir(filesPath);
+}
+
+// A folder dragged in from the OS has no bytes behind it — the drop hands over
+// an entry that either fails to read or uploads as zero bytes — so it is left
+// out rather than written as rubbish. webkitGetAsEntry is what tells the two
+// apart; where it is missing, or answers null for a file the page itself made,
+// the item counts as a file.
+function droppedFiles(dt) {
+  const items = Array.from(dt.items || []).filter((it) => it.kind === "file");
+  if (items.length && items[0].webkitGetAsEntry) {
+    return items
+      .filter((it) => { const e = it.webkitGetAsEntry(); return !e || e.isFile; })
+      .map((it) => it.getAsFile())
+      .filter(Boolean);
+  }
+  return Array.from(dt.files || []);
+}
+
+// The whole scroll area rather than the rows, so an empty folder takes a drop
+// on its "Empty folder" line as readily as a full one takes it on a row. One
+// element for both shapes: the docked pane renders into this same listing.
+const filesDropZone = document.querySelector("#screen-files .files-wrap");
+
+// An upload drag, as opposed to a row's own drag passing over the listing on
+// its way to a folder, or a ref browse where there is nothing to write to.
+function isUploadDrag(ev) {
+  return !touchOnly() && !refFor(filesPath)
+         && !hasDragType(ev.dataTransfer, FILES_DRAG_TYPE)
+         && hasDragType(ev.dataTransfer, "Files");
+}
+
+filesDropZone.addEventListener("dragenter", (ev) => {
+  if (!isUploadDrag(ev)) return;
+  ev.preventDefault();
+  filesDropDepth++;
+  filesDropZone.classList.add("drop-files");
+});
+filesDropZone.addEventListener("dragover", (ev) => {
+  if (!isUploadDrag(ev)) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = "copy";
+  filesDropZone.classList.add("drop-files");   // a dragenter the browser skipped
+});
+filesDropZone.addEventListener("dragleave", () => {
+  if (--filesDropDepth <= 0) {
+    filesDropDepth = 0;
+    filesDropZone.classList.remove("drop-files");
+  }
+});
+filesDropZone.addEventListener("drop", (ev) => {
+  clearDropHints();
+  if (!isUploadDrag(ev)) return;
+  ev.preventDefault();
+  const files = droppedFiles(ev.dataTransfer);
+  if (files.length) uploadFiles(files);
+  else toast("Folders can't be dropped");
+});
+
+// A file dropped anywhere but the listing would otherwise navigate the window
+// to it, throwing the session away. While the explorer is up that default is
+// swallowed document-wide — and only that: nothing is read off the drop,
+// nothing lights up, and no other handler is stopped.
+for (const type of ["dragover", "drop"]) {
+  document.addEventListener(type, (ev) => {
+    if (!$("screen-files").classList.contains("active")) return;
+    if (hasDragType(ev.dataTransfer, "Files")) ev.preventDefault();
+  });
 }
 
 // ---- navigation chrome -----------------------------------------------------
