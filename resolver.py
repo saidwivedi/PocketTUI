@@ -52,6 +52,11 @@ SKIP_DIRS = frozenset({
 })
 
 CWD_CACHE_TTL_S = 5.0
+# A cwd whose walk ran out of budget is remembered as slow for far longer than
+# the ordinary TTL. Re-walking a network mount every five seconds spends a
+# fresh thread on the same timeout each time, and the partial listing already
+# in hand is what the next take would end up with anyway.
+SLOW_CWD_TTL_S = 600.0
 PATH_CACHE_TTL_S = 600.0
 
 # ---------------------------------------------------------------------------
@@ -510,24 +515,36 @@ def screen_tokens(lines, limit: int = MAX_SCREEN_LINES) -> list[str]:
     return tokens
 
 
-def walk_names(cwd: str, deadline: float = 0.0) -> list[str]:
+def walk_names(cwd: str, deadline: float = 0.0, out: list[str] | None = None,
+               stop: threading.Event | None = None) -> list[str]:
     """Relative paths and basenames under `cwd`, bounded hard.
 
     Both forms are indexed: the user says either "test underscore camera h m r
     dot py" or the whole "tests slash test underscore ...", and only one of them
     matches a full relative path.
 
-    `deadline` is checked every ~200 entries rather than every entry — cheap
-    enough not to matter, but frequent enough that a huge directory cannot run
-    the clock out before the check ever fires.
+    `deadline` is checked at every directory and every ~200 entries within one —
+    cheap enough not to matter, but frequent enough that neither a wide tree nor
+    a deep one can run the clock out before the check fires. What it cannot do
+    is interrupt a single directory read, which on a network mount is the slow
+    part; for that the caller runs this in a thread and sets `stop`, and passes
+    `out` so the names found so far are already in its hands. See
+    _walk_names_bounded.
     """
-    names: list[str] = []
+    names: list[str] = [] if out is None else out
     if not cwd or not os.path.isdir(cwd):
         return names
     root_depth = cwd.rstrip(os.sep).count(os.sep)
+
+    def spent() -> bool:
+        if stop is not None and stop.is_set():
+            return True
+        return bool(deadline) and time.monotonic() > deadline
+
+    checked = 0
     try:
         for dirpath, dirnames, filenames in os.walk(cwd):
-            if deadline and len(names) % 200 == 0 and time.monotonic() > deadline:
+            if spent():
                 break
             depth = dirpath.rstrip(os.sep).count(os.sep) - root_depth
             if depth >= MAX_WALK_DEPTH:
@@ -544,6 +561,10 @@ def walk_names(cwd: str, deadline: float = 0.0) -> list[str]:
                     names.append(rel)
                 if len(names) >= MAX_WALK_ENTRIES:
                     return names
+                if len(names) - checked >= 200:
+                    checked = len(names)
+                    if spent():
+                        return names
     except OSError:
         return names
     return names
@@ -686,7 +707,42 @@ def path_commands(deadline: float = 0.0) -> list[str]:
 
 
 _cwd_cache: dict[str, tuple[float, list[str], list[str]]] = {}
+# The cwds whose walk had to be abandoned on the clock. Membership alone is the
+# flag; the age it is judged against is the cache entry's own timestamp, so the
+# two are cleared together and cannot disagree about what is still valid.
+_slow_cwds: set[str] = set()
 _cwd_cache_lock = threading.Lock()
+
+
+def _walk_names_bounded(cwd: str, deadline: float) -> tuple[list[str], bool]:
+    """(names, timed_out) — walk_names, with the deadline honoured regardless.
+
+    os.walk cannot be interrupted inside a directory read, and one such read on
+    a network mount outlasts the whole request budget on its own: the deadline
+    checks in walk_names only fire between reads, so a slow filesystem walks to
+    completion while the phone gives up on the upload. Running it in a daemon
+    thread that appends into a list this side holds makes the wait the caller's
+    to end — on timeout the flag is set, a snapshot of what was collected is
+    taken, and the helper exits at its next check.
+
+    With no deadline there is nothing to enforce, so the walk stays synchronous.
+    """
+    if not deadline:
+        return walk_names(cwd), False
+    names: list[str] = []
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=walk_names, args=(cwd, deadline),
+        kwargs={"out": names, "stop": stop}, daemon=True,
+    )
+    worker.start()
+    worker.join(max(0.0, deadline - time.monotonic()))
+    if worker.is_alive():
+        stop.set()
+        # A copy, because the helper is still appending to the original until
+        # it notices the flag.
+        return list(names), True
+    return names, False
 
 
 def cwd_vocabulary(cwd: str, deadline: float = 0.0) -> tuple[list[str], list[str]]:
@@ -700,14 +756,19 @@ def cwd_vocabulary(cwd: str, deadline: float = 0.0) -> tuple[list[str], list[str
     source: they are cwd files, indexed at the same "cwd" priority, and the
     only thing that distinguishes them is that they come first — which is
     exactly what a list already carries.
+
+    A cwd whose walk timed out keeps its partial answer for SLOW_CWD_TTL_S
+    instead: five seconds there means every take pays the timeout again for a
+    listing that will not have grown.
     """
     now = time.monotonic()
     hit = _cwd_cache.get(cwd)
-    if hit and now - hit[0] < CWD_CACHE_TTL_S:
+    if hit and now - hit[0] < (SLOW_CWD_TTL_S if cwd in _slow_cwds
+                               else CWD_CACHE_TTL_S):
         return hit[1], hit[2]
     if deadline and now > deadline:
         return [], []
-    names = walk_names(cwd, deadline)
+    names, timed_out = _walk_names_bounded(cwd, deadline)
     branches = [] if (deadline and time.monotonic() > deadline) else git_branches(cwd, deadline)
     if not (deadline and time.monotonic() > deadline):
         names = git_touched_files(cwd, deadline) + names
@@ -718,7 +779,12 @@ def cwd_vocabulary(cwd: str, deadline: float = 0.0) -> tuple[list[str], list[str
     with _cwd_cache_lock:
         if len(_cwd_cache) > 32:
             _cwd_cache.clear()
+            _slow_cwds.clear()
         _cwd_cache[cwd] = (now, names, branches)
+        if timed_out:
+            _slow_cwds.add(cwd)
+        else:
+            _slow_cwds.discard(cwd)
     return names, branches
 
 
