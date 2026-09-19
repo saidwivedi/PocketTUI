@@ -937,6 +937,19 @@ function recFinishTake(r) {
   // recBusy was already set and there was no recorder left to clear it. A
   // take the user abandoned is dropped either way, and its blob with it.
   if (!recBusy || recCancelled) { recClearUI(); return; }
+  // Nothing was ever handed over. An empty blob is not a quiet take, it is no
+  // take at all: uploading it buys a 422 the user only sees as a strip stuck on
+  // "Transcribing…". Ended exactly the way the overdue stop ends a take with no
+  // audio — the stream goes with it, since a recorder that delivered nothing
+  // says nothing good about the track it was reading.
+  if (!recChunks || !recChunks.length) {
+    recChunks = null;
+    recRelease();
+    recBusy = false;
+    recClearUI();
+    toast("The browser lost the recording — try again");
+    return;
+  }
   const blob = new Blob(recChunks, { type: r.mimeType || "audio/webm" });
   const seconds = recTakeSeconds();
   recChunks = null;
