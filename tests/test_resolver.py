@@ -958,6 +958,81 @@ def test_cwd_vocabulary_carries_the_recently_touched_files(tmp_path):
     assert "recently_edited.py" in names
 
 
+@pytest.fixture
+def no_git(monkeypatch):
+    """The git sources out of the way, so a walk test measures only the walk."""
+    monkeypatch.setattr(R, "git_branches", lambda cwd, deadline=0.0: [])
+    monkeypatch.setattr(R, "git_touched_files", lambda cwd, deadline=0.0: [])
+    R._cwd_cache.clear()
+    R._slow_cwds.clear()
+    yield
+    R._cwd_cache.clear()
+    R._slow_cwds.clear()
+
+
+def test_cwd_vocabulary_abandons_a_slow_walk_on_the_deadline(tmp_path, monkeypatch,
+                                                             no_git):
+    """The cluster-mount hang: a directory read slower than the whole budget.
+
+    The deadline checks inside walk_names cannot fire during one, so the only
+    thing that can end the wait is the caller — and it must end it with whatever
+    the walk had already found.
+    """
+    walks = []
+
+    def crawling_walk(top, *args, **kwargs):
+        walks.append(top)
+        for i in range(20):
+            yield (os.path.join(top, f"d{i}"), [], [f"file{i}.py"])
+            time.sleep(0.5)
+
+    monkeypatch.setattr(R.os, "walk", crawling_walk)
+    cwd = str(tmp_path)
+
+    started = time.monotonic()
+    names, _ = R.cwd_vocabulary(cwd, deadline=time.monotonic() + 0.3)
+    assert time.monotonic() - started < 1.0
+    assert walks == [cwd]
+    # Partial, not empty: the first directory arrived before the clock ran out.
+    assert "file0.py" in names
+
+    # And the slow cwd is remembered past the ordinary TTL, so the next take
+    # reads the partial listing instead of spawning the same timeout again.
+    monkeypatch.setattr(R, "CWD_CACHE_TTL_S", 0.0)
+    started = time.monotonic()
+    again, _ = R.cwd_vocabulary(cwd, deadline=time.monotonic() + 0.3)
+    assert time.monotonic() - started < 0.1
+    assert again == names
+    assert walks == [cwd]
+
+
+def test_cwd_vocabulary_walks_a_fast_cwd_in_full_and_keeps_the_short_ttl(
+        tmp_path, monkeypatch, no_git):
+    """Nothing about the escape hatch changes the ordinary case."""
+    for i in range(5):
+        (tmp_path / f"quick{i}.py").write_text("")
+    cwd = str(tmp_path)
+
+    names, _ = R.cwd_vocabulary(cwd, deadline=time.monotonic() + 2.0)
+    for i in range(5):
+        assert f"quick{i}.py" in names
+    assert cwd not in R._slow_cwds
+
+    walks = []
+    walk_names = R.walk_names
+
+    def counting_walk_names(*args, **kwargs):
+        walks.append(args[0])
+        return walk_names(*args, **kwargs)
+
+    monkeypatch.setattr(R, "walk_names", counting_walk_names)
+    assert R.cwd_vocabulary(cwd, deadline=time.monotonic() + 2.0)[0] == names
+    assert walks == []          # inside five seconds, this is the cache
+    monkeypatch.setattr(R, "CWD_CACHE_TTL_S", 0.0)
+    R.cwd_vocabulary(cwd, deadline=time.monotonic() + 2.0)
+    assert walks == [cwd]       # past them, it walks again
+
+
 # ---------------------------------------------------------------------------
 # SSH config hosts
 # ---------------------------------------------------------------------------
