@@ -117,6 +117,24 @@ def test_report_dialog_is_wired(doc):
     assert "https://pockettui.com/api/report" in doc
 
 
+def test_browser_zoom_scales_the_frame_not_the_page(doc):
+    """The pane's zoom is a transform on the iframe, never the page's own.
+
+    A proxied document told to zoom itself reports rects with the factor in
+    them and applies it again to any length written back from one, which puts
+    every rect-positioned overlay (jQuery .offset() into a select2 list, a
+    date picker, a tooltip) at factor times where it belongs. Scaling the
+    frame element leaves the page a CSS pixel of its own and still reflows it,
+    because the frame is laid out at 1/factor of the pane.
+    """
+    assert "function browserApplyZoom(" in doc
+    assert "frame.style.transform = factor === 1" in doc
+    assert "pockettui-zoom" not in doc
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    rule = re.search(r"#browser-frame \{[^}]*\}", css).group(0)
+    assert "transform-origin: 0 0;" in rule
+
+
 def test_vendor_script_tags_survive(doc):
     for name in ("xterm.js", "addon-fit.js", "addon-webgl.js"):
         assert f'src="vendor/{name}?v=__CACHE_VERSION__"' in doc

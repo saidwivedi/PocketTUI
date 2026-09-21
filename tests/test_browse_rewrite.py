@@ -461,6 +461,18 @@ def test_shim_parses_as_javascript(tmp_path):
     subprocess.run([node, "--check", str(f)], check=True, capture_output=True)
 
 
+def test_shim_never_zooms_the_page_it_sits_on():
+    # The pane scales its own iframe; nothing scales the document from inside
+    # it. CSS zoom on a document is not a scale a page can be positioned
+    # against: getBoundingClientRect comes back with the factor already in it
+    # and a length written from that rect has the factor applied again, so
+    # every overlay a script places from a rect lands at factor times where it
+    # meant to. That is what closed the MPG login page's institute list — the
+    # dropdown opened on top of the control it hung from, and the mouseup that
+    # ended the opening click landed in the list and dismissed it.
+    assert "zoom" not in A.BROWSE_SHIM.lower()
+
+
 def test_shim_cannot_close_its_own_script_element():
     assert "</script" not in A.BROWSE_SHIM.lower()
 

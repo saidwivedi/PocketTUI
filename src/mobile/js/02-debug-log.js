@@ -471,8 +471,8 @@ const cfg = {
   // server read at 125% is still at 125% the next time it is opened, which is
   // what a desktop browser's per-site zoom does. Only the hosts that are not
   // at 1 are written, so the record stays the size of the handful of pages
-  // someone has actually zoomed. The bounds are the proxied page's shim's own
-  // (app.py BROWSE_SHIM): anything outside them is not a factor this app wrote.
+  // someone has actually zoomed. The bounds are the pane's own steps, widened
+  // a little: anything outside them is not a factor this app wrote.
   get browserZoom() {
     let v = null;
     try { v = JSON.parse(localStorage.getItem("pockettui_browser_zoom")); } catch (e) {}
