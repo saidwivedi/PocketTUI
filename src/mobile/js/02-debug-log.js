@@ -390,10 +390,34 @@ const cfg = {
     let v = null;
     try { v = JSON.parse(localStorage.getItem("pockettui_side_pane")); } catch (e) {}
     if (!v || (v.owner !== "diff" && v.owner !== "files" && v.owner !== "browser")) return null;
+    // The browser's tabs, in the strip's order, and which of them was on
+    // screen. The address above is that same tab's, kept beside them so an
+    // older shell reading this record still opens the pane on the page it
+    // was left on. The cap is the strip's own (BROWSER_TAB_MAX,
+    // 42-browser.js) spelled out rather than read: this getter runs while
+    // the shell is still loading its fragments, and that one is declared in
+    // a later fragment than this.
+    //
+    // Cleaned with the index rather than beside it: dropping an entry moves
+    // every tab after it up one, and an index left counting against the record
+    // as it was written names the tab next to the one that was on screen — the
+    // pane then sends that one to `url` and shows the same page twice.
+    const raw = Array.isArray(v.tabs) ? v.tabs : [];
+    const want = typeof v.tab === "number" && v.tab >= 0 ? Math.trunc(v.tab) : 0;
+    const tabs = [];
+    let at = 0;
+    for (let i = 0; i < raw.length && tabs.length < 8; i++) {
+      const u = typeof raw[i] === "string" ? raw[i].trim() : "";
+      if (!u) continue;
+      if (i <= want) at = tabs.length;
+      tabs.push(u);
+    }
     return {
       owner: v.owner,
       session: typeof v.session === "string" ? v.session : "",
       url: typeof v.url === "string" ? v.url : "",
+      tabs: tabs,
+      tab: Math.min(at, Math.max(0, tabs.length - 1)),
     };
   },
   set sidePane(v) {
@@ -401,6 +425,11 @@ const cfg = {
         && v.session) {
       const rec = { owner: v.owner, session: v.session };
       if (v.owner === "browser" && v.url) rec.url = v.url;
+      if (v.owner === "browser" && Array.isArray(v.tabs)) {
+        rec.tabs = v.tabs.filter((u) => typeof u === "string" && u).slice(0, 8);
+        rec.tab = Math.min(Math.max(0, Math.trunc(v.tab) || 0),
+                           Math.max(0, rec.tabs.length - 1));
+      }
       localStorage.setItem("pockettui_side_pane", JSON.stringify(rec));
     } else localStorage.removeItem("pockettui_side_pane");
   },

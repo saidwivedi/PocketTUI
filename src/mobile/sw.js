@@ -123,8 +123,8 @@ self.addEventListener("fetch", (e) => {
   // proxied pages (/<h|s>/<host:port>/...) are someone else's site passing
   // through, where a cached copy would serve a stale dev server and the
   // offline fallback would put our own shell inside the pane's frame, and the
-  // tab's own entry pages (/enter, /start) carry a storage-clearing header
-  // that must come from the server every time.
+  // tab's own entry page (/enter) carries a storage-clearing header that must
+  // come from the server every time.
   if (/\/b\/[^/]+\//.test(u.pathname)) return;
   if (e.request.method !== "GET") return;
 

@@ -881,7 +881,9 @@ syncDiffTabs();
 // with every other stale entry, off the first session list to arrive.
 const sideBoot = cfg.sidePane;
 if (sideBoot && sideBoot.session) {
-  // The browser's half of that record is the page it was on: the other two
-  // panes reopen from the session alone, and it cannot.
-  fileViews.set(sideBoot.session, { boot: sideBoot.owner, bootUrl: sideBoot.url });
+  // The browser's half of that record is the tabs it had open, the page each
+  // one was on and which of them was in front: the other two panes reopen from
+  // the session alone, and it cannot.
+  fileViews.set(sideBoot.session, { boot: sideBoot.owner, bootUrl: sideBoot.url,
+                                    bootTabs: sideBoot.tabs, bootTab: sideBoot.tab });
 }

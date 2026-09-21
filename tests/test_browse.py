@@ -14,9 +14,7 @@ tailnet name in this repo fails the deploy's leak scan.
 
 import gzip
 import json
-import shutil
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -543,127 +541,6 @@ def test_the_enter_hop_goes_nowhere_but_this_proxy(client, site, to):
                    follow_redirects=False)
     assert r.status_code == 400
     assert "location" not in r.headers
-
-
-# ---------------------------------------------------------------------------
-# The page a tab with nothing in it starts on
-# ---------------------------------------------------------------------------
-# A tab has no chrome of ours, and the browser's own address bar types into the
-# laptop rather than into the computer. /start is the one address bar a tab has
-# that goes through the proxy — this server's own page, on this server's
-# origin, carrying the same wipe /enter does because it is the entry itself.
-
-def start_url(tok: str, prefix: str = PREFIX) -> str:
-    return f"{prefix}/b/{tok}/start"
-
-
-def test_the_start_page_is_this_servers_own_page_unsandboxed(client, site):
-    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
-    r = client.get(start_url(tok)[len(PREFIX):])
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("text/html")
-    assert r.headers["clear-site-data"] == '"storage"'
-    assert r.headers["cache-control"] == "no-store"
-    assert r.headers["x-content-type-options"] == "nosniff"
-    # The tab flavour's whole point: no opaque origin, so the page it sends the
-    # browser to is the top window and its frames are its own to script.
-    assert "content-security-policy" not in r.headers
-    assert 'id="addr"' in r.text and '<form id="go">' in r.text
-    assert socket.gethostname() in r.text
-
-
-def test_the_start_page_is_refused_to_the_pane_token(client, site):
-    """The pane has an address bar of its own, and a sandboxed tab is the one
-    thing the flavour exists to avoid."""
-    tok = mint(client, f"http://127.0.0.1:{site}/").json()["token"]
-    r = client.get(start_url(tok)[len(PREFIX):])
-    assert r.status_code == 403
-    assert "clear-site-data" not in r.headers
-
-
-def test_the_start_page_is_refused_once_its_token_has_gone(client, site):
-    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
-    A.BROWSE[tok].last_used = 0
-    assert client.get(start_url(tok)[len(PREFIX):]).status_code == 403
-    assert client.get(start_url("nosuchtoken")[len(PREFIX):]).status_code == 403
-
-
-def test_the_start_page_lists_the_bookmarks_as_proxied_links(client, site, marks):
-    """Written by this server, not built by its script: a start page with
-    JavaScript off still reaches everything the computer has kept."""
-    client.put("/api/browse/bookmarks", json={"bookmarks": [ONE]}, headers=HDRS)
-    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
-    r = client.get(start_url(tok)[len(PREFIX):])
-    assert f'href="{PREFIX}/b/{tok}/s/wiki.example.net:443/start"' in r.text
-    assert ">Start<" in r.text
-    assert ">wiki.example.net<" in r.text
-
-
-def test_a_bookmark_title_cannot_write_the_start_page(client, site, marks):
-    client.put("/api/browse/bookmarks", headers=HDRS, json={"bookmarks": [
-        dict(ONE, title='</a><img src=x onerror=alert(1)>')]})
-    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
-    r = client.get(start_url(tok)[len(PREFIX):])
-    assert "<img src=x" not in r.text
-    assert "&lt;/a&gt;&lt;img src=x onerror=alert(1)&gt;" in r.text
-
-
-# What the field does with an address, run as the page runs it. The guess is a
-# port of the shell's (isPrivateHost in 08-links.js), and it is the whole of
-# what makes a scheme-less address work in a tab, so it is exercised rather
-# than read: a private host is http, everything else https, and the rest of the
-# URL survives either way.
-START_CASES = [
-    ("localhost:3000", "/h/localhost:3000/"),
-    ("10.0.0.5", "/h/10.0.0.5:80/"),
-    ("box.local", "/h/box.local:80/"),
-    ("portal.example.net", "/s/portal.example.net:443/"),
-    ("https://x.example.net/a?b", "/s/x.example.net:443/a?b"),
-    ("x.example.net:8443", "/s/x.example.net:8443/"),
-    ("   ", ""),
-]
-
-
-def test_the_start_pages_field_guesses_a_scheme_the_way_the_pane_does(tmp_path):
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node is not on PATH")
-    harness = """
-const typed = [];
-let where = "";
-globalThis.window = globalThis;
-globalThis.location = { get href() { return where },
-                        set href(v) { where = v } };
-const input = { value: "" };
-const on = {};
-globalThis.document = {
-  currentScript: { dataset: { cfg: CFG } },
-  getElementById(id) {
-    return id === "addr" ? input
-                         : { addEventListener(t, fn) { on[t] = fn } };
-  },
-};
-SCRIPT
-for (const c of CASES) {
-  where = "";
-  input.value = c;
-  on.submit({ preventDefault() {} });
-  typed.push(where);
-}
-console.log(JSON.stringify(typed));
-"""
-    f = tmp_path / "start.mjs"
-    # the script goes in last, for the reason the shim harnesses give: its own
-    # text must not be searched for the placeholders after it.
-    f.write_text(harness
-                 .replace("CFG", json.dumps(json.dumps({"prefix": PREFIX,
-                                                        "tok": "TOKEN123"})))
-                 .replace("CASES", json.dumps([c for c, _ in START_CASES]))
-                 .replace("SCRIPT", A.BROWSE_START_JS), encoding="utf-8")
-    out = subprocess.run([node, str(f)], check=True, capture_output=True)
-    got = json.loads(out.stdout.decode("utf-8"))
-    want = [f"{PREFIX}/b/TOKEN123{tail}" if tail else "" for _, tail in START_CASES]
-    assert got == want
 
 
 # ---------------------------------------------------------------------------
