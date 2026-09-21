@@ -461,6 +461,63 @@ def test_shim_parses_as_javascript(tmp_path):
     subprocess.run([node, "--check", str(f)], check=True, capture_output=True)
 
 
+def test_shim_maps_the_urls_in_markup_a_page_writes(tmp_path):
+    # document.write hands the parser a string that was never in the bytes the
+    # rewriter saw and never passes an element setter, so without this the
+    # root-relative src= in it is fetched from this server's root. It is how
+    # SAP's portal loads its UI5 core, and the whole page stayed blank for it.
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    cfg = {"prefix": PREFIX, "tok": TOK, "sch": "h",
+           "hostport": "127.0.0.1:3000", "origin": ORIGIN}
+    here = "http://box.example.net:8080" + BASE + "/h/127.0.0.1:3000/page"
+    harness = """
+const written = [];
+globalThis.window = globalThis;
+globalThis.location = {origin: "http://box.example.net:8080",
+  host: "box.example.net:8080", protocol: "http:", href: HERE,
+  pathname: new URL(HERE).pathname, search: "", hash: "", reload() {}};
+globalThis.document = {currentScript: {dataset: {cfg: CFG}}, baseURI: HERE,
+  addEventListener() {}, write(s) { written.push(s); },
+  writeln(s) { written.push(s); }};
+globalThis.addEventListener = function () {};
+globalThis.history = {};
+SHIM
+for (const s of CASES) document.write(s);
+console.log(JSON.stringify(written));
+"""
+    f = tmp_path / "harness.mjs"
+    cases = [
+        # what SAP writes: a root-relative script src, mapped onto the target
+        '<script id="sap-ui-bootstrap" src="/sapui5/core-min-0.js"></scr' + 'ipt>',
+        # an absolute URL to a third host, and an unquoted value
+        '<img src=http://other.example.net/a.png><a href="/b">x</a>',
+        # a value this call left half written, prose that only looks like one,
+        # and a relative value the proxied base already resolves
+        '<img src="/half',
+        'say src=nothing and move on',
+        '<img src="thumb.png">',
+    ]
+    # the shim goes in last: it is the one substitution whose text must not
+    # be searched for the placeholders that follow.
+    f.write_text(harness.replace("CFG", json.dumps(json.dumps(cfg)))
+                 .replace("HERE", json.dumps(here))
+                 .replace("CASES", json.dumps(cases))
+                 .replace("SHIM", A.BROWSE_SHIM), encoding="utf-8")
+    out = subprocess.run([node, str(f)], check=True, capture_output=True)
+    got = json.loads(out.stdout.decode("utf-8"))
+    # spelled from the frame's own origin, the way the shim maps everywhere
+    site = "http://box.example.net:8080" + BASE
+    assert f'src="{site}/h/127.0.0.1:3000/sapui5/core-min-0.js"' in got[0]
+    assert 'id="sap-ui-bootstrap"' in got[0]
+    assert f'src={site}/h/other.example.net:80/a.png' in got[1]
+    assert f'href="{site}/h/127.0.0.1:3000/b"' in got[1]
+    assert got[2] == cases[2]
+    assert got[3] == cases[3]
+    assert got[4] == cases[4]
+
+
 def test_shim_never_zooms_the_page_it_sits_on():
     # The pane scales its own iframe; nothing scales the document from inside
     # it. CSS zoom on a document is not a scale a page can be positioned
