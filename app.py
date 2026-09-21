@@ -1322,6 +1322,9 @@ def server_capabilities() -> dict:
         # "Port forwarding". Strictly checked by the shell: an older server
         # 404s the POST, and the tap must not wait on it to find that out.
         "relay": True,
+        # /api/fs/thumb — the explorer grid's tiles. False on an install with
+        # no ffmpeg to render them with, where the grid keeps its icons.
+        "thumbs": ffmpeg_exe() is not None,
     }
 
 
@@ -3922,6 +3925,142 @@ def api_signed_file(request: Request, path: str = "", exp: str = "",
         return Response(status_code=404)
     p, kind = found
     return no_store(FileResponse(p, media_type=kind))
+
+
+# ---------------------------------------------------------------------------
+# Thumbnails
+# ---------------------------------------------------------------------------
+# The grid view's tiles. One small JPEG per image or video, rendered by ffmpeg
+# and kept on disk: a phone scrolling a photo directory would otherwise pull
+# every full-size file across the tailnet only to shrink it in the browser.
+
+# Under $HOME for IMAGE_DIR's reason, and with its plain mode: a thumbnail is
+# a derivative of the user's own file, not a secret like the token.
+THUMB_DIR = Path.home() / ".pockettui" / "thumbs"
+THUMB_KEEP = 500
+# A tile is around 100 px on a phone; this covers a retina screen and the
+# wider grid a tablet lays out.
+THUMB_MAX_PX = 256
+# Shorter than FFMPEG_TIMEOUT_S: somebody is watching this tile, where a
+# dictation's decode runs against a spinner they expect to wait on.
+THUMB_TIMEOUT_S = 10
+# Every media type but SVG, which is vector art ffmpeg does not rasterise.
+# The grid shows its own icon for anything not listed here.
+THUMB_EXTS = frozenset(MEDIA_TYPES) - {".svg"}
+# Its own bucket rather than "file": one grid screen is forty-odd tiles, so
+# sharing RATE_FILE with the viewer's full-size loads would throttle a couple
+# of folders' browsing. Still a ceiling on a client stuck in a loop.
+RATE_THUMB = 600
+
+# Bound the long side without ever enlarging: the target is the source's own
+# size clamped to THUMB_MAX_PX, fitted inside by `decrease`.
+THUMB_SCALE = (f"scale='min({THUMB_MAX_PX},iw)':'min({THUMB_MAX_PX},ih)'"
+               ":force_original_aspect_ratio=decrease")
+
+
+def thumb_key(p: Path, st: os.stat_result) -> str:
+    """The cache name for `p` as it is right now.
+
+    Size and mtime alongside the path, so an edited file renders again instead
+    of serving the old tile, and the entry it replaces ages out of the
+    directory on its own.
+    """
+    raw = f"{p}|{st.st_mtime_ns}|{st.st_size}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def render_thumb(src: Path, out: Path, video: bool) -> bool:
+    """Write one scaled JPEG frame of `src` to `out`. False when ffmpeg could not.
+
+    A video is sampled a second in, past the black or title frame most clips
+    open on. A clip shorter than that seeks past its end, which ffmpeg reports
+    as success having written nothing at all — so the size of the output, not
+    the exit code alone, is what says the frame was grabbed, and the retry at
+    zero is what covers the short clip. An image goes through the same encoder
+    rather than Pillow: this install already carries ffmpeg for dictation, and
+    a second image library would be a dependency for nothing.
+    """
+    exe = ffmpeg_exe()
+    if exe is None:
+        return False
+    for seek in ((["-ss", "1"], ["-ss", "0"]) if video else ([],)):
+        try:
+            proc = subprocess.run(
+                [exe, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                 *seek, "-i", str(src), "-vf", THUMB_SCALE,
+                 "-frames:v", "1", "-f", "image2", str(out)],
+                capture_output=True, text=True, timeout=THUMB_TIMEOUT_S)
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        if proc.returncode == 0 and out.exists() and out.stat().st_size > 0:
+            return True
+    return False
+
+
+@app.get("/api/fs/thumb")
+def api_fs_thumb(request: Request, path: str = "") -> Response:
+    """A small JPEG of an image or video file, for the explorer's grid tiles.
+
+    Path handling is /api/fs/read's, with media_file()'s resolve() on top
+    because the cache is keyed on the file the bytes actually came from. The
+    extension is checked after the file itself, so a directory answers the 404
+    a missing path does rather than "wrong type".
+
+    Cached under that key, so the second client to scroll past a tile — and
+    the same one after a reload — pays a read instead of an ffmpeg run. The
+    ETag is the key, which makes a revalidation a 304 and an edited file a
+    fresh render. This is the one /api/fs read route that is not no_store:
+    a tile is worth an hour in the browser's own cache precisely because its
+    name changes when the file does.
+
+    `ref` is deliberately not taken. A blob at a ref has no path to key on,
+    and the grid only ever shows the working tree.
+    """
+    refusal = throttled("thumb", RATE_THUMB, request)
+    if refusal is not None:
+        return refusal
+    p = fs_path(path)
+    if p is None:
+        return fs_error("bad_path", 400)
+    p = p.resolve()
+    try:
+        st = os.stat(p)
+    except OSError:
+        return fs_error("not_found", 404)
+    if not stat.S_ISREG(st.st_mode):
+        return fs_error("not_found", 404)
+    if p.suffix.lower() not in THUMB_EXTS:
+        return fs_error("unsupported_type", 415)
+
+    etag = f'"{thumb_key(p, st)}"'
+    headers = {"Cache-Control": "private, max-age=3600", "ETag": etag}
+    known = [t.strip() for t in request.headers.get("if-none-match", "").split(",")]
+    if etag in known:
+        return Response(status_code=304, headers=headers)
+
+    cached = THUMB_DIR / f"{thumb_key(p, st)}.jpg"
+    try:
+        return Response(cached.read_bytes(), media_type="image/jpeg",
+                        headers=headers)
+    except OSError:
+        pass
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "thumb.jpg"
+        video = MEDIA_TYPES[p.suffix.lower()].startswith("video/")
+        if not render_thumb(p, out, video):
+            return fs_error("thumb_failed", 422)
+        data = out.read_bytes()
+    try:
+        THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        # Written through atomic_write like every other file this server
+        # stages, so a request arriving mid-render never reads half a JPEG.
+        atomic_write(cached, data, None)
+        # After the write, so the tile just rendered counts as a survivor.
+        prune_staged(THUMB_DIR, "*.jpg", THUMB_KEEP)
+    except OSError:
+        pass  # A cache that cannot be written is still a thumbnail served.
+    return Response(data, media_type="image/jpeg", headers=headers)
 
 
 # ---------------------------------------------------------------------------
