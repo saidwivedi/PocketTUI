@@ -54,6 +54,24 @@ def shot(tmp_path):
 
 
 @pytest.fixture
+def photo(tmp_path):
+    """A JPEG source, whose container cannot carry alpha either way."""
+    p = tmp_path / "photo.jpg"
+    encode("-f", "lavfi", "-i", "color=c=red:s=64x48", "-frames:v", "1", p)
+    return p
+
+
+@pytest.fixture
+def cutout(tmp_path):
+    """An RGBA PNG — the app icon with rounded corners, in miniature."""
+    p = tmp_path / "cutout.png"
+    encode("-f", "lavfi", "-i", "color=c=red@0.0:s=64x48,format=rgba",
+           "-frames:v", "1", p)
+    assert png_info(p.read_bytes())[2] == 6, "the fixture itself lost its alpha"
+    return p
+
+
+@pytest.fixture
 def clip(tmp_path):
     """Two seconds of video, long enough for the frame grab at one second."""
     p = tmp_path / "clip.mp4"
@@ -81,6 +99,18 @@ def jpeg_size(data: bytes) -> tuple[int, int]:
     raise AssertionError("no start-of-frame in the JPEG")
 
 
+def png_info(data: bytes) -> tuple[int, int, int]:
+    """(width, height, colour type) off the PNG's IHDR, parsed the same way.
+
+    Colour type 6 is truecolour with alpha, which is what says the tile kept
+    the transparency the source had.
+    """
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    assert data[12:16] == b"IHDR", "IHDR is not the first chunk"
+    w, h, _depth, colour = struct.unpack(">IIBB", data[16:26])
+    return w, h, colour
+
+
 def thumb(client, path, **kw):
     return client.get("/api/fs/thumb", params={"path": str(path)}, **kw)
 
@@ -89,17 +119,41 @@ def thumb(client, path, **kw):
 # rendering
 # ---------------------------------------------------------------------------
 
-def test_image_thumb_is_a_jpeg_within_the_tile(client, shot):
+def test_image_thumb_is_a_png_within_the_tile(client, shot):
     r = thumb(client, shot)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/png"
+    assert max(png_info(r.content)[:2]) <= A.THUMB_MAX_PX
+
+
+def test_a_jpeg_source_stays_a_jpeg(client, photo):
+    r = thumb(client, photo)
     assert r.status_code == 200, r.text
     assert r.headers["content-type"] == "image/jpeg"
     assert max(jpeg_size(r.content)) <= A.THUMB_MAX_PX
 
 
+def test_a_transparent_source_keeps_its_alpha(client, cutout, thumbs):
+    """The rounded-corner app icon: a JPEG tile would come back black there."""
+    r = thumb(client, cutout)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/png"
+    w, h, colour = png_info(r.content)
+    assert colour == 6
+    assert max(w, h) <= A.THUMB_MAX_PX
+    cached = list(thumbs.glob("*"))
+    assert [c.suffix for c in cached] == [".png"]
+    assert cached[0].read_bytes() == r.content
+
+    second = thumb(client, cutout)
+    assert second.content == r.content
+    assert list(thumbs.glob("*")) == cached
+
+
 def test_a_large_image_is_scaled_down_keeping_its_aspect(client, tmp_path):
     p = tmp_path / "wide.png"
     encode("-f", "lavfi", "-i", "color=c=blue:s=600x400", "-frames:v", "1", p)
-    w, h = jpeg_size(thumb(client, p).content)
+    w, h, _colour = png_info(thumb(client, p).content)
     assert w == A.THUMB_MAX_PX
     assert abs(w / h - 600 / 400) < 0.02
 
@@ -136,7 +190,7 @@ def test_ffmpeg_failure_is_a_422(client, tmp_path):
 def test_the_second_call_is_served_from_disk(client, shot, thumbs, monkeypatch):
     first = thumb(client, shot)
     assert first.status_code == 200
-    cached = list(thumbs.glob("*.jpg"))
+    cached = list(thumbs.glob("*.png"))
     assert len(cached) == 1
     assert cached[0].read_bytes() == first.content
 
@@ -156,26 +210,28 @@ def test_an_edited_file_renders_again(client, shot, thumbs):
     second = thumb(client, shot)
     assert second.status_code == 200
     assert second.headers["etag"] != first.headers["etag"]
-    assert len(list(thumbs.glob("*.jpg"))) == 2
+    assert len(list(thumbs.glob("*.png"))) == 2
 
 
 def test_the_oldest_entries_are_evicted(client, shot, thumbs, monkeypatch):
+    """The bound is on the cache, not on each suffix: two PNGs and two JPEGs
+    plus the tile just rendered leave three files between them."""
     monkeypatch.setattr(A, "THUMB_KEEP", 3)
     thumbs.mkdir(parents=True)
     old = []
-    for n in range(5):
-        p = thumbs / f"{n:040x}.jpg"
+    for n, suffix in enumerate((".png", ".jpg", ".png", ".jpg")):
+        p = thumbs / f"{n:040x}{suffix}"
         p.write_bytes(b"stale")
         os.utime(p, (time.time() - 100 + n, time.time() - 100 + n))
         old.append(p)
 
     r = thumb(client, shot)
     assert r.status_code == 200
-    left = sorted(p.name for p in thumbs.glob("*.jpg"))
+    left = sorted(p.name for p in thumbs.iterdir())
     assert len(left) == 3
     # The tile just rendered survives, and the two oldest stale ones are gone.
     assert not old[0].exists() and not old[1].exists()
-    assert old[4].name in left
+    assert old[2].name in left and old[3].name in left
 
 
 def test_an_unwritable_cache_still_serves_the_thumbnail(client, shot, thumbs):
@@ -183,7 +239,7 @@ def test_an_unwritable_cache_still_serves_the_thumbnail(client, shot, thumbs):
     thumbs.write_bytes(b"not a directory")
     r = thumb(client, shot)
     assert r.status_code == 200
-    assert max(jpeg_size(r.content)) <= A.THUMB_MAX_PX
+    assert max(png_info(r.content)[:2]) <= A.THUMB_MAX_PX
 
 
 # ---------------------------------------------------------------------------

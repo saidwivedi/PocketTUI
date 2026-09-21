@@ -118,15 +118,18 @@ function kindIcon(kind) {
 }
 
 // The tile's extension chip: what the typed icon cannot say on its own, since
-// a .py and a .rs are one icon. Four characters is what fits under 34px, so a
-// longer extension is clipped rather than shrunk, and anything that is not a
-// short alphanumeric ending is not an extension worth printing.
+// a .py and a .rs are one icon. Never clipped, so what it prints is always a
+// real extension: four characters is what fits under 34px, and a longer
+// ending (.ipynb, .service) goes unprinted rather than half-printed. A name
+// that starts with a dot gets none either — the tail of .dev.vars or of
+// .last_voice.orig is not a type, the way the whole of .bashrc is not one.
 function fileBadge(name) {
+  if (name.startsWith(".")) return "";
   const dot = name.lastIndexOf(".");
   if (dot <= 0) return "";
   const ext = name.slice(dot + 1);
-  if (!/^[a-z0-9]{1,8}$/i.test(ext)) return "";
-  return ext.slice(0, 4).toUpperCase();
+  if (!/^[a-z0-9]{1,4}$/i.test(ext)) return "";
+  return ext.toUpperCase();
 }
 
 // A page opens as a page, in a tab of its own — seeing the source of a report

@@ -3937,9 +3937,11 @@ def api_signed_file(request: Request, path: str = "", exp: str = "",
 # ---------------------------------------------------------------------------
 # Thumbnails
 # ---------------------------------------------------------------------------
-# The grid view's tiles. One small JPEG per image or video, rendered by ffmpeg
-# and kept on disk: a phone scrolling a photo directory would otherwise pull
-# every full-size file across the tailnet only to shrink it in the browser.
+# The grid view's tiles. One small image per image or video file, rendered by
+# ffmpeg and kept on disk: a phone scrolling a photo directory would otherwise
+# pull every full-size file across the tailnet only to shrink it in the
+# browser. A JPEG, except where the source could carry transparency — an app
+# icon with rounded corners would come back with black ones.
 
 # Under $HOME for IMAGE_DIR's reason, and with its plain mode: a thumbnail is
 # a derivative of the user's own file, not a secret like the token.
@@ -3954,6 +3956,14 @@ THUMB_TIMEOUT_S = 10
 # Every media type but SVG, which is vector art ffmpeg does not rasterise.
 # The grid shows its own icon for anything not listed here.
 THUMB_EXTS = frozenset(MEDIA_TYPES) - {".svg"}
+# The containers that can hold an alpha channel, whose tiles are PNGs so a
+# transparent source stays transparent instead of being flattened onto black.
+# A video frame never is: none of the codecs behind .mp4/.webm/.mov carries
+# alpha here, and a JPEG tile is a third the bytes.
+THUMB_ALPHA_EXTS = frozenset({".png", ".gif", ".webp"})
+# Both tile suffixes in one glob, so eviction walks the whole cache and keeps
+# the newest THUMB_KEEP of it rather than that many of each half.
+THUMB_GLOB = "*.[jp][pn]g"
 # Its own bucket rather than "file": one grid screen is forty-odd tiles, so
 # sharing RATE_FILE with the viewer's full-size loads would throttle a couple
 # of folders' browsing. Still a ceiling on a client stuck in a loop.
@@ -3977,7 +3987,11 @@ def thumb_key(p: Path, st: os.stat_result) -> str:
 
 
 def render_thumb(src: Path, out: Path, video: bool) -> bool:
-    """Write one scaled JPEG frame of `src` to `out`. False when ffmpeg could not.
+    """Write one scaled frame of `src` to `out`. False when ffmpeg could not.
+
+    `out`'s own suffix picks the encoder, .png or .jpg; a PNG is asked for rgba
+    so the source's alpha survives the scale filter and reaches the encoder,
+    where a JPEG would have had it flattened onto black.
 
     A video is sampled a second in, past the black or title frame most clips
     open on. A clip shorter than that seeks past its end, which ffmpeg reports
@@ -3990,11 +4004,12 @@ def render_thumb(src: Path, out: Path, video: bool) -> bool:
     exe = ffmpeg_exe()
     if exe is None:
         return False
+    vf = THUMB_SCALE + (",format=rgba" if out.suffix == ".png" else "")
     for seek in ((["-ss", "1"], ["-ss", "0"]) if video else ([],)):
         try:
             proc = subprocess.run(
                 [exe, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-                 *seek, "-i", str(src), "-vf", THUMB_SCALE,
+                 *seek, "-i", str(src), "-vf", vf,
                  "-frames:v", "1", "-f", "image2", str(out)],
                 capture_output=True, text=True, timeout=THUMB_TIMEOUT_S)
         except (subprocess.TimeoutExpired, OSError):
@@ -4006,7 +4021,7 @@ def render_thumb(src: Path, out: Path, video: bool) -> bool:
 
 @app.get("/api/fs/thumb")
 def api_fs_thumb(request: Request, path: str = "") -> Response:
-    """A small JPEG of an image or video file, for the explorer's grid tiles.
+    """A small image of an image or video file, for the explorer's grid tiles.
 
     Path handling is /api/fs/read's, with media_file()'s resolve() on top
     because the cache is keyed on the file the bytes actually came from. The
@@ -4045,15 +4060,16 @@ def api_fs_thumb(request: Request, path: str = "") -> Response:
     if etag in known:
         return Response(status_code=304, headers=headers)
 
-    cached = THUMB_DIR / f"{thumb_key(p, st)}.jpg"
+    suffix = ".png" if p.suffix.lower() in THUMB_ALPHA_EXTS else ".jpg"
+    kind = "image/png" if suffix == ".png" else "image/jpeg"
+    cached = THUMB_DIR / f"{thumb_key(p, st)}{suffix}"
     try:
-        return Response(cached.read_bytes(), media_type="image/jpeg",
-                        headers=headers)
+        return Response(cached.read_bytes(), media_type=kind, headers=headers)
     except OSError:
         pass
 
     with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "thumb.jpg"
+        out = Path(tmp) / f"thumb{suffix}"
         video = MEDIA_TYPES[p.suffix.lower()].startswith("video/")
         if not render_thumb(p, out, video):
             return fs_error("thumb_failed", 422)
@@ -4061,13 +4077,13 @@ def api_fs_thumb(request: Request, path: str = "") -> Response:
     try:
         THUMB_DIR.mkdir(parents=True, exist_ok=True)
         # Written through atomic_write like every other file this server
-        # stages, so a request arriving mid-render never reads half a JPEG.
+        # stages, so a request arriving mid-render never reads half a tile.
         atomic_write(cached, data, None)
         # After the write, so the tile just rendered counts as a survivor.
-        prune_staged(THUMB_DIR, "*.jpg", THUMB_KEEP)
+        prune_staged(THUMB_DIR, THUMB_GLOB, THUMB_KEEP)
     except OSError:
         pass  # A cache that cannot be written is still a thumbnail served.
-    return Response(data, media_type="image/jpeg", headers=headers)
+    return Response(data, media_type=kind, headers=headers)
 
 
 # ---------------------------------------------------------------------------
