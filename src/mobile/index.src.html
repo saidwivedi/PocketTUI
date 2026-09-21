@@ -688,6 +688,45 @@
     <div id="browser-tab-row"></div>
     <button class="icon-btn" id="btn-browser-newtab" aria-label="New tab"
             title="New tab"><svg><use href="#i-plus"/></svg></button>
+    <!-- The window controls, where a browser window keeps them: the same row
+         as the tabs, at its other end. Bookmark, zoom, and the docked pane's
+         own pair — every one of them acts on the window or on the page as a
+         whole, which is what the top row is for, and the address row below is
+         left to the address and the keys that move it. On the band rather
+         than on the active tab's card: they belong to the pane, not to the
+         tab that happens to be on screen. -->
+    <div id="browser-tab-actions">
+      <!-- Keep this page, or stop keeping it: one press either way, since the
+           bar below says which it was. Hidden on a server with no route to save
+           to (syncBrowseCap). -->
+      <button class="icon-btn" id="btn-browser-star" aria-label="Bookmark this page"
+              hidden><svg><use href="#i-star"/></svg></button>
+      <!-- Zoom, in both shapes rather than dock-only: a phone framing an
+           intranet page built for a desktop is the case that needs it most. One
+           key and a panel rather than two keys — the docked bar is 360px wide
+           and the pair were two of its few slots, and neither of them ever said
+           what the page was at. The panel's buttons scale the frame element
+           itself (browserApplyZoom) rather than the document inside it, which is
+           cross-origin anyway. -->
+      <div id="browser-zoom-wrap">
+        <button class="icon-btn" id="btn-browser-zoom" aria-label="Zoom"
+                aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-search"/></svg></button>
+        <div id="browser-zoom-menu" role="menu">
+          <button type="button" class="icon-btn" id="browser-zoom-minus"
+                  aria-label="Zoom out"><svg><use href="#i-zoom-out"/></svg></button>
+          <button type="button" id="browser-zoom-pct"
+                  aria-label="Back to 100%">100%</button>
+          <button type="button" class="icon-btn" id="browser-zoom-plus"
+                  aria-label="Zoom in"><svg><use href="#i-zoom-in"/></svg></button>
+        </div>
+      </div>
+      <!-- The docked pane's own two controls, shown only while the browser is
+           beside the terminal rather than over it — files-expand/close's pair. -->
+      <button class="icon-btn dock-only" id="btn-browser-expand"
+              aria-label="Expand the browser pane"><svg><use href="#i-expand"/></svg></button>
+      <button class="icon-btn dock-only" id="btn-browser-close"
+              aria-label="Close the browser pane"><svg><use href="#i-close"/></svg></button>
+    </div>
   </div>
   <div class="topbar browser-topbar">
     <!-- Same button, same reason: hidden until openBrowser sees the terminal
@@ -707,10 +746,11 @@
          the keys that act on the page rather than on the address. Hidden
          where it cannot be granted (syncBrowseCap). -->
     <button class="icon-btn" id="btn-browser-tab" hidden aria-pressed="false"
-            aria-label="Local network"
-            title="Local network"><svg><use href="#i-lan"/></svg></button>
+            aria-label="Use the computer's network for this tab"
+            title="Use the computer's network for this tab"><svg><use href="#i-lan"/></svg></button>
     <button class="icon-btn" id="btn-browser-reload" aria-label="Reload"><svg><use href="#i-reload"/></svg></button>
-    <!-- Flexes to fill the bar between the arrows and the actions after it —
+    <!-- Flexes to fill everything the arrows leave, which since the window
+         controls moved up to the tab row is the whole rest of the bar —
          files-path-wrap's job, minus the crumbs; the pane has only ever the
          one field. -->
     <div id="browser-url-wrap">
@@ -721,36 +761,6 @@
              autocorrect="off" autocomplete="off" spellcheck="false"
              placeholder="http://localhost:3000" aria-label="Address">
     </div>
-    <!-- Keep this page, or stop keeping it: one press either way, since the
-         bar below says which it was. Hidden on a server with no route to save
-         to (syncBrowseCap). -->
-    <button class="icon-btn" id="btn-browser-star" aria-label="Bookmark this page"
-            hidden><svg><use href="#i-star"/></svg></button>
-    <!-- Zoom, in both shapes rather than dock-only: a phone framing an
-         intranet page built for a desktop is the case that needs it most. One
-         key and a panel rather than two keys — the docked bar is 360px wide
-         and the pair were two of its few slots, and neither of them ever said
-         what the page was at. The panel's buttons scale the frame element
-         itself (browserApplyZoom) rather than the document inside it, which is
-         cross-origin anyway. -->
-    <div id="browser-zoom-wrap">
-      <button class="icon-btn" id="btn-browser-zoom" aria-label="Zoom"
-              aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-search"/></svg></button>
-      <div id="browser-zoom-menu" role="menu">
-        <button type="button" class="icon-btn" id="browser-zoom-minus"
-                aria-label="Zoom out"><svg><use href="#i-zoom-out"/></svg></button>
-        <button type="button" id="browser-zoom-pct"
-                aria-label="Back to 100%">100%</button>
-        <button type="button" class="icon-btn" id="browser-zoom-plus"
-                aria-label="Zoom in"><svg><use href="#i-zoom-in"/></svg></button>
-      </div>
-    </div>
-    <!-- The docked pane's own two controls, shown only while the browser is
-         beside the terminal rather than over it — files-expand/close's pair. -->
-    <button class="icon-btn dock-only" id="btn-browser-expand"
-            aria-label="Expand the browser pane"><svg><use href="#i-expand"/></svg></button>
-    <button class="icon-btn dock-only" id="btn-browser-close"
-            aria-label="Close the browser pane"><svg><use href="#i-close"/></svg></button>
   </div>
   <!-- The zoom panel's scrim, #files-view-scrim's job: take the tap that
        closes the panel, and dim only what the panel floats over. Inside the
