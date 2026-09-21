@@ -99,6 +99,7 @@ JS_FRAGMENTS = (
     "39-type-command.js",
     "40-profiles.js",
     "41-appearance.js",
+    "42-browser.js",
     "27-boot.js",
 )
 

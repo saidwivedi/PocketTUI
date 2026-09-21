@@ -39,6 +39,8 @@ const KEYS = [
   // they are — arrow work and file browsing are different errands anyway.
   { icon: "i-folder", files: true, narrow: true, only: "collapsed",
     cls: "k-files", aria: "Browse files in the session's folder" },
+  { icon: "i-globe", browser: true, narrow: true, only: "collapsed",
+    cls: "k-browser", aria: "Open a browser" },
   // The arrows' alternates are the nav keys that live beside them on a real
   // keyboard: Home/End across, PgUp/PgDn along.
   { label: "←",     seq: "\x1b[D", narrow: true, repeat: true, cls: "k-left",  only: "expanded",
