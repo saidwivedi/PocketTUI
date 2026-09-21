@@ -106,7 +106,7 @@ wideQuery.addEventListener("change", () => {
   if (wideQuery.matches && !demoMode && !needsSetup()) loadSessions();
 });
 
-// The state badges ("needs input" / "running") only move when /api/sessions
+// The state badges ("Needs input" / "Running") only move when /api/sessions
 // is asked again. On the phone that happens every time the list comes back;
 // beside the rail the user can sit in a terminal for an hour with the list in
 // view, so it polls — modestly, foreground only, and quiet so an unreachable
