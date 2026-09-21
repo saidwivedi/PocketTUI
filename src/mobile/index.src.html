@@ -206,6 +206,16 @@
       <path d="M20 20l-4.8-4.8"/>
       <path d="M7.5 10.5h6M10.5 7.5v6"/>
     </symbol>
+    <!-- The bookmarks star, outline and filled. Two symbols rather than one
+         restyled by a class: a <symbol>'s own fill="none" sits closer to the
+         path than anything a class on the button could inherit down, so the
+         key swaps the href the way the expand key swaps its own. -->
+    <symbol id="i-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.6l2.53 5.13 5.66.82-4.1 3.99.97 5.64L12 16.52l-5.06 2.66.97-5.64-4.1-3.99 5.66-.82z"/>
+    </symbol>
+    <symbol id="i-star-fill" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.6l2.53 5.13 5.66.82-4.1 3.99.97 5.64L12 16.52l-5.06 2.66.97-5.64-4.1-3.99 5.66-.82z"/>
+    </symbol>
     <symbol id="i-chev-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M5 15l7-7 7 7"/>
     </symbol>
@@ -674,12 +684,30 @@
              placeholder="http://localhost:3000" aria-label="Address">
     </div>
     <button class="icon-btn" id="btn-browser-tab" aria-label="Open in a browser tab"><svg><use href="#i-external"/></svg></button>
+    <!-- Keep this page, or stop keeping it: one press either way, since the
+         bar below says which it was. Hidden on a server with no route to save
+         to (syncBrowseCap). -->
+    <button class="icon-btn" id="btn-browser-star" aria-label="Bookmark this page"
+            hidden><svg><use href="#i-star"/></svg></button>
     <!-- Zoom, in both shapes rather than dock-only: a phone framing an
-         intranet page built for a desktop is the case that needs it most.
-         They scale the frame element itself (browserApplyZoom) rather than
-         the document inside it, which is cross-origin anyway. -->
-    <button class="icon-btn" id="btn-browser-zoom-out" aria-label="Zoom out"><svg><use href="#i-zoom-out"/></svg></button>
-    <button class="icon-btn" id="btn-browser-zoom-in" aria-label="Zoom in"><svg><use href="#i-zoom-in"/></svg></button>
+         intranet page built for a desktop is the case that needs it most. One
+         key and a panel rather than two keys — the docked bar is 360px wide
+         and the pair were two of its few slots, and neither of them ever said
+         what the page was at. The panel's buttons scale the frame element
+         itself (browserApplyZoom) rather than the document inside it, which is
+         cross-origin anyway. -->
+    <div id="browser-zoom-wrap">
+      <button class="icon-btn" id="btn-browser-zoom" aria-label="Zoom"
+              aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-search"/></svg></button>
+      <div id="browser-zoom-menu" role="menu">
+        <button type="button" class="icon-btn" id="browser-zoom-minus"
+                aria-label="Zoom out"><svg><use href="#i-zoom-out"/></svg></button>
+        <button type="button" id="browser-zoom-pct"
+                aria-label="Back to 100%">100%</button>
+        <button type="button" class="icon-btn" id="browser-zoom-plus"
+                aria-label="Zoom in"><svg><use href="#i-zoom-in"/></svg></button>
+      </div>
+    </div>
     <!-- The docked pane's own two controls, shown only while the browser is
          beside the terminal rather than over it — files-expand/close's pair. -->
     <button class="icon-btn dock-only" id="btn-browser-expand"
@@ -687,6 +715,16 @@
     <button class="icon-btn dock-only" id="btn-browser-close"
             aria-label="Close the browser pane"><svg><use href="#i-close"/></svg></button>
   </div>
+  <!-- The zoom panel's scrim, #files-view-scrim's job: take the tap that
+       closes the panel, and dim only what the panel floats over. Inside the
+       pane and absolute rather than fixed, because #screen-browser is itself
+       position:fixed — docked, the terminal beside it is live and must not be
+       dimmed by a menu in here. -->
+  <div id="browser-menu-scrim"></div>
+  <!-- The bookmarks bar, where a browser puts one: under the address row and
+       above the page. Absent rather than empty while nothing is bookmarked,
+       so a pane nobody has used this on looks exactly as it did. -->
+  <div id="browser-bookmarks" hidden></div>
   <div class="browser-wrap">
     <!-- The sandbox list's order is fixed: the backend emits the same string
          as the proxied page's Content-Security-Policy sandbox header. -->

@@ -13,6 +13,7 @@ tailnet name in this repo fails the deploy's leak scan.
 """
 
 import gzip
+import json
 import socket
 import sys
 import threading
@@ -847,3 +848,112 @@ def test_the_bare_origin_form_upgrades_too(client, echo):
         ws.send_text("x")
         assert ws.receive_text() == "x"
     assert echo.seen[-1]["path"] == "/"
+
+
+# ---------------------------------------------------------------------------
+# Bookmarks
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def marks(tmp_path, monkeypatch):
+    """The list on a computer nobody has bookmarked anything on yet."""
+    p = tmp_path / ".pockettui" / "browser_bookmarks.json"
+    monkeypatch.setattr(A, "BOOKMARKS_PATH", p)
+    return p
+
+
+ONE = {"url": "https://wiki.example.net/start", "title": "Start", "added": 1700000000}
+
+
+def test_a_computer_with_no_file_has_no_bookmarks(client, marks):
+    r = client.get("/api/browse/bookmarks", headers=HDRS)
+    assert r.status_code == 200
+    assert r.json() == {"bookmarks": []}
+
+
+def test_a_file_that_is_not_a_list_reads_as_none(client, marks):
+    """A hand-edited or half-written file costs the pane its bar, not a 500."""
+    marks.parent.mkdir(parents=True)
+    marks.write_text("{oh no", encoding="utf-8")
+    assert client.get("/api/browse/bookmarks", headers=HDRS).json() == {"bookmarks": []}
+    marks.write_text('{"url": "https://wiki.example.net/"}', encoding="utf-8")
+    assert client.get("/api/browse/bookmarks", headers=HDRS).json() == {"bookmarks": []}
+
+
+def test_a_saved_list_is_written_and_read_back(client, marks):
+    r = client.put("/api/browse/bookmarks", json={"bookmarks": [ONE]}, headers=HDRS)
+    assert r.status_code == 200
+    assert r.json() == {"bookmarks": [ONE]}
+    assert json.loads(marks.read_text(encoding="utf-8")) == [ONE]
+    assert client.get("/api/browse/bookmarks", headers=HDRS).json() == {"bookmarks": [ONE]}
+
+
+def test_a_save_replaces_the_whole_list(client, marks):
+    client.put("/api/browse/bookmarks", json={"bookmarks": [ONE]}, headers=HDRS)
+    r = client.put("/api/browse/bookmarks", json={"bookmarks": []}, headers=HDRS)
+    assert r.json() == {"bookmarks": []}
+    assert client.get("/api/browse/bookmarks", headers=HDRS).json() == {"bookmarks": []}
+
+
+def test_a_missing_timestamp_is_filled_rather_than_refused(client, marks):
+    """The only caller that omits it is one bookmarking a page this second."""
+    before = int(time.time())
+    r = client.put("/api/browse/bookmarks",
+                   json={"bookmarks": [{"url": "https://wiki.example.net/", "title": "w"}]},
+                   headers=HDRS)
+    assert r.status_code == 200
+    assert before <= r.json()["bookmarks"][0]["added"] <= int(time.time())
+
+
+def test_a_long_title_is_cut_rather_than_refused(client, marks):
+    r = client.put("/api/browse/bookmarks",
+                   json={"bookmarks": [dict(ONE, title="t" * 500)]}, headers=HDRS)
+    assert r.status_code == 200
+    assert r.json()["bookmarks"][0]["title"] == "t" * A.BOOKMARK_TITLE_MAX
+
+
+@pytest.mark.parametrize("body", [
+    {"bookmarks": "nope"},                                   # not a list
+    {},                                                      # no list at all
+    {"bookmarks": ["https://wiki.example.net/"]},            # not an entry
+    {"bookmarks": [{"title": "no url"}]},
+    {"bookmarks": [dict(ONE, url="ftp://wiki.example.net/")]},
+    {"bookmarks": [dict(ONE, url="javascript:alert(1)")]},
+    {"bookmarks": [dict(ONE, url="https://" + "a" * 2100)]},
+    {"bookmarks": [dict(ONE, title=7)]},
+    {"bookmarks": [dict(ONE, added="yesterday")]},
+    {"bookmarks": [ONE] * 501},
+])
+def test_a_list_this_server_will_not_keep_is_refused(client, marks, body):
+    r = client.put("/api/browse/bookmarks", json=body, headers=HDRS)
+    assert r.status_code == 400
+    assert r.json()["error"] == "bad_bookmarks"
+    assert not marks.exists()
+
+
+def test_the_bookmark_routes_are_gated_like_their_neighbours(client, marks):
+    assert client.get("/api/browse/bookmarks").status_code == 401
+    assert client.put("/api/browse/bookmarks", json={"bookmarks": []}).status_code == 401
+    assert not marks.exists()
+
+
+def test_the_capability_map_says_bookmarks_too():
+    """Independent of httpx: storing a list needs nothing to fetch pages with."""
+    assert A.server_capabilities()["bookmarks"] is True
+
+
+def test_a_put_can_be_preflighted_from_the_hosted_shell(client):
+    """The shell is cross-origin, and a method CORS omits never leaves it.
+
+    The save is this server's first route that is neither GET nor POST, so the
+    preflight is the thing to pin: without PUT on the allow list the browser
+    refuses the request before it is ever sent, and the pane would look as if
+    the computer had said no.
+    """
+    r = client.options("/api/browse/bookmarks", headers={
+        "Origin": SHELL_ORIGIN,
+        "Access-Control-Request-Method": "PUT",
+        "Access-Control-Request-Headers": A.TOKEN_HEADER,
+    })
+    assert r.status_code == 200
+    assert "PUT" in r.headers["access-control-allow-methods"]

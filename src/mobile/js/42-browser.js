@@ -276,6 +276,7 @@ async function browserNavigate(raw, push = true) {
   // viewport the page lays itself out against, so setting it here is what
   // saves the zoomed page a reflow on its first paint.
   browserApplyZoom(browserZoomFor(browserZoomHost(url)));
+  syncBrowserZoom(browserZoomHost(url));
   // The landing this load reports is this load, not a page moving itself.
   browserNavigating = true;
   if (browserPrimed) {
@@ -342,9 +343,10 @@ function browserApplyZoom(factor) {
   frame.style.transform = factor === 1 ? "" : "scale(" + factor + ")";
 }
 
-// A zoom the user asked for: applied, remembered against the host, and said
-// out loud — the page resizing under the tap is the only other signal, and a
-// page that ignores it would otherwise look like a dead button.
+// A zoom the user asked for: applied, remembered against the host, and shown
+// on the panel that asked for it. No toast — the panel is open, its label is
+// the reading, and a step that cannot go further leaves the number where it
+// was, which is the honest answer to a press against an end.
 function browserSetZoom(factor) {
   browserApplyZoom(factor);
   const host = browserZoomHost();
@@ -353,7 +355,7 @@ function browserSetZoom(factor) {
     if (factor === 1) delete rec[host]; else rec[host] = factor;
     cfg.browserZoom = rec;
   }
-  toast("Zoom " + Math.round(factor * 100) + "%");
+  syncBrowserZoom();
 }
 
 // One button press. The next step past where the host is rather than the step
@@ -367,6 +369,152 @@ function browserStepZoom(delta) {
   const down = BROWSER_ZOOMS.filter((z) => z < cur - 1e-6);
   const next = delta > 0 ? up[0] : down[down.length - 1];
   browserSetZoom(next === undefined ? cur : next);
+}
+
+// One key and a panel under it, not two keys: the docked bar is 360px wide and
+// the pair took two of its few slots without ever saying what the page was at.
+// The file bar's dropdown, drawn where one is needed (showViewMenu,
+// 28-file-explorer.js): a class on the wrap, a scrim inside the pane.
+function showBrowserZoomMenu(on) {
+  $("browser-zoom-wrap").classList.toggle("open", on);
+  $("browser-menu-scrim").classList.toggle("show", on);
+  $("btn-browser-zoom").setAttribute("aria-expanded", on ? "true" : "false");
+  if (on) syncBrowserZoom();
+}
+
+// The key's mark and the panel's reading. `host` is passed by the one caller
+// that sets a zoom before its page is the current one — browserNavigate, which
+// applies the factor ahead of the load so the page lays itself out once.
+function syncBrowserZoom(host) {
+  const factor = browserZoomFor(host === undefined ? browserZoomHost() : host);
+  // A host left anywhere but 100% is a state that outlives the pane being
+  // closed, so the key carries it: nothing else on screen would say so.
+  $("btn-browser-zoom").classList.toggle("on", factor !== 1);
+  $("browser-zoom-pct").textContent = Math.round(factor * 100) + "%";
+}
+
+// ---- bookmarks -------------------------------------------------------------
+// Kept on the computer rather than in this browser's storage: the phone and the
+// laptop reach the same machine, and a page worth keeping is worth keeping from
+// both. The whole list goes back on every change — it is a handful of entries
+// the shell already holds, so a merge protocol would buy nothing.
+
+let browserMarks = [];           // as the computer holds them, oldest first
+let browserMarksAsked = false;   // the GET has been made and answered
+// What each page called itself, as its shim reported it. Kept here rather than
+// read off the frame: the document is cross-origin and its title is not ours
+// to ask for after the fact.
+let browserMarkTitles = {};
+
+function browserMarkAt(url) {
+  return browserMarks.findIndex((b) => b && b.url === url);
+}
+
+// What to write on a chip: the title the page reported, and failing that its
+// host — a chip with no words on it is not a chip.
+function browserMarkName(url) {
+  const t = browserMarkTitles[url];
+  if (t) return t;
+  try { return new URL(url).host; } catch (e) { return url; }
+}
+
+function browserMarkHost(url) {
+  try { return new URL(url).host; } catch (e) { return url; }
+}
+
+// Asked once per pane opening rather than at boot: a shell that never opens the
+// pane should not be asking this computer for a list it will not draw. A failed
+// ask is not remembered, so the next opening tries again.
+async function browserLoadMarks() {
+  if (browserMarksAsked || !hasCapStrict("bookmarks")) return;
+  browserMarksAsked = true;
+  try {
+    const r = await fetch(apiURL("api/browse/bookmarks"), {
+      cache: "no-store", headers: authHeaders(),
+    });
+    const d = await r.json();
+    if (!r.ok || !d || !Array.isArray(d.bookmarks)) throw new Error("bad answer");
+    browserMarks = d.bookmarks;
+  } catch (e) {
+    dbg("bookmarks: load failed", e);
+    browserMarksAsked = false;
+    return;
+  }
+  renderBrowserMarks();
+}
+
+// Optimistic: the bar is already drawn from the change by the time this runs,
+// because the alternative is a chip that appears a round trip after the tap. A
+// refused write is the one case that reads back — what is on disk is then the
+// truth and the bar is showing something that never got there.
+async function browserSaveMarks() {
+  try {
+    const r = await fetch(apiURL("api/browse/bookmarks"), {
+      method: "PUT", cache: "no-store",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ bookmarks: browserMarks }),
+    });
+    if (!r.ok) throw new Error("http " + r.status);
+  } catch (e) {
+    dbg("bookmarks: save failed", e);
+    toast("Could not save bookmark");
+    browserMarksAsked = false;
+    browserLoadMarks();
+  }
+}
+
+// The star is a toggle rather than a menu: there are two things anyone wants
+// from the page they are on, and the bar underneath says which one happened.
+function browserToggleMark() {
+  const url = browserCurrentUrl();
+  if (!url || !hasCapStrict("bookmarks")) return;
+  const i = browserMarkAt(url);
+  if (i >= 0) browserMarks.splice(i, 1);
+  else browserMarks.push({ url: url, title: browserMarkName(url),
+                           added: Math.round(Date.now() / 1000) });
+  renderBrowserMarks();
+  browserSaveMarks();
+}
+
+function renderBrowserMarks() {
+  const bar = $("browser-bookmarks");
+  const here = browserCurrentUrl();
+  bar.textContent = "";
+  for (const b of browserMarks) {
+    if (!b || typeof b.url !== "string") continue;
+    const url = b.url;
+    const open = el("button", {
+      type: "button", class: "bm-open", title: browserMarkHost(url),
+      onclick: () => browserNavigate(url),
+    }, b.title || browserMarkName(url));
+    const drop = el("button", {
+      type: "button", class: "bm-del", "aria-label": "Remove this bookmark",
+      onclick: () => {
+        const i = browserMarkAt(url);
+        if (i < 0) return;
+        browserMarks.splice(i, 1);
+        renderBrowserMarks();
+        syncBrowserStar();
+        browserSaveMarks();
+      },
+    }, "\u00d7");
+    bar.appendChild(el("div", { class: "bm-chip" + (url === here ? " on" : "") },
+                       open, drop));
+  }
+  // Absent rather than empty: a pane nobody has bookmarked anything on looks
+  // exactly as it did before the bar existed.
+  bar.hidden = browserMarks.length === 0;
+  syncBrowserStar();
+}
+
+// Whether the page on screen is one of them. Re-asked on every landing, since
+// the page moves under the key.
+function syncBrowserStar() {
+  const btn = $("btn-browser-star");
+  const on = browserMarkAt(browserCurrentUrl()) >= 0;
+  btn.querySelector("use").setAttribute("href", on ? "#i-star-fill" : "#i-star");
+  btn.setAttribute("aria-label", on ? "Remove this bookmark" : "Bookmark this page");
+  btn.classList.toggle("on", on);
 }
 
 // ---- the two shapes --------------------------------------------------------
@@ -403,6 +551,7 @@ function closeDockedBrowser() {
   if (!browserDocked) return;
   browserDocked = false;
   browserOpen = false;
+  showBrowserZoomMenu(false);
   $("screen-browser").classList.remove("docked");
   $("screen-browser").classList.remove("active");
   syncBrowserExpand();       // takes .side-full off the terminal with it
@@ -430,6 +579,7 @@ function openFullBrowser() {
 // The pop's half: the entry is already spent by the time this runs, so nothing
 // here touches history.
 function closeFullBrowser() {
+  showBrowserZoomMenu(false);
   $("screen-browser").classList.remove("active");
   const back = browserOriginFrom || "screen-list";
   browserOriginFrom = null;
@@ -451,6 +601,7 @@ function openBrowser(url) {
   if (demoMode) { toast("No browser in the demo"); return; }
   if (isWideLayout() && $("screen-term").classList.contains("active")) openDockedBrowser();
   else openFullBrowser();
+  browserLoadMarks();
   const target = browserNormalize(url);
   if (target) { browserNavigate(target); return; }
   // Opened with nothing to go to: the page this pane was last on, whether it
@@ -504,6 +655,15 @@ window.addEventListener("message", (e) => {
     // was never zoomed. A load reports more than once and each report sets
     // the same factor, which is a no-op after the first.
     browserApplyZoom(browserZoomFor(browserZoomHost(url)));
+    syncBrowserZoom(browserZoomHost(url));
+    // What the page calls itself, for the chip a bookmark of it would carry:
+    // the document is cross-origin, so this report is the only time it says.
+    if (typeof d.title === "string" && d.title) browserMarkTitles[url] = d.title;
+    // The page moved under the panel, and what it was showing was about the
+    // page that was there. The bar redraws for the same reason: which chip is
+    // the one on screen has just changed.
+    showBrowserZoomMenu(false);
+    renderBrowserMarks();
     // A page that loaded is a token that works and a scheme that was right.
     browserReminted = false;
     browserGuessed = "";
@@ -569,8 +729,16 @@ $("btn-browser-reload").addEventListener("click", () => {
   const u = browserCurrentUrl();
   if (u) browserNavigate(u, false);
 });
-$("btn-browser-zoom-out").addEventListener("click", () => browserStepZoom(-1));
-$("btn-browser-zoom-in").addEventListener("click", () => browserStepZoom(1));
+$("btn-browser-zoom").addEventListener("click", () => {
+  showBrowserZoomMenu(!$("browser-zoom-wrap").classList.contains("open"));
+});
+// Stepping leaves the panel up: a zoom is walked to, not picked, and the label
+// above these two is what says where it got to.
+$("browser-zoom-minus").addEventListener("click", () => browserStepZoom(-1));
+$("browser-zoom-plus").addEventListener("click", () => browserStepZoom(1));
+$("browser-zoom-pct").addEventListener("click", () => browserSetZoom(1));
+$("browser-menu-scrim").addEventListener("click", () => showBrowserZoomMenu(false));
+$("btn-browser-star").addEventListener("click", () => browserToggleMark());
 // The relay path, untouched: this hands the address to the phone's own browser
 // exactly as a tapped link used to, port forwarding and all (08-links.js).
 $("btn-browser-tab").addEventListener("click", () => {
@@ -616,6 +784,13 @@ document.addEventListener("keydown", (e) => {
   if (!$("screen-browser").classList.contains("active")) return;
   if (e.target === $("browser-url")) return;
   if (browserDocked && !$("screen-browser").contains(e.target)) return;
+  // Ahead of the pane's own Escape: an open panel is the top thing to dismiss,
+  // exactly as the file bar's dropdowns are.
+  if ($("browser-zoom-wrap").classList.contains("open")) {
+    e.preventDefault();
+    showBrowserZoomMenu(false);
+    return;
+  }
   if ($("sheet-scrim").classList.contains("show")) return;
   e.preventDefault();
   if (browserDocked) closeDockedBrowser();
@@ -651,6 +826,7 @@ function browserTeardown() {
   browserDocked = false;
   browserOpen = false;
   browserOriginFrom = null;
+  showBrowserZoomMenu(false);
   $("screen-browser").classList.remove("docked");
   $("screen-browser").classList.remove("active");
   if (wasDocked) { syncBrowserExpand(); sideDrop("browser"); }
@@ -685,6 +861,12 @@ function browserResetForProfile() {
   browserReminted = false;
   browserGuessed = "";
   browserApplyZoom(1);
+  // Another computer keeps its own list, and the one on screen is this one's.
+  browserMarks = [];
+  browserMarksAsked = false;
+  browserMarkTitles = {};
+  renderBrowserMarks();
+  showBrowserZoomMenu(false);
   // Blanked through the frame's own location, not through src: the pane may
   // well be reopened on the new computer, and an src assignment would put an
   // entry on the shell's history that back would spend on the frame.
@@ -709,6 +891,10 @@ function syncBrowseCap() {
   if (btn) btn.hidden = !on;
   const key = $("keybar").querySelector(".k-browser");
   if (key) key.classList.toggle("show", on);
+  // Its own capability, not the proxy's: a server can store bookmarks without
+  // httpx to fetch pages with, and one too old for the route would answer the
+  // save with a 404 the user only learns about after tapping the star.
+  $("btn-browser-star").hidden = !hasCapStrict("bookmarks");
 }
 
 syncBrowserNav();
