@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -379,6 +380,45 @@ def test_a_strict_script_is_left_alone():
     # Even behind the comments a build tool leaves in front of the directive.
     assert A.browse_wrap_js("// c\n/* d */\n'use strict'\nvar a=top;") == (
         "// c\n/* d */\n'use strict'\nvar a=top;")
+
+
+def test_the_directive_test_does_not_backtrack():
+    """The head-of-script scan is walked, not matched.
+
+    A regex over runs of whitespace and lazy block comments backtracks
+    exponentially on a script that opens with comments and no directive behind
+    them — which is every minified library carrying a licence header — and it
+    ran on the loop thread, so the whole server stopped.
+    """
+    src = ("/**/\n" * 60) + "x=top;"
+    t0 = time.monotonic()
+    out = A.browse_wrap_js(src)
+    assert time.monotonic() - t0 < 0.5
+    assert out.startswith("with(window.__pt")
+
+
+def test_a_directive_behind_comments_is_still_found():
+    for src in ("'use strict';\nwindow.x=1;var a=top;",
+                '/* c */ // d\n  "use strict";\nvar a=top;'):
+        assert A.browse_wrap_js(src) == src
+
+
+def test_an_unterminated_comment_is_not_a_directive():
+    # And does not hang: the scan stops where the comment does not end.
+    t0 = time.monotonic()
+    assert A.browse_wrap_js("/* unterminated top").startswith("with(window.__pt")
+    assert A.browse_starts_strict("/* unterminated 'use strict'") is False
+    assert time.monotonic() - t0 < 0.5
+
+
+def test_a_library_sized_script_is_wrapped_in_good_time():
+    # Half a megabyte with a licence header's worth of comments in it, which
+    # is the shape of the file that hung the proxy.
+    src = ("/* c */\n" * 400) + ("var pad='" + "p" * 500_000 + "';\n") + "var a=top;"
+    t0 = time.monotonic()
+    out = A.browse_wrap_js(src)
+    assert time.monotonic() - t0 < 1.0
+    assert out.startswith("with(window.__pt")
 
 
 def test_only_the_two_members_of_a_named_global_are_rewritten():
