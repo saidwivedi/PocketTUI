@@ -1539,8 +1539,11 @@ html.term-open, body.term-open {
 /* The pin has no job on a phone: there the bar is docked and always there. */
 #keybar-pin { display: none; }
 /* Nor has the report key: the docked row is already ten keys on a 390px screen,
-   and the Settings row is the phone's way into the same sheet. */
-.keybar > .k-report { display: none; }
+   and the Settings row is the phone's way into the same sheet. The globe is
+   off the docked row for the founder's own reason — the pane is a two-pane
+   feature, and a proxied page inside a 390px screen is not one. */
+.keybar > .k-report,
+.keybar > .k-browser { display: none; }
 
 /* Two-pane width plus a real pointer to aim with. Esc, tab, ctrl, shift, alt,
    the arrows, enter and backspace are all already under the user's fingers
@@ -3470,6 +3473,12 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* ============================================================
    IN-APP BROWSER
    ============================================================ */
+/* The way in is the key bar's globe, and that is a pill key: the pane is a
+   two-pane feature (founder, 2026-09-21). The button stays in the markup
+   because buildKeybar() reads the browse capability off its hidden state —
+   the cap itself cannot be asked at build time (19-voice-capture.js) — but it
+   is never a control on either layout. */
+#btn-browser { display: none; }
 /* The editor's and the reader's fixed column, not the explorer's page scroll:
    the frame inside has to be given a height, and an auto-height block gives it
    none. The docked rules above override every part of this. */
@@ -3834,9 +3843,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-list .icon-btn svg { width: 17px; height: 17px; }
   /* No folder button on the rail: the terminal beside it has the key bar's
      folder key and, since paths in it are links, the folders it prints. The
-     phone's list keeps its button — there the list is a screen of its own. */
-  #screen-list #btn-files,
-  #screen-list #btn-browser { display: none; }
+     phone's list keeps its button — there the list is a screen of its own.
+     (#btn-browser is hidden on both layouts, in the browser section below.) */
+  #screen-list #btn-files { display: none; }
   @container (max-width: 280px) {
     #screen-list .right { gap: 0; padding-left: 4px; }
   }

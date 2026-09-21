@@ -106,6 +106,78 @@ def test_map_url_is_idempotent(raw):
     assert A.browse_map_url(once, CTX) == once
 
 
+# --- map_url on an address that is already the proxy's ----------------------
+# The founder's runaway started here. A restart mints a new token, so a page
+# still open carries a dead one; the rewriter saw an address on some host it
+# did not recognise and wrapped it, and the wrap was the proxy's own public
+# name. Every one of these has to come out as the target at the bottom of it,
+# under the token this process is minting now.
+
+OTHER = "https://ps054.example-tailnet.example.net"
+DEAD = "DEADTOKEN"
+
+
+@pytest.mark.parametrize("raw,want", [
+    # This backend's public name, with a token it no longer knows.
+    (f"{OTHER}{PREFIX}/b/{DEAD}/s/portal.example.net:443/startPage",
+     f"{BASE}/s/portal.example.net:443/startPage"),
+    # The same, bare: `tailscale serve` strips the prefix on the way in, so
+    # both spellings are in circulation at once.
+    (f"{OTHER}/b/{DEAD}/h/box.example.net:8080/a?q=1",
+     f"{BASE}/h/box.example.net:8080/a?q=1"),
+    # Two layers, the inner one under the prefix the browser saw.
+    (f"{OTHER}{PREFIX}/b/{DEAD}/s/{OTHER[8:]}:443{PREFIX}/b/{DEAD}"
+     f"/s/portal.example.net:443/startPage",
+     f"{BASE}/s/portal.example.net:443/startPage"),
+    # Root-relative, which is how a link on such a page reads.
+    (f"{PREFIX}/b/{DEAD}/s/portal.example.net:443/startPage",
+     f"{BASE}/s/portal.example.net:443/startPage"),
+    # And nested root-relative, the shape a second pass would have made.
+    (f"{PREFIX}/b/{DEAD}/h/127.0.0.1:3000{PREFIX}/b/{DEAD}/h/box.example.net:80/x",
+     f"{BASE}/h/box.example.net:80/x"),
+])
+def test_map_url_peels_an_address_that_is_already_ours(raw, want):
+    assert A.browse_map_url(raw, CTX) == want
+
+
+def test_map_url_peels_to_a_fixed_point():
+    raw = f"{OTHER}{PREFIX}/b/{DEAD}/s/portal.example.net:443/startPage"
+    once = A.browse_map_url(raw, CTX)
+    assert A.browse_map_url(once, CTX) == once
+
+
+# --- peel ------------------------------------------------------------------
+
+@pytest.mark.parametrize("path,want", [
+    # One layer, under the prefix and bare.
+    (f"{PREFIX}/b/{TOK}/h/example.net:80/a", ("h", "example.net:80", "/a")),
+    (f"/b/{TOK}/h/example.net:80/a", ("h", "example.net:80", "/a")),
+    # The innermost, not the outermost: the layers above it are all this proxy.
+    (f"{PREFIX}/b/{TOK}/h/a.example.net:80{PREFIX}/b/{DEAD}/s/b.example.net:443/x",
+     ("s", "b.example.net:443", "/x")),
+    (f"/b/{TOK}/h/a.example.net:80/b/{DEAD}/h/b.example.net:80/b/x/h/c.example.net:80/y",
+     ("h", "c.example.net:80", "/y")),
+    # No path at all is the target's root.
+    (f"{PREFIX}/b/{TOK}/h/example.net:80", ("h", "example.net:80", "/")),
+    # The query rides along with the innermost path.
+    (f"{PREFIX}/b/{TOK}/h/example.net:80/a?q=1", ("h", "example.net:80", "/a?q=1")),
+    # Not ours: a path of the target's that merely begins the same way.
+    ("/b/only-two/parts", None),
+    ("/other/thing", None),
+    (f"{PREFIX}/api/fs", None),
+    (f"{PREFIX}/b/{TOK}/x/example.net:80/a", None),
+])
+def test_peel_reads_every_layer(path, want):
+    assert A.browse_peel(path, PREFIX) == want
+
+
+def test_peel_is_bounded():
+    """A crafted address cannot spin the loop, it only reaches the bottom."""
+    deep = f"/b/{TOK}/h/a.example.net:80" * (A.BROWSE_PEEL_MAX + 5) + "/end"
+    got = A.browse_peel(deep, PREFIX)
+    assert got is not None and got[1] == "a.example.net:80"
+
+
 # --- unmap_path ------------------------------------------------------------
 
 @pytest.mark.parametrize("raw,want", [
@@ -358,7 +430,18 @@ def test_a_quote_in_a_rewritten_value_is_escaped():
 # --- shim ------------------------------------------------------------------
 
 def test_shim_is_small_enough_to_sit_on_every_page():
-    assert len(A.BROWSE_SHIM.encode("utf-8")) < 6144
+    # A budget, not a protocol limit: the shim rides on every proxied document,
+    # so it is kept small deliberately. Raise the cap when behaviour needs the
+    # room rather than trimming what the shim does.
+    assert len(A.BROWSE_SHIM.encode("utf-8")) < 8192
+
+
+def test_shim_reads_a_proxy_path_without_the_token():
+    # B builds an address; this reads one. Reading with B would mean a page
+    # still open under a restart's old token did not recognise its own
+    # location as the proxy's, and wrapped it a layer deeper per link.
+    assert "/b/[^/]+/([hs])/([^/]+)(/.*)?$" in A.BROWSE_SHIM
+    assert "function peel(" in A.BROWSE_SHIM
 
 
 def test_shim_hands_a_traversal_to_the_pane():
