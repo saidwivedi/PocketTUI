@@ -661,7 +661,12 @@ def list_sessions() -> list[dict]:
         # reasonably: it mirrors a session already on the list.
         if not row["representative"]:
             continue
-        cmd, title = active_pane(row["name"])
+        cmd, title, cwd = active_pane(row["name"])
+        # tmux seeds every pane's title with the hostname, which is the same
+        # word on every row and tells the list nothing; dropping it here is
+        # what lets the byline fall back to the folder the pane is in.
+        if title == socket.gethostname():
+            title = ""
         # The watcher's view of this session rides along regardless of the
         # @notify opt-in: the badge is in-app signal, and the phone's WS dies
         # seconds after backgrounding, so the list is where "still waiting on
@@ -674,6 +679,7 @@ def list_sessions() -> list[dict]:
             "windows": row["windows"],
             "command": cmd,
             "title": title,
+            "cwd": cwd,
             "alias": row["alias"],
             "notify": row["notify"],
             "state": w.state if w else "idle",
@@ -891,8 +897,9 @@ def tmux_names() -> list[str]:
     return names
 
 
-def active_pane(name: str) -> tuple[str, str]:
-    """(pane_current_command, pane_title) of the session's active pane.
+def active_pane(name: str) -> tuple[str, str, str]:
+    """(pane_current_command, pane_title, pane_current_path) of the session's
+    active pane.
 
     list-panes with a pane_active filter, rather than display-message: the
     latter resolves its target against the calling client's session, which this
@@ -900,12 +907,13 @@ def active_pane(name: str) -> tuple[str, str]:
     """
     rc, out = tmux(
         "list-panes", "-t", f"={name}", "-f", "#{pane_active}",
-        "-F", "#{pane_current_command}\t#{pane_title}",
+        "-F", "#{pane_current_command}\t#{pane_title}\t#{pane_current_path}",
     )
     if rc != 0 or not out.strip():
-        return "", ""
+        return "", "", ""
     parts = out.strip().splitlines()[0].split("\t")
-    return parts[0], (parts[1] if len(parts) > 1 else "")
+    parts += [""] * (3 - len(parts))
+    return parts[0], parts[1], parts[2]
 
 
 def session_group(name: str) -> str:
@@ -5980,7 +5988,7 @@ class WatchState:
     fired: bool = False           # this idle episode was already read
     fired_sig: str = ""           # signature of the last idle push actually sent
     notified_at: float | None = None   # monotonic stamp of the last dispatch
-    state: str = "idle"           # "active" | "waiting" | "idle" (the badge)
+    state: str = "idle"           # active|waiting|ready|idle (the badge)
     prompt: dict | None = None    # the chips frame currently showing, if any
 
 
@@ -6013,12 +6021,61 @@ PROMPT_ASK_RE = re.compile(
 # dialog inside a rounded box, so a real menu line arrives as `│ ❯ 1. Yes` and
 # a menu regex anchored at the digit would never see one.
 PROMPT_MENU_RE = re.compile(r"^\s*│?\s*(❯\s*)?(\d+)[.)]\s")
-# Claude Code's composer renders ❯ (often followed by a NBSP, or nothing at
-# all once capture_pane rstrips an empty composer), so both glyphs count.
+# Claude Code's composer renders ❯ followed by a NBSP (and older boxes `> `),
+# and an empty one captures as the bare glyph, so both glyphs count.
 PROMPT_BOX_RE = re.compile(r"^\s*│?\s*[>❯](\s|$)")
+# A chooser whose options are not numbered: `❯ Yes, I trust this folder` over
+# its unmarked siblings, which is how Claude Code's folder-trust dialog asks.
+# The marker is also the composer's glyph, so the plain space is load-bearing —
+# a composer puts a NBSP or nothing after it, never a space and a word.
+PROMPT_SEL_RE = re.compile(r"^\s*│?\s*❯[ ]+(\S.*)$")
 # The glyphs a TUI paints its frames with. A line made only of these is
 # furniture: it carries no text, whatever its width.
 BOX_CHARS = "─│╭╮╰╯└┘┌┐├┤"
+
+SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
+# A `-e` capture keeps OSC 8 hyperlinks as well — Claude Code links its docs
+# that way. They carry no attribute, only bytes nobody should be reading off a
+# lock screen, so they come off before anything else looks at the line.
+OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def strip_sgr(line: str) -> str:
+    """`line` with its colour escapes and hyperlinks taken off."""
+    return SGR_RE.sub("", OSC_RE.sub("", line))
+
+
+def dim_runs(line: str) -> list[tuple[str, bool]]:
+    """`line` as (text, dim) chunks, its SGR codes folded into the flag.
+
+    Only faintness (SGR 2) is tracked, and only 22 and 0 take it off again: a
+    colour change does not, which is exactly what Claude Code's placeholder
+    does (`❯ \x1b[2m\x1b[39mPress up to edit queued messages`). An extended
+    colour swallows its own parameters, so the 2 in `38;5;2` is a palette index
+    and not the attribute.
+    """
+    runs: list[tuple[str, bool]] = []
+    dim, pos = False, 0
+    line = OSC_RE.sub("", line)
+    for m in SGR_RE.finditer(line):
+        if m.start() > pos:
+            runs.append((line[pos:m.start()], dim))
+        codes = (m.group(1) or "0").split(";")
+        i = 0
+        while i < len(codes):
+            code = codes[i]
+            if code in ("38", "48", "58"):
+                i += 3 if i + 1 < len(codes) and codes[i + 1] == "5" else 5
+                continue
+            if code in ("", "0", "22"):
+                dim = False
+            elif code == "2":
+                dim = True
+            i += 1
+        pos = m.end()
+    if pos < len(line):
+        runs.append((line[pos:], dim))
+    return runs
 
 
 def strip_chrome(line: str) -> str:
@@ -6036,31 +6093,44 @@ def composer_text(line: str) -> str | None:
 
     "" means the box is empty and the program is waiting on its human; any
     other text is a half-typed message, which is a human at the keyboard —
-    the one situation that must never turn into a notification.
+    the one situation that must never turn into a notification. Dim text reads
+    as empty: Claude Code paints its own suggestions into the composer (a
+    remembered prompt, or "Press up to edit queued messages") in SGR 2, and a
+    plain-text capture cannot tell that from a draft — which is why every idle
+    agent used to read as someone mid-sentence.
     """
-    m = PROMPT_BOX_RE.match(line)
+    runs = dim_runs(line)
+    m = PROMPT_BOX_RE.match("".join(text for text, _ in runs))
     if m is None:
         return None
-    return strip_chrome(line[m.end():])
+    rest, pos = [], 0
+    for text, dim in runs:
+        pos += len(text)
+        if pos > m.end():
+            rest.append((text[max(0, len(text) - (pos - m.end())):], dim))
+    if all(dim for text, dim in rest if text.strip()):
+        return ""
+    return strip_chrome("".join(text for text, _ in rest))
 
 
 def last_substantive(lines: list[str]) -> str:
-    """The last line of the capture that actually says something, or "".
+    """The last line of `lines` that actually says something, or "".
 
-    Read over the whole capture rather than the 5-line tail, because an
-    agent's composer box and its shortcut hint fill that tail on their own and
-    the line worth quoting — the last thing the agent said — sits above them.
-    Box chrome, the composer itself and the TUI's own footer hints are skipped.
-    What survives is both the notification body and the thing that makes a
-    "ready" signature move when the agent has genuinely said something new.
+    Read over everything above the composer rather than a 5-line tail, because
+    an agent's box and its footer fill that tail on their own and the line
+    worth quoting — the last thing the agent said — sits above them. Box
+    chrome, the composer itself and the TUI's own hints are skipped. What
+    survives is both the notification body and the thing that makes a "ready"
+    signature move when the agent has genuinely said something new.
     """
     for line in reversed(lines):
         text = strip_chrome(line)
         if not text or PROMPT_BOX_RE.match(line):
             continue
-        # `? for shortcuts`, `⏵⏵ accept edits on`: pane furniture that repaints
-        # by itself and would otherwise be quoted at the user as news.
-        if text.startswith("?") or text.startswith("⏵"):
+        # `? for shortcuts`, `⏵⏵ accept edits on`, `✻ Baked for 11s · done
+        # 7:54 AM`: pane furniture and turn summaries that repaint by
+        # themselves and would otherwise be quoted at the user as news.
+        if text[:1] in ("?", "⏵", "✻"):
             continue
         return text[:120]
     return ""
@@ -6068,20 +6138,30 @@ def last_substantive(lines: list[str]) -> str:
 
 def detect_prompt(lines: list[str],
                   cursor_line: str = "") -> tuple[str, list[str], str]:
-    """What the pane's tail looks like it is asking. Pure — table-tested.
+    """What the pane looks like it is asking. Pure — table-tested.
+
+    `lines` is the visible pane, newest last, and `cursor_line` the row the
+    cursor sits on; both may carry the colour escapes a `-e` capture keeps,
+    which only the composer rule reads (see composer_text).
 
     Returns (kind, options, line): kind "prompt" (a y/n question, options
     ["y","n"]), "menu" (a numbered chooser, options its digits), "waiting" (a
-    trailing question with nothing tappable, options []), "ready" (an empty
-    composer: the program has stopped talking and is waiting on its human,
-    with `line` the last thing it said), "drafting" (a composer with a
-    half-typed message in it) or "quiet" (no shape at all). `line` is the text
-    that becomes the notification body. Only the last 5 non-empty lines are
-    read — a prompt is at the bottom of a pane or it is history — with the
-    cursor's own line weighted first, because that is where an interactive
-    program parks it. "ready" is the exception: what an agent last said scrolls
-    well above the composer it is sitting in, so that verdict reads the whole
-    capture.
+    question with nothing tappable — an arrow-key chooser, or a trailing "?"),
+    "ready" (an empty composer: the program has stopped talking and is waiting
+    on its human, with `line` the last thing it said), "drafting" (a composer
+    with a half-typed message in it) or "quiet" (no shape at all). `line` is
+    the text that becomes the notification body.
+
+    Where the reading stops is the whole difficulty. An empty composer splits
+    the pane: Claude Code draws its model, its context meter and its mode
+    hints *under* the box, so a five-line tail ending in those never sees the
+    question above them and quotes a token counter as news. Everything at and
+    below such a composer is therefore chrome, and the ask is looked for in the
+    last 5 non-empty lines above it. A composer with something in it cannot be
+    trusted to split anything — `❯ 1. Yes` is a chooser's marked row, not a
+    composer — so the boundary only moves for an empty one, and the cursor's
+    own line is weighted first, because that is where an interactive program
+    parks it.
 
     The scan order is load-bearing. A menu is looked for before question
     phrasing because Claude Code's permission dialog is both at once ("Do you
@@ -6090,44 +6170,84 @@ def detect_prompt(lines: list[str],
     after both, because a question is what the pane is asking and a composer is
     merely where the answer would be typed.
     """
-    scan = [line for line in lines if line.strip()][-5:]
-    composer = composer_text(cursor_line) if cursor_line.strip() else None
-    ordered = [line for line in reversed(scan) if line != cursor_line]
+    text = [strip_sgr(line) for line in lines]
+    cursor = strip_sgr(cursor_line)
+    composer = composer_text(cursor_line) if cursor.strip() else None
+    above = text
+    if composer == "":
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i] == cursor_line:
+                above = text[:i]
+                break
+
+    marks = [(i, line) for i, line in enumerate(above) if line.strip()][-5:]
+    scan = [line for _, line in marks]
+    ordered = [line for line in reversed(scan) if line != cursor]
     # A composer holding a draft is the user's own half-typed sentence, so it
     # is not evidence that anything is being asked: it stays out of the scans,
     # or someone typing "do you want me to rebase" would prompt themselves.
-    if cursor_line.strip() and not composer:
-        ordered.insert(0, cursor_line)
+    if cursor.strip() and not composer:
+        ordered.insert(0, cursor)
 
     for line in ordered:
         if PROMPT_YN_RE.search(line):
             return "prompt", ["y", "n"], line.strip()
 
+    def question_above(start: int, fallback: str) -> str:
+        """The question the chooser starting at `start` belongs to.
+
+        It sits above the options, and on a tall pane that is outside the tail
+        they were found in — Claude Code puts "Do you want to create demo.txt?"
+        one row above `❯ 1. Yes`. The marked line only stands in when the
+        chooser asks nothing in so many words, because "❯ 1. Yes" on its own is
+        a useless thing to read on a phone.
+        """
+        for line in reversed(above[max(0, start - 5):start]):
+            if (PROMPT_YN_RE.search(line) or PROMPT_ASK_RE.search(line)
+                    or strip_chrome(line).endswith("?")):
+                return line
+        return fallback
+
     # A numbered menu is only a menu when at least two choices sit together —
     # a lone "1." is prose.
-    run: list[tuple[str, bool, str]] = []
-    menu: list[tuple[str, bool, str]] | None = None
-    for line in [*scan, ""]:
+    run: list[tuple[int, str, bool, str]] = []
+    menu: list[tuple[int, str, bool, str]] | None = None
+    indent = -1
+    for i, line in [*marks, (len(above), "")]:
         m = PROMPT_MENU_RE.match(line)
         if m:
-            run.append((m.group(2), bool(m.group(1)), line))
+            run.append((i, m.group(2), bool(m.group(1)), line))
+            indent = len(line) - len(line.lstrip())
+            continue
+        # An option too long for the pane wraps onto the next row, indented
+        # past its own digit. Breaking the run there would drop every option
+        # under it — which is how "3. No" went missing from a permission
+        # dialog whose second choice needed two lines.
+        if run and line.strip() and len(line) - len(line.lstrip()) > indent:
             continue
         if len(run) >= 2 and menu is None:
             menu = run
         run = []
     if menu:
-        options = [digit for digit, _, _ in menu][:4]
-        # ❯ marks the pre-selected line, but "❯ 1. Yes" on its own is a useless
-        # thing to read on a phone: the question the options belong to is the
-        # body worth sending, and the marked line only stands in when the
-        # chooser asks nothing in so many words.
-        marked = next((line for _, sel, line in menu if sel), menu[0][2])
-        question = next((line for line in scan
-                         if not PROMPT_MENU_RE.match(line)
-                         and (PROMPT_YN_RE.search(line)
-                              or PROMPT_ASK_RE.search(line)
-                              or strip_chrome(line).endswith("?"))), marked)
+        options = [digit for _, digit, _, _ in menu][:4]
+        marked = next((line for _, _, sel, line in menu if sel), menu[0][3])
+        question = question_above(menu[0][0], marked)
         return "menu", options, strip_chrome(question)
+
+    # The same chooser without digits: one marked line with an unmarked sibling
+    # under it. Nothing is tappable, but something is very much being asked —
+    # and the marked row is composer-shaped, so without this the folder-trust
+    # dialog would read as a half-typed message. One marker, because a chooser
+    # pre-selects exactly one row: Claude Code lists messages queued behind a
+    # running turn with the same glyph on every one of them.
+    marked = [pos for pos, (_, line) in enumerate(marks)
+              if PROMPT_SEL_RE.match(line)]
+    if len(marked) == 1:
+        pos = marked[0]
+        sibling = marks[pos + 1][1] if pos + 1 < len(marks) else ""
+        if strip_chrome(sibling):
+            i, line = marks[pos]
+            return "waiting", [], strip_chrome(question_above(i, line))
 
     for line in ordered:
         if PROMPT_ASK_RE.search(line):
@@ -6137,38 +6257,47 @@ def detect_prompt(lines: list[str],
         if composer:
             return "drafting", [], ""
         return ("ready", [],
-                last_substantive(lines) or "ready for your next message")
+                last_substantive(above) or "ready for your next message")
 
-    if cursor_line.strip() and cursor_line.rstrip().endswith("?"):
-        return "waiting", [], cursor_line.strip()
+    if cursor.strip() and cursor.rstrip().endswith("?"):
+        return "waiting", [], cursor.strip()
     return "quiet", [], ""
+
+
+def capture_visible(name: str) -> tuple[list[str], str]:
+    """The session's active pane exactly as it is on screen, and the cursor's
+    own row out of it.
+
+    Colours and all (`-e`), because Claude Code's composer placeholder is only
+    distinguishable from a typed draft by its dimness. Without `-S`, so the
+    capture is exactly pane_height rows and the cursor's row is simply
+    lines[cursor_y]: a capture carrying scrollback is history plus screen, and
+    no arithmetic recovers which row the cursor is on once it has been
+    truncated to a fixed count.
+    """
+    rc, out = tmux("list-panes", "-t", f"={name}", "-f", "#{pane_active}",
+                   "-F", "#{pane_id}\t#{cursor_y}")
+    if rc != 0 or not out.strip():
+        return [], ""
+    parts = out.strip().splitlines()[0].split("\t")
+    rc, out = tmux("capture-pane", "-p", "-e", "-t", parts[0])
+    if rc != 0:
+        return [], ""
+    lines = out.splitlines()
+    try:
+        y = int(parts[1])
+    except (IndexError, ValueError):
+        return lines, ""
+    return lines, lines[y] if 0 <= y < len(lines) else ""
 
 
 def classify_session(name: str) -> tuple[str, list[str], str]:
     """Read the session's visible pane once and run detect_prompt over it.
 
-    Called only on a busy→idle transition, so its two tmux calls (cursor
-    position, then the capture) are paid per episode, not per tick.
+    Called only on a busy→idle transition, so its two tmux calls (the pane's
+    id and cursor row, then the capture) are paid per episode, not per tick.
     """
-    lines = capture_pane(name, 30)
-    cursor_line = ""
-    rc, out = tmux("list-panes", "-t", f"={name}",
-                   "-F", "#{pane_active}\t#{cursor_y}\t#{pane_height}")
-    if rc == 0:
-        for row in out.splitlines():
-            parts = row.split("\t")
-            if len(parts) >= 3 and parts[0] == "1":
-                try:
-                    y, height = int(parts[1]), int(parts[2])
-                except ValueError:
-                    break
-                # The capture's last line is the visible bottom row, so the
-                # cursor's line sits (height - 1 - y) lines above it.
-                idx = len(lines) - (height - y)
-                if 0 <= idx < len(lines):
-                    cursor_line = lines[idx]
-                break
-    return detect_prompt(lines, cursor_line)
+    return detect_prompt(*capture_visible(name))
 
 
 def watch_panes() -> list[dict]:
@@ -6350,14 +6479,20 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
                                          and agg["cmd"] not in SHELL_COMMANDS):
                 kind, options, line = classify(name)
                 if kind in ("prompt", "menu", "waiting", "ready", "drafting"):
-                    w.state = "waiting"
+                    # Only a real question is "needs input". An agent sitting
+                    # at an empty composer is done, which is worth saying but
+                    # not worth answering, and a half-typed draft is a human at
+                    # the keyboard — neither is a badge anyone should be
+                    # chasing.
+                    asks = kind in ("prompt", "menu", "waiting")
+                    w.state = ("waiting" if asks
+                               else "ready" if kind == "ready" else "idle")
                     # Only a real question has anything to tap. "ready" and
                     # "drafting" publish the empty frame instead, which
                     # showPromptChips reads as "take the bar down" — but
                     # w.prompt still has to hold it, or the `w.prompt is None`
                     # branch below would drop the badge back to idle on the
                     # very next tick.
-                    asks = kind in ("prompt", "menu", "waiting")
                     w.prompt = {"type": "prompt",
                                 "options": options if asks else [],
                                 "line": line if asks else ""}
