@@ -27,6 +27,7 @@ import fcntl
 import getpass
 import hashlib
 import hmac
+import http.cookiejar
 import importlib
 import ipaddress
 import json
@@ -5249,6 +5250,74 @@ _BROWSE_CHARSET = re.compile(r"""charset\s*=\s*["']?\s*([\w.:+-]+)""", re.I)
 _BROWSE_META_CHARSET = re.compile(
     rb"""<meta[^>]+charset\s*=\s*["']?\s*([\w.:+-]+)""", re.I)
 
+# The two names a page uses to reach out of its own document, as bare words and
+# as the members that spell the same thing.
+_BROWSE_TOP_WORD = re.compile(r"\b(?:top|parent)\b")
+_BROWSE_TOP_MEMBER = re.compile(
+    r"\b(?:window|self|globalThis)\s*\.\s*(top|parent)\b")
+# A "use strict" directive at the head of a script, after whatever whitespace
+# and comments come before it. `with` is a SyntaxError in strict code, so a
+# script that opens with one is handed on exactly as it came.
+_BROWSE_USE_STRICT = re.compile(
+    r"""^(?:\s+|/\*[\s\S]*?\*/|//[^\n]*(?:\n|$))*(['"])use strict\1""")
+
+# The types a <script> element may declare and still be JavaScript the browser
+# will run. Anything else in there — a module, a JSON island, a template — is
+# left alone: a module has its own scope rules and the rest is not code.
+_BROWSE_INLINE_JS_TYPES = frozenset({
+    "", "text/javascript", "application/javascript", "application/x-javascript",
+    "text/ecmascript", "application/ecmascript", "text/jscript",
+})
+
+# And the types a script *response* may come back as. A body is only ever run
+# through the wrapper when the browser said it was fetching a script AND the
+# target said it was sending one, so nothing fetched as data is touched.
+BROWSE_JS_TYPES = frozenset({
+    "text/javascript", "application/javascript", "application/x-javascript",
+    "text/ecmascript", "application/ecmascript", "text/jscript",
+})
+
+
+def browse_wrap_js(src: str) -> str:
+    """One script's source, with `top` and `parent` meaning the page itself.
+
+    A page served in the unsandboxed flavour is a document in its own right,
+    but it is still drawn inside the pane's frame — so `window.top` and
+    `window.parent` are the shell, and a framework that walks up to `top` to
+    find its own API gets a SecurityError instead of finding it. The shim works
+    out what those two would be if the user had opened this page in a window of
+    their own (`__pt`, at the foot of BROWSE_SHIM), and this is how a script
+    comes to read them: `with` makes the bare identifiers resolve against that
+    object, and the one spelling `with` cannot reach — the members of an object
+    named outright — is rewritten to it.
+
+    What it costs, plainly: inside `with`, a top-level `let`, `const` or `class`
+    is scoped to the block rather than to the document, so a script that
+    declares one of those *and* mentions `top` stops sharing that name with the
+    scripts after it. The mention test is what keeps that from reaching pages
+    with no stake in this — the great majority of scripts never write either
+    word — and there is no way to have both.
+
+    The pane's own flavour never gets here: its callers check ctx.sandbox.
+    """
+    if not src.strip():
+        return src
+    if not _BROWSE_TOP_WORD.search(src) or _BROWSE_USE_STRICT.match(src):
+        return src
+    # The closing brace on a line of its own, because the last line of a script
+    # may be a // comment with no newline after it.
+    return "with(window.__pt||{}){" + _BROWSE_TOP_MEMBER.sub(r"__pt.\1", src) + "\n}"
+
+
+def _browse_wrappable_script(attrs: list, ctx: "BrowseCtx") -> bool:
+    """Whether this <script> start tag opens a body browse_wrap_js should see."""
+    if ctx.sandbox:
+        return False
+    named = {k.lower(): (v or "") for k, v in attrs}
+    if "src" in named:          # its body is elsewhere, and comes back as a response
+        return False
+    return named.get("type", "").strip().lower() in _BROWSE_INLINE_JS_TYPES
+
 
 @dataclasses.dataclass(frozen=True)
 class BrowseCtx:
@@ -5546,6 +5615,7 @@ class BrowseHTMLRewriter(HTMLParser):
         self.copied = 0
         self.injected = False
         self.in_style = False
+        self.in_script = False
         # Where the shim goes is decided up front: seen at the first start tag,
         # a <html> with a <head> under it is indistinguishable from one without.
         self.head_expected = re.search(r"<head[\s/>]", src, re.I) is not None
@@ -5578,16 +5648,30 @@ class BrowseHTMLRewriter(HTMLParser):
             self.injected = True
         if tag == "style":
             self.in_style = True
+        elif tag == "script":
+            self.in_script = _browse_wrappable_script(attrs, self.ctx)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag != "style" or not self.in_style:
+        if tag == "style" and self.in_style:
+            self.in_style = False
+            end = self.at()
+            if end < self.copied:
+                return
+            self.out.append(browse_rewrite_css(self.src[self.copied:end],
+                                               self.ctx))
+            self.copied = end
             return
-        self.in_style = False
-        end = self.at()
-        if end < self.copied:
-            return
-        self.out.append(browse_rewrite_css(self.src[self.copied:end], self.ctx))
-        self.copied = end
+        # An inline script in the unsandboxed flavour, so that the page reads
+        # its own top and parent rather than the shell's (browse_wrap_js).
+        # Sliced from the source like everything else here, so a script the
+        # wrapper decides against comes out as the bytes it went in as.
+        if tag == "script" and self.in_script:
+            self.in_script = False
+            end = self.at()
+            if end < self.copied:
+                return
+            self.out.append(browse_wrap_js(self.src[self.copied:end]))
+            self.copied = end
 
     def result(self) -> str:
         self.close()
@@ -5841,16 +5925,46 @@ P(function(){
   try{Object.defineProperty(window,n,{configurable:true,value:mk()})}catch(e){}
  });
 });
-P(function(){addEventListener("message",function(e){
- // How the pane closes a tab it opened. It holds the window but nulled the
- // opener, and a window that is neither the caller's own nor same origin
- // refuses close() — so the page is asked instead, and closes itself. The
- // origin check is the whole gate: only the shell this token was minted for.
- if(e.origin===C.origin&&e.data==="pockettui-close")P(function(){close()});
-})});
 P(function(){["DOMContentLoaded","load","popstate","hashchange"].forEach(function(n){
  addEventListener(n,report)
 })});
+if(!C.sandbox){
+ // What this page's top and parent would be if the user had opened it in a
+ // window of their own. It is drawn inside the pane's frame, so the real two
+ // are the shell and reading either throws; a framework that walks up to top
+ // for its own API would get a SecurityError where it expects to find itself.
+ // Set before the walk so that it is there whatever the walk does — the
+ // rewriter has already pointed this page's scripts at it (browse_wrap_js).
+ window.__pt={top:window,parent:window};
+ P(function(){
+  function ok(w){try{void w.location.href;return true}catch(e){return false}}
+  var T=window;
+  for(var i=0;i<64&&T.parent!==T&&ok(T.parent);i++)T=T.parent;
+  window.__pt={top:T,parent:ok(window.parent)?window.parent:window};
+ });
+ P(function(){
+  // The code a framework fetches as text and runs itself never went past the
+  // rewriter, and a library preload is exactly where a portal reads top.
+  var W=/\b(?:top|parent)\b/,
+      ST=/^(?:\s+|\/\*[\s\S]*?\*\/|\/\/[^\n]*(?:\n|$))*(['"])use strict\1/,
+      M=/\b(?:window|self|globalThis)\s*\.\s*(top|parent)\b/g;
+  function wrap(c){
+   var s=String(c);
+   if(!W.test(s)||ST.test(s))return s;
+   return "with(window.__pt||{}){"+s.replace(M,"__pt.$1")+"\n}";
+  }
+  var E=window.eval;
+  window.eval=function(c){return typeof c==="string"?(0,E)(wrap(c)):(0,E)(c)};
+  var F=window.Function;
+  function X(){
+   var a=[].slice.call(arguments);
+   if(a.length)P(function(){a[a.length-1]=wrap(a[a.length-1])});
+   return F.apply(this,a);
+  }
+  X.prototype=F.prototype;
+  window.Function=X;
+ });
+}
 })();
 """
 
@@ -6128,10 +6242,120 @@ def browse_client(httpx):
 
 
 # The client both flavours hold. One jar on purpose: the pane and the tab are
-# two views of one browsing session, so a login done in the frame is a login the
-# tab already has, and the other way round. One connection pool with it, which
-# is the size browse_client's limit was chosen for.
+# two views of one browsing session, so a login done in one is a login the other
+# already has. One connection pool with it, which is the size browse_client's
+# limit was chosen for.
 BROWSE_CLIENT = None
+
+# Where that jar is kept between runs. A browser does not ask its user to log in
+# again because it was restarted, and this server had been doing exactly that:
+# the jar lived in the process and every `pockettui update` threw away every
+# session the pane had. 0600, because the file is somebody's logins.
+BROWSE_COOKIES_PATH = Path.home() / ".pockettui" / "browser_cookies.json"
+# How long after a Set-Cookie the file is written. A login is a burst of
+# redirects each setting one, and every write is the whole jar.
+BROWSE_COOKIE_SAVE_AFTER = 2.0
+_BROWSE_COOKIE_SAVE = None
+
+
+def browse_cookie_rows(jar) -> list[dict]:
+    """The jar as rows, minus the ones a browser itself would not keep.
+
+    A session cookie — no expiry, or marked discard — is one the browser drops
+    when it closes. This file is what outlives a restart, so writing those would
+    make this server keep something the device in front of the user does not.
+    """
+    rows = []
+    for c in jar:
+        if c.discard or c.expires is None:
+            continue
+        rows.append({
+            "name": c.name, "value": c.value or "", "domain": c.domain,
+            "domain_specified": bool(c.domain_specified), "path": c.path,
+            "secure": bool(c.secure), "expires": int(c.expires),
+        })
+    return rows
+
+
+def browse_cookie_from_row(row: dict):
+    """One row back as the jar's own kind of object."""
+    domain = row["domain"]
+    return http.cookiejar.Cookie(
+        version=0, name=row["name"], value=row["value"],
+        port=None, port_specified=False,
+        domain=domain, domain_specified=bool(row.get("domain_specified")),
+        domain_initial_dot=domain.startswith("."),
+        path=row["path"], path_specified=True,
+        secure=bool(row.get("secure")), expires=int(row["expires"]),
+        discard=False, comment=None, comment_url=None, rest={})
+
+
+def browse_load_cookies(jar) -> int:
+    """Whatever the last run was logged in to, back in the jar. Returns how many.
+
+    A missing file is the normal state of an install nobody has browsed on, and
+    a corrupt one is not worth refusing to start over: either way the jar starts
+    empty and the next save writes a whole one over it. Anything already past
+    its expiry is dropped here rather than sent — a cookie this server would not
+    have been allowed to keep is not one to offer the target now.
+    """
+    now = time.time()
+    try:
+        data = json.loads(BROWSE_COOKIES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(data, list):
+        return 0
+    kept = 0
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        try:
+            if float(row.get("expires", 0)) <= now:
+                continue
+            jar.set_cookie(browse_cookie_from_row(row))
+        except (KeyError, TypeError, ValueError):
+            continue
+        kept += 1
+    return kept
+
+
+def browse_save_cookies(jar) -> None:
+    """The jar to disk, whole-or-not-at-all like every other file this owns."""
+    raw = json.dumps(browse_cookie_rows(jar), indent=1).encode("utf-8")
+    with FS_WRITE_LOCK:
+        BROWSE_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(BROWSE_COOKIES_PATH, raw, 0o600)
+
+
+async def _browse_cookie_saver() -> None:
+    await asyncio.sleep(BROWSE_COOKIE_SAVE_AFTER)
+    client = BROWSE_CLIENT
+    if client is None:
+        return
+    try:
+        # Off the loop: this server may be running off a network mount, and a
+        # write there is not something to hold every other request for.
+        await asyncio.to_thread(browse_save_cookies, client.cookies.jar)
+    except OSError as exc:
+        log(f"browse: cookies not saved ({exc})")
+
+
+def browse_cookies_touched() -> None:
+    """A response set a cookie. Write the jar out once, in a moment.
+
+    One task at a time: a save already waiting will pick up whatever the
+    responses between now and then add, and a second timer would only write the
+    same file twice.
+    """
+    global _BROWSE_COOKIE_SAVE
+    if _BROWSE_COOKIE_SAVE is not None and not _BROWSE_COOKIE_SAVE.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _BROWSE_COOKIE_SAVE = loop.create_task(_browse_cookie_saver())
 
 
 def browse_shared_client(httpx):
@@ -6139,6 +6363,11 @@ def browse_shared_client(httpx):
     global BROWSE_CLIENT
     if BROWSE_CLIENT is None:
         BROWSE_CLIENT = browse_client(httpx)
+        # Read here rather than at import: an install where nobody opens the
+        # pane never reads the file and never makes the directory.
+        kept = browse_load_cookies(BROWSE_CLIENT.cookies.jar)
+        if kept:
+            log(f"browse: {kept} cookies restored")
     return BROWSE_CLIENT
 
 
@@ -6408,7 +6637,8 @@ def browse_upstream_path(conn: "Request | WebSocket", rest: str) -> str:
     return "/" + rest
 
 
-def browse_wants_rewrite(request: Request, path: str) -> bool:
+def browse_wants_rewrite(request: Request, path: str,
+                         sandbox: bool = True) -> bool:
     """Whether this fetch is likely for something the rewriter will want to read.
 
     A guess, and used for nothing but asking the target not to compress it:
@@ -6419,9 +6649,30 @@ def browse_wants_rewrite(request: Request, path: str) -> bool:
     dest = request.headers.get("sec-fetch-dest", "").strip().lower()
     if dest in ("document", "iframe", "frame", "style"):
         return True
+    # A script only in the flavour whose scripts are rewritten. In the pane's
+    # own, a script is passed through as it came and compressed all the way.
+    if dest == "script" and not sandbox:
+        return True
     if "text/html" in request.headers.get("accept", "").lower():
         return True
     return path.split("?", 1)[0].lower().endswith(".css")
+
+
+def browse_wants_js_rewrite(request: Request, rec: "BrowseToken",
+                            base: str) -> bool:
+    """Whether this response is a script that has to see the page's own `top`.
+
+    Three gates and all of them: the flavour, because the pane's own pages are
+    untouched by any of this; what the browser said it was fetching; and what
+    the target said it sent back. A library pulled in as JSON or as text by an
+    XHR is left alone — nothing is going to run it as a script off the back of
+    this request, and rewriting a JSON body would corrupt it.
+    """
+    if rec.sandbox:
+        return False
+    if request.headers.get("sec-fetch-dest", "").strip().lower() != "script":
+        return False
+    return base in BROWSE_JS_TYPES
 
 
 def browse_has_body(request: Request) -> bool:
@@ -6911,7 +7162,7 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
     # pane to make that retry on the user's behalf.
     alt = browse_other_scheme(rec, sch, hostport, path, request.url.query)
 
-    identity = browse_wants_rewrite(request, path)
+    identity = browse_wants_rewrite(request, path, rec.sandbox)
     headers = browse_upstream_headers(request, authority, target_origin,
                                       rec.prefix, identity)
     content = request.stream() if browse_has_body(request) else None
@@ -6923,9 +7174,15 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
         code, detail = browse_failure(exc, hostport)
         return browse_error_response(code, detail, rec.origin, rec.sandbox, alt)
 
+    # A login is a burst of redirects each setting one, and the jar is what
+    # survives a restart of this server (browse_save_cookies).
+    if resp.headers.get("set-cookie"):
+        browse_cookies_touched()
+
     ctype = resp.headers.get("content-type", "")
     base = ctype.split(";", 1)[0].strip().lower()
-    rewritable = base in ("text/html", "application/xhtml+xml", "text/css")
+    js = browse_wants_js_rewrite(request, rec, base)
+    rewritable = js or base in ("text/html", "application/xhtml+xml", "text/css")
     if request.method == "HEAD" or not rewritable:
         # Everything that is not a document goes through unbuffered: a 9 MiB
         # download must not become 9 MiB of this process, and the upstream
@@ -6961,15 +7218,18 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
                                stream=browse_body(resp, buffered,
                                                   raw if over_cap else None))
 
-    if base == "text/css":
+    if base == "text/css" or js:
         m = _BROWSE_CHARSET.search(ctype)
         try:
             text = body.decode(m.group(1) if m else "utf-8", errors="replace")
         except LookupError:
             text = body.decode("utf-8", errors="replace")
-        out = browse_rewrite_css(text, ctx).encode("utf-8")
+        out = (browse_wrap_js(text) if js
+               else browse_rewrite_css(text, ctx)).encode("utf-8")
         # Re-encoded utf-8 like the HTML path, so the declared charset has to
-        # follow it or a stylesheet written in latin-1 comes out mojibake.
+        # follow it or a stylesheet written in latin-1 comes out mojibake. A
+        # script gets no page headers: it is not a document, and the sandbox
+        # header belongs to the document that loads it.
         new_ctype = f"{base}; charset=utf-8"
         extra: dict = {}
     else:

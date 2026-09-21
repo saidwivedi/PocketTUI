@@ -3596,10 +3596,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
   cursor: pointer;
 }
 #browser-zoom-pct:hover { color: var(--ink); background: var(--umber-tint); }
-/* A host left at anything but its own size, and a page already kept: both are
-   states that outlive the pane being closed, and the key is the only thing on
-   screen that can say so. */
-#btn-browser-zoom.on, #btn-browser-star.on { color: var(--umber); }
+/* A host left at anything but its own size, a page already kept, and a tab put
+   on the computer's own network: all three are states that outlive the press
+   that made them, and the key is the only thing on screen that can say so.
+   aria-pressed carries the same state for a reader who cannot see the tint, and
+   is drawn from as well so the two can never disagree. */
+#btn-browser-zoom.on, #btn-browser-star.on, #btn-browser-tab.on,
+#btn-browser-tab[aria-pressed="true"] { color: var(--umber); }
 #btn-browser-star[hidden] { display: none; }
 /* #files-view-scrim's recipe, in the pane rather than over the window:
    #screen-browser is position:fixed, so absolute already means "this pane",
@@ -3613,48 +3616,69 @@ html.term-open #dbg-panel { opacity: 0.85; }
   z-index: 45;
 }
 #browser-menu-scrim.show { opacity: 1; pointer-events: auto; }
-/* The tab strip, on the bookmarks bar's recipe and directly above it: one row
-   that scrolls sideways with no bar of its own rather than wrapping, because
-   the height of this pane belongs to the page. Always drawn while the pane is
+/* The tab strip, at the pane's top edge where a browser keeps it: one row that
+   scrolls sideways with no bar of its own rather than wrapping, because the
+   height of this pane belongs to the page. The band behind it is a shade
+   darker than the paper; the active tab is drawn in the paper itself and
+   bottoms out against the address row below with nothing between them, which
+   is the whole of what an active tab says. Always drawn while the pane is
    open, the lone tab included — a window with one tab still shows it, and a
    strip that appeared at the second tab would move the page under the reader. */
 #browser-tabs {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 12px 6px;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 5px 8px 0;
+  background: var(--card-2);
 }
 /* The chips alone scroll: the button beside them keeps its place at the end of
    the row, where a strip too wide for the pane would otherwise carry it off. */
 #browser-tab-row {
-  /* Only as wide as the chips it holds, so the button follows the last one
-     rather than sitting off at the pane's edge — and shrinking, so a row too
-     wide for the pane scrolls inside itself instead of pushing it out. */
+  /* Only as wide as the tabs it holds, so the key follows the last one rather
+     than sitting off at the pane's edge — and shrinking, so a row too wide for
+     the pane scrolls inside itself instead of pushing it out. */
   flex: 0 1 auto;
   min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-end;
+  gap: 2px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
 }
 #browser-tab-row::-webkit-scrollbar { display: none; }
+/* A card only once it is the one being read. The rest are words on the band:
+   a strip of eight outlined cards is a row of buttons, and the one thing this
+   row has to say is which of them the page below belongs to. */
 .tab-chip {
   flex: 0 0 auto;
   display: flex; align-items: center;
   max-width: 160px;
-  background: var(--card-2);
-  border: 1px solid var(--hair);
-  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 9px 9px 0 0;
 }
-/* The tab whose page is on screen, drawn on the paper the page below it is
-   drawn on: the chip and the frame are one surface, which is the whole of what
-   a browser's active tab says. */
+/* The tab whose page is on screen, drawn on the paper the address row and the
+   page below it are drawn on and open at the bottom, so the three read as one
+   surface — a browser's own active tab and nothing more. */
 .tab-chip.on {
   background: var(--paper);
-  border-color: var(--umber);
+  border-color: var(--hair);
+}
+.tab-chip:not(.on):hover { background: var(--umber-tint); }
+/* A tab on the computer's own network, for the tabs the key above is not
+   speaking for. A dot rather than a glyph: it sits inside a name that is
+   already being ellipsised, and at this size a mark is all that reads. */
+.tab-chip.lan .tab-name::before {
+  content: "";
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-right: 5px;
+  vertical-align: 1px;
+  border-radius: 50%;
+  background: var(--umber);
 }
 .tab-name {
   display: block;
@@ -3664,10 +3688,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   text-overflow: ellipsis;
   font-family: var(--sans);
   font-size: 12px;
-  color: var(--secondary);
+  color: var(--tertiary);
   background: transparent;
   border: none;
-  padding: 5px 2px 5px 9px;
+  padding: 6px 2px 7px 10px;
   cursor: pointer;
 }
 .tab-chip.on .tab-name, .tab-chip:hover .tab-name { color: var(--ink); }
@@ -3688,21 +3712,32 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .tab-chip.on .tab-del,
 .tab-chip:hover .tab-del, .tab-chip:focus-within .tab-del { visibility: visible; }
 .tab-del:hover { color: var(--ink); }
-/* The new tab, after the last chip where a browser keeps it. Dimmed rather
-   than disabled at the cap: a press that cannot open a ninth tab should say
-   why, and a disabled button takes its own click away. */
-#btn-browser-newtab { flex: 0 0 auto; padding: 5px; }
-#btn-browser-newtab svg { width: 17px; height: 17px; }
+/* The new tab, a small round key after the last of them where a browser keeps
+   it — outside the scrolling row on purpose, so a strip too wide for a 360px
+   pane carries its tabs off sideways and never this. Dimmed rather than
+   disabled at the cap: a press that cannot open a ninth tab should say why, and
+   a disabled button takes its own click away. */
+#btn-browser-newtab {
+  flex: 0 0 auto;
+  padding: 0;
+  width: 22px; height: 22px;
+  margin: 0 2px 4px;
+  border-radius: 50%;
+}
+#btn-browser-newtab svg { width: 14px; height: 14px; }
 #btn-browser-newtab.off { opacity: 0.4; }
 /* The bookmarks bar, in the order they were added the way a browser's own is.
    Scrolls sideways with no bar of its own (.keybar's recipe) rather than
    wrapping to a second row: the pane is a pane, and the page below it is what
-   the height is for. */
+   the height is for. Links, not cards: the tab strip above the address row is
+   the pane's one row of cards, and two rows of the same shape a few pixels
+   apart would be read as one thing twice. */
 #browser-bookmarks {
   flex: 0 0 auto;
   display: flex;
-  gap: 5px;
-  padding: 0 12px 7px;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 10px 5px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
@@ -3713,30 +3748,38 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .bm-chip {
   flex: 0 0 auto;
   display: flex; align-items: center;
-  background: var(--card-2);
-  border: 1px solid var(--hair);
-  border-radius: 8px;
+  border-radius: 6px;
 }
-/* The chip for the page on screen, in the accent the branch picker uses for
-   the same kind of "this is the one you are on". */
-.bm-chip.on { border-color: var(--umber); background: var(--umber-tint); }
-/* One line whatever the page called itself: a title is as long as its author
-   made it, and a bar of full titles would hold three of them. */
+/* The one the page is on, said in the ink rather than with a box: this bar is
+   a row of links and the mark has to be one a link can carry. */
+.bm-chip.on .bm-open { color: var(--umber); }
+/* The star before the title is what a favicon is in a desktop browser — the
+   thing that makes a row of words read as a row of saved pages. This proxy has
+   no favicons to fetch, so every one of them wears the key that saved it. */
 .bm-open {
-  display: block;
-  max-width: 140px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-family: var(--sans);
   font-size: 12px;
   color: var(--secondary);
   background: transparent;
   border: none;
-  padding: 5px 2px 5px 9px;
+  border-radius: 6px;
+  padding: 3px 5px;
   cursor: pointer;
 }
-.bm-chip:hover .bm-open { color: var(--ink); }
+.bm-open svg { flex: 0 0 auto; width: 11px; height: 11px; }
+/* One line whatever the page called itself: a title is as long as its author
+   made it, and a bar of full titles would hold three of them. */
+.bm-name {
+  display: block;
+  max-width: 140px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bm-chip:hover .bm-open { color: var(--ink); background: var(--umber-tint); }
 /* The way to drop one, kept in its slot rather than hidden out of it: the pane
    is wide-layout only so hover exists, but a chip that grows under the pointer
    moves every chip after it. Visible on a keyboard focus too, which is the
@@ -3744,7 +3787,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .bm-del {
   flex: 0 0 auto;
   visibility: hidden;
-  padding: 0 7px 0 3px;
+  padding: 0 4px 0 1px;
   border: none;
   background: transparent;
   color: var(--tertiary);

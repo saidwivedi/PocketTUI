@@ -152,26 +152,67 @@ def test_the_browser_topbar_carries_one_zoom_key_and_a_star(doc):
     assert 'id="i-star"' in doc and 'id="i-star-fill"' in doc
 
 
-def test_the_topbar_offers_the_page_in_a_window_of_its_own(doc):
-    """The way out for a page that cannot run framed: an app written to be the
-    top window (a portal reading top.EPCM through its views) needs a top-level
-    tab, which the backend serves under its unsandboxed token. Hidden until the
-    computer says it has the mode, like the star. What it is called says
-    nothing about how it is fetched — that is the computer's business, not the
-    reader's."""
+def test_the_topbar_toggles_a_tab_onto_the_computers_own_network(doc):
+    """The way through for a page that cannot run framed: an app written to be
+    the top window (a portal reading top.EPCM through its views) is fetched
+    under the computer's other permission and drawn in the same frame without
+    the sandbox, so it is a page in its own right. A toggle per tab, left of
+    reload, and hidden until the computer says it can grant that — like the
+    star. What it is called says nothing about how it is fetched: that is the
+    computer's business, not the reader's."""
     assert 'id="btn-browser-tab" hidden' in doc
-    assert 'aria-label="Open in its own window"' in doc
+    assert 'aria-label="Local network"' in doc
+    assert 'title="Local network"' in doc
+    # A toggle says so to a reader who cannot see the tint, not only to one
+    # who can.
+    assert 'aria-pressed="false"' in doc
     assert '"browse_tab"' in doc or "hasCapStrict(\"browse_tab\")" in doc
-    # Opened blank inside the click, sent somewhere once the token is in hand.
-    assert 'window.open("", "_blank")' in doc
-    # And sent to the hop that wipes this origin's storage, never straight to
-    # the proxied page: the shell may once have been served from this same
-    # address, and its pairing token would still be sitting there.
+    # No window of the device's own is opened any more — the founder asked for
+    # the page in the pane, and nothing here should say otherwise.
+    assert "Open in its own window" not in doc
+    assert 'window.open("", "_blank")' not in doc
+    # The mode is one attribute and the frame is replaced to change it: a
+    # sandbox list is read when a frame loads, not when it is set.
+    assert 'tab.frame.removeAttribute("sandbox")' in doc
+    assert "function browserSetLan(" in doc and "function syncBrowserLan(" in doc
+    # A tab that has loaded nothing yet goes in through the hop that wipes this
+    # origin's storage, never straight to the proxied page: the shell may once
+    # have been served from this same address, and its pairing token would
+    # still be sitting there. Past that hop the pages are ordinary ones —
+    # re-entering would wipe what the page itself has since put there.
     assert '"/enter?to=" + encodeURIComponent(' in doc
-    assert "function browserCloseTabs(" in doc
-    # Asked to close, not closed: cross-origin, with the opener nulled, the
-    # shell's own close() on that window is refused.
-    assert 'w.postMessage("pockettui-close", browserOrigin())' in doc
+    assert "target = tab.primed ? proxied : browserEnterUrl(proxied, rec);" in doc
+
+
+def test_the_toggles_order_in_the_address_row(doc):
+    """Left of reload, where a browser keeps the keys that act on the page
+    rather than on the address — and both of them before the field."""
+    at = {name: doc.index(f'id="{name}"')
+          for name in ("btn-browser-back", "btn-browser-fwd", "btn-browser-tab",
+                       "btn-browser-reload", "browser-url-wrap", "browser-url")}
+    assert (at["btn-browser-fwd"] < at["btn-browser-tab"]
+            < at["btn-browser-reload"] < at["browser-url-wrap"] < at["browser-url"])
+
+
+def test_the_bookmarks_bar_is_a_row_of_links_not_a_second_row_of_tabs(doc):
+    """Two rows of cards a few pixels apart read as one thing twice. The strip
+    above the address row is the pane's cards; this one is links, each with the
+    star that saved it where a desktop browser would put a favicon — there are
+    none to fetch through a proxy."""
+    assert 'svgIcon("i-star"), el("span", { class: "bm-name" }' in doc
+    # The title alone is what is capped and ellipsised; the star and the link's
+    # own padding sit outside it.
+    assert ".bm-name {" in doc and "text-overflow: ellipsis;" in doc
+    # No card: the border and the filled background the chips used are gone.
+    body = doc[doc.index(".bm-chip {"):doc.index(".bm-del {")]
+    assert "border: 1px solid" not in body and "var(--card-2)" not in body
+
+
+def test_the_tab_strip_sits_above_the_address_row(doc):
+    """Where every desktop browser puts it: the pane's top edge, then the
+    address row, then the bookmarks, then the page."""
+    assert (doc.index('id="browser-tabs"') < doc.index('class="topbar browser-topbar"')
+            < doc.index('id="browser-bookmarks"') < doc.index('id="browser-wrap"'))
 
 
 def test_the_pane_has_tabs_of_its_own(doc):
@@ -187,6 +228,10 @@ def test_the_pane_has_tabs_of_its_own(doc):
     assert 'id="browser-tabs"' in doc
     assert 'id="btn-browser-newtab"' in doc
     assert 'title="New tab"' in doc
+    # A "+" again: the network glyph moved to the key it now names, and a new
+    # tab is the one thing a "+" has always meant.
+    assert ('title="New tab"><svg><use href="#i-plus"/></svg>' in doc
+            or 'title="New tab"><svg><use href="#i-plus"/>' in doc)
     assert 'id="browser-frame-tpl"' in doc
     assert "function browserNewTab(" in doc and "function browserTab(" in doc
     assert "function browserShowTab(" in doc and "function browserCloseTab(" in doc
@@ -197,8 +242,9 @@ def test_the_pane_has_tabs_of_its_own(doc):
     # The laptop start page is gone with the button that opened it: the "+"
     # opens a tab in here now.
     assert "/start" not in doc and "browserStartUrl" not in doc
-    # The window a page that cannot be framed still opens in is unchanged.
-    assert "function browserOpenTab(" in doc
+    # A tab remembers whether it was left on the computer's own network, so a
+    # reload brings it back in the mode it was in.
+    assert "tab.lan = !!(e && e.lan);" in doc
 
 
 def test_every_pane_tab_carries_the_proxys_own_sandbox_list(doc):
