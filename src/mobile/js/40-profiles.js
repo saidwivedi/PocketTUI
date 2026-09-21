@@ -255,6 +255,7 @@ function switchProfile(id, probe) {
   dropAllFileViews();
   filesResetForProfile();
   diffResetForProfile();
+  browserResetForProfile();
   sessionsResetForProfile();
   versionResetForProfile();
   pairResetForProfile();
