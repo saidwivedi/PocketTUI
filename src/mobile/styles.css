@@ -574,6 +574,9 @@ body {
 }
 .item .item-meta .sep { color: var(--whisper); }
 .item .item-meta .cmd { color: var(--umber); font-weight: 600; }
+/* The rail keeps a command slot on every row so the bylines line up, and a
+   row with no command carries it empty; here that would only be a stray gap. */
+.item .item-meta .cmd:empty { display: none; }
 /* What the pane is holding — an agent's conversation summary, or the folder a
    shell is in. It is the one field with no length anyone controls, so it gives
    up its width first and ellipsises rather than wrapping the row onto a second
@@ -3491,8 +3494,17 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 #screen-browser.active { display: flex; }
 /* The list screens scroll the page under a sticky topbar; this one is a fixed
-   column, so its bar just sits in the flow, the editor bar's arrangement. */
-.browser-topbar { position: static; flex: 0 0 auto; gap: 4px; padding: 8px 12px; }
+   column, so its bar just sits in the flow, the editor bar's arrangement —
+   relative rather than static only so it can be given a layer, which is what
+   keeps the zoom panel's scrim below the bar the panel hangs off (the file
+   bar's sticky topbar gets the same 50 for the same reason). */
+.browser-topbar {
+  position: relative;
+  z-index: 50;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 8px 12px;
+}
 .browser-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 /* Absolute against the wrap rather than sized to its own content — the iOS
    iframe-height fix. */
@@ -3521,6 +3533,123 @@ html.term-open #dbg-panel { opacity: 0.85; }
   padding: 8px 10px;
 }
 #browser-url:focus { border-color: var(--umber); outline: none; }
+/* The zoom key's panel, on the file bar's dropdown recipe (#files-view-menu):
+   a class on the wrap opens it, a scrim inside the pane closes it. Anchored on
+   the edge it shares with its button rather than the left, because the key
+   sits near the right of a pane that is 360px wide docked and a panel hung off
+   the other edge would run out of it. */
+#browser-zoom-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex; align-items: center;
+}
+#browser-zoom-menu {
+  display: none;
+  position: absolute;
+  top: 100%; right: 0;
+  margin-top: 6px;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: var(--card);
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
+  z-index: 60;
+}
+#browser-zoom-wrap.open #browser-zoom-menu { display: flex; }
+/* The factor, and the way back to 1: a label that is also the reset, since
+   "100%" is the only thing anyone would tap it for. */
+#browser-zoom-pct {
+  min-width: 52px;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--secondary);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 4px;
+  cursor: pointer;
+}
+#browser-zoom-pct:hover { color: var(--ink); background: var(--umber-tint); }
+/* A host left at anything but its own size, and a page already kept: both are
+   states that outlive the pane being closed, and the key is the only thing on
+   screen that can say so. */
+#btn-browser-zoom.on, #btn-browser-star.on { color: var(--umber); }
+#btn-browser-star[hidden] { display: none; }
+/* #files-view-scrim's recipe, in the pane rather than over the window:
+   #screen-browser is position:fixed, so absolute already means "this pane",
+   and docked the live terminal beside it must not dim for a menu in here. */
+#browser-menu-scrim {
+  position: absolute; inset: 0;
+  background: rgba(20, 16, 10, 0.16);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s var(--ease-out);
+  z-index: 45;
+}
+#browser-menu-scrim.show { opacity: 1; pointer-events: auto; }
+/* The bookmarks bar, in the order they were added the way a browser's own is.
+   Scrolls sideways with no bar of its own (.keybar's recipe) rather than
+   wrapping to a second row: the pane is a pane, and the page below it is what
+   the height is for. */
+#browser-bookmarks {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 5px;
+  padding: 0 12px 7px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--hair);
+}
+#browser-bookmarks[hidden] { display: none; }
+#browser-bookmarks::-webkit-scrollbar { display: none; }
+.bm-chip {
+  flex: 0 0 auto;
+  display: flex; align-items: center;
+  background: var(--card-2);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+}
+/* The chip for the page on screen, in the accent the branch picker uses for
+   the same kind of "this is the one you are on". */
+.bm-chip.on { border-color: var(--umber); background: var(--umber-tint); }
+/* One line whatever the page called itself: a title is as long as its author
+   made it, and a bar of full titles would hold three of them. */
+.bm-open {
+  display: block;
+  max-width: 140px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--secondary);
+  background: transparent;
+  border: none;
+  padding: 5px 2px 5px 9px;
+  cursor: pointer;
+}
+.bm-chip:hover .bm-open { color: var(--ink); }
+/* The way to drop one, kept in its slot rather than hidden out of it: the pane
+   is wide-layout only so hover exists, but a chip that grows under the pointer
+   moves every chip after it. Visible on a keyboard focus too, which is the
+   only other way to reach the button. */
+.bm-del {
+  flex: 0 0 auto;
+  visibility: hidden;
+  padding: 0 7px 0 3px;
+  border: none;
+  background: transparent;
+  color: var(--tertiary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.bm-chip:hover .bm-del, .bm-chip:focus-within .bm-del { visibility: visible; }
+.bm-del:hover { color: var(--ink); }
 
 /* ============================================================
    EDITOR
@@ -3907,6 +4036,25 @@ html.term-open #dbg-panel { opacity: 0.85; }
      an emptied meta line takes no height at all. */
   #screen-list .item .item-meta > span:not([class]),
   #screen-list .item .item-meta .sep { display: none; }
+  /* What is left is three slots, so a byline breaks where the rail says and
+     not where each row's own text happens to end: the command in a slot wide
+     enough for the longest tmux reports (python3), the state badge in one
+     sized to "Needs input" and right-aligned under the row's icon cluster,
+     and the pane label taking whatever lies between them — so its start and
+     its truncation point are the same on every row. The widths are in ch, so
+     they follow the rail's derived font-size like the rest of the line. */
+  #screen-list .item .item-meta .cmd {
+    flex: 0 0 7ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #screen-list .item .item-meta .cmd:empty { display: block; }
+  #screen-list .item .item-meta .where { flex: 1 1 auto; max-width: none; }
+  #screen-list .item .item-meta .state {
+    flex: 0 0 11ch;
+    margin-left: auto;
+    text-align: right;
+  }
   #screen-list .item .btn-bell, #screen-list .item .btn-alias,
   #screen-list .item .btn-trash { padding: 3px; margin-top: 0; }
   #screen-list .item .btn-bell svg, #screen-list .item .btn-alias svg,

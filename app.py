@@ -507,7 +507,9 @@ async def require_token(request: Request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST"],
+    # PUT is /api/browse/bookmarks' save: the preflight for a method not
+    # listed here is refused, and the hosted shell is always cross-origin.
+    allow_methods=["GET", "POST", "PUT"],
     allow_headers=["*"],
     # Chrome's private-network preflight is rejected outright without this —
     # the public shell reaching this tailnet host is exactly that case.
@@ -1329,6 +1331,11 @@ def server_capabilities() -> dict:
         # httpx is not installed, which is every install that has not re-run
         # pip since the pane shipped.
         "browse": browse_available(),
+        # /api/browse/bookmarks — the pane's bookmarks bar, kept on this
+        # computer so every device paired to it sees the same list. Independent
+        # of httpx: a server with no proxy still stores them, and the shell
+        # hides the star rather than the pane on a server too old for the route.
+        "bookmarks": True,
         # /api/fs/thumb — the explorer grid's tiles. False on an install with
         # no ffmpeg to render them with, where the grid keeps its icons.
         "thumbs": ffmpeg_exe() is not None,
@@ -6378,6 +6385,105 @@ async def api_browse(request: Request, body: dict = Body(...)) -> Response:
         # server on, which is the one thing it knows better than this server.
         "url": browse_map_url(raw, ctx),
     }))
+
+
+# In-app browser: bookmarks
+# ---------------------------------------------------------------------------
+# The pane's bookmarks bar is kept on the computer, not in each browser's own
+# storage: the phone and the laptop reach the same machine, and a page worth
+# keeping is worth keeping from both. One small JSON file beside the rest of
+# this app's state, replaced whole on every change — the list is a handful of
+# entries and the shell already holds all of them, so a merge protocol would
+# buy nothing a last-write-wins does not.
+
+BOOKMARKS_PATH = Path.home() / ".pockettui" / "browser_bookmarks.json"
+BOOKMARKS_MAX = 500
+BOOKMARK_URL_MAX = 2048
+BOOKMARK_TITLE_MAX = 200
+
+
+def clean_bookmark(row: object) -> dict | None:
+    """One entry as this server is willing to keep it, or None if it is not one.
+
+    The same check answers for both directions: a PUT refuses the whole body on
+    the first row that fails, and a read drops it — a file edited by hand into
+    something half-valid should still give the pane the entries that survive.
+    A missing `added` is filled with now, because the only client that omits it
+    is one bookmarking a page this second; a present one that is not a whole
+    number is a caller getting the shape wrong.
+    """
+    if not isinstance(row, dict):
+        return None
+    url = row.get("url")
+    if not isinstance(url, str) or not url or len(url) > BOOKMARK_URL_MAX:
+        return None
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        return None
+    title = row.get("title", "")
+    if not isinstance(title, str):
+        return None
+    added = row.get("added", None)
+    if added is None:
+        added = int(time.time())
+    # bool is an int in Python, and True is not a timestamp.
+    if isinstance(added, bool) or not isinstance(added, int):
+        return None
+    return {"url": url, "title": title[:BOOKMARK_TITLE_MAX], "added": added}
+
+
+def read_bookmarks() -> list[dict]:
+    """What is on disk, or nothing at all.
+
+    A missing file is the normal state of an install nobody has bookmarked
+    anything on, and a corrupt one is not worth a 500 the pane can do nothing
+    with: either way the bar starts empty and the next save writes a whole,
+    valid list over whatever is there.
+    """
+    try:
+        data = json.loads(BOOKMARKS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    rows = [clean_bookmark(row) for row in data[:BOOKMARKS_MAX]]
+    return [row for row in rows if row is not None]
+
+
+@app.get("/api/browse/bookmarks")
+def api_browse_bookmarks() -> Response:
+    """The bar's contents. Gated like every other /api/ route."""
+    return no_store(JSONResponse({"bookmarks": read_bookmarks()}))
+
+
+@app.put("/api/browse/bookmarks")
+def api_browse_bookmarks_put(body: dict = Body(...)) -> Response:
+    """Replace the list, and echo back what was stored.
+
+    A plain `def`, so the write happens on the threadpool rather than on the
+    event loop, and under FS_WRITE_LOCK with atomic_write like every other file
+    this server owns: two devices saving at once must not leave half a list.
+    """
+    rows = body.get("bookmarks")
+    if not isinstance(rows, list) or len(rows) > BOOKMARKS_MAX:
+        return fs_error("bad_bookmarks", 400)
+    clean = []
+    for row in rows:
+        one = clean_bookmark(row)
+        if one is None:
+            return fs_error("bad_bookmarks", 400)
+        clean.append(one)
+    raw = json.dumps(clean, indent=1).encode("utf-8")
+    try:
+        with FS_WRITE_LOCK:
+            BOOKMARKS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write(BOOKMARKS_PATH, raw, None)
+    except OSError:
+        return fs_error("not_writable", 500)
+    return no_store(JSONResponse({"bookmarks": clean}))
 
 
 @app.api_route("/b/{tok}/{sch}/{hostport}/{rest:path}", methods=BROWSE_METHODS)
