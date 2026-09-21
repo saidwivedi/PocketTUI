@@ -242,7 +242,11 @@ function linksOn(y) {
 // and 22-drag-scroll.js hit-tests the tap's own cell instead. Two call sites,
 // one meaning.
 function activateLink(link) {
-  if (link.url) { openUrl(link.url); return; }
+  if (link.url) {
+    if (browsePaneWanted(link.url)) openBrowser(link.url);
+    else openUrl(link.url);
+    return;
+  }
   // Media keeps the viewer it has always opened: the picture is what the tap
   // was for, not the folder it happens to live in.
   if (isMediaPath(link.path)) { showImage(link.path); return; }
@@ -268,6 +272,63 @@ function linkAt(x, y) {
   const pos = y * cols + x;
   return linksOn(y).find(f =>
     f.start.y * cols + f.start.x <= pos && pos <= f.end.y * cols + f.end.x) || null;
+}
+
+// Which of the two things a tapped URL can do. A host only the workstation can
+// reach — its own localhost, a box on its LAN, an intranet name — is what the
+// in-app browser exists for: the phone cannot open it at all, and the pane
+// reaches it through the proxy on the backend (42-browser.js). A public URL
+// keeps the new tab it has always opened, which is a better browser than a
+// sandboxed frame.
+//
+// Suffixes rather than a registry: these four are the names a LAN hands out,
+// and nothing on the public internet answers to them.
+const PRIVATE_HOST_SUFFIXES = [".local", ".internal", ".lan", ".home.arpa"];
+
+// The computer this app is already talking to. Whatever it serves is as
+// reachable from the pane as its own loopback is, and a tailnet name is not
+// something the phone's browser would resolve on another network.
+function backendHost() {
+  try { return new URL(apiURL(""), location.href).hostname.toLowerCase(); }
+  catch (e) { return ""; }
+}
+
+// One pure test, on the hostname the URL parser handed over — brackets and all
+// for an IPv6 literal, which is the form it keeps.
+function isPrivateHost(host) {
+  const h = (host || "").toLowerCase().replace(/\.$/, "");
+  if (!h) return false;
+  if (h === "localhost" || h.endsWith(".localhost") || h === "0.0.0.0") return true;
+  if (h.charAt(0) === "[") {
+    const ip = h.slice(1, -1);
+    // Loopback and the unspecified address, then ULA (fc00::/7) and
+    // link-local (fe80::/10) — the v6 halves of the v4 ranges below.
+    if (ip === "::1" || ip === "::") return true;
+    return /^f[cd][0-9a-f]{0,2}:/.test(ip) || /^fe[89ab][0-9a-f]?:/.test(ip);
+  }
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (m) {
+    const a = +m[1], b = +m[2];
+    return a === 127                              // loopback
+        || a === 10                               // 10/8
+        || (a === 172 && b >= 16 && b <= 31)      // 172.16/12
+        || (a === 192 && b === 168)               // 192.168/16
+        || (a === 169 && b === 254);              // link-local
+  }
+  // A name with no dot in it is a LAN name: the public DNS root has none.
+  if (h.indexOf(".") === -1) return true;
+  return PRIVATE_HOST_SUFFIXES.some((sfx) => h.endsWith(sfx)) || h === backendHost();
+}
+
+// Whether this tap belongs to the pane rather than to a new tab. Strictly
+// gated on the capability for the reason the relay is: a server too old for
+// api/browse would 404 the mint and leave the tap doing nothing at all.
+function browsePaneWanted(raw) {
+  if (demoMode || needsSetup() || !hasCapStrict("browse")) return false;
+  let u;
+  try { u = new URL(raw); } catch (e) { return false; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  return isPrivateHost(u.hostname);
 }
 
 // A URL printed by a program running on the workstation names a host this phone

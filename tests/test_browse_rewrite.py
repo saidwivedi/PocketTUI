@@ -361,6 +361,14 @@ def test_shim_is_small_enough_to_sit_on_every_page():
     assert len(A.BROWSE_SHIM.encode("utf-8")) < 6144
 
 
+def test_shim_hands_a_traversal_to_the_pane():
+    # back/forward/go inside the frame would walk the shell's joint history,
+    # so the shim posts the step out instead of taking it.
+    assert '"pockettui-history"' in A.BROWSE_SHIM
+    for n in ("history.go=", "history.back=", "history.forward="):
+        assert n in A.BROWSE_SHIM
+
+
 def test_shim_parses_as_javascript(tmp_path):
     node = shutil.which("node")
     if node is None:

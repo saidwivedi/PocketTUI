@@ -40,6 +40,7 @@ import shlex
 import shutil
 import signal
 import socket
+import ssl
 import stat
 import struct
 import subprocess
@@ -51,6 +52,7 @@ import time
 import urllib.parse
 import urllib.request
 import wave
+import zlib
 from contextlib import asynccontextmanager
 from html import escape as html_escape
 from html.parser import HTMLParser
@@ -59,7 +61,8 @@ from pathlib import Path
 from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import (FileResponse, JSONResponse, Response,
+                               StreamingResponse)
 import uvicorn
 
 import qrcodegen
@@ -1322,6 +1325,10 @@ def server_capabilities() -> dict:
         # "Port forwarding". Strictly checked by the shell: an older server
         # 404s the POST, and the tap must not wait on it to find that out.
         "relay": True,
+        # /b/<tok>/... — the in-app browser pane's reverse proxy. False where
+        # httpx is not installed, which is every install that has not re-run
+        # pip since the pane shipped.
+        "browse": browse_available(),
         # /api/fs/thumb — the explorer grid's tiles. False on an install with
         # no ffmpeg to render them with, where the grid keeps its icons.
         "thumbs": ffmpeg_exe() is not None,
@@ -5520,14 +5527,32 @@ P(function(){["Worker","SharedWorker"].forEach(function(n){
  function X(u,o){return new W(map(u),o)}
  X.prototype=W.prototype;window[n]=X;
 })});
-P(function(){["pushState","replaceState"].forEach(function(n){
- var h=history[n];if(!h)return;
- history[n]=function(s,t,u){
-  var a=[s,t];
-  if(u!==undefined&&u!==null)a.push(map(u));
-  var r=h.apply(history,a);report();return r;
- };
-})});
+P(function(){
+ // The pane owns this frame's history, not the shell: a pushState would add
+ // an entry to the joint history, and a traversal would spend one and close
+ // the pane. Both spellings report instead, and a step is posted to the pane.
+ var R=history.replaceState;if(!R)return;
+ ["pushState","replaceState"].forEach(function(n){
+  if(!history[n])return;
+  history[n]=function(s,t,u){
+   var a=[s,t];
+   if(u!==undefined&&u!==null)a.push(map(u));
+   var r=R.apply(history,a);report();return r;
+  };
+ });
+});
+P(function(){
+ var G=history.go,RL=location.reload;
+ function step(d){
+  d=Number(d)||0;
+  if(!d)return P(function(){RL.call(location)});  // go(0) and go() are reloads
+  if(window.parent===window)return G.call(history,d);
+  P(function(){parent.postMessage({type:"pockettui-history",delta:d},C.origin||"*")});
+ }
+ history.go=function(d){step(d)};
+ history.back=function(){step(-1)};
+ history.forward=function(){step(1)};
+});
 P(function(){
  function patch(c,n){
   if(!c||!c.prototype)return;
@@ -5662,6 +5687,887 @@ def browse_page_headers() -> dict:
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "no-store",
     }
+
+
+# ---------------------------------------------------------------------------
+# In-app browser: proxy
+# ---------------------------------------------------------------------------
+# The network half. The rewriting section above moves a page's URLs under
+# /b/<tok>/<h|s>/<host:port>/; this is what answers there — a reverse proxy
+# that fetches the target, drops the headers that would stop an iframe
+# rendering it, and hands documents to the rewriter on the way out.
+#
+# The prefix is deliberately not under /api/, so the pairing-token middleware
+# lets it through: an iframe cannot send a header, and the pairing token must
+# never ride in a URL a proxied page could read off its own location. `tok` is
+# the credential instead — minted by /api/browse, which *is* gated, and worth
+# nothing anywhere but here.
+#
+# httpx is optional the way pywebpush is: the import is lazy, the capability
+# reads false without it, and the mint answers 503 rather than an install that
+# never re-ran pip failing to boot.
+
+# Per-minute allowance for minting. The pane mints once and then only again
+# after an expiry, so this is a ceiling on a client stuck in a loop rather than
+# a budget anyone should ever feel.
+RATE_BROWSE = 30
+# Sliding idle window and hard ceiling. Twelve hours is "the pane is still the
+# one I opened this morning"; a week is the longest one cookie jar and one
+# connection pool should live however heavily they are used.
+BROWSE_IDLE = 12 * 3600
+BROWSE_MAX_AGE = 7 * 86400
+# How much of a rewritable body is worth holding in memory, and for how long.
+# Past either limit the body goes out as it came in: an unrewritten page still
+# renders (its absolute links leave the pane), where a page held hostage to a
+# 40 MiB buffer does not.
+BROWSE_REWRITE_CAP = 8 * 1024 * 1024
+BROWSE_REWRITE_WAIT = 30
+
+# The port uvicorn is listening on, so the loop guard can recognise a target
+# that is this server. None wherever main() did not run — the test suite, an
+# import for --selfcheck — which reads as "cannot be us".
+LISTEN_PORT: int | None = None
+
+# token -> record. One live token per process (see the mint); the dict shape is
+# what the lookup and the sweep want, and it lets an expiring record still be
+# found for the one request that retires it.
+BROWSE: dict[str, "BrowseToken"] = {}
+
+_BROWSE_PREFIX_RE = re.compile(r"^(/[A-Za-z0-9._-]+)*$")
+_BROWSE_ORIGIN_RE = re.compile(r"^https?://[^/]+$")
+_BROWSE_LINK_URL = re.compile(r"<([^<>]*)>")
+
+# Headers that describe one hop rather than the message, so forwarding them
+# would describe the wrong connection. Proxy-* joins them, matched by prefix.
+BROWSE_HOP_HEADERS = frozenset({
+    "connection", "keep-alive", "transfer-encoding", "upgrade", "te",
+    "trailer", "trailers",
+})
+
+# What must not reach the frame. The framing three (X-Frame-Options and both
+# CSP spellings) are the reason this proxy exists at all; HSTS would pin *this*
+# server's origin to https on a target's say-so; Set-Cookie belongs to the jar
+# (see BrowseToken); COOP/COEP/CORP, Report-To, NEL and Clear-Site-Data are
+# promises scoped to an origin that is no longer the one serving the page; and
+# Alt-Svc would send the browser to a port this proxy is not listening on.
+# Date and Server describe whoever answered, and uvicorn already puts this
+# server's own pair on every response — forwarding the target's too would send
+# the frame two of each, which Date is not allowed to have.
+BROWSE_DROP_HEADERS = frozenset({
+    "x-frame-options", "content-security-policy",
+    "content-security-policy-report-only", "strict-transport-security",
+    "set-cookie", "alt-svc", "cross-origin-opener-policy",
+    "cross-origin-embedder-policy", "cross-origin-resource-policy",
+    "report-to", "nel", "clear-site-data", "transfer-encoding", "connection",
+    "keep-alive", "date", "server",
+})
+
+BROWSE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+# Which failure gets which status. Anything the target does wrong is a 502,
+# except a silence, which is a 504, and the two refusals this proxy makes on
+# its own account.
+BROWSE_ERROR_STATUS = {
+    "expired": 403, "bad_target": 400, "loop": 400, "refused": 502,
+    "timeout": 504, "tls": 502, "unknown_host": 502, "upstream": 502,
+}
+
+_BROWSE_HTTPX = None
+
+
+def _httpx_module():
+    """httpx, or None where it is not installed.
+
+    The single seam every browse path goes through, so a bare install degrades
+    in one place: no httpx, no `browse` capability, no pane offered, and the
+    mint says so instead of the import taking the server down at boot.
+    """
+    global _BROWSE_HTTPX
+    if _BROWSE_HTTPX is None:
+        try:
+            import httpx
+            _BROWSE_HTTPX = httpx
+        except Exception:  # noqa: BLE001 — a broken wheel reads as "not installed"
+            _BROWSE_HTTPX = False
+    return _BROWSE_HTTPX or None
+
+
+def browse_available() -> bool:
+    return _httpx_module() is not None
+
+
+@dataclasses.dataclass
+class BrowseToken:
+    """One pane's standing permission to reach the network through this server.
+
+    The client is the load-bearing field: its cookie jar is where a proxied
+    site's session lives. Cookies cannot live in the browser here — the iframe
+    is on an opaque origin, and Safari drops third-party cookies besides — so
+    Set-Cookie is caught on the way in and Cookie is sent from here.
+    """
+
+    token: str
+    prefix: str
+    origin: str
+    created: float
+    last_used: float
+    client: object   # httpx.AsyncClient; typed loosely so the import stays lazy
+
+
+def browse_client(httpx):
+    """The one HTTP client a browse token owns.
+
+    verify=False, with no way to turn it on: what this pane is for is intranet
+    and LAN hosts, whose certificates are self-signed when they have one at
+    all, so a verified connection is not on offer — and the leg that carries
+    the real risk, phone to this server, is tailscale's TLS, which is verified.
+
+    No redirect following, because the pane has to see the 3xx: its Location is
+    a URL that must come back mapped or the next hop leaves the iframe. No read
+    timeout, because a proxied page may hold a long poll or an SSE stream open
+    for as long as it likes; the deadlines that matter are the connect and the
+    rewrite buffer's own wait.
+    """
+    return httpx.AsyncClient(
+        verify=False, follow_redirects=False,
+        timeout=httpx.Timeout(connect=5, read=None, write=30, pool=5),
+        limits=httpx.Limits(max_connections=32),
+        cookies=httpx.Cookies())
+
+
+def browse_expiry(rec: "BrowseToken") -> float:
+    """When a record stops being usable, whichever limit comes first."""
+    return min(rec.last_used + BROWSE_IDLE, rec.created + BROWSE_MAX_AGE)
+
+
+async def browse_drop(rec: "BrowseToken") -> None:
+    """Forget a record and let go of the connections it was holding."""
+    BROWSE.pop(rec.token, None)
+    try:
+        await rec.client.aclose()
+    except Exception:  # noqa: BLE001 — a client being thrown away regardless
+        pass
+
+
+async def browse_sweep() -> None:
+    now = time.time()
+    for rec in list(BROWSE.values()):
+        if browse_expiry(rec) <= now:
+            await browse_drop(rec)
+
+
+_BROWSE_SELF_ADDRS: "set[str] | None" = None
+
+
+def browse_self_addresses() -> set[str]:
+    """Every address this machine answers on, as far as it can tell.
+
+    Computed once: interfaces do not come and go often enough to pay for this
+    per request, and being wrong about one costs a refusal the user can work
+    around rather than a hole. Both lookups are best-effort — a workstation
+    whose hostname resolves to nothing is ordinary, and the loopback test in
+    the caller carries the case that actually matters.
+    """
+    global _BROWSE_SELF_ADDRS
+    if _BROWSE_SELF_ADDRS is not None:
+        return _BROWSE_SELF_ADDRS
+    addrs: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            addrs.add(info[4][0])
+    except (OSError, UnicodeError):
+        pass
+    # The UDP connect names the default route's interface without sending a
+    # packet — the only way to learn the address a phone would reach this box
+    # on when the hostname does not say.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 9))
+        addrs.add(probe.getsockname()[0])
+    except OSError:
+        pass
+    finally:
+        probe.close()
+    _BROWSE_SELF_ADDRS = addrs
+    return addrs
+
+
+def browse_is_loop(host: str, port: int) -> bool:
+    """Whether host:port is this server, which would proxy us into ourselves.
+
+    Every other host the workstation can reach is allowed on purpose — reaching
+    intranet and LAN addresses is the whole point of the pane — so this is the
+    one target refused, and it is refused because a request that serves itself
+    through itself never ends.
+
+    Resolution only happens once the port already matches, which keeps a
+    blocking getaddrinfo off the path of every proxied asset. A name that does
+    not resolve is not us: the proxy tries it and answers unknown_host.
+    """
+    if LISTEN_PORT is None or port != LISTEN_PORT:
+        return False
+    try:
+        infos = socket.getaddrinfo(host.strip("[]"), None, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return False
+    own = browse_self_addresses()
+    for info in infos:
+        ip = info[4][0]
+        if ip in own:
+            return True
+        try:
+            addr = ipaddress.ip_address(ip.split("%", 1)[0])
+        except ValueError:
+            continue
+        if addr.is_loopback or addr.is_unspecified:
+            return True
+    return False
+
+
+def browse_target(tok: str, sch: str, hostport: str):
+    """What a proxied path names: (record, scheme, host, port), or an error code.
+
+    Shared with the WebSocket route, which makes exactly these three checks
+    before it upgrades — hence a bare code for the failure rather than a
+    response, since a socket cannot be handed an HTML page.
+    """
+    rec = BROWSE.get(tok)
+    if rec is None or browse_expiry(rec) <= time.time():
+        return "expired"
+    if sch not in ("h", "s"):
+        return "bad_target"
+    host, sep, port = hostport.rpartition(":")
+    if not sep or not host:
+        return "bad_target"
+    try:
+        num = int(port)
+    except ValueError:
+        return "bad_target"
+    if not 1 <= num <= 65535:
+        return "bad_target"
+    if browse_is_loop(host, num):
+        return "loop"
+    return (rec, "https" if sch == "s" else "http", host, num)
+
+
+def browse_error_response(code: str, detail: str, origin: "str | None") -> Response:
+    """One failure as the page the iframe renders and the pane listens to."""
+    return Response(browse_error_page(code, detail, origin),
+                    status_code=BROWSE_ERROR_STATUS.get(code, 502),
+                    media_type="text/html; charset=utf-8",
+                    headers=browse_page_headers())
+
+
+def browse_caused_by(exc: BaseException, kind) -> bool:
+    """Whether `kind` appears anywhere in this exception's chain.
+
+    httpx wraps httpcore wraps the socket error, and which layer's class
+    reaches us moves between versions, so the cause chain is the only stable
+    place to ask what actually went wrong.
+    """
+    seen: set = set()
+    cur: "BaseException | None" = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, kind):
+            return True
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def browse_failure(exc: Exception, hostport: str) -> tuple[str, str]:
+    """(error code, detail) for one upstream failure."""
+    httpx = _httpx_module()
+    if httpx is not None and isinstance(exc, httpx.TimeoutException):
+        return ("timeout", hostport)
+    # Ordered by specificity: a name that does not resolve and a handshake that
+    # fails both surface as httpx.ConnectError, and only the cause says which.
+    if browse_caused_by(exc, socket.gaierror):
+        return ("unknown_host", hostport)
+    if browse_caused_by(exc, ssl.SSLError):
+        return ("tls", hostport)
+    if httpx is not None and isinstance(exc, httpx.ConnectError):
+        return ("refused", hostport)
+    return ("upstream", f"{hostport} — {exc}")
+
+
+def browse_unmap_referer(value: str, prefix: str, target_origin: str) -> str:
+    """A Referer pointing at this proxy, said in the target's own terms."""
+    try:
+        path = urllib.parse.urlsplit(value).path
+    except ValueError:
+        return target_origin
+    un = browse_unmap_path(path, prefix)
+    if un is None:
+        return target_origin
+    return f"{'https' if un[0] == 's' else 'http'}://{un[1]}{un[2]}"
+
+
+def browse_upstream_path(conn: "Request | WebSocket", rest: str) -> str:
+    """The target's path, keeping the percent-encoding the client sent.
+
+    The routed `rest` has been decoded, which would turn a %2F inside a path
+    segment into a separator the target reads as a different URL. raw_path is
+    the bytes as they arrived, so the mapping is undone there instead and the
+    decoded form is only the fallback for a server that does not provide it.
+    """
+    raw = conn.scope.get("raw_path")
+    if raw:
+        try:
+            spelled = raw.decode("latin-1").split("?", 1)[0]
+        except (UnicodeDecodeError, AttributeError):
+            spelled = ""
+        un = browse_unmap_path(spelled, "")
+        if un is not None:
+            return un[2]
+    return "/" + rest
+
+
+def browse_wants_rewrite(request: Request, path: str) -> bool:
+    """Whether this fetch is likely for something the rewriter will want to read.
+
+    A guess, and used for nothing but asking the target not to compress it:
+    Sec-Fetch-Dest says it outright where the browser sends one, Accept says it
+    for the ones that do not, and the path says it for a stylesheet pulled in
+    by an @import, whose request carries neither.
+    """
+    dest = request.headers.get("sec-fetch-dest", "").strip().lower()
+    if dest in ("document", "iframe", "frame", "style"):
+        return True
+    if "text/html" in request.headers.get("accept", "").lower():
+        return True
+    return path.split("?", 1)[0].lower().endswith(".css")
+
+
+def browse_has_body(request: Request) -> bool:
+    """Whether this request carries one, so an empty POST is not sent chunked."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return False
+    if "chunked" in request.headers.get("transfer-encoding", "").lower():
+        return True
+    try:
+        return int(request.headers.get("content-length", "0")) > 0
+    except ValueError:
+        return False
+
+
+def browse_upstream_headers(request: Request, hostport: str, target_origin: str,
+                            prefix: str, identity: bool) -> list:
+    """The request headers as the target should see them.
+
+    Host names the target rather than this server; Cookie is dropped because
+    the jar speaks for the session, and a cookie the browser attached here
+    would be one the target never set; Origin and Referer are rewritten so that
+    a target which checks them — Jupyter's XSRF, Django's CSRF — sees its own
+    address instead of a stranger's.
+
+    Content-Length is forwarded rather than left to httpx: given a streamed
+    body and no length, httpx sends the request chunked, and plenty of small
+    dev servers (Python's own http.server among them) never read a chunked one.
+    """
+    out = [("host", hostport)]
+    saw_encoding = False
+    for name, value in request.headers.items():
+        n = name.lower()
+        if n == "host" or n == "cookie" or n in BROWSE_HOP_HEADERS or \
+                n.startswith("proxy-"):
+            continue
+        if n == "origin":
+            value = target_origin
+        elif n == "referer":
+            value = browse_unmap_referer(value, prefix, target_origin)
+        elif n == "accept-encoding":
+            saw_encoding = True
+            if identity:
+                # The rewriter works on text. Asking for it in the clear costs
+                # a little bandwidth on one document and saves inflating it
+                # here — and saves the pages a br build could not inflate.
+                value = "identity"
+        out.append((n, value))
+    if identity and not saw_encoding:
+        out.append(("accept-encoding", "identity"))
+    return out
+
+
+def browse_response_headers(resp, ctx: BrowseCtx,
+                            drop: frozenset = frozenset()) -> list:
+    """The upstream response headers, minus the ones that would fight the frame.
+
+    Location is mapped because a 3xx is how many sites answer the first
+    request; Refresh and Link get the same treatment, since both spell their
+    URL out in one piece. What is left alone is every header whose URL would
+    have to be parsed out of a structure to be found — Content-Location's
+    relative form, and Link's parameters other than the target itself.
+    """
+    out = []
+    for name, value in resp.headers.multi_items():
+        n = name.lower()
+        if n in BROWSE_DROP_HEADERS or n in drop:
+            continue
+        if n == "location":
+            value = browse_map_url(value, ctx)
+        elif n == "refresh":
+            value = _BROWSE_REFRESH.sub(
+                lambda m: f"{m.group(1)}{m.group(2)}"
+                          f"{browse_map_url(m.group(3), ctx)}{m.group(2)}", value)
+        elif n == "link":
+            value = _BROWSE_LINK_URL.sub(
+                lambda m: f"<{browse_map_url(m.group(1), ctx)}>", value)
+        out.append((n, value))
+    return out
+
+
+def browse_response(status: int, pairs: list, body: bytes = b"",
+                    stream=None) -> Response:
+    """A response carrying exactly `pairs`, duplicates and all.
+
+    raw_headers rather than the headers argument, because a proxy has no
+    business collapsing two Vary or two Link lines from the target into one.
+    """
+    out = (StreamingResponse(stream, status_code=status) if stream is not None
+           else Response(body, status_code=status))
+    out.raw_headers = [(k.encode("latin-1", "replace"),
+                        str(v).encode("latin-1", "replace")) for k, v in pairs]
+    return out
+
+
+async def browse_body(resp, buffered: list, rest=None):
+    """What is left of an upstream body, closing the connection when it ends.
+
+    `rest` is the raw iterator, handed in rather than taken from the response:
+    httpx allows exactly one, so a body that was partly read for the rewrite
+    buffer has to be finished on the same one it was started on.
+    """
+    try:
+        for chunk in buffered:
+            yield chunk
+        if rest is not None:
+            async for chunk in rest:
+                yield chunk
+    finally:
+        await resp.aclose()
+
+
+async def browse_read_capped(stream, cap: int) -> tuple:
+    """(body, chunks read) for a body up to `cap`; body is None past it.
+
+    The chunks come back either way, so that a body too big to rewrite can be
+    streamed on from where the read stopped rather than fetched twice.
+    """
+    buffered: list = []
+    total = 0
+    async for chunk in stream:
+        buffered.append(chunk)
+        total += len(chunk)
+        if total > cap:
+            return None, buffered
+    return b"".join(buffered), buffered
+
+
+def browse_decompress(body: bytes, encoding: str) -> "bytes | None":
+    """A rewritable body in the clear, or None when this build cannot get there.
+
+    Only reached when the target compressed a document that was asked for as
+    identity, which happens on servers answering from a cache that holds
+    nothing else. brotli is not a dependency, so a br body without it is a body
+    that goes out untouched rather than a page that fails to load.
+    """
+    enc = encoding.strip().lower()
+    if not enc or enc == "identity":
+        return body
+    try:
+        if enc in ("gzip", "x-gzip"):
+            return zlib.decompress(body, 16 + zlib.MAX_WBITS)
+        if enc == "deflate":
+            # Two spellings in the wild: zlib-wrapped, as the RFC says, and
+            # raw deflate, as several older servers send.
+            try:
+                return zlib.decompress(body)
+            except zlib.error:
+                return zlib.decompress(body, -zlib.MAX_WBITS)
+        if enc == "br":
+            try:
+                import brotli
+            except ImportError:
+                return None
+            return brotli.decompress(body)
+    except (zlib.error, OSError, ValueError):
+        return None
+    return None
+
+
+@app.post("/api/browse")
+async def api_browse(request: Request, body: dict = Body(...)) -> Response:
+    """Mint the credential the iframe carries, and say where to point it.
+
+    One live token per process, handed back on every call rather than replaced:
+    the pane persists the proxied URL of the page it was last on, and a fresh
+    token per reload would turn every one of those into a 403.
+
+    The prefix comes from the caller because only the shell knows it. Behind
+    `tailscale serve` this server is mounted under /pockettui and never sees
+    the segment — but the URLs inside a proxied page are read by the browser,
+    which does.
+    """
+    refusal = throttled("browse", RATE_BROWSE, request)
+    if refusal is not None:
+        return refusal
+    httpx = _httpx_module()
+    if httpx is None:
+        return fs_error("browse_unavailable", 503)
+
+    raw = str(body.get("url", "")).strip()
+    try:
+        parts = urllib.parse.urlsplit(raw)
+    except ValueError:
+        return fs_error("bad_url", 400)
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        return fs_error("bad_url", 400)
+    sch = "s" if parts.scheme.lower() == "https" else "h"
+    hostport = _browse_authority(parts.netloc, "443" if sch == "s" else "80")
+    if not hostport:
+        return fs_error("bad_url", 400)
+
+    prefix = str(body.get("prefix", ""))
+    if _BROWSE_PREFIX_RE.match(prefix) is None:
+        return fs_error("bad_prefix", 400)
+    origin = str(body.get("origin", ""))
+    if _BROWSE_ORIGIN_RE.match(origin) is None:
+        return fs_error("bad_origin", 400)
+
+    host, _, port = hostport.rpartition(":")
+    try:
+        if browse_is_loop(host, int(port)):
+            return fs_error("loop", 400)
+    except ValueError:
+        return fs_error("bad_url", 400)
+
+    await browse_sweep()
+    now = time.time()
+    rec = next(iter(BROWSE.values()), None)
+    if rec is None:
+        rec = BrowseToken(token=secrets.token_urlsafe(24), prefix=prefix,
+                          origin=origin, created=now, last_used=now,
+                          client=browse_client(httpx))
+        BROWSE[rec.token] = rec
+        log(f"browse token minted prefix={prefix or '/'}")
+    else:
+        # The shell may have moved: a second device, or the same one reaching
+        # this server directly rather than through `tailscale serve`.
+        rec.prefix = prefix
+        rec.origin = origin
+        rec.last_used = now
+
+    ctx = BrowseCtx(prefix, rec.token, sch, hostport)
+    return no_store(JSONResponse({
+        "token": rec.token,
+        "prefix": prefix,
+        "expires": int(browse_expiry(rec)),
+        # Path-only: the shell joins it to whatever origin it reaches this
+        # server on, which is the one thing it knows better than this server.
+        "url": browse_map_url(raw, ctx),
+    }))
+
+
+@app.api_route("/b/{tok}/{sch}/{hostport}/{rest:path}", methods=BROWSE_METHODS)
+async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
+                           rest: str = "") -> Response:
+    """Fetch one URL on the pane's behalf, and answer with something it renders.
+
+    Un-gated, for the reason at the top of the section. Every refusal is an
+    HTML page rather than a JSON error, because an iframe is what displays it
+    and the pane only learns what happened from the postMessage it carries.
+    """
+    httpx = _httpx_module()
+    if httpx is None:
+        return browse_error_response("upstream", "httpx is not installed", None)
+
+    target = browse_target(tok, sch, hostport)
+    if isinstance(target, str):
+        rec = BROWSE.get(tok)
+        if target == "expired" and rec is not None:
+            await browse_drop(rec)
+        return browse_error_response(
+            target, hostport if target in ("loop", "bad_target") else "",
+            rec.origin if rec is not None else None)
+
+    rec, scheme, host, port = target
+    rec.last_used = time.time()
+    ctx = BrowseCtx(rec.prefix, rec.token, sch, hostport, rec.origin)
+    target_origin = f"{scheme}://{hostport}"
+
+    path = browse_upstream_path(request, rest)
+    url = target_origin + path
+    if request.url.query:
+        url += "?" + request.url.query
+
+    identity = browse_wants_rewrite(request, path)
+    headers = browse_upstream_headers(request, hostport, target_origin,
+                                      rec.prefix, identity)
+    content = request.stream() if browse_has_body(request) else None
+    try:
+        req = rec.client.build_request(request.method, url, headers=headers,
+                                       content=content)
+        resp = await rec.client.send(req, stream=True)
+    except Exception as exc:  # noqa: BLE001 — every failure here is a page
+        code, detail = browse_failure(exc, hostport)
+        return browse_error_response(code, detail, rec.origin)
+
+    ctype = resp.headers.get("content-type", "")
+    base = ctype.split(";", 1)[0].strip().lower()
+    rewritable = base in ("text/html", "application/xhtml+xml", "text/css")
+    if request.method == "HEAD" or not rewritable:
+        # Everything that is not a document goes through unbuffered: a 9 MiB
+        # download must not become 9 MiB of this process, and the upstream
+        # cache headers ride along because asset caching is what makes the
+        # tailnet leg bearable.
+        pairs = browse_response_headers(resp, ctx)
+        if request.method == "HEAD":
+            await resp.aclose()
+            return browse_response(resp.status_code, pairs)
+        return browse_response(resp.status_code, pairs,
+                               stream=browse_body(resp, [], resp.aiter_raw()))
+
+    raw = resp.aiter_raw()
+    try:
+        body, buffered = await asyncio.wait_for(
+            browse_read_capped(raw, BROWSE_REWRITE_CAP), BROWSE_REWRITE_WAIT)
+    except asyncio.TimeoutError:
+        await resp.aclose()
+        return browse_error_response("timeout", hostport, rec.origin)
+    except Exception as exc:  # noqa: BLE001 — a body that stopped mid-flight
+        await resp.aclose()
+        code, detail = browse_failure(exc, hostport)
+        return browse_error_response(code, detail, rec.origin)
+
+    over_cap = body is None
+    if not over_cap:
+        body = browse_decompress(body, resp.headers.get("content-encoding", ""))
+    if body is None:
+        # Too big to hold, or compressed in a way this build cannot undo.
+        pairs = browse_response_headers(resp, ctx)
+        return browse_response(resp.status_code, pairs,
+                               stream=browse_body(resp, buffered,
+                                                  raw if over_cap else None))
+
+    if base == "text/css":
+        m = _BROWSE_CHARSET.search(ctype)
+        try:
+            text = body.decode(m.group(1) if m else "utf-8", errors="replace")
+        except LookupError:
+            text = body.decode("utf-8", errors="replace")
+        out = browse_rewrite_css(text, ctx).encode("utf-8")
+        # Re-encoded utf-8 like the HTML path, so the declared charset has to
+        # follow it or a stylesheet written in latin-1 comes out mojibake.
+        new_ctype = f"{base}; charset=utf-8"
+        extra: dict = {}
+    else:
+        out, new_ctype = browse_rewrite_html(body, ctx, ctype)
+        extra = browse_page_headers()
+    pairs = browse_response_headers(resp, ctx, drop=frozenset(
+        {"content-length", "content-encoding", "content-type"}
+        | {k.lower() for k in extra}))
+    pairs.append(("content-type", new_ctype))
+    pairs.append(("content-length", str(len(out))))
+    pairs.extend((k.lower(), v) for k, v in extra.items())
+    await resp.aclose()
+    return browse_response(resp.status_code, pairs, out)
+
+
+@app.api_route("/b/{tok}/{sch}/{hostport}", methods=BROWSE_METHODS)
+async def api_browse_proxy_root(request: Request, tok: str, sch: str,
+                                hostport: str) -> Response:
+    """The same target with no path at all, which is what a bare origin maps to."""
+    return await api_browse_proxy(request, tok, sch, hostport, "")
+
+
+# ---------------------------------------------------------------------------
+# In-app browser: the WebSocket half
+# ---------------------------------------------------------------------------
+# The same /b/ path, upgraded. A Vite dev server's HMR channel and a Jupyter
+# kernel are both WebSockets, so the shim rewrites `new WebSocket("ws://...")`
+# onto this route and the pane keeps them working. Nothing here reads a frame:
+# what the HTTP side rewrites are URLs a browser will fetch, and a socket's
+# payload belongs to the application on either end of it.
+
+# Which refusal gets which close code, alongside BROWSE_ERROR_STATUS above.
+# 4401 is the code the shell's own attach socket already uses for "your
+# credential is no good", so the pane can read the two the same way.
+BROWSE_WS_CLOSE = {"expired": 4401, "bad_target": 4400, "loop": 4400}
+
+_BROWSE_WS_CONNECT = None
+
+
+def _ws_connect():
+    """websockets' asyncio client, or None where this install predates it.
+
+    uvicorn[standard] brings websockets in, but `websockets.asyncio` only
+    landed in 13 and an install that has not re-run pip since may hold an
+    older one. Lazy for the same reason httpx is: a missing piece costs the
+    browser pane its sockets, not the server its boot.
+    """
+    global _BROWSE_WS_CONNECT
+    if _BROWSE_WS_CONNECT is None:
+        try:
+            from websockets.asyncio.client import connect
+            _BROWSE_WS_CONNECT = connect
+        except Exception:  # noqa: BLE001 — a broken wheel reads as "not there"
+            _BROWSE_WS_CONNECT = False
+    return _BROWSE_WS_CONNECT or None
+
+
+async def browse_ws_reject(ws: WebSocket, code: int, reason: str) -> None:
+    """Refuse an upgrade in a way the pane can read off the close event.
+
+    Accepted first and closed immediately, rather than closed outright: a
+    close before the accept goes out as a failed handshake — uvicorn answers
+    403 — and a browser is told nothing about a handshake but that it failed.
+    Accepting first costs one round trip and buys the close code, which is the
+    pane's whole account of what went wrong.
+    """
+    await ws.accept()
+    await ws.close(code=code, reason=reason)
+
+
+def browse_ws_cookie(rec: "BrowseToken", url: str) -> str:
+    """The jar's Cookie line for one target URL, or "" when it has none.
+
+    Asked of httpx rather than read off the jar, so that domain, path, secure
+    and expiry matching are exactly what a proxied fetch of the same URL would
+    get. The browser cannot hold these cookies — see BrowseToken — so a socket
+    that carries a session has to be handed one from here.
+    """
+    httpx = _httpx_module()
+    probe = httpx.Request("GET", url)
+    rec.client.cookies.set_cookie_header(probe)
+    return probe.headers.get("cookie", "")
+
+
+def browse_ws_tls():
+    """A context that accepts whatever certificate the target has.
+
+    browse_client's verify=False in the other spelling, and for its reason:
+    the intranet and LAN hosts this pane exists to reach are self-signed when
+    they have a certificate at all.
+    """
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+async def browse_ws_pump_up(ws: WebSocket, upstream) -> None:
+    """Client frames, on to the target, until the client hangs up."""
+    while True:
+        msg = await ws.receive()
+        if msg["type"] == "websocket.disconnect":
+            return
+        if msg.get("text") is not None:
+            await upstream.send(msg["text"])
+        elif msg.get("bytes") is not None:
+            await upstream.send(msg["bytes"])
+
+
+async def browse_ws_pump_down(ws: WebSocket, upstream) -> None:
+    """Target frames, on to the client, until the target hangs up."""
+    async for msg in upstream:
+        if isinstance(msg, str):
+            await ws.send_text(msg)
+        else:
+            await ws.send_bytes(msg)
+
+
+@app.websocket("/b/{tok}/{sch}/{hostport}/{rest:path}")
+async def api_browse_ws(ws: WebSocket, tok: str, sch: str, hostport: str,
+                        rest: str = "") -> None:
+    """Carry one WebSocket through to the target, frames untouched.
+
+    Un-gated for the reason at the top of the section, and holding the same
+    three checks the HTTP route makes — which is why browse_target answers
+    with a bare code: a socket cannot be handed an HTML error page.
+    """
+    connect = _ws_connect()
+    if connect is None or _httpx_module() is None:
+        await browse_ws_reject(ws, 4502, "browsing is unavailable")
+        return
+
+    target = browse_target(tok, sch, hostport)
+    if isinstance(target, str):
+        rec = BROWSE.get(tok)
+        if target == "expired" and rec is not None:
+            await browse_drop(rec)
+        await browse_ws_reject(ws, BROWSE_WS_CLOSE.get(target, 4400), target)
+        return
+
+    rec, scheme, host, port = target
+    rec.last_used = time.time()
+
+    secure = scheme == "https"
+    origin = f"{scheme}://{hostport}"
+    path = browse_upstream_path(ws, rest)
+    uri = f"{'wss' if secure else 'ws'}://{hostport}{path}"
+    query = ws.scope.get("query_string", b"").decode("latin-1")
+    if query:
+        uri += "?" + query
+
+    # Origin because a target that checks it — Jupyter, most dev servers with
+    # a CSRF story — must see its own address rather than this proxy's.
+    headers = {"Origin": origin}
+    cookie = browse_ws_cookie(rec, origin + path)
+    if cookie:
+        headers["Cookie"] = cookie
+
+    extra = {"ssl": browse_ws_tls()} if secure else {}
+    try:
+        upstream = await connect(
+            uri, subprotocols=ws.scope.get("subprotocols") or None,
+            additional_headers=headers,
+            # websockets' own knob rather than an additional_headers entry,
+            # which would put a second User-Agent on the handshake.
+            user_agent_header=ws.headers.get("user-agent") or None,
+            max_size=None, open_timeout=10,
+            # No keepalive of this proxy's own: the two ends ping each other
+            # if they want to, and a ping timeout here would drop a socket
+            # both of them still consider live.
+            ping_interval=None, **extra)
+    except Exception as exc:  # noqa: BLE001 — every failure here is one close
+        await browse_ws_reject(ws, 4502, f"{hostport}: {exc}"[:120])
+        return
+
+    await ws.accept(subprotocol=upstream.subprotocol)
+    up = asyncio.create_task(browse_ws_pump_up(ws, upstream))
+    down = asyncio.create_task(browse_ws_pump_down(ws, upstream))
+    done, pending = await asyncio.wait({up, down},
+                                       return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    # Both sides, so a pump that ended on a send into a closed socket does not
+    # leave its exception unretrieved.
+    await asyncio.gather(up, down, return_exceptions=True)
+
+    code = 1000
+    if down in done:
+        # The target hung up first, so its reason is the one worth passing on.
+        # 1005 and 1006 are never sent on the wire: they are what the local
+        # end records for "no code" and "connection lost".
+        upcode = upstream.close_code
+        if upcode and upcode not in (1005, 1006):
+            code = upcode
+    try:
+        await upstream.close()
+    except Exception:  # noqa: BLE001 — a socket being let go regardless
+        pass
+    try:
+        await ws.close(code=code)
+    except Exception:  # noqa: BLE001 — the client may have closed it already
+        pass
+
+
+@app.websocket("/b/{tok}/{sch}/{hostport}")
+async def api_browse_ws_root(ws: WebSocket, tok: str, sch: str,
+                             hostport: str) -> None:
+    """The bare-origin form, as on the HTTP side."""
+    await api_browse_ws(ws, tok, sch, hostport, "")
 
 
 # ---------------------------------------------------------------------------
@@ -7804,6 +8710,10 @@ def main() -> None:
 
     install_title_hook()
 
+    # The browse loop guard's one input: a target on this port that resolves
+    # to this machine is us, and proxying ourselves through ourselves hangs.
+    global LISTEN_PORT
+    LISTEN_PORT = args.port
     write_runtime(args.host, args.port)
     # uvicorn takes SIGINT and SIGTERM for its own graceful shutdown and then
     # re-raises whichever it caught, under the handlers that were in place
