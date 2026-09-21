@@ -13,6 +13,7 @@ one of the guarantees under test.
 import asyncio
 import json
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -159,6 +160,187 @@ def test_detect_prompt_weights_the_cursor_line_first():
     lines = ["old [y/n] text", "│ > "]
     kind, options, line = A.detect_prompt(lines, "│ > ")
     assert (kind, options) == ("prompt", ["y", "n"])
+
+
+# ---------------------------------------------------------------------------
+# Real Claude Code panes
+# ---------------------------------------------------------------------------
+# Taken off a live pane with `capture-pane -p -e` (Claude Code v2.1.278, 40
+# rows) and kept byte for byte, because the escapes are the evidence: the
+# composer's placeholder differs from a typed message only by being dim, and
+# the rows Claude Code draws *under* the box are what a five-line tail used to
+# read as the pane's last word. Only paths are genericised.
+
+RULE = "\x1b[38;5;246m" + "─" * 100
+# The model, the context meter and the mode hint, in that order, under the box.
+FOOTER = [
+    "\x1b[39m  \x1b[36m[Fable 5.1]\x1b[38;5;241m \x1b[32m█\x1b[2m░░░░░░░░░\x1b[0m"
+    "\x1b[38;5;241m \x1b[32m5%\x1b[38;5;241m | \x1b[33mproject\x1b[38;5;241m | "
+    "\x1b[2m5h:\x1b[0m\x1b[38;5;241m \x1b[94m27%\x1b[38;5;241m \x1b[2m(2h 7m)\x1b[0m",
+    "  \x1b[38;5;241m⏸ manual mode on · ← for agents\x1b[39m",
+]
+# Four composers. The first three are empty as far as anyone is concerned: the
+# bare glyph, the suggestion Claude Code paints into the box, and the note it
+# leaves there while messages sit queued behind a running turn. Only the last
+# has a human's sentence in it, and it is the only one in normal colour.
+COMPOSER_EMPTY = "\x1b[39m❯\xa0"
+COMPOSER_PLACEHOLDER = "\x1b[39m❯\xa0\x1b[2mcat notes.txt\x1b[0m"
+COMPOSER_QUEUED = ("\x1b[38;5;241m❯\xa0\x1b[2m\x1b[39m"
+                   "Press up to edit queued messages\x1b[0m")
+COMPOSER_DRAFT = "\x1b[39m❯\xa0run ls in this directory and tell me what you see"
+# A turn that has just ended: two rows of answer, then Claude Code's own
+# summary of the turn.
+FINISHED = [
+    "\x1b[38;5;16m●\x1b[39m The directory holds a single file, "
+    "\x1b[38;5;105mnotes.txt\x1b[39m (6 bytes). Nothing else is",
+    "  present, and it is not a git repository.",
+    "",
+    "\x1b[38;5;241m✻\x1b[39m \x1b[38;5;241mBrewed for 11s · done 7:49 AM\x1b[39m",
+    "",
+]
+
+
+def claude_pane(body, composer):
+    """(lines, cursor_line) for a pane showing `body` over `composer`.
+
+    Exactly what classify_session hands detect_prompt: the visible rows with
+    their colours, and the row the cursor is on — which, whenever a composer is
+    drawn at all, is the composer.
+    """
+    return [*body, RULE, composer, RULE, *FOOTER], composer
+
+
+@pytest.mark.parametrize("composer,expect", [
+    (COMPOSER_EMPTY, ("ready", [], "present, and it is not a git repository.")),
+    # The live bug: dim is Claude Code talking to itself, not a draft.
+    (COMPOSER_PLACEHOLDER,
+     ("ready", [], "present, and it is not a git repository.")),
+    (COMPOSER_QUEUED,
+     ("ready", [], "present, and it is not a git repository.")),
+    # Normal colour, so a human really is mid-sentence.
+    (COMPOSER_DRAFT, ("drafting", [], "")),
+])
+def test_claude_composer_shapes(composer, expect):
+    assert A.detect_prompt(*claude_pane(FINISHED, composer)) == expect
+
+
+def test_the_footer_under_the_composer_is_never_quoted():
+    # The context meter moves on its own, so quoting it made every redraw a
+    # fresh "done" with a fresh signature — a phone buzzing at a token count.
+    _, _, line = A.detect_prompt(*claude_pane(FINISHED, COMPOSER_PLACEHOLDER))
+    assert "Fable" not in line and "5h:" not in line
+    # The turn summary repaints by itself too, and is not a sentence the agent
+    # wrote.
+    assert "Brewed" not in line
+
+
+def test_a_quoted_line_never_carries_escape_bytes():
+    # The capture keeps colours and OSC 8 hyperlinks; a notification body is
+    # text, and none of it belongs on a lock screen.
+    body = ["\x1b[38;5;16m●\x1b[39m see \x1b]8;id=1;https://example.com/docs"
+            "\x1b\\the guide\x1b[39m\x1b]8;;\x1b\\"]
+    _, _, line = A.detect_prompt(*claude_pane(body, COMPOSER_EMPTY))
+    assert line == "● see the guide"
+
+
+def test_a_question_above_the_composer_is_seen():
+    # Six rows of Claude Code chrome sit between the question and the bottom of
+    # the pane, which is exactly how a real ask used to be missed.
+    body = [*FINISHED[:2], "", "\x1b[38;5;16m●\x1b[39m Do you want me to "
+            "delete the old build directory?"]
+    assert A.detect_prompt(*claude_pane(body, COMPOSER_PLACEHOLDER)) == \
+        ("prompt", ["y", "n"], "● Do you want me to delete the old build "
+         "directory?")
+
+
+# The permission dialog as it is drawn now: a diff box, the question, three
+# options — the second of them wrapped onto a second row — and a hint. No
+# composer and no footer; the dialog replaces both, and the cursor sits on the
+# marked option.
+PERMISSION_DIALOG = [
+    "\x1b[38;5;105m" + "─" * 100,
+    "\x1b[39m \x1b[1m\x1b[38;5;105mCreate file\x1b[0m",
+    " \x1b[38;5;241mdemo.txt\x1b[39m",
+    "\x1b[38;5;248m" + "╌" * 100,
+    "\x1b[39m \x1b[2m\x1b[38;5;236m 1 \x1b[0m\x1b[38;5;236mbanana\x1b[39m",
+    "\x1b[38;5;248m" + "╌" * 100,
+    "\x1b[39m Do you want to create \x1b[1mdemo.txt\x1b[0m?",
+    " \x1b[38;5;105m❯\x1b[39m \x1b[38;5;241m1. \x1b[38;5;105mYes\x1b[39m",
+    "   \x1b[38;5;241m2. \x1b[39mYes, and switch to \x1b[1maccept edits "
+    "(auto-approve file edits and common file commands)\x1b[0m for this",
+    "      session \x1b[1m(shift+tab)\x1b[0m",
+    "   \x1b[38;5;241m3. \x1b[39mNo",
+    "",
+    " \x1b[38;5;241mEsc to cancel · Tab to amend\x1b[39m",
+]
+
+
+def test_the_permission_dialog_keeps_its_question_and_all_three_options():
+    # The question is a row above the options, and "3. No" is two rows below
+    # the wrapped tail of option 2 — neither survives a plain five-line tail.
+    assert A.detect_prompt(PERMISSION_DIALOG, PERMISSION_DIALOG[7]) == \
+        ("menu", ["1", "2", "3"], "Do you want to create demo.txt?")
+
+
+# The folder-trust dialog, which asks with arrow keys rather than digits. Its
+# marked row is composer-shaped, and the cursor is on it.
+TRUST_DIALOG = [
+    "\x1b[38;5;137m" + "─" * 100,
+    "\x1b[39m \x1b[1m\x1b[38;5;137mAccessing\x1b[0m \x1b[1m"
+    "\x1b[38;5;137mworkspace:\x1b[0m",
+    "",
+    " \x1b[1m/home/user/project\x1b[0m",
+    "",
+    " Quick safety check: Is this a project you created or one you trust?",
+    "",
+    " Claude Code'll be able to read, edit, and execute files here.",
+    "",
+    " \x1b[38;5;105m❯\x1b[39m \x1b[38;5;105mNo,\x1b[39m \x1b[38;5;105mexit"
+    "\x1b[39m",
+    "   Yes, I trust this folder",
+    "",
+    " \x1b[38;5;241mEnter to confirm · Esc to cancel\x1b[39m",
+]
+
+
+def test_an_arrow_key_chooser_is_waiting_not_a_draft():
+    kind, options, _ = A.detect_prompt(TRUST_DIALOG, TRUST_DIALOG[9])
+    assert (kind, options) == ("waiting", [])
+
+
+def test_messages_queued_behind_a_turn_are_not_a_chooser():
+    # Every queued message carries the same ❯, so a marked row with a
+    # neighbour is not enough — a chooser pre-selects exactly one.
+    queued = [
+        "\x1b[38;5;248m\x1b[48;5;255m❯ \x1b[38;5;241mthen a haiku\x1b[39m",
+        "",
+        "\x1b[38;5;248m❯ \x1b[38;5;241mand a limerick\x1b[39m",
+        "\x1b[49m  \x1b[38;5;241mctrl+x ctrl+s to send now\x1b[39m",
+    ]
+    kind, _, _ = A.detect_prompt(*claude_pane(queued, COMPOSER_QUEUED))
+    assert kind == "ready"
+
+
+# ---------------------------------------------------------------------------
+# Reading the pane
+# ---------------------------------------------------------------------------
+
+def test_capture_visible_reads_the_screen_and_indexes_the_cursor(monkeypatch):
+    # The root cause of the third bug: a capture carrying scrollback is history
+    # plus screen, and the cursor's row cannot be found in it. Without -S the
+    # capture is exactly the screen, so the cursor is simply lines[cursor_y].
+    screen = [f"row {i}" for i in range(40)]
+    calls = []
+
+    def tmux(*args):
+        calls.append(args)
+        if args[0] == "list-panes":
+            return 0, "%7\t36\n"
+        return 0, "".join(line + "\n" for line in screen)
+
+    monkeypatch.setattr(A, "tmux", tmux)
+    assert A.capture_visible("work") == (screen, "row 36")
+    assert calls[1] == ("capture-pane", "-p", "-e", "-t", "%7")
 
 
 # ---------------------------------------------------------------------------
@@ -462,12 +644,13 @@ def test_typing_in_the_composer_never_pushes():
     for i in range(3):
         events = spin(rows, "work", 1000 + 200 * i, 200.0 * i,
                       classify_drafting, cmd="claude")
-        # The badge says the session wants its human; the chip bar is told to
-        # go away; nothing reaches the phone.
+        # A human at the keyboard is not a session waiting on anyone, so the
+        # badge stays off; the chip bar is told to go away; nothing reaches
+        # the phone.
         assert kinds(events) == [("ws", "prompt")]
         assert events[0]["payload"] == {"type": "prompt", "options": [],
                                         "line": ""}
-        assert A.WATCHER["work"].state == "waiting"
+        assert A.WATCHER["work"].state == "idle"
 
 
 def test_an_empty_composer_after_a_long_turn_pushes_once():
@@ -478,7 +661,9 @@ def test_an_empty_composer_after_a_long_turn_pushes_once():
     assert push[0]["payload"]["kind"] == "ready"
     assert push[0]["payload"]["body"] == \
         "⏺ Rewrote the parser; all 89 tests pass."
-    assert A.WATCHER["work"].state == "waiting"
+    # "done", not "needs input": there is nothing in an empty composer to
+    # answer.
+    assert A.WATCHER["work"].state == "ready"
     # Nothing to answer, so the chip bar is taken down rather than filled.
     ws = [e for e in events if e["kind"] == "ws"]
     assert ws[0]["payload"] == {"type": "prompt", "options": [], "line": ""}
@@ -497,7 +682,18 @@ def test_a_short_ready_episode_sets_the_state_but_stays_silent():
     rows = [row("work", notify="on")]
     events = spin(rows, "work", 1000, 0.0, classify_ready, cmd="claude")
     assert kinds(events) == [("ws", "prompt")]
-    assert A.WATCHER["work"].state == "waiting"
+    assert A.WATCHER["work"].state == "ready"
+
+
+def test_the_badge_separates_a_question_from_a_finished_turn():
+    # Three verdicts, three badges. Only a real question is "needs input": an
+    # empty composer is an agent that has finished, and a half-typed line is a
+    # human at the keyboard who needs nothing at all.
+    for classify, state in [(classify_menu, "waiting"), (classify_ready,
+                            "ready"), (classify_drafting, "idle")]:
+        A.WATCHER.clear()
+        long_spin([row("work")], "work", 1000, 0.0, classify)
+        assert A.WATCHER["work"].state == state
 
 
 def test_a_dialog_three_seconds_into_a_tool_call_still_pushes():
@@ -821,6 +1017,31 @@ def test_sessions_payload_carries_notify_mode_and_activity(client, monkeypatch):
     assert by_name["work2"]["notify"] == "off"
     assert by_name["work2"]["state"] == "idle"
     assert by_name["work2"]["last_activity"] == 0
+
+
+def test_sessions_payload_carries_the_pane_title_and_its_folder(monkeypatch):
+    # What the byline says instead of a window count: the pane's title, which
+    # for an agent is the conversation it is having, and the folder it is in
+    # for when there is no title worth showing. tmux seeds the title with the
+    # hostname, which is dropped here rather than rendered on every row.
+    scripted = scripted_tmux(monkeypatch)
+    tmux = A.tmux
+    panes = {}
+
+    def fake(*args):
+        if args[0] == "list-panes" and "#{pane_current_path}" in args[-1]:
+            scripted.append(args)
+            return 0, panes.get(args[2].lstrip("="), "\t\t") + "\n"
+        return tmux(*args)
+
+    monkeypatch.setattr(A, "tmux", fake)
+    panes["solo"] = "claude\t✳ PocketTUI\t/home/user/pockettui"
+    panes["hush"] = f"zsh\t{socket.gethostname()}\t/home/user/other"
+    by_name = {s["name"]: s for s in A.list_sessions()}
+    assert by_name["solo"]["title"] == "✳ PocketTUI"
+    assert by_name["solo"]["cwd"] == "/home/user/pockettui"
+    assert by_name["hush"]["title"] == ""
+    assert by_name["hush"]["cwd"] == "/home/user/other"
 
 
 # ---------------------------------------------------------------------------

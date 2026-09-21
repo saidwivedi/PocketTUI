@@ -247,6 +247,21 @@ function sessionsResetForProfile() {
   sessionsEverLoaded = false;
 }
 
+// The one useful thing a row can say about what a session is holding. An agent
+// keeps its conversation's summary in the pane title ("✳ Notification and
+// running logic analysis"), which beats anything else this list could show; the
+// glyph in front of it is the agent's own decoration and goes. A plain shell
+// leaves either nothing or the `user@host: /path` it writes itself — neither
+// says a word the row does not already — so those fall back to the folder the
+// pane is in. (tmux's other default, the bare hostname, is dropped server-side,
+// where the hostname is known.)
+function paneLabel(s) {
+  const title = (s.title || "").replace(/^[^\p{L}\p{N}/~]+/u, "").trim();
+  if (title && !/^[\w.-]+@[\w.-]+:\s/.test(title)) return title;
+  const cwd = (s.cwd || "").replace(/\/+$/, "");
+  return cwd ? (cwd.slice(cwd.lastIndexOf("/") + 1) || "/") : "";
+}
+
 function renderSessions(sessions) {
   const list = $("list");
   const unread = noteUnread(sessions);
@@ -258,17 +273,30 @@ function renderSessions(sessions) {
       meta.appendChild(el("span", { class: "cmd" }, s.command));
       meta.appendChild(el("span", { class: "sep" }, "·"));
     }
-    meta.appendChild(el("span", {}, s.windows + (s.windows === 1 ? " window" : " windows")));
-    meta.appendChild(el("span", { class: "sep" }, "·"));
+    const where = paneLabel(s);
+    if (where) {
+      meta.appendChild(el("span", { class: "where" }, where));
+      meta.appendChild(el("span", { class: "sep" }, "·"));
+    }
+    // A window count is only worth the width when there is more than one.
+    if (s.windows > 1) {
+      meta.appendChild(el("span", {}, s.windows + " windows"));
+      meta.appendChild(el("span", { class: "sep" }, "·"));
+    }
     meta.appendChild(el("span", {}, relTime(s.created)));
     // The pane watcher's verdict: amber says the session is waiting on its
-    // human, green that it is producing output right now. Idle earns nothing.
+    // human, green that it is producing output right now, and a quiet "done"
+    // that an agent has finished its turn — news, but nothing to answer.
+    // Idle earns nothing.
     if (s.state === "waiting") {
       meta.appendChild(el("span", { class: "sep" }, "·"));
       meta.appendChild(el("span", { class: "state waiting" }, "needs input"));
     } else if (s.state === "active") {
       meta.appendChild(el("span", { class: "sep" }, "·"));
       meta.appendChild(el("span", { class: "state active" }, "running"));
+    } else if (s.state === "ready") {
+      meta.appendChild(el("span", { class: "sep" }, "·"));
+      meta.appendChild(el("span", { class: "state ready" }, "done"));
     }
 
     // With an alias set it becomes the row's title and the real tmux name moves
