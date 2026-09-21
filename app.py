@@ -52,6 +52,8 @@ import urllib.parse
 import urllib.request
 import wave
 from contextlib import asynccontextmanager
+from html import escape as html_escape
+from html.parser import HTMLParser
 from pathlib import Path
 
 from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -4924,6 +4926,603 @@ async def api_relay(request: Request, body: dict = Body(...)) -> Response:
     RELAYS[port] = relay
     log(f"relay port={port} host={host} -> {target[0]}:{port}")
     return no_store(JSONResponse({"state": "relayed"}))
+
+
+# ---------------------------------------------------------------------------
+# In-app browser: rewriting
+# ---------------------------------------------------------------------------
+# The shell is served from https://pockettui.com/app/, so an iframe pointed
+# straight at http://localhost:3000 is mixed content, and the targets worth
+# looking at (Jupyter, Grafana, a Vite dev server) send X-Frame-Options or a
+# frame-ancestors CSP besides. The way in is to serve the target through this
+# origin instead, under /b/<tok>/<h|s>/<host:port>/..., which only works if
+# every URL the page carries is moved under that prefix too.
+#
+# This is the pure half of that: the address arithmetic, the HTML and CSS
+# rewriters, the runtime shim the page gets for the URLs it builds in JS, and
+# the error page. Nothing here touches the network or app state, so it is all
+# testable on strings (tests/test_browse_rewrite.py) and none of it needs httpx.
+#
+# What the static rewriter cannot see, and the shim is there for: URLs built in
+# JavaScript, iframe srcdoc documents, SVG xlink:href, and the Link and Refresh
+# response headers (those are the proxy's business, not this module's).
+
+# The iframe attribute and the CSP header have to agree word for word, or the
+# stricter of the two wins and the page loses a capability it was granted.
+BROWSE_SANDBOX = ("sandbox allow-scripts allow-forms allow-popups allow-modals "
+                  "allow-downloads allow-popups-to-escape-sandbox")
+
+# Schemes a URL attribute may hold that mean "not a fetch from a server", so
+# rewriting them would break them.
+BROWSE_SKIP = ("data:", "blob:", "javascript:", "mailto:", "about:", "tel:")
+
+_BROWSE_ABS = re.compile(r"(https?|wss?)://", re.I)
+_BROWSE_CSS_URL = re.compile(r"""url\(\s*(?P<q>["']?)(?P<u>[^"')]*)(?P=q)\s*\)""", re.I)
+_BROWSE_CSS_IMPORT = re.compile(r"""(@import\s+)(?P<q>["'])(?P<u>[^"']*)(?P=q)""", re.I)
+_BROWSE_TAG_NAME = re.compile(r"<\s*([A-Za-z][^\s/>]*)")
+_BROWSE_TAG_ATTR = re.compile(
+    r"""(\s+)([^\s/>="']+)(\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*))?""")
+_BROWSE_REFRESH = re.compile(r"""(url\s*=\s*)(["']?)([^"';]*)\2""", re.I)
+_BROWSE_CHARSET = re.compile(r"""charset\s*=\s*["']?\s*([\w.:+-]+)""", re.I)
+# Catches both spellings in one pass: <meta charset=x> and the http-equiv
+# content-type whose content= ends in the same charset=x.
+_BROWSE_META_CHARSET = re.compile(
+    rb"""<meta[^>]+charset\s*=\s*["']?\s*([\w.:+-]+)""", re.I)
+
+
+@dataclasses.dataclass(frozen=True)
+class BrowseCtx:
+    """Where a proxied page is being served from, and what it is a page of."""
+
+    prefix: str    # the backend's public path prefix, "" or "/pockettui"
+    tok: str       # the browse token the pane minted
+    sch: str       # "h" or "s" — the target's scheme, one letter in the path
+    hostport: str  # target host:port, a v6 literal keeping its brackets
+    # Where the shim posts its navigation reports: the shell's origin, which
+    # the pane sent when it minted the token. Defaulted because every function
+    # here but the shim tag works without knowing it.
+    origin: str = ""
+
+
+def _browse_authority(netloc: str, default_port: str) -> str:
+    """`host:port` for one URL authority, with the port filled from the scheme.
+
+    The port is always spelled out so that one target has one path, whichever
+    way the page happened to write the link.
+    """
+    auth = netloc.rsplit("@", 1)[-1]
+    if auth.startswith("["):
+        host, _, tail = auth.partition("]")
+        host += "]"
+        port = tail[1:] if tail.startswith(":") else ""
+    else:
+        host, _, port = auth.partition(":")
+    if not host or host == "[]":
+        return ""
+    return f"{host}:{port or default_port}"
+
+
+def browse_map_url(raw: str, ctx: BrowseCtx) -> str:
+    """One URL as the page wrote it, moved under the proxy prefix.
+
+    Absolute and protocol-relative URLs name their own target; a root-relative
+    one means the target this page came from. Relative ones need no help: they
+    resolve against the proxied path they sit in. ws:// maps like http:// —
+    only the path matters here, the scheme is the shim's to fix at connect time.
+    """
+    if not raw:
+        return raw
+    u = raw.strip()
+    low = u.lower()
+    if not u or u.startswith("#") or low.startswith(BROWSE_SKIP):
+        return raw
+    base = f"{ctx.prefix}/b/"
+    if u.startswith(base):
+        # Already ours. Keeping this idempotent is what lets the shim map a URL
+        # the HTML rewriter has already mapped without doubling the prefix.
+        return raw
+
+    m = _BROWSE_ABS.match(u)
+    if m:
+        letter = "s" if m.group(1).lower() in ("https", "wss") else "h"
+        body = u[m.end():]
+    elif u.startswith("//"):
+        letter = ctx.sch
+        body = u[2:]
+    elif u.startswith("/"):
+        return f"{base}{ctx.tok}/{ctx.sch}/{ctx.hostport}{u}"
+    else:
+        return raw
+
+    cut = len(body)
+    for ch in "/?#":
+        i = body.find(ch)
+        if 0 <= i < cut:
+            cut = i
+    hostport = _browse_authority(body[:cut], "443" if letter == "s" else "80")
+    if not hostport:
+        return raw
+    rest = body[cut:]
+    if not rest.startswith("/"):
+        rest = "/" + rest
+    return f"{base}{ctx.tok}/{letter}/{hostport}{rest}"
+
+
+def browse_unmap_path(path: str, prefix: str) -> tuple[str, str, str] | None:
+    """(scheme letter, host:port, path) for a proxied path, else None."""
+    base = f"{prefix}/b/"
+    if not path.startswith(base):
+        return None
+    parts = path[len(base):].split("/", 3)
+    if len(parts) < 3 or parts[1] not in ("h", "s") or not parts[2]:
+        return None
+    return (parts[1], parts[2], "/" + (parts[3] if len(parts) > 3 else ""))
+
+
+def browse_rewrite_css(text: str, ctx: BrowseCtx) -> str:
+    """Move the url() and @import targets of a stylesheet under the prefix."""
+    def one_url(m: "re.Match") -> str:
+        q = m.group("q")
+        return f"url({q}{browse_map_url(m.group('u'), ctx)}{q})"
+
+    def one_import(m: "re.Match") -> str:
+        q = m.group("q")
+        return f"{m.group(1)}{q}{browse_map_url(m.group('u'), ctx)}{q}"
+
+    # url() first: it takes the `@import url(...)` form with it, leaving the
+    # second pass only the bare-string spelling.
+    return _BROWSE_CSS_IMPORT.sub(one_import, _BROWSE_CSS_URL.sub(one_url, text))
+
+
+def _browse_srcset(value: str, ctx: BrowseCtx) -> str:
+    """A srcset with every candidate's URL mapped, or the original untouched."""
+    out = []
+    changed = False
+    for cand in value.split(","):
+        body = cand.strip()
+        if not body:
+            out.append(cand)
+            continue
+        lead = cand[:len(cand) - len(cand.lstrip())]
+        parts = body.split(None, 1)
+        mapped = browse_map_url(parts[0], ctx)
+        changed = changed or mapped != parts[0]
+        tail = f" {parts[1]}" if len(parts) > 1 else ""
+        out.append(f"{lead}{mapped}{tail}")
+    return ",".join(out) if changed else value
+
+
+def _browse_attr_value(new: str, quote: str) -> str:
+    """A rewritten attribute value, escaped for the quoting it is going into.
+
+    The parser hands values with their character references already resolved,
+    so the ampersand has to go back in or a mapped `?a=1&amp;b=2` would come out
+    as a different query than it went in as.
+    """
+    v = new.replace("&", "&amp;").replace("<", "&lt;")
+    if quote == "'":
+        return f"'{v.replace(chr(39), '&#39;')}'"
+    return '"{}"'.format(v.replace('"', "&quot;"))
+
+
+def _browse_apply_attrs(text: str, changes: dict) -> str | None:
+    """`text` (one start tag, verbatim) with named attributes replaced or dropped.
+
+    Edited in place rather than rebuilt from the parsed attributes, so that the
+    tag's own spelling — quoting, casing, whitespace, the attributes nothing
+    here cares about — survives the rewrite untouched.
+    """
+    head = _BROWSE_TAG_NAME.match(text)
+    if head is None:
+        return None
+    out = [text[:head.end()]]
+    pos = head.end()
+    touched = False
+    for m in _BROWSE_TAG_ATTR.finditer(text, pos):
+        name = m.group(2).lower()
+        if name not in changes:
+            continue
+        new = changes[name]
+        out.append(text[pos:m.start()])
+        pos = m.end()
+        touched = True
+        if new is None:
+            continue
+        raw = (m.group(3) or "").split("=", 1)
+        spelled = raw[1].strip() if len(raw) > 1 else ""
+        quote = spelled[0] if spelled[:1] in ("'", '"') else '"'
+        out.append(f"{m.group(1)}{m.group(2)}={_browse_attr_value(new, quote)}")
+    if not touched:
+        return None
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _browse_start_tag(tag: str, attrs: list, text: str, ctx: BrowseCtx) -> str | None:
+    """The replacement for one start tag, or None when it carries no URL of ours."""
+    named = {k.lower(): (v or "") for k, v in attrs}
+    changes: dict = {}
+    url_changed = False
+    for name, value in attrs:
+        if value is None:
+            continue
+        n = name.lower()
+        if n in ("href", "src", "action", "formaction", "poster") or (
+                n == "data" and tag == "object"):
+            new = browse_map_url(value, ctx)
+        elif n in ("srcset", "imagesrcset"):
+            new = _browse_srcset(value, ctx)
+        elif n == "style":
+            new = browse_rewrite_css(value, ctx)
+        elif n == "content" and tag == "meta" and (
+                named.get("http-equiv", "").strip().lower() == "refresh"):
+            new = _BROWSE_REFRESH.sub(
+                lambda m: f"{m.group(1)}{m.group(2)}"
+                          f"{browse_map_url(m.group(3), ctx)}{m.group(2)}", value)
+        else:
+            continue
+        if new != value:
+            changes[n] = new
+            url_changed = url_changed or n != "style"
+    # An integrity hash is a promise about bytes that came from the target. The
+    # bytes still do, but the URL no longer matches the one that was hashed —
+    # and on a page the proxy rewrote, a hash mismatch is our doing, not an
+    # attack, so keeping it would only take the stylesheet or script away.
+    if url_changed and "integrity" in named and (
+            tag == "script" or
+            (tag == "link" and "stylesheet" in named.get("rel", "").lower())):
+        changes["integrity"] = None
+    if not changes:
+        return None
+    return _browse_apply_attrs(text, changes)
+
+
+class BrowseHTMLRewriter(HTMLParser):
+    """Copies a document through verbatim, replacing only what carries a URL.
+
+    Verbatim by construction: every handler works from the source offsets, so
+    text nodes, comments, doctypes, entities and the attributes nothing here
+    touches come out as the bytes they went in as. A rewriter that rebuilt the
+    document from parsed tokens would quietly normalise a page its own JS then
+    fails to recognise.
+    """
+
+    def __init__(self, src: str, ctx: BrowseCtx, shim: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.src = src
+        self.ctx = ctx
+        self.shim = shim
+        self.out: list[str] = []
+        self.copied = 0
+        self.injected = False
+        self.in_style = False
+        # Where the shim goes is decided up front: seen at the first start tag,
+        # a <html> with a <head> under it is indistinguishable from one without.
+        self.head_expected = re.search(r"<head[\s/>]", src, re.I) is not None
+        self.lines = [0]
+        for line in src.splitlines(keepends=True):
+            self.lines.append(self.lines[-1] + len(line))
+
+    def at(self) -> int:
+        """Where the handler that is running sits in the source, as an index."""
+        lineno, col = self.getpos()
+        if not 1 <= lineno <= len(self.lines):
+            return self.copied
+        return self.lines[lineno - 1] + col
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        text = self.get_starttag_text()
+        if text is None:
+            return
+        start = self.at()
+        if start < self.copied:
+            return
+        self.out.append(self.src[self.copied:start])
+        self.copied = start + len(text)
+        if not self.injected and not self.head_expected:
+            self.out.append(self.shim)
+            self.injected = True
+        self.out.append(_browse_start_tag(tag, attrs, text, self.ctx) or text)
+        if not self.injected and tag == "head":
+            self.out.append(self.shim)
+            self.injected = True
+        if tag == "style":
+            self.in_style = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "style" or not self.in_style:
+            return
+        self.in_style = False
+        end = self.at()
+        if end < self.copied:
+            return
+        self.out.append(browse_rewrite_css(self.src[self.copied:end], self.ctx))
+        self.copied = end
+
+    def result(self) -> str:
+        self.close()
+        self.out.append(self.src[self.copied:])
+        body = "".join(self.out)
+        return body if self.injected else self.shim + body
+
+
+def browse_rewrite_html(body: bytes, ctx: BrowseCtx,
+                        content_type: str | None) -> tuple[bytes, str]:
+    """A proxied HTML document, rewritten and re-encoded as utf-8.
+
+    Always utf-8 out: the document's own charset declaration is left where it
+    is (rewriting it is one more way to break a page), so the answer has to
+    carry the encoding in its Content-Type where it outranks the meta tag.
+    """
+    charset = None
+    if content_type:
+        m = _BROWSE_CHARSET.search(content_type)
+        if m:
+            charset = m.group(1)
+    if charset is None:
+        m = _BROWSE_META_CHARSET.search(body[:4096])
+        if m:
+            charset = m.group(1).decode("ascii", "replace")
+    try:
+        src = body.decode(charset or "utf-8", errors="replace")
+    except LookupError:
+        src = body.decode("utf-8", errors="replace")
+    parser = BrowseHTMLRewriter(src, ctx, browse_shim_tag(ctx, ctx.origin))
+    parser.feed(src)
+    return parser.result().encode("utf-8"), "text/html; charset=utf-8"
+
+
+def browse_shim_tag(ctx: BrowseCtx, origin: str) -> str:
+    """The shim script element, carrying its configuration as an attribute.
+
+    Single-quoted so the JSON keeps its own double quotes, which leaves three
+    characters to escape for the document not to be able to end the attribute
+    or the tag early.
+    """
+    cfg = json.dumps({"prefix": ctx.prefix, "tok": ctx.tok, "sch": ctx.sch,
+                      "hostport": ctx.hostport, "origin": origin})
+    cfg = cfg.replace("&", "&amp;").replace("<", "&lt;").replace("'", "&#39;")
+    return f"<script data-cfg='{cfg}'>{BROWSE_SHIM}</script>"
+
+
+# The shim the rewriter puts at the top of every proxied page. It lives here
+# rather than in src/mobile/ because app.py is deployed on its own, so a file
+# beside it would not be there to read.
+#
+# Everything it does is a patch over a browser API, and every patch is wrapped:
+# a page that loads is worth more than a URL that is mapped, so a failure
+# anywhere in here leaves the original behaviour in place instead of throwing
+# on the page's first call.
+BROWSE_SHIM = r"""
+(function(){
+var S=document.currentScript,C=null;
+try{C=JSON.parse(S.dataset.cfg)}catch(e){return}
+if(!C)return;
+var B=C.prefix+"/b/"+C.tok+"/",O=location.origin,SKIP=/^(#|data:|blob:|javascript:|mailto:|about:|tel:)/i;
+function P(f){try{f()}catch(e){}}
+function dport(p){return (p==="https:"||p==="wss:")?"443":"80"}
+function letter(p){return (p==="https:"||p==="wss:")?"s":"h"}
+function map(u){
+ if(u==null)return u;
+ var t=String(u).trim();
+ if(!t||SKIP.test(t))return u;
+ var r;try{r=new URL(t,document.baseURI)}catch(e){return u}
+ var p=r.protocol;
+ if(p!=="http:"&&p!=="https:"&&p!=="ws:"&&p!=="wss:")return u;
+ var tail=r.pathname+r.search+r.hash;
+ if(r.host===location.host){
+  if(r.pathname.indexOf(B)===0)return u;
+  return O+B+C.sch+"/"+C.hostport+tail;
+ }
+ return O+B+letter(p)+"/"+r.hostname+":"+(r.port||dport(p))+tail;
+}
+function mapset(v){
+ if(v==null)return v;
+ return String(v).split(",").map(function(c){
+  var b=c.trim();if(!b)return c;
+  var a=b.split(/\s+/);a[0]=map(a[0]);return a.join(" ");
+ }).join(", ");
+}
+function wsmap(u){
+ var m=map(u);
+ if(m===u)return u;
+ return m.replace(/^https?:/,location.protocol==="https:"?"wss:":"ws:");
+}
+function unmap(h){
+ try{
+  var r=new URL(h,location.href);
+  if(r.host!==location.host||r.pathname.indexOf(B)!==0)return r.href;
+  var a=r.pathname.slice(B.length).split("/");
+  if(a.length<2)return r.href;
+  var s=a[0]==="s",hp=a[1];
+  hp=hp.replace(s?/:443$/:/:80$/,"");
+  return (s?"https://":"http://")+hp+"/"+a.slice(2).join("/")+r.search+r.hash;
+ }catch(e){return String(h)}
+}
+function report(){P(function(){
+ if(window.parent===window)return;
+ parent.postMessage({type:"pockettui-nav",
+  url:unmap(location.pathname+location.search+location.hash),
+  title:document.title},C.origin||"*");
+})}
+P(function(){var f=window.fetch;if(!f)return;
+ window.fetch=function(i,o){
+  try{
+   if(typeof i==="string"||i instanceof URL)i=map(String(i));
+   else if(i&&i.url)i=new Request(map(i.url),i);
+  }catch(e){}
+  return f.call(this,i,o);
+ };
+});
+P(function(){var o=XMLHttpRequest.prototype.open;
+ XMLHttpRequest.prototype.open=function(){
+  var a=[].slice.call(arguments);
+  try{a[1]=map(a[1])}catch(e){}
+  return o.apply(this,a);
+ };
+});
+P(function(){var W=window.WebSocket;if(!W)return;
+ function X(u,p){return p===undefined?new W(wsmap(u)):new W(wsmap(u),p)}
+ X.prototype=W.prototype;
+ ["CONNECTING","OPEN","CLOSING","CLOSED"].forEach(function(k,i){X[k]=i});
+ window.WebSocket=X;
+});
+P(function(){var E=window.EventSource;if(!E)return;
+ function X(u,i){return new E(map(u),i)}
+ X.prototype=E.prototype;
+ ["CONNECTING","OPEN","CLOSED"].forEach(function(k,i){X[k]=i});
+ window.EventSource=X;
+});
+P(function(){var b=navigator.sendBeacon;if(!b)return;
+ navigator.sendBeacon=function(u,d){return b.call(navigator,map(u),d)};
+});
+P(function(){["Worker","SharedWorker"].forEach(function(n){
+ var W=window[n];if(!W)return;
+ function X(u,o){return new W(map(u),o)}
+ X.prototype=W.prototype;window[n]=X;
+})});
+P(function(){["pushState","replaceState"].forEach(function(n){
+ var h=history[n];if(!h)return;
+ history[n]=function(s,t,u){
+  var a=[s,t];
+  if(u!==undefined&&u!==null)a.push(map(u));
+  var r=h.apply(history,a);report();return r;
+ };
+})});
+P(function(){
+ function patch(c,n){
+  if(!c||!c.prototype)return;
+  var d=Object.getOwnPropertyDescriptor(c.prototype,n);
+  if(!d||!d.set)return;
+  Object.defineProperty(c.prototype,n,{configurable:true,enumerable:d.enumerable,
+   get:d.get,set:function(v){d.set.call(this,n==="srcset"?mapset(v):map(v))}});
+ }
+ [["HTMLAnchorElement","href"],["HTMLLinkElement","href"],["HTMLAreaElement","href"],
+  ["HTMLImageElement","src"],["HTMLScriptElement","src"],["HTMLIFrameElement","src"],
+  ["HTMLMediaElement","src"],["HTMLSourceElement","src"],["HTMLEmbedElement","src"],
+  ["HTMLImageElement","srcset"],["HTMLSourceElement","srcset"],
+  ["HTMLFormElement","action"],["HTMLObjectElement","data"],
+  ["HTMLVideoElement","poster"]].forEach(function(p){patch(window[p[0]],p[1])});
+});
+P(function(){
+ var A={href:1,src:1,action:1,formaction:1,poster:1,data:1,srcset:1,imagesrcset:1};
+ var s=Element.prototype.setAttribute;
+ Element.prototype.setAttribute=function(n,v){
+  var k=String(n).toLowerCase();
+  if(A[k])try{v=(k==="srcset"||k==="imagesrcset")?mapset(v):map(v)}catch(e){}
+  return s.call(this,n,v);
+ };
+});
+P(function(){document.addEventListener("click",function(e){
+ if(e.defaultPrevented||e.button||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
+ var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;
+ if(!a)return;
+ var t=(a.getAttribute("target")||"").toLowerCase();
+ if(t&&t!=="_self")return;
+ var h=a.href;
+ if(!/^https?:/i.test(h))return;
+ e.preventDefault();
+ location.replace(map(h));
+},true)});
+P(function(){
+ try{localStorage.length;return}catch(e){}
+ function mk(){var m={};return{
+  get length(){return Object.keys(m).length},
+  key:function(i){var k=Object.keys(m);return i<k.length?k[i]:null},
+  getItem:function(k){return Object.prototype.hasOwnProperty.call(m,k)?m[k]:null},
+  setItem:function(k,v){m[k]=String(v)},
+  removeItem:function(k){delete m[k]},
+  clear:function(){m={}}
+ }}
+ ["localStorage","sessionStorage"].forEach(function(n){
+  try{Object.defineProperty(window,n,{configurable:true,value:mk()})}catch(e){}
+ });
+});
+P(function(){["DOMContentLoaded","load","popstate","hashchange"].forEach(function(n){
+ addEventListener(n,report)
+})});
+})();
+"""
+
+
+# ---------------------------------------------------------------------------
+# In-app browser: error page
+# ---------------------------------------------------------------------------
+# What the iframe shows when the target says nothing useful. It is a page
+# rather than a JSON refusal because the iframe is what renders it, and the
+# pane only learns what happened from the postMessage at the bottom of it.
+
+BROWSE_ERROR_TITLES = {
+    "refused": "Nothing is answering at {d}",
+    "timeout": "{d} did not answer in time",
+    "tls": "{d} refused a secure connection",
+    "unknown_host": "{d} is not a name this computer knows",
+    "loop": "That address is PocketTUI itself",
+    "expired": "This browser link has expired",
+}
+
+BROWSE_ERROR_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+:root {{ color-scheme: light dark; }}
+body {{ margin: 0; min-height: 100vh; display: flex; align-items: center;
+  justify-content: center; background: #f4efe6; color: #2a2620;
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+  "Helvetica Neue", Arial, sans-serif; }}
+.card {{ max-width: 30em; padding: 2em 1.5em; text-align: center; }}
+h1 {{ font-size: 1.15rem; font-weight: 600; margin: 0 0 .6em; }}
+p {{ margin: 0 0 1.4em; color: #6f675c; word-break: break-word; }}
+button {{ font: inherit; padding: .5em 1.4em; border-radius: 8px;
+  border: 1px solid #c9bfae; background: transparent; color: inherit;
+  cursor: pointer; }}
+@media (prefers-color-scheme: dark) {{
+  body {{ background: #1c1a17; color: #e8e2d6; }}
+  p {{ color: #97907f; }}
+  button {{ border-color: #4a443b; }}
+}}
+</style></head>
+<body><div class="card">
+<h1>{title}</h1>
+<p>{detail}</p>
+<button onclick="location.reload()">Retry</button>
+</div>
+<script>
+try {{ parent.postMessage({{type: "pockettui-browse-error", code: {code},
+  url: location.href}}, {origin}); }} catch (e) {{}}
+</script>
+</body></html>
+"""
+
+
+def browse_error_page(code: str, detail: str, origin: str | None) -> str:
+    """The themed failure page for one browse error, addressed to the shell."""
+    safe = html_escape(detail or "")
+    title = BROWSE_ERROR_TITLES.get(code, "The page could not be loaded")
+    # replace rather than format: the detail is a host, a URL or an OS message,
+    # and any brace in it would be read as a field of its own.
+    return BROWSE_ERROR_PAGE.format(
+        title=title.replace("{d}", safe),
+        detail=safe or html_escape(code),
+        code=json.dumps(code),
+        # "*" only when there is no token to say where the pane lives: an
+        # unknown token is exactly the case the pane has to hear about.
+        origin=json.dumps(origin or "*"))
+
+
+def browse_page_headers() -> dict:
+    """The headers every HTML the proxy emits carries.
+
+    The sandbox CSP is the load-bearing one: it puts the page on an opaque
+    origin, so a proxied page that runs scripts cannot reach the pairing token
+    this app keeps in localStorage on the backend's real origin.
+    """
+    return {
+        "Content-Security-Policy": BROWSE_SANDBOX,
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+    }
 
 
 # ---------------------------------------------------------------------------
