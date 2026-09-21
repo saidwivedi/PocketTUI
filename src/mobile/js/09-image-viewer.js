@@ -177,6 +177,10 @@
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!$("viewer").classList.contains("show")) return;
+  // Seated in the pane, the overlay has a live terminal beside it and Escape
+  // is one of that terminal's keys — so only a press aimed inside the pane is
+  // the overlay's to answer, which is what the explorer's own Escape says.
+  if ($("viewer").classList.contains("docked") && !$("viewer").contains(e.target)) return;
   if ($("sheet-scrim").classList.contains("show")) return;
   if (document.activeElement !== termInput() && typingFocus()) return;
   e.preventDefault();
@@ -406,6 +410,10 @@ function dropAllFileViews() { fileViews.clear(); }
 function fileViewKind() {
   if ($("screen-editor").classList.contains("active")) return "editor";
   if ($("screen-reader").classList.contains("active")) return "reader";
+  // Only the overlay seated in the pane: full screen it is a look at a file
+  // over whatever screen was there, and a phone switching sessions never has
+  // one up at all.
+  if ($("viewer").classList.contains("docked")) return "viewer";
   return null;
 }
 
@@ -422,6 +430,7 @@ function stashFileView(session, kind) {
   }
   if (kind === "editor") view.editor = edStash();
   else if (kind === "reader") view.reader = readerStash();
+  else if (kind === "viewer") view.viewer = viewerStash();
   // The pane goes down with the session it belongs to, both halves of it: the
   // slot is given back here (diffSetOpen, and filesTeardown's own sideDrop) and
   // the record above is the whole of what puts it up again.
@@ -467,8 +476,13 @@ function restoreFileView(session) {
   // repo — diffSetOpen's own poll asks for it.
   if (view.diff) diffSetOpen(true);
   if (view.browser) browserRestore(view.browser);
+  if (view.viewer) { viewerRestore(view.viewer); return; }
   if (!view.editor && !view.reader) return;
-  history.pushState(view.editor ? { editor: true } : { reader: true }, "", location.href);
+  // A docked view pushed no entry of its own, so it gets none back — the pane
+  // under it is the same rule, a few lines up.
+  if (!view.files || !view.files.docked) {
+    history.pushState(view.editor ? { editor: true } : { reader: true }, "", location.href);
+  }
   if (view.editor) edRestore(view.editor);
   else readerRestore(view.reader);
 }
@@ -501,10 +515,15 @@ function openTerminal(name, resumed) {
   // gate keeps the deep-link edge cases exactly as they were.
   if (isWideLayout() && !resumed) {
     const kind = fileViewKind();
-    // A view opened from a terminal is that session's own: put it away rather
-    // than tearing it down, spend the entries it owns, and finish the switch
-    // when their pop lands. Nothing is discarded, so nothing is asked.
-    if (kind && filesOrigin === "screen-term" && currentSession) {
+    // A view seated in the pane owns no history entries (dockFileView,
+    // 28-file-explorer.js): there is nothing to spend and no pop to wait for,
+    // so it goes into the pane's own stash below and the switch happens here.
+    const docked = !!dockedFileView();
+    // A full-screen view opened from a terminal is that session's own: put it
+    // away rather than tearing it down, spend the entries it owns, and finish
+    // the switch when their pop lands. Nothing is discarded, so nothing is
+    // asked.
+    if (kind && !docked && filesOrigin === "screen-term" && currentSession) {
       // Tapping the row that is already open: the pane is this session's, and
       // so is the view on it. There is nothing to switch away from — and a
       // stash made here would be one for a session that is on screen, which
@@ -514,13 +533,16 @@ function openTerminal(name, resumed) {
       history.go(-(filesEntryCount() + 1));
       return;
     }
-    // A view opened from the session list belongs to no session — there is no
-    // terminal under it to come back to — so it closes on the spot, with a
-    // dirty buffer getting the same say its own back gives it.
-    if (kind === "reader") closeReader();
-    if ($("screen-editor").classList.contains("active")) {
-      if (edDirty && !confirm("Discard your unsaved changes?")) return;
-      closeEditor();
+    // A full-screen view opened from the session list belongs to no session —
+    // there is no terminal under it to come back to — so it closes on the
+    // spot, with a dirty buffer getting the same say its own back gives it. A
+    // docked one stands aside: it is the pane's, and the pane is stashed.
+    if (!docked) {
+      if (kind === "reader") closeReader();
+      if ($("screen-editor").classList.contains("active")) {
+        if (edDirty && !confirm("Discard your unsaved changes?")) return;
+        closeEditor();
+      }
     }
     // The docked explorer is the terminal's own pane rather than a screen over
     // it, and the pane is the leaving session's: the folder and the claim on
@@ -531,8 +553,13 @@ function openTerminal(name, resumed) {
     if (filesDocked) {
       if (name !== currentSession) {
         closePathEdit();
-        if (currentSession) stashFileView(currentSession, null);
-        else filesTeardown();
+        // Whatever the pane is showing over its listing goes into the record
+        // with the folder: both halves are this session's view of it.
+        if (currentSession) stashFileView(currentSession, kind);
+        // No session to keep it for, so it is dropped rather than stashed —
+        // and a docked editor gets its say about unsaved work first.
+        else if (closeDockedFileView()) filesTeardown();
+        else return;
       }
     } else if ($("screen-files").classList.contains("active")) {
       // Not arriving via back — no pop happened — so the address field (if
@@ -659,7 +686,11 @@ function closeTerminal(skipReload) {
   // not it: the slot goes back here, into the session's own record, so the list
   // is never left holding a pane and reopening this session — and only this
   // session — brings it up again.
-  if (currentSession && (filesDocked || diffOpen)) stashFileView(currentSession, null);
+  if (currentSession && (filesDocked || diffOpen)) {
+    // And the file the pane was showing over its listing, which is the same
+    // session's. Nothing is discarded by a stash, so nothing is asked.
+    stashFileView(currentSession, dockedFileView() ? fileViewKind() : null);
+  }
   currentSession = null;
   // Same as the session switch above: an intentional close is a hidden, or
   // reopening within the linger window claims nothing.
@@ -987,11 +1018,15 @@ window.addEventListener("popstate", (e) => {
     openTerminal(p.name, true);
     return;
   }
-  // A docked explorer leaves the terminal .active under the editor and the
-  // reader, so "a terminal is on screen" no longer means "this pop is the
-  // terminal's". Those two answer their own pop, in the explorer's handler.
-  if ($("screen-editor").classList.contains("active")) return;
-  if ($("screen-reader").classList.contains("active")) return;
+  // A full-screen editor or reader leaves the terminal .active underneath, so
+  // "a terminal is on screen" no longer means "this pop is the terminal's":
+  // those two answer their own pop, in the explorer's handler. Seated in the
+  // pane they own no entry at all, so the pop is the terminal's after all and
+  // the pane goes down with the session, file view and folder together.
+  if (!dockedFileView()) {
+    if ($("screen-editor").classList.contains("active")) return;
+    if ($("screen-reader").classList.contains("active")) return;
+  }
   if ($("screen-term").classList.contains("active")) closeTerminal();
 });
 
