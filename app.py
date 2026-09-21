@@ -5164,6 +5164,22 @@ def _browse_authority(netloc: str, default_port: str) -> str:
     return f"{host}:{port or default_port}"
 
 
+def browse_authority(sch: str, host: str, port) -> str:
+    """One authority as a browser would spell it: no port when it is the default.
+
+    The counterpart of `_browse_authority`, and deliberately the other way
+    round. The path segment always spells the port out so that one target has
+    one path; what goes upstream must not, because `Host: example.net:443` is
+    a line no browser sends, and a server that routes on it — a web dispatcher
+    in front of a portal, say — answers it with a different page.
+    """
+    text = str(port)
+    if not text:
+        return host
+    return host if text == ("443" if sch in ("s", "https", "wss") else "80") \
+        else f"{host}:{text}"
+
+
 def browse_map_url(raw: str, ctx: BrowseCtx) -> str:
     """One URL as the page wrote it, moved under the proxy prefix.
 
@@ -6016,7 +6032,9 @@ def browse_unmap_referer(value: str, prefix: str, target_origin: str) -> str:
     un = browse_unmap_path(path, prefix)
     if un is None:
         return target_origin
-    return f"{'https' if un[0] == 's' else 'http'}://{un[1]}{un[2]}"
+    host, sep, port = un[1].rpartition(":")
+    auth = browse_authority(un[0], host, port) if sep and host else un[1]
+    return f"{'https' if un[0] == 's' else 'http'}://{auth}{un[2]}"
 
 
 def browse_upstream_path(conn: "Request | WebSocket", rest: str) -> str:
@@ -6067,21 +6085,27 @@ def browse_has_body(request: Request) -> bool:
         return False
 
 
-def browse_upstream_headers(request: Request, hostport: str, target_origin: str,
-                            prefix: str, identity: bool) -> list:
+def browse_upstream_headers(request: Request, authority: str,
+                            target_origin: str, prefix: str,
+                            identity: bool) -> list:
     """The request headers as the target should see them.
 
-    Host names the target rather than this server; Cookie is dropped because
-    the jar speaks for the session, and a cookie the browser attached here
-    would be one the target never set; Origin and Referer are rewritten so that
-    a target which checks them — Jupyter's XSRF, Django's CSRF — sees its own
-    address instead of a stranger's.
+    Host names the target rather than this server, and in the target's own
+    spelling: `authority` comes from `browse_authority`, so a default port is
+    absent here even though the path segment it was routed on carries it.
+    Cookie is dropped because the jar speaks for the session, and a cookie the
+    browser attached here would be one the target never set; Origin and
+    Referer are rewritten so that a target which checks them — Jupyter's
+    XSRF, Django's CSRF — sees its own address instead of a stranger's.
 
     Content-Length is forwarded rather than left to httpx: given a streamed
     body and no length, httpx sends the request chunked, and plenty of small
     dev servers (Python's own http.server among them) never read a chunked one.
     """
-    out = [("host", hostport)]
+    # Explicit rather than left to httpx, which would take it from the URL:
+    # the URL is built from the same authority, so the two agree, and the
+    # header being here is what makes the spelling this function's to state.
+    out = [("host", authority)]
     saw_encoding = False
     for name, value in request.headers.items():
         n = name.lower()
@@ -6310,7 +6334,10 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
     rec, scheme, host, port = target
     rec.last_used = time.time()
     ctx = BrowseCtx(rec.prefix, rec.token, sch, hostport, rec.origin)
-    target_origin = f"{scheme}://{hostport}"
+    # The path segment keeps its port; everything the target sees drops a
+    # default one, the way the browser addressing it directly would.
+    authority = browse_authority(sch, host, port)
+    target_origin = f"{scheme}://{authority}"
 
     path = browse_upstream_path(request, rest)
     url = target_origin + path
@@ -6318,7 +6345,7 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
         url += "?" + request.url.query
 
     identity = browse_wants_rewrite(request, path)
-    headers = browse_upstream_headers(request, hostport, target_origin,
+    headers = browse_upstream_headers(request, authority, target_origin,
                                       rec.prefix, identity)
     content = request.stream() if browse_has_body(request) else None
     try:
@@ -6519,9 +6546,11 @@ async def api_browse_ws(ws: WebSocket, tok: str, sch: str, hostport: str,
     rec.last_used = time.time()
 
     secure = scheme == "https"
-    origin = f"{scheme}://{hostport}"
+    authority = browse_authority(sch, host, port)
+    origin = f"{scheme}://{authority}"
     path = browse_upstream_path(ws, rest)
-    uri = f"{'wss' if secure else 'ws'}://{hostport}{path}"
+    # The URI too: the handshake's Host line comes from it.
+    uri = f"{'wss' if secure else 'ws'}://{authority}{path}"
     query = ws.scope.get("query_string", b"").decode("latin-1")
     if query:
         uri += "?" + query
