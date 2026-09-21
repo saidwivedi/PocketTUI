@@ -111,6 +111,16 @@ class SiteHandler(BaseHTTPRequestHandler):
         elif path == "/redir-rel":
             self.send_body(b"", "text/plain", status=302,
                            extra=(("Location", "/whoami"),))
+        elif path == "/lib.js":
+            self.send_body(b"if(top===self){go()}window.parent.x=1;",
+                           "application/javascript")
+        elif path == "/strict.js":
+            self.send_body(b'"use strict";var a=top;', "application/javascript")
+        elif path == "/data.json":
+            self.send_body(b'{"top": 1, "parent": 2}', "application/json")
+        elif path == "/setcookie":
+            self.send_body(b"ok", "text/plain", extra=(
+                ("Set-Cookie", "keep=yes; Path=/; Max-Age=3600"),))
         elif path == "/style.css":
             self.send_body(SHEET.format(port=self.port).encode(), "text/css")
         elif path == "/big.bin":
@@ -178,9 +188,11 @@ def fresh_browse():
     """
     A.BROWSE.clear()
     A.BROWSE_CLIENT = None
+    A._BROWSE_COOKIE_SAVE = None
     yield
     A.BROWSE.clear()
     A.BROWSE_CLIENT = None
+    A._BROWSE_COOKIE_SAVE = None
 
 
 # ---------------------------------------------------------------------------
@@ -1311,3 +1323,156 @@ def test_a_put_can_be_preflighted_from_the_hosted_shell(client):
     })
     assert r.status_code == 200
     assert "PUT" in r.headers["access-control-allow-methods"]
+
+
+# ---------------------------------------------------------------------------
+# A script a page on the computer's own network loads
+# ---------------------------------------------------------------------------
+# The inline half is tested on strings (tests/test_browse_rewrite.py); this is
+# the half that only exists over the wire, where three things have to line up:
+# the flavour of the token, what the browser said it was fetching, and what the
+# target said it sent back.
+
+def _script(client, tok, site, path, dest="script"):
+    # The prefix is what a `tailscale serve` front end adds; this app serves
+    # the routes bare, which is what every other test here strips too.
+    return client.get((base_of(tok, site) + path)[len(PREFIX):],
+                      headers={"Sec-Fetch-Dest": dest} if dest else {})
+
+
+def test_a_script_on_the_computers_network_reads_the_pages_own_top(client, site):
+    r = mint_tab(client, f"http://127.0.0.1:{site}/")
+    assert r.status_code == 200, r.text
+    got = _script(client, r.json()["token"], site, "/lib.js")
+    assert got.status_code == 200
+    body = got.text
+    assert body.startswith("with(window.__pt||{}){")
+    # The bare word is left for `with` to resolve; the member spelling cannot
+    # be reached that way and is rewritten.
+    assert "if(top===self){go()}" in body and "__pt.parent.x=1;" in body
+
+
+def test_the_panes_own_scripts_are_passed_through_as_they_came(client, site):
+    r = mint(client, f"http://127.0.0.1:{site}/")
+    got = _script(client, r.json()["token"], site, "/lib.js")
+    assert got.text == "if(top===self){go()}window.parent.x=1;"
+    assert "__pt" not in got.text
+
+
+def test_a_strict_script_is_never_wrapped(client, site):
+    # `with` is a SyntaxError in strict code: wrapping one would take the
+    # library away rather than fix it.
+    r = mint_tab(client, f"http://127.0.0.1:{site}/")
+    got = _script(client, r.json()["token"], site, "/strict.js")
+    assert got.text == '"use strict";var a=top;'
+
+
+def test_json_is_never_wrapped_however_it_is_fetched(client, site):
+    # Both gates, one at a time: the wrong content type with the right
+    # destination, and the right type with the destination an XHR sends.
+    r = mint_tab(client, f"http://127.0.0.1:{site}/")
+    tok = r.json()["token"]
+    assert _script(client, tok, site, "/data.json").text == '{"top": 1, "parent": 2}'
+    assert _script(client, tok, site, "/lib.js", dest="empty").text == (
+        "if(top===self){go()}window.parent.x=1;")
+
+
+def test_a_wrapped_script_keeps_its_own_content_type(client, site):
+    r = mint_tab(client, f"http://127.0.0.1:{site}/")
+    got = _script(client, r.json()["token"], site, "/lib.js")
+    assert got.headers["content-type"] == "application/javascript; charset=utf-8"
+    assert int(got.headers["content-length"]) == len(got.content)
+    # Not a document: the sandbox header belongs to the page that loads it.
+    assert "content-security-policy" not in got.headers
+
+
+# ---------------------------------------------------------------------------
+# The cookie jar between runs
+# ---------------------------------------------------------------------------
+# A browser does not ask its user to log in again because it was restarted, and
+# this server had been doing exactly that: every `pockettui update` threw away
+# every session the pane held.
+
+def test_the_jar_is_written_to_disk_and_read_back(tmp_path, monkeypatch):
+    path = tmp_path / "state" / "browser_cookies.json"
+    monkeypatch.setattr(A, "BROWSE_COOKIES_PATH", path)
+    jar = httpx.Cookies().jar
+    jar.set_cookie(A.browse_cookie_from_row(
+        {"name": "sid", "value": "abc", "domain": "box.example.net",
+         "domain_specified": False, "path": "/",
+         "secure": False, "expires": int(time.time()) + 3600}))
+    A.browse_save_cookies(jar)
+    assert path.exists()
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    back = httpx.Cookies().jar
+    assert A.browse_load_cookies(back) == 1
+    assert [c.name for c in back] == ["sid"]
+
+
+def test_an_expired_cookie_is_dropped_on_the_way_back_in(tmp_path, monkeypatch):
+    path = tmp_path / "browser_cookies.json"
+    monkeypatch.setattr(A, "BROWSE_COOKIES_PATH", path)
+    path.write_text(json.dumps([
+        {"name": "old", "value": "1", "domain": "box.example.net",
+         "path": "/", "secure": False, "expires": int(time.time()) - 10},
+        {"name": "new", "value": "2", "domain": "box.example.net",
+         "path": "/", "secure": False, "expires": int(time.time()) + 3600},
+    ]), encoding="utf-8")
+    jar = httpx.Cookies().jar
+    assert A.browse_load_cookies(jar) == 1
+    assert [c.name for c in jar] == ["new"]
+
+
+def test_a_session_cookie_is_not_kept_across_a_restart(tmp_path):
+    # One with no expiry is one the device in front of the user would drop when
+    # it closed, and this file is what outlives a restart.
+    jar = httpx.Cookies().jar
+    jar.set_cookie(A.browse_cookie_from_row(
+        {"name": "keep", "value": "1", "domain": "box.example.net", "path": "/",
+         "secure": False, "expires": int(time.time()) + 60}))
+    rows = A.browse_cookie_rows(jar)
+    assert [r["name"] for r in rows] == ["keep"]
+    for c in jar:
+        c.expires = None
+    assert A.browse_cookie_rows(jar) == []
+
+
+def test_a_missing_or_broken_file_leaves_the_jar_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "BROWSE_COOKIES_PATH", tmp_path / "nope.json")
+    assert A.browse_load_cookies(httpx.Cookies().jar) == 0
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(A, "BROWSE_COOKIES_PATH", bad)
+    assert A.browse_load_cookies(httpx.Cookies().jar) == 0
+
+
+def test_a_set_cookie_through_the_proxy_reaches_the_file(client, site, tmp_path,
+                                                         monkeypatch):
+    path = tmp_path / "browser_cookies.json"
+    monkeypatch.setattr(A, "BROWSE_COOKIES_PATH", path)
+    monkeypatch.setattr(A, "BROWSE_COOKIE_SAVE_AFTER", 0.05)
+    r = mint(client, f"http://127.0.0.1:{site}/")
+    tok = r.json()["token"]
+    assert client.get(
+        (base_of(tok, site) + "/setcookie")[len(PREFIX):]).status_code == 200
+    for _ in range(100):
+        if path.exists():
+            break
+        time.sleep(0.05)
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    assert [row["name"] for row in rows] == ["keep"]
+
+
+def test_a_restored_jar_is_sent_to_the_target(client, site, tmp_path,
+                                              monkeypatch):
+    # The whole point of the file: the next run is still logged in.
+    path = tmp_path / "browser_cookies.json"
+    monkeypatch.setattr(A, "BROWSE_COOKIES_PATH", path)
+    path.write_text(json.dumps([
+        {"name": "sid", "value": "restored", "domain": "127.0.0.1", "path": "/",
+         "secure": False, "expires": int(time.time()) + 3600},
+    ]), encoding="utf-8")
+    r = mint(client, f"http://127.0.0.1:{site}/")
+    got = client.get(
+        (base_of(r.json()["token"], site) + "/whoami")[len(PREFIX):])
+    assert "sid=restored" in got.text

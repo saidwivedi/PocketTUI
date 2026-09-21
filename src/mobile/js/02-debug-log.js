@@ -406,11 +406,17 @@ const cfg = {
     const want = typeof v.tab === "number" && v.tab >= 0 ? Math.trunc(v.tab) : 0;
     const tabs = [];
     let at = 0;
+    // Either shape an entry may have been written in: the address alone, or
+    // the address with the mode that tab was left in (the computer's own
+    // network, 42-browser.js). The pair comes back out of here whichever went
+    // in, so the pane has one shape to read.
     for (let i = 0; i < raw.length && tabs.length < 8; i++) {
-      const u = typeof raw[i] === "string" ? raw[i].trim() : "";
+      const e = raw[i];
+      const u = typeof e === "string" ? e.trim()
+              : (e && typeof e.url === "string" ? e.url.trim() : "");
       if (!u) continue;
       if (i <= want) at = tabs.length;
-      tabs.push(u);
+      tabs.push({ url: u, lan: !!(e && e.lan) });
     }
     return {
       owner: v.owner,
@@ -426,7 +432,13 @@ const cfg = {
       const rec = { owner: v.owner, session: v.session };
       if (v.owner === "browser" && v.url) rec.url = v.url;
       if (v.owner === "browser" && Array.isArray(v.tabs)) {
-        rec.tabs = v.tabs.filter((u) => typeof u === "string" && u).slice(0, 8);
+        // A bare string wherever there is nothing more to say, so a shell too
+        // old to know about the mode still reads those tabs back.
+        rec.tabs = v.tabs.map((t) => {
+          if (typeof t === "string") return t || null;
+          if (!t || typeof t.url !== "string" || !t.url) return null;
+          return t.lan ? { url: t.url, lan: true } : t.url;
+        }).filter((t) => t).slice(0, 8);
         rec.tab = Math.min(Math.max(0, Math.trunc(v.tab) || 0),
                            Math.max(0, rec.tabs.length - 1));
       }

@@ -245,9 +245,9 @@
       <path d="M19 5l-8.5 8.5"/>
     </symbol>
     <!-- The network glyph every router page and settings panel draws: one node
-         above, a trunk down to a bar, two nodes hanging off it. It opens a tab
-         in the browser pane, where a page is fetched from the network the
-         computer is on rather than from this device's. -->
+         above, a trunk down to a bar, two nodes hanging off it. It marks the
+         key that puts this tab's page on the network the computer is on
+         rather than on this device's. -->
     <symbol id="i-lan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <rect x="9.25" y="3" width="5.5" height="4.5" rx="1.2"/>
       <rect x="3.5" y="16.5" width="5.5" height="4.5" rx="1.2"/>
@@ -675,6 +675,20 @@
      IN-APP BROWSER
      ============================================================ -->
 <div class="screen" id="screen-browser">
+  <!-- The tabs, where a browser puts them: the pane's top edge, above the
+       address row rather than under it, with the active tab drawn on the same
+       paper as the row below and no line between the two — one surface, which
+       is the whole of what an active tab says. Always drawn, the lone tab
+       included: a window with one tab still shows it, and a strip that
+       appeared at the second tab would move the page under the reader. -->
+  <div id="browser-tabs">
+    <!-- The tabs scroll; the key after them does not. A strip of eight at the
+         docked width is wider than the pane, and a new-tab key that scrolled
+         off with the row would be the one control nobody could reach. -->
+    <div id="browser-tab-row"></div>
+    <button class="icon-btn" id="btn-browser-newtab" aria-label="New tab"
+            title="New tab"><svg><use href="#i-plus"/></svg></button>
+  </div>
   <div class="topbar browser-topbar">
     <!-- Same button, same reason: hidden until openBrowser sees the terminal
          behind the pane. -->
@@ -682,6 +696,19 @@
             style="display:none"><svg><use href="#i-logo"/></svg></button>
     <button class="icon-btn" id="btn-browser-back" aria-label="Back"><svg><use href="#i-back"/></svg></button>
     <button class="icon-btn" id="btn-browser-fwd" aria-label="Forward"><svg><use href="#i-forward"/></svg></button>
+    <!-- This tab, on the network the computer is on. Pressed, the page is
+         re-fetched and re-drawn in the same frame under a different set of
+         powers: it becomes the top window of its own document, its frames are
+         its own to reach, and the storage and cookies a real visit would have
+         are there — which is what an intranet portal that writes its own
+         views needs, and what a tab in the ordinary mode cannot give it. A
+         toggle, and the active tab's own: lit for the tab whose page is in
+         this mode, pressed again to put that tab back. Left of reload, with
+         the keys that act on the page rather than on the address. Hidden
+         where it cannot be granted (syncBrowseCap). -->
+    <button class="icon-btn" id="btn-browser-tab" hidden aria-pressed="false"
+            aria-label="Local network"
+            title="Local network"><svg><use href="#i-lan"/></svg></button>
     <button class="icon-btn" id="btn-browser-reload" aria-label="Reload"><svg><use href="#i-reload"/></svg></button>
     <!-- Flexes to fill the bar between the arrows and the actions after it —
          files-path-wrap's job, minus the crumbs; the pane has only ever the
@@ -694,14 +721,6 @@
              autocorrect="off" autocomplete="off" spellcheck="false"
              placeholder="http://localhost:3000" aria-label="Address">
     </div>
-    <!-- The page again in a window of the device's own, still fetched through
-         the computer: a top-level tab is the one place this page is the top
-         window, which an app that owns its own frames needs. Hidden on a
-         server without the mode, and on a computer that served this shell
-         itself (syncBrowseCap). -->
-    <button class="icon-btn" id="btn-browser-tab" hidden
-            aria-label="Open in its own window"
-            title="Open in its own window"><svg><use href="#i-external"/></svg></button>
     <!-- Keep this page, or stop keeping it: one press either way, since the
          bar below says which it was. Hidden on a server with no route to save
          to (syncBrowseCap). -->
@@ -739,22 +758,12 @@
        position:fixed — docked, the terminal beside it is live and must not be
        dimmed by a menu in here. -->
   <div id="browser-menu-scrim"></div>
-  <!-- The tabs, where a browser puts them: a row of chips above the page, the
-       lone one included — a window with one tab still shows it. The button
-       that opens another sits after the last chip, as it does in Chrome
-       (renderBrowserTabs keeps it there). -->
-  <div id="browser-tabs">
-    <!-- The chips scroll; the button after them does not. A strip of eight at
-         the docked width is wider than the pane, and a new-tab button that
-         scrolled off with the row would be the one control nobody could
-         reach. -->
-    <div id="browser-tab-row"></div>
-    <button class="icon-btn" id="btn-browser-newtab" aria-label="New tab"
-            title="New tab"><svg><use href="#i-lan"/></svg></button>
-  </div>
   <!-- The bookmarks bar, where a browser puts one: under the address row and
-       above the page. Absent rather than empty while nothing is bookmarked,
-       so a pane nobody has used this on looks exactly as it did. -->
+       above the page. Drawn as links rather than as cards, so that the two
+       rows the pane now has above the page — tabs at the top, bookmarks here —
+       are never mistaken for each other. Absent rather than empty while
+       nothing is bookmarked, so a pane nobody has used this on looks exactly
+       as it did. -->
   <div id="browser-bookmarks" hidden></div>
   <div class="browser-wrap" id="browser-wrap">
     <!-- One frame per tab, cut from here as the tab first loads something
