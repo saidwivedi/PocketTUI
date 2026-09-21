@@ -3235,11 +3235,12 @@ html.term-open #dbg-panel { opacity: 0.85; }
    either. Positioned, because both the chip and the picture are laid over it.
    One fixed square for every tile, picture or not — a slot that grew to the
    column would put a 170px photo beside a 34px icon on a wide grid and leave
-   the rows ragged. */
+   the rows ragged. 40px, barely over the 34px icon, so a picture reads at the
+   same weight as the icons beside it and leaves no empty slot above the name. */
 .file-slot {
   position: relative;
   flex: 0 0 auto;
-  width: 64px; height: 64px;
+  width: 40px; height: 40px;
   display: flex; align-items: center; justify-content: center;
 }
 /* The picture fills that square, cropped rather than letterboxed: a grid of
@@ -3247,7 +3248,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
    different height. The backing is the recessed surface, not black, since a
    PNG or GIF arrives with its corners transparent. */
 .file-slot.has-thumb {
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
   background: var(--paper-rec);
 }
@@ -3271,22 +3272,22 @@ html.term-open #dbg-panel { opacity: 0.85; }
   position: absolute;
   top: 50%; left: 50%;
   transform: translate(-50%, -50%);
-  width: 22px; height: 22px;
+  width: 16px; height: 16px;
   display: inline-flex; align-items: center; justify-content: center;
   border-radius: 999px;
   background: rgba(12, 10, 7, 0.6);
   color: rgba(243, 237, 224, 0.92);
   pointer-events: none;
 }
-.file-play svg { width: 13px; height: 13px; }
+.file-play svg { width: 9px; height: 9px; }
 /* Says which kind of file, where the icon can only say which family: a .py
    and a .rs are one glyph. Small caps on a chip of the card colour, the same
    quiet register as #files-ref-ro. */
 .file-badge {
   position: absolute;
-  /* Hung off the bottom of the 34px icon, not of the 64px slot: (64-34)/2
+  /* Hung off the bottom of the 34px icon, not of the 40px slot: (40-34)/2
      less the 3px it overhangs by. */
-  left: 50%; bottom: 12px;
+  left: 50%; bottom: 0;
   transform: translateX(-50%);
   padding: 0 3px;
   border-radius: 4px;
