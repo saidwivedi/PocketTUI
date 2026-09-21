@@ -172,6 +172,21 @@ def test_the_topbar_offers_the_page_as_a_tab_through_the_computer(doc):
     assert 'w.postMessage("pockettui-close", browserOrigin())' in doc
 
 
+def test_the_topbar_offers_an_empty_tab_through_the_computer(doc):
+    """A tab has no address bar of ours — the browser's own types into the
+    laptop — so an empty tab starts on the backend's start page, which is the
+    one field in a tab that goes through the computer. Same token, same
+    flavour, so it is shown and hidden with the button beside it."""
+    assert 'id="btn-browser-newtab" hidden' in doc
+    assert 'aria-label="New tab through the computer"' in doc
+    assert '$("btn-browser-newtab").hidden = tab;' in doc
+    assert 'rec.prefix + "/b/" + rec.token + "/start"' in doc
+    # Both buttons open the blank window inside the click and send it on once
+    # the token is in hand.
+    assert "function browserOpenTab(" in doc
+    assert "browserOpenTab(browserStartUrl)" in doc
+
+
 def test_vendor_script_tags_survive(doc):
     for name in ("xterm.js", "addon-fit.js", "addon-webgl.js"):
         assert f'src="vendor/{name}?v=__CACHE_VERSION__"' in doc

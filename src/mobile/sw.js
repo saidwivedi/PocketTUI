@@ -119,11 +119,13 @@ self.addEventListener("fetch", (e) => {
   // say it is reachable long after it stopped being.
   if (u.pathname.includes("/api/") || u.pathname.includes("/ws/") ||
       u.pathname.includes("/.well-known/")) return;
-  // Pages the in-app browser proxies (/b/<token>/<h|s>/<host:port>/...) are
-  // someone else's site passing through: caching them would serve a stale
-  // dev server, and the offline fallback would put our own shell inside the
-  // pane's frame.
-  if (/\/b\/[^/]+\/[hs]\//.test(u.pathname)) return;
+  // Everything under the in-app browser's token (/b/<token>/...) is live: the
+  // proxied pages (/<h|s>/<host:port>/...) are someone else's site passing
+  // through, where a cached copy would serve a stale dev server and the
+  // offline fallback would put our own shell inside the pane's frame, and the
+  // tab's own entry pages (/enter, /start) carry a storage-clearing header
+  // that must come from the server every time.
+  if (/\/b\/[^/]+\//.test(u.pathname)) return;
   if (e.request.method !== "GET") return;
 
   e.respondWith(

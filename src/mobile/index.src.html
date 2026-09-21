@@ -691,6 +691,13 @@
     <button class="icon-btn" id="btn-browser-tab" hidden
             aria-label="Open in a tab through the computer"
             title="Open in a tab through the computer"><svg><use href="#i-external"/></svg></button>
+    <!-- An empty tab through the computer: it lands on the backend's own start
+         page, which is the one address bar a tab has that types into this
+         computer rather than into the laptop. Shown and hidden with the button
+         beside it — same token, same flavour, same refusals. -->
+    <button class="icon-btn" id="btn-browser-newtab" hidden
+            aria-label="New tab through the computer"
+            title="New tab through the computer"><svg><use href="#i-plus"/></svg></button>
     <!-- Keep this page, or stop keeping it: one press either way, since the
          bar below says which it was. Hidden on a server with no route to save
          to (syncBrowseCap). -->
