@@ -49,6 +49,18 @@ let browserReminted = false;
 // round — and only until something lands, which is what clears it.
 let browserGuessed = "";
 let browserExpanded = cfg.browserExpanded;
+// The unsandboxed token the "open in a tab" button builds its address from,
+// minted beside the pane's when the pane opens: the click has to hand a window
+// an address in one step, and a mint inside it would be a round trip the popup
+// blocker counts against the gesture.
+let browserTabToken = null;
+// The tabs this pane has opened. They are the pane's own windows, shown in the
+// laptop's browser because the page inside them cannot be framed, so they close
+// when the pane does.
+let browserTabs = [];
+// This computer serves the shell as well, so it will not mint an unsandboxed
+// token (see the mint's same-origin gate). Asked once, and the button goes.
+let browserTabBlocked = false;
 
 // The backend's origin and path prefix, read off apiURL() at each use rather
 // than captured once: a profile switch changes the computer, and `tailscale
@@ -170,8 +182,8 @@ function browserFlipScheme(url) {
 // The address as the proxy serves it. Built here rather than asked for per
 // navigation: the mint already said what the prefix and the token are, and a
 // round trip per link would be felt.
-function browserProxied(raw) {
-  if (!browserToken) return "";
+function browserProxied(raw, rec = browserToken) {
+  if (!rec) return "";
   let u;
   try { u = new URL(raw); } catch (e) { return ""; }
   if (u.protocol !== "http:" && u.protocol !== "https:") return "";
@@ -179,37 +191,122 @@ function browserProxied(raw) {
   // The port is part of the host segment always, so the proxy never has to
   // guess it back from the scheme. hostname keeps an IPv6 literal's brackets.
   const port = u.port || (secure ? "443" : "80");
-  return browserOrigin() + browserToken.prefix + "/b/" + browserToken.token
+  return browserOrigin() + rec.prefix + "/b/" + rec.token
        + "/" + (secure ? "s" : "h") + "/" + u.hostname + ":" + port
        + u.pathname + u.search + u.hash;
+}
+
+// Where a tab actually starts, which is never the proxied page itself. That
+// page runs on the computer's own origin without the sandbox, and a browser
+// that once opened this shell straight from that address left the pairing
+// token in its localStorage. The backend's /enter answers with Clear-Site-Data
+// and the redirect onward, so the browser has wiped that storage before the
+// page's first script runs — on Chromium and Firefox; Safari ignores the
+// header, and there the mint's same-origin refusal is the whole of it.
+function browserEnterUrl(proxied, rec) {
+  const head = browserOrigin() + rec.prefix + "/b/" + rec.token;
+  if (!proxied || !proxied.startsWith(head + "/")) return "";
+  return head + "/enter?to=" + encodeURIComponent(proxied.slice(head.length));
 }
 
 // One token per shell load, minted on the first navigation and kept. The
 // backend hands the same record back for a second ask, so a reload that
 // re-mints lands on the token the persisted URLs were built with.
+// One ask, either flavour: "tab" is the unsandboxed token a page opened in the
+// laptop's own browser is served under, anything else the pane's own. What
+// comes back is the record or a bare {error}, because the two callers answer a
+// refusal differently — one toasts it, the other takes its button away.
+async function browserMint(url, mode) {
+  const body = { url: url, prefix: browserPrefix(), origin: location.origin };
+  if (mode) body.mode = mode;
+  const r = await fetch(apiURL("api/browse"), {
+    method: "POST", cache: "no-store",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  const d = await r.json().catch(() => null);
+  if (!r.ok || !d || !d.token) return { error: (d && d.error) || "" };
+  return {
+    token: d.token,
+    prefix: typeof d.prefix === "string" ? d.prefix : browserPrefix(),
+    expires: typeof d.expires === "number" ? d.expires : 0,
+  };
+}
+
 async function browserEnsureToken(url) {
   if (browserToken) return browserToken;
+  let rec;
   try {
-    const r = await fetch(apiURL("api/browse"), {
-      method: "POST", cache: "no-store",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ url: url, prefix: browserPrefix(), origin: location.origin }),
-    });
-    const d = await r.json().catch(() => null);
-    if (!r.ok || !d || !d.token) {
-      toast((d && BROWSE_MINT_ERRORS[d.error]) || "Couldn't open that address");
-      return null;
-    }
-    browserToken = {
-      token: d.token,
-      prefix: typeof d.prefix === "string" ? d.prefix : browserPrefix(),
-    };
-    return browserToken;
+    rec = await browserMint(url);
   } catch (e) {
     dbg("browse: mint failed", e);
     toast("Couldn't reach the computer");
     return null;
   }
+  if (!rec.token) {
+    toast(BROWSE_MINT_ERRORS[rec.error] || "Couldn't open that address");
+    return null;
+  }
+  browserToken = rec;
+  return browserToken;
+}
+
+// The other flavour's, kept until it is close to its own expiry rather than
+// asked for per press: a token that has expired heals to the pane's, which is
+// the sandboxed one, and a sandboxed tab is the one thing this button must not
+// end up opening.
+async function browserEnsureTabToken() {
+  if (browserTabBlocked || !hasCapStrict("browse_tab")) return null;
+  const now = Math.round(Date.now() / 1000);
+  if (browserTabToken && browserTabToken.expires - now > 60) return browserTabToken;
+  let rec;
+  try {
+    rec = await browserMint(browserCurrentUrl() || BROWSER_HOME, "tab");
+  } catch (e) {
+    dbg("browse: tab mint failed", e);
+    return null;
+  }
+  if (!rec.token) {
+    if (rec.error === "same_origin") {
+      // The shell came off this same computer, so a page served without the
+      // sandbox would land on the origin the pairing token is kept on, and the
+      // computer refuses to mint one for it. Only the button is affected: the
+      // pane is sandboxed on every install.
+      browserTabBlocked = true;
+      syncBrowseCap();
+      toast("Opening in a tab needs the app from pockettui.com, not from this computer");
+    }
+    return null;
+  }
+  browserTabToken = rec;
+  return browserTabToken;
+}
+
+// A window this pane opened, minus the ones already closed: a WindowProxy
+// stays an object after its window is gone and only .closed says so, so the
+// list is pruned wherever it is touched rather than swept.
+function browserTrackTab(w) {
+  browserTabs = browserTabs.filter((t) => t && !t.closed);
+  browserTabs.push(w);
+}
+
+// Every way out of the pane ends here. A tab is the pane's own window shown
+// elsewhere, so it goes when the pane goes — but not on a navigation inside
+// the pane, where the tab is still the page the user sent there.
+function browserCloseTabs() {
+  for (const w of browserTabs) {
+    try {
+      if (!w || w.closed) continue;
+      // Asked rather than closed outright. The tab was opened with its opener
+      // nulled and it lives on the computer's origin, not this shell's, and a
+      // window that is neither the caller's own nor same-origin refuses
+      // close() — the page's shim hears this and closes itself. The direct
+      // close is what answers on an install where the two do share an origin.
+      w.postMessage("pockettui-close", browserOrigin());
+      w.close();
+    } catch (e) {}
+  }
+  browserTabs = [];
 }
 
 function browserSetField(url) {
@@ -551,6 +648,7 @@ function closeDockedBrowser() {
   if (!browserDocked) return;
   browserDocked = false;
   browserOpen = false;
+  browserCloseTabs();
   showBrowserZoomMenu(false);
   $("screen-browser").classList.remove("docked");
   $("screen-browser").classList.remove("active");
@@ -579,6 +677,7 @@ function openFullBrowser() {
 // The pop's half: the entry is already spent by the time this runs, so nothing
 // here touches history.
 function closeFullBrowser() {
+  browserCloseTabs();
   showBrowserZoomMenu(false);
   $("screen-browser").classList.remove("active");
   const back = browserOriginFrom || "screen-list";
@@ -602,6 +701,8 @@ function openBrowser(url) {
   if (isWideLayout() && $("screen-term").classList.contains("active")) openDockedBrowser();
   else openFullBrowser();
   browserLoadMarks();
+  // Ahead of any press, so the button's own click has nothing to wait for.
+  browserEnsureTabToken();
   const target = browserNormalize(url);
   if (target) { browserNavigate(target); return; }
   // Opened with nothing to go to: the page this pane was last on, whether it
@@ -739,11 +840,33 @@ $("browser-zoom-plus").addEventListener("click", () => browserStepZoom(1));
 $("browser-zoom-pct").addEventListener("click", () => browserSetZoom(1));
 $("browser-menu-scrim").addEventListener("click", () => showBrowserZoomMenu(false));
 $("btn-browser-star").addEventListener("click", () => browserToggleMark());
-// The relay path, untouched: this hands the address to the phone's own browser
-// exactly as a tapped link used to, port forwarding and all (08-links.js).
+// The page as a top-level tab in this laptop's own browser, still fetched
+// through the computer: the backend serves it under the unsandboxed token, so
+// the tab's documents share one real origin and an app written to be the top
+// window works — top is the page itself and its frames are its own to script,
+// neither of which is true in the pane. The pane's own frame keeps its sandbox.
+//
+// The window is opened blank inside the click and sent somewhere once the
+// token is in hand: a popup blocker allows the window a gesture opens, not one
+// opened a round trip later.
 $("btn-browser-tab").addEventListener("click", () => {
-  const u = browserCurrentUrl();
-  if (u) openUrl(u);
+  const url = browserCurrentUrl();
+  if (!url) return;
+  const w = window.open("", "_blank");
+  if (!w) { toast("This browser blocked the tab"); return; }
+  // No handle back on this window: the tab is not sandboxed, and opener is
+  // what a page there would navigate the shell through.
+  try { w.opener = null; } catch (e) {}
+  browserEnsureTabToken().then((rec) => {
+    const target = rec ? browserEnterUrl(browserProxied(url, rec), rec) : "";
+    if (!target) {
+      try { w.close(); } catch (e) {}
+      if (!browserTabBlocked) toast("Couldn't open that in a tab");
+      return;
+    }
+    w.location = target;
+    browserTrackTab(w);
+  });
 });
 $("btn-browser-expand").addEventListener("click", () => {
   browserExpanded = !browserExpanded;
@@ -826,6 +949,7 @@ function browserTeardown() {
   browserDocked = false;
   browserOpen = false;
   browserOriginFrom = null;
+  browserCloseTabs();
   showBrowserZoomMenu(false);
   $("screen-browser").classList.remove("docked");
   $("screen-browser").classList.remove("active");
@@ -855,6 +979,10 @@ function browserResetForProfile() {
   if (browserDocked) closeDockedBrowser();
   else browserTeardown();
   browserToken = null;
+  // The next computer answers for itself, both on the flavour and on whether
+  // it is the one that served this shell.
+  browserTabToken = null;
+  browserTabBlocked = false;
   browserStack = [];
   browserIdx = -1;
   browserLoadedUrl = "";
@@ -895,6 +1023,10 @@ function syncBrowseCap() {
   // httpx to fetch pages with, and one too old for the route would answer the
   // save with a 404 the user only learns about after tapping the star.
   $("btn-browser-star").hidden = !hasCapStrict("bookmarks");
+  // Strictly checked too, and with the computer's own refusal on top of it: a
+  // server too old for the mode answers with the pane's sandboxed token, and a
+  // tab opened on that cannot do the one thing it was opened for.
+  $("btn-browser-tab").hidden = !hasCapStrict("browse_tab") || browserTabBlocked;
 }
 
 syncBrowserNav();

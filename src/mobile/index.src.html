@@ -683,7 +683,14 @@
              autocorrect="off" autocomplete="off" spellcheck="false"
              placeholder="http://localhost:3000" aria-label="Address">
     </div>
-    <button class="icon-btn" id="btn-browser-tab" aria-label="Open in a browser tab"><svg><use href="#i-external"/></svg></button>
+    <!-- The page again in the laptop's own browser, still fetched through the
+         computer: a top-level tab is the one place a proxied page is the top
+         window, which an app that owns its own frames needs. Hidden on a
+         server without the mode, and on a computer that served this shell
+         itself (syncBrowseCap). -->
+    <button class="icon-btn" id="btn-browser-tab" hidden
+            aria-label="Open in a tab through the computer"
+            title="Open in a tab through the computer"><svg><use href="#i-external"/></svg></button>
     <!-- Keep this page, or stop keeping it: one press either way, since the
          bar below says which it was. Hidden on a server with no route to save
          to (syncBrowseCap). -->

@@ -18,6 +18,7 @@ import socket
 import sys
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -170,10 +171,16 @@ def fresh_limits(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def fresh_browse():
-    """No token outlives its test: its client belongs to that test's loop."""
+    """No token outlives its test: its client belongs to that test's loop.
+
+    The client goes with them, since both flavours share one (BROWSE_CLIENT)
+    and a pool made on the last test's portal is bound to a loop that is gone.
+    """
     A.BROWSE.clear()
+    A.BROWSE_CLIENT = None
     yield
     A.BROWSE.clear()
+    A.BROWSE_CLIENT = None
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +191,17 @@ def mint(client, url, prefix=PREFIX, origin=SHELL_ORIGIN):
     return client.post("/api/browse",
                        json={"url": url, "prefix": prefix, "origin": origin},
                        headers=HDRS)
+
+
+def mint_tab(client, url, origin=SHELL_ORIGIN, prefix=PREFIX):
+    """The other flavour's mint, with the Origin header a browser puts on a POST."""
+    headers = dict(HDRS)
+    if origin is not None:
+        headers["Origin"] = origin
+    return client.post("/api/browse",
+                       json={"url": url, "prefix": prefix,
+                             "origin": SHELL_ORIGIN, "mode": "tab"},
+                       headers=headers)
 
 
 def opened(client, site, path="/", **kw):
@@ -286,7 +304,283 @@ def test_the_mint_is_rate_limited(client, site):
 
 
 def test_the_capability_map_says_so():
-    assert A.server_capabilities()["browse"] is True
+    caps = A.server_capabilities()
+    assert caps["browse"] is True
+    # Independent of the same-origin gate, which is per request: the shell asks
+    # for the mode and is refused for its own address, not for its age.
+    assert caps["browse_tab"] is True
+
+
+# ---------------------------------------------------------------------------
+# The tab flavour
+# ---------------------------------------------------------------------------
+# The pane's frame is sandboxed and stays that way. A page opened as a tab in
+# the laptop's own browser is not, which is the only way an app written to be
+# the top window runs at all — top is unforgeable and an opaque origin makes
+# even same-host frames strangers. Two tokens, one cookie jar, and the
+# unsandboxed one only for a shell this server did not serve itself.
+
+def test_the_tab_mint_is_a_second_token(client, site):
+    pane = mint(client, f"http://127.0.0.1:{site}/").json()
+    tab = mint_tab(client, f"http://127.0.0.1:{site}/").json()
+    assert tab["token"] != pane["token"]
+    assert tab["url"] == f"{base_of(tab['token'], site)}/"
+    assert len(A.BROWSE) == 2
+    assert {r.sandbox for r in A.BROWSE.values()} == {True, False}
+
+
+def test_the_tab_mint_is_idempotent_within_its_flavour(client, site):
+    first = mint_tab(client, f"http://127.0.0.1:{site}/").json()
+    second = mint_tab(client, f"http://127.0.0.1:{site}/other").json()
+    assert first["token"] == second["token"]
+    assert len(A.BROWSE) == 1
+
+
+@pytest.mark.parametrize("origin", ["http://testserver", "https://testserver",
+                                    "http://testserver:80", None,
+                                    "testserver", "about:blank"])
+def test_a_shell_this_server_serves_itself_gets_no_tab_token(client, site, origin):
+    """An unsandboxed page would land on the origin holding the pairing token.
+
+    The TestClient's own address is the Host here, so an Origin naming it is
+    the laptop-only install: shell and backend on one origin. The https
+    spelling is refused with it, because `tailscale serve` terminates TLS and
+    forwards in the clear — the scheme this server sees is not the browser's,
+    so a host that matches with a port missing on either side is one origin.
+    A request with no Origin at all is not a browser's, and there is nothing
+    to compare.
+    """
+    r = mint_tab(client, f"http://127.0.0.1:{site}/", origin=origin)
+    assert r.status_code == 403
+    assert r.json()["error"] == "same_origin"
+    assert not A.BROWSE
+
+
+def test_a_shell_on_another_port_of_this_host_is_another_origin(client, site):
+    """Two ports, both written down, are two origins and storage agrees."""
+    r = client.post("/api/browse",
+                    json={"url": f"http://127.0.0.1:{site}/", "prefix": PREFIX,
+                          "origin": SHELL_ORIGIN, "mode": "tab"},
+                    headers={**HDRS, "Host": "testserver:5560",
+                             "Origin": "http://testserver:8080"})
+    assert r.status_code == 200
+
+
+def test_the_gate_compares_against_the_address_the_browser_used(client, site):
+    """Behind a proxy that rewrites Host, only X-Forwarded-Host still names it.
+
+    Host here is the backend address the front end forwarded to; the browser
+    asked for box.example.net, which is also where the shell came from. Reading
+    Host would compare the shell's origin against an address nobody typed and
+    hand out the flavour exactly where the two really are one origin.
+    """
+    r = client.post("/api/browse",
+                    json={"url": f"http://127.0.0.1:{site}/", "prefix": PREFIX,
+                          "origin": SHELL_ORIGIN, "mode": "tab"},
+                    headers={**HDRS, "Host": "127.0.0.1:5599",
+                             "X-Forwarded-Host": "box.example.net, edge.example.net",
+                             "Origin": "https://box.example.net"})
+    assert r.status_code == 403
+    assert r.json()["error"] == "same_origin"
+    # A forwarded host that is not the shell's is another origin, as before.
+    r = client.post("/api/browse",
+                    json={"url": f"http://127.0.0.1:{site}/", "prefix": PREFIX,
+                          "origin": SHELL_ORIGIN, "mode": "tab"},
+                    headers={**HDRS, "Host": "127.0.0.1:5599",
+                             "X-Forwarded-Host": "box.example.net",
+                             "Origin": SHELL_ORIGIN})
+    assert r.status_code == 200
+
+
+def test_a_port_is_the_number_it_spells_not_the_way_it_is_written(client, site):
+    """:0443 and :443 are one port, so the two sides are one origin."""
+    r = client.post("/api/browse",
+                    json={"url": f"http://127.0.0.1:{site}/", "prefix": PREFIX,
+                          "origin": SHELL_ORIGIN, "mode": "tab"},
+                    headers={**HDRS, "Host": "box.example.net:0443",
+                             "Origin": "https://box.example.net:443"})
+    assert r.status_code == 403
+    assert r.json()["error"] == "same_origin"
+
+
+def test_the_pane_flavour_is_never_gated(client, site):
+    """It keeps its sandbox on every install, so it has nothing to be gated on."""
+    r = client.post("/api/browse",
+                    json={"url": f"http://127.0.0.1:{site}/", "prefix": PREFIX,
+                          "origin": SHELL_ORIGIN},
+                    headers={**HDRS, "Origin": "http://testserver"})
+    assert r.status_code == 200
+
+
+def test_a_tab_page_is_served_without_the_sandbox(client, site):
+    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
+    r = client.get(f"{base_of(tok, site)}/"[len(PREFIX):])
+    assert r.status_code == 200
+    # The one header that goes, and it is the one the flavour exists for.
+    assert "content-security-policy" not in r.headers
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["cache-control"] == "no-store"
+    assert "x-frame-options" not in r.headers
+    # Same rewriter, same shim, told which kind of document it is in.
+    assert f'href="{base_of(tok, site)}/whoami"' in r.text
+    assert '"sandbox": false' in r.text
+
+    pane = mint(client, f"http://127.0.0.1:{site}/").json()["token"]
+    p = client.get(f"{base_of(pane, site)}/"[len(PREFIX):])
+    assert p.headers["content-security-policy"] == A.BROWSE_SANDBOX
+    assert '"sandbox": true' in p.text
+
+
+def test_both_flavours_carry_the_same_session(client, site):
+    """One jar: a login done in the pane is one the tab already has."""
+    pane = mint(client, f"http://127.0.0.1:{site}/").json()["token"]
+    tab = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
+    # The fixture site sets its cookie on "/", and only there.
+    assert client.get(f"{base_of(pane, site)}/"[len(PREFIX):]).status_code == 200
+    assert "sid=1" in client.get(f"{base_of(tab, site)}/whoami"[len(PREFIX):]).text
+    assert A.BROWSE[pane].client is A.BROWSE[tab].client
+
+
+def test_retiring_one_flavour_leaves_the_other_its_client(client, site):
+    pane = mint(client, f"http://127.0.0.1:{site}/").json()["token"]
+    tab = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
+    A.BROWSE[tab].last_used = 0          # idled out, as a long-closed pane would
+    assert client.get(f"{base_of(tab, site)}/"[len(PREFIX):],
+                      follow_redirects=False).status_code == 302
+    assert tab not in A.BROWSE
+    # The pane's requests still go through, which they would not on a closed client.
+    assert client.get(f"{base_of(pane, site)}/whoami"[len(PREFIX):]).status_code == 200
+
+
+def test_a_dead_token_heals_to_the_pane_flavour(client, site):
+    """A restart forgets which flavour an address was for, so it heals to the
+    safe one: the sandboxed page is the one that can be served to anybody."""
+    pane = mint(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+    tab = mint_tab(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+    r = client.get(f"/b/deadtoken/h/127.0.0.1:{site}/whoami",
+                   follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == f"/b/{pane}/h/127.0.0.1:{site}/whoami"
+    assert tab not in r.headers["location"]
+
+
+def test_a_dead_token_is_never_healed_into_the_tab_flavour(client, site):
+    """With no sandboxed token live there is nothing safe to point at.
+
+    An address whose token is gone says nothing about the flavour it was minted
+    for, and the pane is where a healed one is likeliest to land — so healing
+    to the tab token would serve a page into an iframe without the sandbox, on
+    this server's own origin, on the strength of an address nobody can vouch
+    for. The expired page instead, which the pane answers by re-minting.
+    """
+    tab = mint_tab(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+    r = client.get(f"/b/deadtoken/h/127.0.0.1:{site}/whoami",
+                   follow_redirects=False)
+    assert r.status_code == 403
+    assert "location" not in r.headers
+    assert tab not in r.text
+
+
+# ---------------------------------------------------------------------------
+# The hop a tab starts on
+# ---------------------------------------------------------------------------
+# A tab-flavour page runs on this server's real origin, and a browser that once
+# opened the shell straight from this address left the pairing token in that
+# origin's localStorage. So no tab starts on a proxied page: it starts on
+# /enter, which wipes the storage and redirects onward.
+
+def enter_url(tok: str, to: str, prefix: str = PREFIX) -> str:
+    return f"{prefix}/b/{tok}/enter?to={urllib.parse.quote(to, safe='')}"
+
+
+def test_the_enter_hop_wipes_this_origins_storage_and_redirects(client, site):
+    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
+    to = f"/h/127.0.0.1:{site}/dir/page?q=1#frag"
+    r = client.get(enter_url(tok, to)[len(PREFIX):], follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == f"{PREFIX}/b/{tok}{to}"
+    # Applied before the redirect is followed, which is the whole point of the
+    # hop: nothing of the shell's is left on this origin by the time the
+    # unsandboxed document runs. Chromium and Firefox; Safari ignores it.
+    assert r.headers["clear-site-data"] == '"storage"'
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_the_enter_hop_is_refused_to_the_pane_token(client, site):
+    """The pane has no use for it, and a sandboxed page reached through it
+    would be one this route treats as a tab about to start."""
+    tok = mint(client, f"http://127.0.0.1:{site}/").json()["token"]
+    r = client.get(enter_url(tok, f"/h/127.0.0.1:{site}/")[len(PREFIX):],
+                   follow_redirects=False)
+    assert r.status_code == 403
+    assert "clear-site-data" not in r.headers
+
+
+def test_the_enter_hop_is_refused_once_its_token_has_gone(client, site):
+    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
+    A.BROWSE[tok].last_used = 0
+    r = client.get(enter_url(tok, f"/h/127.0.0.1:{site}/")[len(PREFIX):],
+                   follow_redirects=False)
+    assert r.status_code == 403
+
+
+@pytest.mark.parametrize("to", [
+    "",                                    # nowhere at all
+    "/whoami",                             # not this proxy's shape
+    "/x/127.0.0.1:8080/",                  # no such scheme segment
+    "/h/127.0.0.1/",                       # no port written
+    "/h/127.0.0.1:notaport/",              # nor a number
+    "//evil.example.net/",                 # a host where the scheme goes
+    "http://evil.example.net/",            # an address of its own
+    "/h/127.0.0.1:8080/a b",               # a space the Location cannot carry
+    "/h/127.0.0.1:8080/x\r\nX-Evil: 1",    # a second header
+])
+def test_the_enter_hop_goes_nowhere_but_this_proxy(client, site, to):
+    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
+    r = client.get(f"/b/{tok}/enter?to={urllib.parse.quote(to, safe='')}",
+                   follow_redirects=False)
+    assert r.status_code == 400
+    assert "location" not in r.headers
+
+
+# ---------------------------------------------------------------------------
+# What a proxied page may ask this server for
+# ---------------------------------------------------------------------------
+# Nothing. A tab-flavour page runs on this origin, so a call from it would
+# carry whatever the browser attaches to a same-origin request — but the
+# browser also writes the Referer, and a page cannot forge that.
+
+def test_an_api_call_from_a_proxied_page_is_refused(client):
+    r = client.get("/api/version", headers={
+        **HDRS,
+        "Referer": "https://box.example.net/b/sometoken/s/intranet.example.net:443/app"})
+    assert r.status_code == 403
+    assert r.json()["error"] == "proxied_origin"
+
+
+def test_the_gate_reads_the_path_whatever_prefix_it_sits_under(client):
+    """The proxy is mounted under /pockettui behind `tailscale serve`, and the
+    token segment is the page's, not one this server can enumerate."""
+    r = client.get("/api/version", headers={
+        **HDRS, "Referer": "https://box.example.net/pockettui/b/xyz/h/127.0.0.1:3000/"})
+    assert r.status_code == 403
+
+
+def test_the_shells_own_calls_are_untouched(client):
+    """Its Referer is its own path, or — cross-origin — nothing but the origin.
+    A WebSocket handshake sends none at all, which is why absence has to pass.
+    """
+    assert client.get("/api/version",
+                      headers={**HDRS, "Referer": SHELL_ORIGIN + "/"}).status_code == 200
+    assert client.get("/api/version", headers=HDRS).status_code == 200
+
+
+def test_the_socket_route_takes_the_tab_token_too(client, echo):
+    """Both flavours are good on every /b/ route: a tab runs the same apps."""
+    tok = mint_tab(client, f"http://127.0.0.1:{echo.port}/").json()["token"]
+    with client.websocket_connect(f"/b/{tok}/h/127.0.0.1:{echo.port}/echo") as ws:
+        ws.send_text("hi")
+        assert ws.receive_text() == "hi"
 
 
 # ---------------------------------------------------------------------------

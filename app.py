@@ -470,6 +470,37 @@ def check_auth(candidate: str, ip: str, where: str) -> tuple[bool, str]:
     return False, "bad token"
 
 
+# The proxy's own path shape, token-agnostic: `/b/<token>/h|s/` anywhere in a
+# path. The read browse_peel makes, without the prefix arithmetic, because a
+# Referer is an absolute URL and all that matters is whether the page that sent
+# it was served by this proxy.
+_BROWSE_REFERER = re.compile(r"/b/[^/]+/[hs]/")
+
+
+def browse_referer_is_proxied(referer: str) -> bool:
+    """Whether this request was made by a page this proxy served.
+
+    The browser sets Referer itself and a page cannot forge it, so a match is a
+    fetch or an XHR from a proxied document, which has no business on this
+    server's API whatever credential it managed to put on the call. The shell's
+    own calls never match: its Referer is its own path, or its bare origin.
+
+    Absence is not a match, and cannot be. The hosted shell's cross-origin
+    calls are sent under `strict-origin-when-cross-origin` and carry the origin
+    alone, and a WebSocket handshake carries no Referer at all — so the attach
+    socket is not covered by this gate, and neither is anything else a browser
+    sends bare. What covers the rest is that a tab starts on api_browse_enter,
+    which wipes this origin's storage before the proxied page ever runs.
+    """
+    if not referer:
+        return False
+    try:
+        path = urllib.parse.urlsplit(referer).path
+    except ValueError:
+        return True
+    return _BROWSE_REFERER.search(path) is not None
+
+
 @app.middleware("http")
 async def require_token(request: Request, call_next):
     """Gate the API routes on the pairing token.
@@ -489,6 +520,13 @@ async def require_token(request: Request, call_next):
         return await call_next(request)
     if request.url.path in SIGNED_PATHS or request.url.path.startswith(SIGNED_PREFIXES):
         return await call_next(request)
+    if browse_referer_is_proxied(request.headers.get("referer", "")):
+        # A page the in-app browser served, asking this server for something.
+        # Refused ahead of the token, because the tab flavour puts such a page
+        # on this very origin and the question is who is calling rather than
+        # what they are holding.
+        log(f"api refused: proxied page called {request.url.path}")
+        return no_store(JSONResponse({"error": "proxied_origin"}, status_code=403))
 
     ok, reason = check_auth(
         request.headers.get(TOKEN_HEADER, ""),
@@ -1391,6 +1429,13 @@ def server_capabilities() -> dict:
         # httpx is not installed, which is every install that has not re-run
         # pip since the pane shipped.
         "browse": browse_available(),
+        # POST /api/browse {"mode": "tab"} — the unsandboxed flavour behind the
+        # pane's "open in a tab through the computer" button. Strictly checked
+        # by the shell: a server too old for the mode answers with the pane's
+        # own token, and a tab opened on that is a sandboxed page that cannot
+        # do the one thing it was opened for. Whether any given shell may have
+        # one is per request (browse_tab_allowed), not a capability.
+        "browse_tab": True,
         # /api/browse/bookmarks — the pane's bookmarks bar, kept on this
         # computer so every device paired to it sees the same list. Independent
         # of httpx: a server with no proxy still stores them, and the shell
@@ -5217,13 +5262,18 @@ class BrowseCtx:
     # the pane sent when it minted the token. Defaulted because every function
     # here but the shim tag works without knowing it.
     origin: str = ""
+    # Whether this document is served sandboxed. The pane's are; a page opened
+    # as a tab in the laptop's own browser is not (see the mint's "tab" mode),
+    # and the shim is told which, because what it may leave to the real browser
+    # — storage above all — turns on it.
+    sandbox: bool = True
 
 
-def _browse_authority(netloc: str, default_port: str) -> str:
-    """`host:port` for one URL authority, with the port filled from the scheme.
+def _browse_split_authority(netloc: str) -> tuple[str, str]:
+    """(host, the port as written or "") for one URL authority.
 
-    The port is always spelled out so that one target has one path, whichever
-    way the page happened to write the link.
+    Split out from the filler below because one caller has to know whether a
+    port was written at all: browse_tab_allowed cannot fill one in.
     """
     auth = netloc.rsplit("@", 1)[-1]
     if auth.startswith("["):
@@ -5232,7 +5282,17 @@ def _browse_authority(netloc: str, default_port: str) -> str:
         port = tail[1:] if tail.startswith(":") else ""
     else:
         host, _, port = auth.partition(":")
-    if not host or host == "[]":
+    return ("" if not host or host == "[]" else host), port
+
+
+def _browse_authority(netloc: str, default_port: str) -> str:
+    """`host:port` for one URL authority, with the port filled from the scheme.
+
+    The port is always spelled out so that one target has one path, whichever
+    way the page happened to write the link.
+    """
+    host, port = _browse_split_authority(netloc)
+    if not host:
         return ""
     return f"{host}:{port or default_port}"
 
@@ -5570,7 +5630,8 @@ def browse_shim_tag(ctx: BrowseCtx, origin: str) -> str:
     or the tag early.
     """
     cfg = json.dumps({"prefix": ctx.prefix, "tok": ctx.tok, "sch": ctx.sch,
-                      "hostport": ctx.hostport, "origin": origin})
+                      "hostport": ctx.hostport, "origin": origin,
+                      "sandbox": ctx.sandbox})
     cfg = cfg.replace("&", "&amp;").replace("<", "&lt;").replace("'", "&#39;")
     return f"<script data-cfg='{cfg}'>{BROWSE_SHIM}</script>"
 
@@ -5747,6 +5808,11 @@ P(function(){
   };
  });
 });
+P(function(){var o=window.open;if(!o)return;
+ // A portal opens its views in named windows; unmapped, each one leaves the
+ // proxy for an address the laptop has no route to.
+ window.open=function(u,n,f){return o.call(window,map(u),n,f)};
+});
 P(function(){document.addEventListener("click",function(e){
  if(e.defaultPrevented||e.button||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
  var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;
@@ -5759,6 +5825,9 @@ P(function(){document.addEventListener("click",function(e){
  location.replace(map(h));
 },true)});
 P(function(){
+ // Only where the document has no storage of its own: sandboxed it sits on
+ // an opaque origin and every access throws. A tab keeps its real storage.
+ if(!C.sandbox&&window.origin!=="null")return;
  try{localStorage.length;return}catch(e){}
  function mk(){var m={};return{
   get length(){return Object.keys(m).length},
@@ -5772,6 +5841,13 @@ P(function(){
   try{Object.defineProperty(window,n,{configurable:true,value:mk()})}catch(e){}
  });
 });
+P(function(){addEventListener("message",function(e){
+ // How the pane closes a tab it opened. It holds the window but nulled the
+ // opener, and a window that is neither the caller's own nor same origin
+ // refuses close() — so the page is asked instead, and closes itself. The
+ // origin check is the whole gate: only the shell this token was minted for.
+ if(e.origin===C.origin&&e.data==="pockettui-close")P(function(){close()});
+})});
 P(function(){["DOMContentLoaded","load","popstate","hashchange"].forEach(function(n){
  addEventListener(n,report)
 })});
@@ -5845,18 +5921,27 @@ def browse_error_page(code: str, detail: str, origin: str | None) -> str:
         origin=json.dumps(origin or "*"))
 
 
-def browse_page_headers() -> dict:
+def browse_page_headers(sandbox: bool = True) -> dict:
     """The headers every HTML the proxy emits carries.
 
     The sandbox CSP is the load-bearing one: it puts the page on an opaque
     origin, so a proxied page that runs scripts cannot reach the pairing token
     this app keeps in localStorage on the backend's real origin.
+
+    Left off for the tab flavour alone, and only because the mint refuses that
+    flavour to a shell this server serves itself (browse_tab_allowed), so the
+    origin the page lands on holds nothing to read. A page opened as a tab has
+    to be the top window and has to be able to script its own frames — which
+    is the whole reason the flavour exists — and an opaque origin denies it
+    both.
     """
-    return {
-        "Content-Security-Policy": BROWSE_SANDBOX,
+    head = {
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "no-store",
     }
+    if sandbox:
+        head["Content-Security-Policy"] = BROWSE_SANDBOX
+    return head
 
 
 # ---------------------------------------------------------------------------
@@ -5982,6 +6067,10 @@ class BrowseToken:
     created: float
     last_used: float
     client: object   # httpx.AsyncClient; typed loosely so the import stays lazy
+    # Which flavour this is: sandboxed, for the pane's frame, or not, for a
+    # page opened as a tab in the laptop's own browser. One live record of
+    # each, and both are good on every /b/ route, HTTP and socket alike.
+    sandbox: bool = True
 
 
 def browse_client(httpx):
@@ -6005,14 +6094,35 @@ def browse_client(httpx):
         cookies=httpx.Cookies())
 
 
+# The client both flavours hold. One jar on purpose: the pane and the tab are
+# two views of one browsing session, so a login done in the frame is a login the
+# tab already has, and the other way round. One connection pool with it, which
+# is the size browse_client's limit was chosen for.
+BROWSE_CLIENT = None
+
+
+def browse_shared_client(httpx):
+    """The process's one browse client, made on the first mint that needs it."""
+    global BROWSE_CLIENT
+    if BROWSE_CLIENT is None:
+        BROWSE_CLIENT = browse_client(httpx)
+    return BROWSE_CLIENT
+
+
 def browse_expiry(rec: "BrowseToken") -> float:
     """When a record stops being usable, whichever limit comes first."""
     return min(rec.last_used + BROWSE_IDLE, rec.created + BROWSE_MAX_AGE)
 
 
 async def browse_drop(rec: "BrowseToken") -> None:
-    """Forget a record and let go of the connections it was holding."""
+    """Forget a record, and with the last of them the client they shared."""
+    global BROWSE_CLIENT
     BROWSE.pop(rec.token, None)
+    if BROWSE:
+        # The other flavour is still live on the same client: closing it here
+        # would take its connections and its half of the session with it.
+        return
+    BROWSE_CLIENT = None
     try:
         await rec.client.aclose()
     except Exception:  # noqa: BLE001 — a client being thrown away regardless
@@ -6121,10 +6231,24 @@ def browse_target(tok: str, sch: str, hostport: str):
 
 
 def browse_live() -> "BrowseToken | None":
-    """The token this process is minting now, if it still has one."""
+    """The sandboxed token this process is minting now, if it still has one.
+
+    The sandboxed flavour is the only thing a dead address ever heals to, and
+    not as a preference. A token in an address says nothing about the flavour
+    it was minted for — after a restart nothing can — so healing to the tab
+    token would put a page on this server's own origin without the sandbox on
+    the strength of an address nobody can vouch for, and healing a tab's
+    address to the pane's would serve the one document that has to be top-level
+    inside an opaque origin instead. So an address whose token is gone heals to
+    the frame or not at all: with no sandboxed token live it gets the expired
+    page, which the pane answers by re-minting. A tab address that expired gets
+    that page too, and costs nothing, because the pane re-mints the tab token
+    before its expiry rather than letting a press find it dead
+    (browserEnsureTabToken).
+    """
     now = time.time()
     for rec in BROWSE.values():
-        if browse_expiry(rec) > now:
+        if rec.sandbox and browse_expiry(rec) > now:
             return rec
     return None
 
@@ -6150,12 +6274,13 @@ def browse_redirect(rec: "BrowseToken", sch: str, hostport: str, path: str,
                     headers={"location": dest, "cache-control": "no-store"})
 
 
-def browse_error_response(code: str, detail: str, origin: "str | None") -> Response:
+def browse_error_response(code: str, detail: str, origin: "str | None",
+                          sandbox: bool = True) -> Response:
     """One failure as the page the iframe renders and the pane listens to."""
     return Response(browse_error_page(code, detail, origin),
                     status_code=BROWSE_ERROR_STATUS.get(code, 502),
                     media_type="text/html; charset=utf-8",
-                    headers=browse_page_headers())
+                    headers=browse_page_headers(sandbox))
 
 
 def browse_caused_by(exc: BaseException, kind) -> bool:
@@ -6404,13 +6529,102 @@ def browse_decompress(body: bytes, encoding: str) -> "bytes | None":
     return None
 
 
+def browse_forwarded_host(request: Request) -> str:
+    """The address the browser used to reach this server, as best it can tell.
+
+    `Host` is what the socket carried, which is this server's own address
+    whenever something in front of it rewrote the header. `tailscale serve`
+    leaves Host alone, but a reverse proxy in front of either it or this port
+    may not, and then the browser's own address survives only in
+    X-Forwarded-Host. Its first value is the one the client asked for; anything
+    after it is a hop that added itself.
+    """
+    first = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+    return first or request.headers.get("host", "").strip()
+
+
+def _browse_same_port(a: str, b: str) -> bool:
+    """Whether two written ports name the same one.
+
+    Numerically where both are numbers, so `:0443` and `:443` are one port
+    rather than two origins; textually otherwise, since a port that is not a
+    number is not an origin this comparison can reason about anyway.
+    """
+    try:
+        return int(a) == int(b)
+    except ValueError:
+        return a == b
+
+
+def browse_tab_allowed(request: Request) -> bool:
+    """Whether this caller may have the unsandboxed flavour.
+
+    A tab-flavour page is served without the sandbox CSP, so it runs on this
+    server's own origin. Where the shell is served from somewhere else — the
+    site, over the tailnet — that origin holds nothing: no pairing token, no
+    settings, nothing a page could read off it. Where this server serves the
+    shell as well (the laptop-only LAN install, or a browser pointed straight
+    at this port), that same origin is where the pairing token sits in
+    localStorage, and an unsandboxed page on it could read the token out. So
+    the flavour is refused to a shell on this server's own origin — and only
+    that flavour: the pane keeps its sandbox everywhere, on every install.
+
+    The comparison is the host first, and the port only as a way of telling
+    two origins on one host apart — and only when both sides spell one out.
+    Neither the scheme nor a default port can be filled in here: `tailscale
+    serve` fronts this server on 443 and forwards to it in the clear, so the
+    scheme this request arrived on is not the one the browser used, and a port
+    guessed from it would read https://box.example.net and box.example.net as
+    two origins when they are one. A host that matches with a port missing on
+    either side is therefore taken as the same origin. It costs a hidden
+    button on the odd install that serves the shell from another port of this
+    machine; the other way round it would cost the pairing token.
+
+    The side to compare the Origin against is the address the browser used,
+    which is X-Forwarded-Host where a proxy rewrote Host into this server's own
+    (browse_forwarded_host) — reading Host there would compare the shell's
+    origin against an address no browser ever typed, and hand out the flavour
+    exactly where the two are in fact one origin.
+
+    A request carrying no Origin is not one a browser made — a browser sends
+    one on every POST — and leaves nothing to compare, so it is refused too.
+    """
+    origin = request.headers.get("origin", "").strip()
+    host = browse_forwarded_host(request)
+    if not origin or not host:
+        return False
+    try:
+        parts = urllib.parse.urlsplit(origin)
+    except ValueError:
+        return False
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        return False
+    mine, my_port = _browse_split_authority(host)
+    theirs, their_port = _browse_split_authority(parts.netloc)
+    if not mine or not theirs:
+        return False
+    if mine.lower() != theirs.lower():
+        return True
+    return (bool(my_port) and bool(their_port)
+            and not _browse_same_port(my_port, their_port))
+
+
 @app.post("/api/browse")
 async def api_browse(request: Request, body: dict = Body(...)) -> Response:
     """Mint the credential the iframe carries, and say where to point it.
 
-    One live token per process, handed back on every call rather than replaced:
+    One live token per flavour, handed back on every call rather than replaced:
     the pane persists the proxied URL of the page it was last on, and a fresh
     token per reload would turn every one of those into a 403.
+
+    `mode: "tab"` asks for the other flavour, whose pages are served without
+    the sandbox CSP. It is for the one button that opens the current page as a
+    top-level tab in the laptop's own browser, still fetched through this
+    computer: an app written to be the top window — SAP's portal framework
+    reads top.EPCM and its views reach it through parent — cannot run in the
+    pane at all, because window.top is unforgeable and the sandbox gives every
+    proxied document an origin of its own. A top-level tab is the one place
+    where top is the page itself and its frames are its own to script.
 
     The prefix comes from the caller because only the shell knows it. Behind
     `tailscale serve` this server is mounted under /pockettui and never sees
@@ -6450,15 +6664,20 @@ async def api_browse(request: Request, body: dict = Body(...)) -> Response:
     except ValueError:
         return fs_error("bad_url", 400)
 
+    sandbox = str(body.get("mode", "")).strip().lower() != "tab"
+    if not sandbox and not browse_tab_allowed(request):
+        return fs_error("same_origin", 403)
+
     await browse_sweep()
     now = time.time()
-    rec = next(iter(BROWSE.values()), None)
+    rec = next((r for r in BROWSE.values() if r.sandbox is sandbox), None)
     if rec is None:
         rec = BrowseToken(token=secrets.token_urlsafe(24), prefix=prefix,
                           origin=origin, created=now, last_used=now,
-                          client=browse_client(httpx))
+                          client=browse_shared_client(httpx), sandbox=sandbox)
         BROWSE[rec.token] = rec
-        log(f"browse token minted prefix={prefix or '/'}")
+        log(f"browse token minted prefix={prefix or '/'} "
+            f"flavour={'pane' if sandbox else 'tab'}")
     else:
         # The shell may have moved: a second device, or the same one reaching
         # this server directly rather than through `tailscale serve`.
@@ -6466,7 +6685,7 @@ async def api_browse(request: Request, body: dict = Body(...)) -> Response:
         rec.origin = origin
         rec.last_used = now
 
-    ctx = BrowseCtx(prefix, rec.token, sch, hostport)
+    ctx = BrowseCtx(prefix, rec.token, sch, hostport, sandbox=sandbox)
     return no_store(JSONResponse({
         "token": rec.token,
         "prefix": prefix,
@@ -6606,11 +6825,12 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
                                    request.url.query)
         return browse_error_response(
             target, hostport if target in ("loop", "bad_target") else "",
-            rec.origin if rec is not None else None)
+            rec.origin if rec is not None else None,
+            rec.sandbox if rec is not None else True)
 
     rec, scheme, host, port = target
     rec.last_used = time.time()
-    ctx = BrowseCtx(rec.prefix, rec.token, sch, hostport, rec.origin)
+    ctx = BrowseCtx(rec.prefix, rec.token, sch, hostport, rec.origin, rec.sandbox)
     # The path segment keeps its port; everything the target sees drops a
     # default one, the way the browser addressing it directly would.
     authority = browse_authority(sch, host, port)
@@ -6639,7 +6859,7 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
         resp = await rec.client.send(req, stream=True)
     except Exception as exc:  # noqa: BLE001 — every failure here is a page
         code, detail = browse_failure(exc, hostport)
-        return browse_error_response(code, detail, rec.origin)
+        return browse_error_response(code, detail, rec.origin, rec.sandbox)
 
     ctype = resp.headers.get("content-type", "")
     base = ctype.split(";", 1)[0].strip().lower()
@@ -6662,11 +6882,12 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
             browse_read_capped(raw, BROWSE_REWRITE_CAP), BROWSE_REWRITE_WAIT)
     except asyncio.TimeoutError:
         await resp.aclose()
-        return browse_error_response("timeout", hostport, rec.origin)
+        return browse_error_response("timeout", hostport, rec.origin,
+                                     rec.sandbox)
     except Exception as exc:  # noqa: BLE001 — a body that stopped mid-flight
         await resp.aclose()
         code, detail = browse_failure(exc, hostport)
-        return browse_error_response(code, detail, rec.origin)
+        return browse_error_response(code, detail, rec.origin, rec.sandbox)
 
     over_cap = body is None
     if not over_cap:
@@ -6691,7 +6912,7 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
         extra: dict = {}
     else:
         out, new_ctype = browse_rewrite_html(body, ctx, ctype)
-        extra = browse_page_headers()
+        extra = browse_page_headers(rec.sandbox)
     pairs = browse_response_headers(resp, ctx, drop=frozenset(
         {"content-length", "content-encoding", "content-type"}
         | {k.lower() for k in extra}))
@@ -6707,6 +6928,64 @@ async def api_browse_proxy_root(request: Request, tok: str, sch: str,
                                 hostport: str) -> Response:
     """The same target with no path at all, which is what a bare origin maps to."""
     return await api_browse_proxy(request, tok, sch, hostport, "")
+
+
+# Where a tab may be sent: this proxy's own path shape, minus the `/b/<token>`
+# head the route already carries. Nothing else is accepted, so the only thing
+# this route can do is start a tab on a page the pane could have shown it.
+_BROWSE_ENTER_TO = re.compile(r"^/[hs]/(?P<hostport>[^/?#]+)(/[^?#]*)?"
+                              r"(\?[^#]*)?(#.*)?$")
+
+
+@app.get("/b/{tok}/enter")
+async def api_browse_enter(request: Request, tok: str) -> Response:
+    """Start a tab by wiping this origin's storage on the way in.
+
+    A tab-flavour page runs without the sandbox CSP, so it runs on this
+    server's real origin. The mint already refuses that flavour to a shell this
+    server serves itself (browse_tab_allowed), but a laptop that once opened
+    the shell straight from this address left the pairing token in this
+    origin's localStorage, and it is still there after that browser moved to
+    the hosted shell. So a tab never starts on a proxied page: it starts here,
+    and this answers with `Clear-Site-Data: "storage"` and the 302 onward. The
+    browser applies the header before it follows the redirect, so whatever the
+    shell left on this origin is gone before the first unsandboxed document
+    runs.
+
+    What it costs, plainly: a browser that also uses the shell served from this
+    computer has to pair that shell again after opening a tab, because the
+    pairing lives in the storage this wipes. And Safari ignores Clear-Site-Data
+    altogether — this is a Chromium and Firefox mitigation, and on Safari the
+    storage is left exactly as it was. Those two honour it only on an origin
+    they count as trustworthy, which this server is over `tailscale serve`
+    (https) and on a loopback address, but not on a plain-http LAN address —
+    where the shell is same-origin anyway and the mint's refusal is what
+    stands.
+
+    Both refusals are the proxy's own pages, served sandboxed whatever the
+    token was for: nothing of the target is in them, and this hop is the one
+    place a tab's document can still be given an origin of its own.
+    """
+    rec = BROWSE.get(tok)
+    if rec is None or rec.sandbox or browse_expiry(rec) <= time.time():
+        # The pane's own token included. The pane has no use for this route,
+        # and a page reached through it is one the tab flavour was asked for.
+        return browse_error_response("expired", "",
+                                     rec.origin if rec is not None else None)
+    to = request.query_params.get("to", "")
+    m = _BROWSE_ENTER_TO.match(to)
+    # Printable ASCII only, so what goes into the Location header is a URL and
+    # not a header the caller wrote half of.
+    if not m or any(c <= " " or c > "~" for c in to):
+        return browse_error_response("bad_target", "", rec.origin)
+    host, sep, port = m.group("hostport").rpartition(":")
+    if not sep or not host or not port.isdigit() or not 1 <= int(port) <= 65535:
+        return browse_error_response("bad_target", m.group("hostport"), rec.origin)
+    return Response(status_code=302, headers={
+        "location": f"{rec.prefix}/b/{rec.token}{to}",
+        "clear-site-data": '"storage"',
+        "cache-control": "no-store",
+    })
 
 
 # ---------------------------------------------------------------------------
