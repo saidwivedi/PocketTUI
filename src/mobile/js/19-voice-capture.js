@@ -1769,10 +1769,13 @@ function buildKeybar() {
     // it: reportAvailable() cannot be asked on the first build, which runs
     // before 35-report.js does.
     if (k.report) b.classList.toggle("show", $("report-row").classList.contains("show"));
-    // Gated on the capability directly, the same idea as the report key's
-    // gate: no server old enough to lack /api/browse can proxy anything for
-    // the pane to show.
-    if (k.browser) b.classList.toggle("show", typeof hasCapStrict === "function" && hasCapStrict("browse"));
+    // The same, and taken from the same kind of place: the header's own
+    // browser button, which syncBrowseCap() (42-browser.js) keeps in step
+    // with this key. Asking the capability here cannot work — the first build
+    // runs before 36-server-version.js has declared serverCaps at all, and
+    // reaching into that binding's dead zone throws before the rest of the
+    // script has been initialised.
+    if (k.browser) b.classList.toggle("show", !$("btn-browser").hidden);
     if (k.mod) modButtons[k.mod] = b;
     // Every key but the focusing ones must leave focus exactly where it is:
     // stealing it would drop the soft keyboard, and handing it back would raise
