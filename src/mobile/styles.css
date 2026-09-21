@@ -563,31 +563,50 @@ body {
   top: -8px; right: -6px; bottom: -5px; left: -6px;
 }
 
+/* One line, never two, and broken where the list says rather than where each
+   row's own text happens to end: the command in a slot wide enough for the
+   longest one tmux reports (python3), the watcher's badge in one sized to
+   "Needs input" and right-aligned under the row's icon cluster, and the pane
+   label taking whatever lies between them. So every row's command starts at
+   the same x, every label starts at the same x, and every badge ends at the
+   same x. The widths are in ch, so the slots follow the font-size the rail
+   derives for itself as readily as the phone's fixed one. */
 .item .item-meta {
   margin-left: 20px;
   margin-top: 5px;
-  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+  display: flex; gap: 6px; flex-wrap: nowrap; align-items: center;
+  white-space: nowrap; overflow: hidden;
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--tertiary);
   letter-spacing: -0.005em;
 }
+/* What is left over once the three slots have the line: the window count and
+   the age (the classless spans) and the dots between everything (.sep). The
+   demo row is not a session and keeps its one plain line. */
+.item:not(.demo) .item-meta > span:not([class]),
+.item:not(.demo) .item-meta .sep { display: none; }
 .item .item-meta .sep { color: var(--whisper); }
-.item .item-meta .cmd { color: var(--umber); font-weight: 600; }
-/* The rail keeps a command slot on every row so the bylines line up, and a
-   row with no command carries it empty; here that would only be a stray gap. */
-.item .item-meta .cmd:empty { display: none; }
+.item .item-meta .cmd {
+  color: var(--umber); font-weight: 600;
+  flex: 0 0 7ch;
+  overflow: hidden; text-overflow: ellipsis;
+}
 /* What the pane is holding — an agent's conversation summary, or the folder a
-   shell is in. It is the one field with no length anyone controls, so it gives
-   up its width first and ellipsises rather than wrapping the row onto a second
-   line, on the phone and in the rail alike. */
+   shell is in. It is the one field with no length anyone controls, so it takes
+   the space the two fixed slots leave and ellipsises inside it. */
 .item .item-meta .where {
-  min-width: 0; max-width: 46%;
+  flex: 1 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* The pane watcher's badge: amber for a session waiting on its human, green
-   for one producing output right now, and a quiet grey "done" for an agent
+   for one producing output right now, and a quiet grey "Done" for an agent
    that has finished its turn. Idle sessions carry nothing. */
+.item .item-meta .state {
+  flex: 0 0 11ch;
+  margin-left: auto;
+  text-align: right;
+}
 .item .item-meta .state.waiting { color: var(--warn); font-weight: 600; }
 .item .item-meta .state.active { color: var(--good); }
 .item .item-meta .state.ready { color: var(--secondary); font-weight: 600; }
@@ -3997,12 +4016,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
     font-size: 13px;
   }
 
-  /* Compact two-line rows: the title on top (ellipsized), the phone's meta
-     line beneath it distilled — the running command and the watcher's
-     verdict keep their colors, while the window count, age and separators
-     fold away so the line stays one dense read even at 240px. And one row
-     means one name: the alias keeps the row and the tmux name stays in the
-     session sheet. */
+  /* Compact two-line rows: the title on top (ellipsized), the byline beneath
+     it at the rail's own scale so the line stays one dense read even at
+     240px. And one row means one name: the alias keeps the row and the tmux
+     name stays in the session sheet. */
   #screen-list .item {
     padding: 8px 10px;
     margin-bottom: 6px;
@@ -4018,43 +4035,20 @@ html.term-open #dbg-panel { opacity: 0.85; }
     text-overflow: ellipsis;
   }
   #screen-list .item .title .realname { display: none; }
+  /* Sizes only — the byline's three slots are the base stylesheet's. */
   #screen-list .item .item-meta {
     /* Under the title's own left edge: the 7px dot plus the head's 7px gap. */
     margin-left: 14px;
     margin-top: 1px;
     gap: 5px;
-    flex-wrap: nowrap;
-    white-space: nowrap;
-    overflow: hidden;
     /* Derived rather than set: the meta line holds its 10-to-14 proportion
        against the title however far the scale is taken, so a bigger rail is
        the same rail, larger. */
     font-size: calc(var(--rail-title) * 10 / 14);
   }
-  /* The classless spans are the window count and age; the dots between are
-     .sep. A session with neither command nor state keeps a one-line row —
-     an emptied meta line takes no height at all. */
-  #screen-list .item .item-meta > span:not([class]),
-  #screen-list .item .item-meta .sep { display: none; }
-  /* What is left is three slots, so a byline breaks where the rail says and
-     not where each row's own text happens to end: the command in a slot wide
-     enough for the longest tmux reports (python3), the state badge in one
-     sized to "Needs input" and right-aligned under the row's icon cluster,
-     and the pane label taking whatever lies between them — so its start and
-     its truncation point are the same on every row. The widths are in ch, so
-     they follow the rail's derived font-size like the rest of the line. */
-  #screen-list .item .item-meta .cmd {
-    flex: 0 0 7ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  #screen-list .item .item-meta .cmd:empty { display: block; }
-  #screen-list .item .item-meta .where { flex: 1 1 auto; max-width: none; }
-  #screen-list .item .item-meta .state {
-    flex: 0 0 11ch;
-    margin-left: auto;
-    text-align: right;
-  }
+  /* The demo row is a session's shape without a session's fields, so the rail
+     drops its one plain line rather than let it run the width. */
+  #screen-list .item.demo .item-meta > span:not([class]) { display: none; }
   #screen-list .item .btn-bell, #screen-list .item .btn-alias,
   #screen-list .item .btn-trash { padding: 3px; margin-top: 0; }
   #screen-list .item .btn-bell svg, #screen-list .item .btn-alias svg,
