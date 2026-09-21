@@ -131,7 +131,7 @@ def test_browser_zoom_scales_the_frame_not_the_page(doc):
     assert "frame.style.transform = factor === 1" in doc
     assert "pockettui-zoom" not in doc
     css = (SRC / "styles.css").read_text(encoding="utf-8")
-    rule = re.search(r"#browser-frame \{[^}]*\}", css).group(0)
+    rule = re.search(r"\.browser-frame \{[^}]*\}", css).group(0)
     assert "transform-origin: 0 0;" in rule
 
 
@@ -152,13 +152,15 @@ def test_the_browser_topbar_carries_one_zoom_key_and_a_star(doc):
     assert 'id="i-star"' in doc and 'id="i-star-fill"' in doc
 
 
-def test_the_topbar_offers_the_page_as_a_tab_through_the_computer(doc):
+def test_the_topbar_offers_the_page_in_a_window_of_its_own(doc):
     """The way out for a page that cannot run framed: an app written to be the
     top window (a portal reading top.EPCM through its views) needs a top-level
     tab, which the backend serves under its unsandboxed token. Hidden until the
-    computer says it has the mode, like the star."""
+    computer says it has the mode, like the star. What it is called says
+    nothing about how it is fetched — that is the computer's business, not the
+    reader's."""
     assert 'id="btn-browser-tab" hidden' in doc
-    assert 'aria-label="Open in a tab through the computer"' in doc
+    assert 'aria-label="Open in its own window"' in doc
     assert '"browse_tab"' in doc or "hasCapStrict(\"browse_tab\")" in doc
     # Opened blank inside the click, sent somewhere once the token is in hand.
     assert 'window.open("", "_blank")' in doc
@@ -172,19 +174,46 @@ def test_the_topbar_offers_the_page_as_a_tab_through_the_computer(doc):
     assert 'w.postMessage("pockettui-close", browserOrigin())' in doc
 
 
-def test_the_topbar_offers_an_empty_tab_through_the_computer(doc):
-    """A tab has no address bar of ours — the browser's own types into the
-    laptop — so an empty tab starts on the backend's start page, which is the
-    one field in a tab that goes through the computer. Same token, same
-    flavour, so it is shown and hidden with the button beside it."""
-    assert 'id="btn-browser-newtab" hidden' in doc
-    assert 'aria-label="New tab through the computer"' in doc
-    assert '$("btn-browser-newtab").hidden = tab;' in doc
-    assert 'rec.prefix + "/b/" + rec.token + "/start"' in doc
-    # Both buttons open the blank window inside the click and send it on once
-    # the token is in hand.
+def test_the_pane_has_tabs_of_its_own(doc):
+    """The pane is a browser: a strip of chips above the page, the lone tab
+    included, and the button that opens another after the last of them.
+
+    Every tab owns what the pane used to own once — its stack, where in it the
+    frame is, and its own frame, kept in the wrap while the tab is off screen
+    so coming back to it is not a reload. The frame is cut from the template
+    the markup keeps, which is where the sandbox list lives; a frame built any
+    other way would be a frame with other powers.
+    """
+    assert 'id="browser-tabs"' in doc
+    assert 'id="btn-browser-newtab"' in doc
+    assert 'title="New tab"' in doc
+    assert 'id="browser-frame-tpl"' in doc
+    assert "function browserNewTab(" in doc and "function browserTab(" in doc
+    assert "function browserShowTab(" in doc and "function browserCloseTab(" in doc
+    assert "const BROWSER_TAB_MAX = 8;" in doc
+    # The landing goes to the tab whose frame reported it, not to the one on
+    # screen: a tab loading in the background keeps its own stack and name.
+    assert "browserTabs.find((t) => t.frame && e.source === t.frame.contentWindow)" in doc
+    # The laptop start page is gone with the button that opened it: the "+"
+    # opens a tab in here now.
+    assert "/start" not in doc and "browserStartUrl" not in doc
+    # The window a page that cannot be framed still opens in is unchanged.
     assert "function browserOpenTab(" in doc
-    assert "browserOpenTab(browserStartUrl)" in doc
+
+
+def test_every_pane_tab_carries_the_proxys_own_sandbox_list(doc):
+    """The iframe attribute and the CSP header have to agree word for word, or
+    the stricter of the two wins and the page loses a capability it was
+    granted. One template, so there is one list to agree with."""
+    sandbox = ("allow-scripts allow-forms allow-popups allow-modals "
+               "allow-downloads allow-popups-to-escape-sandbox")
+    assert f'sandbox="{sandbox}"' in doc
+    assert doc.count('sandbox="allow-scripts') == 1
+    app_py = (REPO / "app.py").read_text(encoding="utf-8")
+    assert f'BROWSE_SANDBOX = ("sandbox allow-scripts' in app_py
+    # Spelled out here as well as in app.py, because this is the pinning: the
+    # markup and the header are two files that must say the same thing.
+    assert f"sandbox {sandbox}" in re.sub(r'"\s*\n\s*"', "", app_py)
 
 
 def test_vendor_script_tags_survive(doc):

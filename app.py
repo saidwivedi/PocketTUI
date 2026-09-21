@@ -5871,10 +5871,9 @@ BROWSE_ERROR_TITLES = {
     "expired": "This browser link has expired",
 }
 
-# The paper both of this server's own browser pages are printed on — the
-# failure page and the start page a tab opens on. Shared because they are the
-# same page to whoever meets them: this computer speaking for itself in the
-# middle of somebody else's site, light or dark as the device asks.
+# The paper this server's own browser page is printed on — the failure page,
+# which is this computer speaking for itself in the middle of somebody else's
+# site, light or dark as the device asks.
 BROWSE_PAGE_CSS = """
 :root { color-scheme: light dark; --bg: #f4efe6; --fg: #2a2620;
   --dim: #6f675c; --line: #c9bfae; }
@@ -5927,8 +5926,9 @@ def browse_error_page(code: str, detail: str, origin: str | None,
 
     `alt` is the same target under the other scheme, when there is one worth
     offering (browse_other_scheme). It matters most where there is no pane to
-    retry on the user's behalf: an address typed into a tab's start page is
-    given a scheme by guesswork, and this link is how a wrong guess is undone.
+    retry on the user's behalf: a page opened in a window of the device's own
+    is out of the pane's reach, and this link is how a wrong guess is undone
+    there.
     """
     safe = html_escape(detail or "")
     title = BROWSE_ERROR_TITLES.get(code, "The page could not be loaded")
@@ -7048,153 +7048,6 @@ async def api_browse_enter(request: Request, tok: str) -> Response:
         "clear-site-data": '"storage"',
         "cache-control": "no-store",
     })
-
-
-# ---------------------------------------------------------------------------
-# In-app browser: the page a tab starts on
-# ---------------------------------------------------------------------------
-# A tab has no chrome of ours. The browser's own address bar shows the proxied
-# URL, and an address typed there would be fetched by the laptop rather than by
-# this computer — which is the one thing a tab through the computer is for. So
-# a tab opened empty lands here instead: this server's own page, on this
-# server's origin, with a field that goes to the proxy and the bookmarks the
-# pane keeps. It is the tab's home, and the browser's back button is the way
-# back to it; giving a proxied page a bar of our own is not something the
-# sandbox-free tab flavour allows (a page there could script it), and is
-# deliberately not attempted.
-
-# The field's script. A constant of its own for the reason the shim is one:
-# nothing here is formatted, so it is safe to hold braces and regexes, and its
-# configuration rides in a data attribute the page fills in.
-#
-# The scheme guess is the shell's, ported: isPrivateHost and
-# browserGuessScheme in src/mobile/js/08-links.js and 42-browser.js. An address
-# typed without a scheme is http on a private host — a dev server, an intranet
-# box, anything with no dot in its name — and https everywhere else. Where the
-# guess is wrong the failure page's "Try http:// instead" link is the way back,
-# because a tab has no pane to retry for it.
-BROWSE_START_JS = r"""
-(function(){
-var C={};try{C=JSON.parse(document.currentScript.dataset.cfg)}catch(e){}
-var SFX=[".local",".internal",".lan",".home.arpa"];
-function priv(h){
- h=(h||"").toLowerCase().replace(/\.$/,"");
- if(!h)return false;
- if(h==="localhost"||h.slice(-10)===".localhost"||h==="0.0.0.0")return true;
- if(h.charAt(0)==="["){var ip=h.slice(1,-1);
-  if(ip==="::1"||ip==="::")return true;
-  return /^f[cd][0-9a-f]{0,2}:/.test(ip)||/^fe[89ab][0-9a-f]?:/.test(ip)}
- var m=/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
- if(m){var a=+m[1],b=+m[2];
-  return a===127||a===10||(a===172&&b>=16&&b<=31)||(a===192&&b===168)
-      ||(a===169&&b===254)}
- if(h.indexOf(".")===-1)return true;
- return SFX.some(function(x){return h.slice(-x.length)===x})}
-// The host of an address as written: a v6 literal keeps its brackets and its
-// colons, anything else loses a port, and userinfo is dropped.
-function host(raw){var h=raw.split(/[/?#]/)[0];h=h.slice(h.lastIndexOf("@")+1);
- return h.charAt(0)==="["?h.slice(0,h.indexOf("]")+1):h.split(":")[0]}
-// A colon alone is not a scheme: "localhost:3000" is a host and a port, and a
-// digit after it is what tells the two apart.
-function target(raw){
- var s=(raw||"").trim();
- if(!s)return "";
- var full=/^[a-z][a-z0-9+.-]*:(?!\d)/i.test(s)?s
-  :(priv(host(s))?"http://":"https://")+s;
- var u;try{u=new URL(full)}catch(e){return ""}
- if(u.protocol!=="http:"&&u.protocol!=="https:")return "";
- var sec=u.protocol==="https:";
- return C.prefix+"/b/"+C.tok+"/"+(sec?"s":"h")+"/"+u.hostname+":"
-  +(u.port||(sec?"443":"80"))+u.pathname+u.search+u.hash}
-var f=document.getElementById("go"),i=document.getElementById("addr");
-f.addEventListener("submit",function(e){e.preventDefault();
- var u=target(i.value);if(u)location.href=u});
-})();
-"""
-
-BROWSE_START_PAGE = """<!doctype html>
-<html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PocketTUI</title>
-<style>
-{css}
-body {{ padding: 2.5em 1.25em; }}
-.card {{ max-width: 34em; margin: 0 auto; }}
-.mark {{ font-size: .85rem; color: var(--dim); margin: 0 0 1em;
-  word-break: break-word; }}
-input {{ width: 100%; box-sizing: border-box; font: inherit; padding: .6em .8em;
-  border-radius: 10px; border: 1px solid var(--line); background: transparent;
-  color: inherit; }}
-h2 {{ font-size: .75rem; font-weight: 600; letter-spacing: .05em;
-  text-transform: uppercase; color: var(--dim); margin: 2.2em 0 .4em; }}
-a.row {{ display: block; padding: .55em 0; color: inherit;
-  text-decoration: none; border-top: 1px solid var(--line);
-  word-break: break-word; }}
-a.row span {{ display: block; font-size: .8rem; color: var(--dim); }}
-</style></head>
-<body><div class="card">
-<p class="mark">PocketTUI · through {host}</p>
-<form id="go"><input type="text" id="addr" inputmode="url"
-  autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false"
-  autofocus aria-label="Address"
-  placeholder="localhost:3000 or an intranet address"></form>
-{marks}
-</div>
-<script data-cfg='{cfg}'>{js}</script>
-</body></html>
-"""
-
-
-def browse_start_page(rec: "BrowseToken") -> str:
-    """The start page for one tab token, bookmarks and all.
-
-    The rows are links this server wrote, not links the script builds: a start
-    page with its JavaScript turned off still reaches everything the computer
-    has kept, and only the typed field needs the script at all.
-    """
-    # Any ctx will do for an absolute URL — the scheme and host in it are the
-    # page's own, and only a relative URL would be read against the ctx's.
-    ctx = BrowseCtx(rec.prefix, rec.token, "h", "")
-    rows = []
-    for mark in read_bookmarks():
-        where = urllib.parse.urlsplit(mark["url"]).netloc
-        title = mark["title"].strip() or where
-        rows.append(
-            f'<a class="row" href="{html_escape(browse_map_url(mark["url"], ctx))}">'
-            f"{html_escape(title)}<span>{html_escape(where)}</span></a>")
-    cfg = json.dumps({"prefix": rec.prefix, "tok": rec.token})
-    # Single-quoted attribute, like the shim's: three characters to escape for
-    # the page not to be able to end the attribute or the tag early.
-    cfg = cfg.replace("&", "&amp;").replace("<", "&lt;").replace("'", "&#39;")
-    return BROWSE_START_PAGE.format(
-        css=BROWSE_PAGE_CSS,
-        host=html_escape(socket.gethostname()),
-        marks=("<h2>Bookmarks</h2>" + "".join(rows)) if rows else "",
-        cfg=cfg, js=BROWSE_START_JS)
-
-
-@app.get("/b/{tok}/start")
-def api_browse_start(tok: str) -> Response:
-    """Where a tab opened with no page in mind begins.
-
-    The tab flavour only, and for the reason /enter is refused to the pane's
-    token: this page is served on this server's real origin without the sandbox
-    CSP, so it carries /enter's Clear-Site-Data too — it *is* the entry, and
-    whatever a shell once served from this address left in this origin's
-    storage is gone before anything else runs.
-
-    A plain `def`, so reading the bookmarks off disk happens on the threadpool
-    rather than on the event loop, like the bookmark route itself.
-    """
-    rec = BROWSE.get(tok)
-    if rec is None or rec.sandbox or browse_expiry(rec) <= time.time():
-        return browse_error_response("expired", "",
-                                     rec.origin if rec is not None else None)
-    rec.last_used = time.time()
-    headers = dict(browse_page_headers(sandbox=False))
-    headers["Clear-Site-Data"] = '"storage"'
-    return Response(browse_start_page(rec), media_type="text/html; charset=utf-8",
-                    headers=headers)
 
 
 # ---------------------------------------------------------------------------
