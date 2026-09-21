@@ -79,6 +79,56 @@ const FILES_MEDIA_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|mp4|webm|mov)$/i;
 // editor — Edit there is one tap away.
 const FILES_MD_RE = /\.(?:md|markdown)$/i;
 
+// What kind of thing a name says it is, and so which icon the listing draws
+// for it. One table, read by rows and tiles alike — a .py is the same file in
+// either layout. Everything unlisted is the plain page i-file, which is what
+// the explorer drew for every file before this.
+const FILE_KIND_EXT = {
+  image:   "png jpg jpeg gif webp bmp svg heic avif",
+  video:   "mp4 webm mov mkv m4v",
+  audio:   "mp3 wav m4a ogg flac",
+  code:    "py js ts jsx tsx mjs cjs sh bash zsh c h cpp hpp rs go java kt swift"
+           + " rb php lua sql html css scss json yaml yml toml xml ipynb",
+  text:    "md txt rst log csv tsv",
+  pdf:     "pdf",
+  archive: "zip tar gz tgz bz2 xz 7z rar",
+};
+const FILE_KIND_BY_EXT = (() => {
+  const m = new Map();
+  for (const [kind, exts] of Object.entries(FILE_KIND_EXT))
+    for (const ext of exts.split(" ")) m.set(ext, kind);
+  return m;
+})();
+// The names a project gives meaning to without an extension. All of them are
+// something to read, so all of them are text.
+const FILE_KIND_BY_NAME = new Set(["readme", "license", "licence", "changelog",
+                                   "makefile", "dockerfile"]);
+
+// Case-insensitive, and a leading dot is not an extension: .bashrc is a name,
+// not a file of type "bashrc".
+function fileKind(name) {
+  const n = name.toLowerCase();
+  const dot = n.lastIndexOf(".");
+  if (dot > 0) return FILE_KIND_BY_EXT.get(n.slice(dot + 1)) || "file";
+  return FILE_KIND_BY_NAME.has(n) ? "text" : "file";
+}
+
+function kindIcon(kind) {
+  return kind === "file" ? "i-file" : "i-" + kind;
+}
+
+// The tile's extension chip: what the typed icon cannot say on its own, since
+// a .py and a .rs are one icon. Four characters is what fits under 34px, so a
+// longer extension is clipped rather than shrunk, and anything that is not a
+// short alphanumeric ending is not an extension worth printing.
+function fileBadge(name) {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return "";
+  const ext = name.slice(dot + 1);
+  if (!/^[a-z0-9]{1,8}$/i.test(ext)) return "";
+  return ext.slice(0, 4).toUpperCase();
+}
+
 // A page opens as a page, in a tab of its own — seeing the source of a report
 // is not what anyone taps it for. Editing is the long-press sheet's Edit.
 const FILES_HTML_RE = /\.(?:html?|xhtml)$/i;
@@ -902,6 +952,8 @@ function renderEntries(entries) {
   const list = $("files-list");
   const grid = cfg.filesView === "grid";
   filesEntries = entries;
+  stopThumbs();
+  thumbsDrawn = grid && thumbsOn();
   list.classList.toggle("files-grid", grid);
   list.innerHTML = "";
   $("files-empty").style.display = entries.length ? "none" : "block";
@@ -933,8 +985,7 @@ function fileRow(e) {
                  ? fmtSize(e.size) + (e.mtime ? " · " + relTime(e.mtime) : "")
              : e.type === "link" ? "link" : "";
   const row = el("div", { class: "file-row" },
-    el("span", { class: "file-ic " + e.type },
-       svgIcon(e.type === "dir" ? "i-folder" : "i-file")),
+    el("span", { class: "file-ic " + e.type }, svgIcon(entryIcon(e))),
     el("div", { class: "file-name" }, e.name),
     el("div", { class: "file-meta" }, meta),
   );
@@ -946,13 +997,166 @@ function fileRow(e) {
 // under it. No meta line — a tile has no room for one, and size and age were
 // never why anyone switched to icons.
 function fileTile(e) {
+  const slot = el("div", { class: "file-slot" },
+    el("span", { class: "file-ic " + e.type }, svgIcon(entryIcon(e))));
+  if (wantsThumb(e)) {
+    // The icon stays put and the picture arrives over it, so a tile is never
+    // an empty box waiting for a server.
+    slot.classList.add("has-thumb");
+    slot.setAttribute("data-thumb", joinPath(filesPath, e.name));
+    // A first frame is a photo until something says otherwise, so the tile
+    // that got one says so — once it has one, in loadThumb below.
+    if (fileKind(e.name) === "video") slot.setAttribute("data-video", "1");
+    thumbWatch(slot);
+  } else if (e.type !== "dir") {
+    tileBadge(slot, e.name);
+  }
   const tile = el("div", { class: "file-tile" },
-    el("span", { class: "file-ic " + e.type },
-       svgIcon(e.type === "dir" ? "i-folder" : "i-file")),
+    slot,
     el("div", { class: "file-name" }, e.name),
   );
   wireRow(tile, e);
   return tile;
+}
+
+// One icon per entry, whichever layout is asking. A symlink is drawn as what
+// it is named after: the listing cannot say what it points at, and a name is
+// the only evidence either way.
+function entryIcon(e) {
+  return e.type === "dir" ? "i-folder" : kindIcon(fileKind(e.name));
+}
+
+function tileBadge(slot, name) {
+  const ext = fileBadge(name);
+  if (ext) slot.appendChild(el("span", { class: "file-badge" }, ext));
+}
+
+// ---- grid thumbnails --------------------------------------------------------
+// A folder of photos is a wall of identical icons, so in the grid the picture
+// tiles show the picture: /api/fs/thumb renders a <=256px JPEG of an image or a
+// video's first frame. Fetched one tile at a time rather than through
+// api/file_link, which would cost a signing round-trip per tile, and only as
+// tiles come into view — a folder of four hundred photos must not be four
+// hundred requests the moment it opens.
+//
+// Everything here belongs to one render. A folder change disconnects the
+// observer and aborts the fetches in flight, so nothing a listing left behind
+// can paint itself into the tiles of the listing that replaced it.
+
+const THUMB_MAX = 6;       // requests allowed in flight at once
+let thumbRun = null;       // the current render's {obs, ctrl, queue, active}
+// Whether the tiles on screen were drawn expecting thumbnails, so the arrival
+// of the capability map can be told from a redraw that already knew.
+let thumbsDrawn = false;
+
+// Whether this server renders thumbnails for the folder on screen. A listing
+// read at a ref is a commit and the endpoint reads the working tree, so that
+// mode simply keeps its icons. Strict, not hasCap(): a server that predates
+// the endpoint answers 404 for every tile.
+function thumbsOn() {
+  return hasCapStrict("thumbs") && !refFor(filesPath);
+}
+
+// Which tiles ask for one: pictures and videos, by name. An .svg is a picture
+// the backend refuses (it rasterises nothing), so it keeps the image icon and
+// takes a badge like any other typed file.
+function wantsThumb(e) {
+  if (e.type === "dir" || !thumbsOn()) return false;
+  if (/\.svg$/i.test(e.name)) return false;
+  const kind = fileKind(e.name);
+  return kind === "image" || kind === "video";
+}
+
+function stopThumbs() {
+  if (!thumbRun) return;
+  thumbRun.obs.disconnect();
+  thumbRun.ctrl.abort();
+  thumbRun = null;
+}
+
+function thumbWatch(slot) {
+  if (!thumbRun) {
+    // Docked, the pane is what scrolls; full screen, the page is. Asked of the
+    // live style rather than of the layout, since the same markup is both.
+    const wrap = $("files-list").closest(".files-wrap");
+    const root = wrap && getComputedStyle(wrap).overflowY !== "visible" ? wrap : null;
+    const run = { obs: null, ctrl: new AbortController(), queue: [], active: 0 };
+    // A screen's worth of lead time, so a tile is usually painted by the time
+    // a scroll brings it up.
+    run.obs = new IntersectionObserver((recs) => {
+      if (run !== thumbRun) return;
+      for (const r of recs) {
+        if (!r.isIntersecting) continue;
+        run.obs.unobserve(r.target);
+        run.queue.push(r.target);
+      }
+      pumpThumbs(run);
+    }, { root: root, rootMargin: "300px" });
+    thumbRun = run;
+  }
+  thumbRun.obs.observe(slot);
+}
+
+function pumpThumbs(run) {
+  while (run === thumbRun && run.active < THUMB_MAX && run.queue.length) {
+    run.active++;
+    // Both arms, so a rejection nobody expected cannot wedge the slot shut.
+    const done = () => {
+      if (run !== thumbRun) return;
+      run.active--;
+      pumpThumbs(run);
+    };
+    loadThumb(run.queue.shift(), run).then(done, done);
+  }
+}
+
+// One tile. Every failure ends the same way — the typed icon that is already
+// there stays — so a server that cannot render this particular file costs the
+// tile nothing. No rejectToken() on a 401 either: the listing behind these
+// tiles asks the same server with the same header, and it is the one that
+// should be telling the user their code expired.
+async function loadThumb(slot, run) {
+  const path = slot.getAttribute("data-thumb");
+  try {
+    const r = await fetch(apiURL("api/fs/thumb?path=" + encodeURIComponent(path)),
+                          { headers: authHeaders(), signal: run.ctrl.signal });
+    if (run !== thumbRun) return;
+    if (!r.ok) {
+      // Unsupported is a fact about the file rather than a failure, so the
+      // tile says what it is instead of pretending it is still loading.
+      if (r.status === 415) tileBadge(slot, baseName(path));
+      return;
+    }
+    const blob = await r.blob();
+    if (run !== thumbRun) return;
+    const url = URL.createObjectURL(blob);
+    const img = el("img", { class: "file-thumb", alt: "", draggable: "false" });
+    // Revoked the moment it has been decoded: the bitmap is the browser's from
+    // then on, and a folder of photos must not leave its blobs behind.
+    const drop = () => URL.revokeObjectURL(url);
+    img.addEventListener("load", () => {
+      img.classList.add("on");
+      if (slot.getAttribute("data-video"))
+        slot.appendChild(el("span", { class: "file-play" }, svgIcon("i-play")));
+      drop();
+    });
+    img.addEventListener("error", drop);
+    img.src = url;
+    slot.appendChild(img);
+  } catch (e) {
+    return;   // aborted by the next render, or the network said no
+  }
+}
+
+// The capability map can land after a folder is already on screen (36-server-
+// version.js calls this where it calls the diff pane's and the ref bar's own
+// gates). A grid drawn before the answer arrived is redrawn once, rather than
+// keeping its icons until the user navigates.
+function syncThumbsCap() {
+  if (cfg.filesView !== "grid" || !filesEntries.length) return;
+  if (thumbsDrawn === thumbsOn()) return;
+  if ($("files-error").style.display === "block") return;
+  renderEntries(filesEntries);
 }
 
 // The switch itself, a button and a menu rather than a <select> — see the

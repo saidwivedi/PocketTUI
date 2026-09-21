@@ -3230,6 +3230,71 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* Tile-sized, over the row's 19px — the icon is what the eye lands on here,
    and it keeps the row's colors (dirs in the accent, everything else quiet). */
 .file-tile .file-ic { width: 34px; height: 34px; }
+/* What the tile's icon sits in: the icon alone, or a square of picture once
+   /api/fs/thumb answers, with the extension chip hung off the bottom of
+   either. Positioned, because both the chip and the picture are laid over it. */
+.file-slot {
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+}
+/* A photo tile is the picture, so the slot grows to the tile's width and the
+   icon waits in the middle of it until the JPEG lands. Square rather than the
+   file's own shape: a grid of mixed portrait and landscape shots would set
+   every row a different height. */
+.file-slot.has-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--paper-rec);
+}
+.file-thumb {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.2s var(--ease-out);
+  /* The tile is what a press and a drag belong to; the picture inside it is
+     not separately draggable and never eats a long press. */
+  pointer-events: none;
+  -webkit-user-select: none; user-select: none;
+}
+.file-thumb.on { opacity: 1; }
+/* Which of these squares is a film. Added only once the frame is actually
+   showing (loadThumb in 28-file-explorer.js), since a tile still holding its
+   i-video icon says it already. The viewer's own over-the-media recipe, for
+   the same reason it exists there: a first frame can be any colour at all. */
+.file-play {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px;
+  background: rgba(12, 10, 7, 0.6);
+  color: rgba(243, 237, 224, 0.92);
+  pointer-events: none;
+}
+.file-play svg { width: 13px; height: 13px; }
+/* Says which kind of file, where the icon can only say which family: a .py
+   and a .rs are one glyph. Small caps on a chip of the card colour, the same
+   quiet register as #files-ref-ro. */
+.file-badge {
+  position: absolute;
+  left: 50%; bottom: -3px;
+  transform: translateX(-50%);
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--card);
+  border: 1px solid var(--hair);
+  font-family: var(--sans);
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  color: var(--tertiary);
+  pointer-events: none;
+}
 /* Two lines and then an ellipsis, and always two lines' worth of height so a
    long name never sets its tile taller than the ones beside it. anywhere,
    not break-word: a path-ish name can be one unbroken token. */
