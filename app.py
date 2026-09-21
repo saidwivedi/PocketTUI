@@ -5657,6 +5657,30 @@ P(function(){
   return s.call(this,n,v);
  };
 });
+P(function(){
+ // Markup a page writes into its own parser was not in the bytes the rewriter
+ // saw and reaches no element setter, so a root-relative src= in it is fetched
+ // from this server's root: SAP's portal bootstraps its whole UI5 core out of
+ // one document.write, and got this app's shell back four times over.
+ // Left alone, as in the rewriter: a relative value, whose base is already the
+ // proxied path and which in prose is not a URL at all, and a value this call
+ // left half written, whose rest is in the next one.
+ var AT=/(\s(?:src|href|action|formaction|poster)\s*=\s*)("[^"]*"|'[^']*'|[^\s>"'][^\s>]*)/gi;
+ var ABS=/^(\/|[A-Za-z][\w+.-]*:)/;
+ function mk(s){return String(s).replace(AT,function(m,k,v){
+  var q=v.charAt(0),x=(q==='"'||q==="'")?v.slice(1,-1):v;
+  if(!ABS.test(x))return m;
+  x=map(x);
+  return (q==='"'||q==="'")?k+q+x+q:k+x;
+ })}
+ ["write","writeln"].forEach(function(n){
+  var w=document[n];if(!w)return;
+  document[n]=function(){
+   var a=[].map.call(arguments,function(s){try{return mk(s)}catch(e){return s}});
+   return w.apply(document,a);
+  };
+ });
+});
 P(function(){document.addEventListener("click",function(e){
  if(e.defaultPrevented||e.button||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
  var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;
