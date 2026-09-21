@@ -107,6 +107,7 @@ async function fetchServerVersion() {
   syncSearchCap();
   syncComposeAttach();
   syncRefCap();
+  syncThumbsCap();
   syncPairCard();
 }
 

@@ -124,6 +124,51 @@
       <path d="M6.5 3.5h7l4 4.5v12.5h-11z"/>
       <path d="M13.5 3.5V8h4"/>
     </symbol>
+    <!-- What a file is, drawn at the same weight as i-file above: the explorer
+         picks one of these by extension (fileKind in 28-file-explorer.js) and
+         falls back to the plain page. The three that are documents keep that
+         page silhouette so the set reads as one family; the four that are not
+         get an object of their own. -->
+    <symbol id="i-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2"/>
+      <circle cx="9" cy="10" r="1.75"/>
+      <path d="M20.5 15.6l-4.6-4.6-8.5 8.5"/>
+    </symbol>
+    <symbol id="i-video" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.5" y="5" width="17" height="14" rx="2"/>
+      <path d="M10.2 9.2l5.3 2.8-5.3 2.8z"/>
+    </symbol>
+    <symbol id="i-audio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9.5 17.8V5.8l9-1.8v12"/>
+      <circle cx="7" cy="17.8" r="2.5"/>
+      <circle cx="16" cy="15.8" r="2.5"/>
+    </symbol>
+    <symbol id="i-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8.5 8.5L4.5 12l4 3.5"/>
+      <path d="M15.5 8.5l4 3.5-4 3.5"/>
+      <path d="M13.4 6l-2.8 12"/>
+    </symbol>
+    <symbol id="i-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6.5 3.5h7l4 4.5v12.5h-11z"/>
+      <path d="M13.5 3.5V8h4"/>
+      <path d="M8.8 11.8h6.4M8.8 14.8h6.4M8.8 17.8h4"/>
+    </symbol>
+    <symbol id="i-pdf" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6.5 3.5h7l4 4.5v12.5h-11z"/>
+      <path d="M13.5 3.5V8h4"/>
+      <rect x="8.8" y="13.2" width="6.4" height="4.6" rx="1.2"/>
+    </symbol>
+    <!-- Solid rather than outlined, unlike everything above it: this one is
+         never drawn on the paper, only on a video's own thumbnail, where an
+         outline would take the frame's colours straight through it. -->
+    <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <path d="M9 6.2l9.2 5.8L9 17.8z"/>
+    </symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.5" y="4.5" width="17" height="4" rx="1.2"/>
+      <path d="M5.2 8.5v9a2 2 0 0 0 2 2h9.6a2 2 0 0 0 2-2v-9"/>
+      <path d="M10 12h4"/>
+    </symbol>
     <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 3.5v11"/>
       <path d="M7.5 10.5l4.5 4.5 4.5-4.5"/>
