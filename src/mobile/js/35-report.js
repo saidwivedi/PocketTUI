@@ -30,7 +30,7 @@ function reportAvailable() {
 
 // Both entry points at once, so neither can be showing while the other is not.
 // Called wherever that answer can have changed — a list that loaded, the demo
-// starting or ending, Settings opening — never on a timer. The key pill's ring
+// starting or ending, Settings opening — never on a timer. The key pill's bubble
 // is looked up rather than held: buildKeybar() replaces that button whenever
 // Settings touches the bar, and on the very first call there may be no bar yet.
 function syncReportEntry() {

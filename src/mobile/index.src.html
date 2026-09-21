@@ -154,10 +154,13 @@
     <symbol id="i-chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M5 9l7 7 7-7"/>
     </symbol>
-    <symbol id="i-life-ring" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="12" cy="12" r="9"/>
-      <circle cx="12" cy="12" r="3.5"/>
-      <path d="M14.47 9.53l3.89-3.89M9.53 9.53L5.64 5.64M9.53 14.47l-3.89 3.89M14.47 14.47l3.89 3.89"/>
+    <!-- The report key: a speech bubble carrying an exclamation mark, "tell us
+         something went wrong". A life ring was tried first and at 20px its four
+         spokes read as a circled X. -->
+    <symbol id="i-report" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H10l-4.6 3.6c-.6.5-1.4 0-1.4-.7z"/>
+      <path d="M12 7.5v3.6"/>
+      <circle cx="12" cy="13.2" r=".6" fill="currentColor" stroke="none"/>
     </symbol>
   </defs>
 </svg>
@@ -286,10 +289,10 @@
     <button type="button" id="btn-conn-retry">Retry now</button>
     <button type="button" id="btn-conn-sessions">Sessions</button>
   </div>
-  <!-- Scrollback search, opened by Ctrl+Shift+F and by the key pill's magnifier
-       (38-scrollback-search.js). Docked to the top of the terminal's own column
-       — the prompt is at the bottom, and this box's edges are already the ones
-       the rail and the side pane move. Hidden outside the wide layout, where
+  <!-- Scrollback search, opened by Ctrl+Shift+F (38-scrollback-search.js).
+       Docked to the top of the terminal's own column — the prompt is at the
+       bottom, and this box's edges are already the ones the rail and the side
+       pane move. Hidden outside the wide layout, where
        there is no chord to open it with. -->
   <div id="search-bar" role="search">
     <svg class="search-icon" aria-hidden="true"><use href="#i-search"/></svg>
