@@ -675,9 +675,9 @@
     </div>
     <button class="icon-btn" id="btn-browser-tab" aria-label="Open in a browser tab"><svg><use href="#i-external"/></svg></button>
     <!-- Zoom, in both shapes rather than dock-only: a phone framing an
-         intranet page built for a desktop is the case that needs it most. The
-         frame is cross-origin, so these do not restyle it — they message the
-         shim the proxy put on the page (app.py BROWSE_SHIM). -->
+         intranet page built for a desktop is the case that needs it most.
+         They scale the frame element itself (browserApplyZoom) rather than
+         the document inside it, which is cross-origin anyway. -->
     <button class="icon-btn" id="btn-browser-zoom-out" aria-label="Zoom out"><svg><use href="#i-zoom-out"/></svg></button>
     <button class="icon-btn" id="btn-browser-zoom-in" aria-label="Zoom in"><svg><use href="#i-zoom-in"/></svg></button>
     <!-- The docked pane's own two controls, shown only while the browser is

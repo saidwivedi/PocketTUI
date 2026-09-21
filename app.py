@@ -5564,22 +5564,6 @@ function report(){P(function(){
   url:unmap(location.pathname+location.search+location.hash),
   title:document.title},C.origin||"*");
 })}
-// How big this page draws itself, asked for by the pane: the frame is
-// cross-origin, so the shell cannot touch this document's style and has to
-// send the factor in. Only the parent is listened to — anything else on the
-// page can postMessage as well, and a page is not allowed to resize itself
-// out of the pane's record of where it is.
-P(function(){addEventListener("message",function(e){P(function(){
- if(window.parent===window||e.source!==window.parent)return;
- var d=e.data;if(!d||d.type!=="pockettui-zoom")return;
- var z=Number(d.zoom);if(!isFinite(z)||z<0.25||z>5)return;
- var s=document.documentElement.style;
- // CSS zoom reflows the page at the new size, which is what a browser's own
- // zoom does. The transform is the fallback for an engine without it, widened
- // by the same factor so the scaled layout still fills the frame.
- if("zoom" in s)s.zoom=z;
- else{s.transform="scale("+z+")";s.transformOrigin="0 0";s.width=(100/z)+"%"}
-})})});
 P(function(){var f=window.fetch;if(!f)return;
  window.fetch=function(i,o){
   try{
