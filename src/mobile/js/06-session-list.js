@@ -269,10 +269,10 @@ function renderSessions(sessions) {
   $("list-empty").style.display = sessions.length ? "none" : "block";
   for (const s of sessions) {
     const meta = el("div", { class: "item-meta" });
-    if (s.command) {
-      meta.appendChild(el("span", { class: "cmd" }, s.command));
-      meta.appendChild(el("span", { class: "sep" }, "·"));
-    }
+    // The byline is three fixed slots, so the command's span is always there
+    // to hold its own — empty on a session that is sitting at a shell.
+    meta.appendChild(el("span", { class: "cmd" }, s.command || ""));
+    if (s.command) meta.appendChild(el("span", { class: "sep" }, "·"));
     const where = paneLabel(s);
     if (where) {
       meta.appendChild(el("span", { class: "where" }, where));
@@ -290,13 +290,17 @@ function renderSessions(sessions) {
     // Idle earns nothing.
     if (s.state === "waiting") {
       meta.appendChild(el("span", { class: "sep" }, "·"));
-      meta.appendChild(el("span", { class: "state waiting" }, "needs input"));
+      meta.appendChild(el("span", { class: "state waiting" }, "Needs input"));
     } else if (s.state === "active") {
       meta.appendChild(el("span", { class: "sep" }, "·"));
-      meta.appendChild(el("span", { class: "state active" }, "running"));
+      meta.appendChild(el("span", { class: "state active" }, "Running"));
     } else if (s.state === "ready") {
       meta.appendChild(el("span", { class: "sep" }, "·"));
-      meta.appendChild(el("span", { class: "state ready" }, "done"));
+      meta.appendChild(el("span", { class: "state ready" }, "Done"));
+    } else {
+      // Idle says nothing, but the slot is still spoken for: without it the
+      // pane label on this row would run past where every other row's stops.
+      meta.appendChild(el("span", { class: "state" }));
     }
 
     // With an alias set it becomes the row's title and the real tmux name moves
