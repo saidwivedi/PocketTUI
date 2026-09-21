@@ -24,6 +24,7 @@ import pytest
 
 httpx = pytest.importorskip("httpx")
 
+from starlette.requests import Request  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
@@ -412,6 +413,64 @@ def test_the_target_sees_its_own_origin(client, site):
     assert f"host: 127.0.0.1:{site}" in r.text
 
 
+# ---------------------------------------------------------------------------
+# The authority the target is addressed by
+# ---------------------------------------------------------------------------
+# The path segment always spells the port out, so that one target has one
+# path. What goes upstream must not: a real browser sends `Host: h.example.net`
+# for an https URL on 443, and a server that routes on the Host line answers
+# `h.example.net:443` with a different page than the one the user asked for.
+
+@pytest.mark.parametrize("sch,host,port,expected", [
+    ("s", "h.example.net", 443, "h.example.net"),
+    ("s", "h.example.net", "443", "h.example.net"),
+    ("s", "h.example.net", 8443, "h.example.net:8443"),
+    ("h", "h.example.net", 80, "h.example.net"),
+    ("h", "h.example.net", 8080, "h.example.net:8080"),
+    # 443 is not http's default, and a port is only dropped when it is the
+    # scheme's own — otherwise the address would name a different server.
+    ("h", "h.example.net", 443, "h.example.net:443"),
+    ("s", "h.example.net", 80, "h.example.net:80"),
+    # The long spellings, for the callers that hold a scheme rather than the
+    # path's one letter, and the socket ones the WebSocket half addresses.
+    ("https", "h.example.net", 443, "h.example.net"),
+    ("http", "h.example.net", 80, "h.example.net"),
+    ("wss", "h.example.net", 443, "h.example.net"),
+    ("ws", "h.example.net", 8080, "h.example.net:8080"),
+    # A v6 literal keeps its brackets either way round.
+    ("s", "[::1]", 443, "[::1]"),
+    ("h", "[2001:db8::1]", 8080, "[2001:db8::1]:8080"),
+])
+def test_a_default_port_is_left_out_of_the_authority(sch, host, port, expected):
+    assert A.browse_authority(sch, host, port) == expected
+
+
+def headers_for(target_origin: str, authority: str, sent: dict) -> dict:
+    """browse_upstream_headers over one made-up request, as a dict."""
+    scope = {
+        "type": "http", "method": "GET", "path": "/", "query_string": b"",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in sent.items()],
+    }
+    pairs = A.browse_upstream_headers(Request(scope), authority, target_origin,
+                                      PREFIX, False)
+    return dict(pairs)
+
+
+def test_a_default_port_target_is_addressed_without_one():
+    """The headers a 443 target sees, with no 443 anywhere in them."""
+    tok = "sometoken"
+    authority = A.browse_authority("s", "portal.example.net", 443)
+    out = headers_for(f"https://{authority}", authority, {
+        "Host": "testserver",
+        "Origin": SHELL_ORIGIN,
+        # As the browser sends it: the path segment it is on carries the port.
+        "Referer": f"{SHELL_ORIGIN}{PREFIX}/b/{tok}/s/portal.example.net:443/dir/page",
+    })
+    assert out["host"] == "portal.example.net"
+    assert out["origin"] == "https://portal.example.net"
+    assert out["referer"] == "https://portal.example.net/dir/page"
+
+
 def test_a_head_request_answers_without_a_body(client, site):
     body, _ = opened(client, site)
     r = client.head(f"{base_of(body['token'], site)}/"[len(PREFIX):])
@@ -519,6 +578,7 @@ def echo():
         seen.append({
             "path": conn.request.path,
             "origin": conn.request.headers.get("Origin"),
+            "host": conn.request.headers.get("Host"),
             "cookie": conn.request.headers.get("Cookie"),
             "agent": conn.request.headers.get("User-Agent"),
             "subprotocol": conn.subprotocol,
@@ -598,6 +658,31 @@ def test_the_target_sees_its_own_origin_and_the_jar(client, site, echo):
     assert echo.seen[-1]["origin"] == f"http://127.0.0.1:{echo.port}"
     assert echo.seen[-1]["cookie"] == "sid=1"
     assert echo.seen[-1]["agent"] == "testclient"
+    # A port that is not the scheme's default stays on both lines.
+    assert echo.seen[-1]["host"] == f"127.0.0.1:{echo.port}"
+
+
+def test_a_default_port_socket_target_is_addressed_without_one(client,
+                                                               monkeypatch):
+    """No fixture can bind 443, so the handshake is caught on its way out.
+
+    The connect is replaced by a recorder that refuses, which is enough: the
+    URI and the Origin are decided before it is called, and the URI is where
+    the handshake's own Host line comes from.
+    """
+    seen: dict = {}
+
+    async def refuse(uri, **kw):
+        seen["uri"] = uri
+        seen["headers"] = kw.get("additional_headers") or {}
+        raise OSError("not a real target")
+
+    monkeypatch.setattr(A, "_ws_connect", lambda: refuse)
+    tok = mint(client, "https://portal.example.net/").json()["token"]
+    assert closed_with(client.websocket_connect(
+        f"/b/{tok}/s/portal.example.net:443/socket")) == 4502
+    assert seen["uri"] == "wss://portal.example.net/socket"
+    assert seen["headers"]["Origin"] == "https://portal.example.net"
 
 
 # ---------------------------------------------------------------------------

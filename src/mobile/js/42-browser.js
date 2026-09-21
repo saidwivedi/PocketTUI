@@ -288,6 +288,8 @@ function closeFullBrowser() {
   if (back === "screen-term") refit(0);
 }
 
+const BROWSER_HOME = "https://www.google.com/";
+
 // Every way in lands here — the globe key, the header button, a tapped private
 // URL in the terminal, a restored session — so the two shapes are one entry
 // point, the way openExplorer is for the folder.
@@ -301,17 +303,9 @@ function openBrowser(url) {
   // Opened with nothing to go to: the page this pane was last on, whether it
   // is still in the frame (a close keeps it) or only in this session's record
   // (a reload does not).
-  const last = browserCurrentUrl() || browserRememberedUrl();
-  if (!last) {
-    // Nowhere to go and nothing to show, so the field is the whole pane: a
-    // cursor waiting for an address over a frame that is already blank —
-    // pointing it at about:blank here would spend its one free navigation and
-    // leave the first real page owing a history entry.
-    browserSetField("");
-    syncBrowserNav();
-    $("browser-url").focus();
-    return;
-  }
+  // Failing both, a search page: a browser that opens on a blank frame reads
+  // as broken, and the address field is one tap away either way.
+  const last = browserCurrentUrl() || browserRememberedUrl() || BROWSER_HOME;
   if (last !== browserLoadedUrl) browserNavigate(last, browserIdx < 0);
   else { browserSetField(last); syncBrowserNav(); }
 }
