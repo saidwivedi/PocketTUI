@@ -135,6 +135,23 @@ def test_browser_zoom_scales_the_frame_not_the_page(doc):
     assert "transform-origin: 0 0;" in rule
 
 
+def test_the_browser_topbar_carries_one_zoom_key_and_a_star(doc):
+    """Zoom is a key and a panel, and the bar's other new key is the bookmark.
+
+    The two zoom keys are gone from the bar itself — the panel under the one
+    key is the only place a minus and a plus are left, which is what frees the
+    slots on a bar that is 360px wide docked.
+    """
+    assert 'id="btn-browser-zoom"' in doc
+    assert 'id="btn-browser-star"' in doc
+    assert "btn-browser-zoom-out" not in doc and "btn-browser-zoom-in" not in doc
+    for ident in ("browser-zoom-minus", "browser-zoom-pct", "browser-zoom-plus"):
+        assert f'id="{ident}"' in doc, ident
+    # The panel still draws the pair's glyphs, so the sprite keeps them.
+    assert 'id="i-zoom-out"' in doc and 'id="i-zoom-in"' in doc
+    assert 'id="i-star"' in doc and 'id="i-star-fill"' in doc
+
+
 def test_vendor_script_tags_survive(doc):
     for name in ("xterm.js", "addon-fit.js", "addon-webgl.js"):
         assert f'src="vendor/{name}?v=__CACHE_VERSION__"' in doc
