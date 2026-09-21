@@ -639,9 +639,9 @@
          because the cross is the one that ends the pane and the outermost
          control is where a window's close always sits. Expand swaps its face
          for #i-collapse while the pane is filling the main area. -->
-    <button class="icon-btn dock-only" id="btn-files-expand"
+    <button class="icon-btn dock-only dock-expand" id="btn-files-expand"
             aria-label="Expand the file pane"><svg><use href="#i-expand"/></svg></button>
-    <button class="icon-btn dock-only" id="btn-files-close"
+    <button class="icon-btn dock-only dock-close" id="btn-files-close"
             aria-label="Close the file pane"><svg><use href="#i-close"/></svg></button>
     <!-- Matching entries for the path segment being typed in files-path-input.
          A child of the topbar rather than files-path-wrap so it can span the
@@ -805,6 +805,15 @@
     <button type="button" id="btn-editor-vim" class="editor-wrap-toggle"
             aria-label="Vim keybindings" aria-pressed="false">Vim</button>
     <button type="button" id="btn-editor-save">Save</button>
+    <!-- The pane's own two controls again, for the shape where this screen is
+         the pane: a file opened from the docked explorer opens inside it
+         (28-file-explorer.js), and the size it is read at and the way out
+         belong to the pane wherever it is. Hidden in every other shape, and
+         wired by class rather than by id since three bars now carry them. -->
+    <button class="icon-btn dock-only dock-expand" type="button"
+            aria-label="Expand the file pane"><svg><use href="#i-expand"/></svg></button>
+    <button class="icon-btn dock-only dock-close" type="button"
+            aria-label="Close the file pane"><svg><use href="#i-close"/></svg></button>
   </div>
   <!-- CodeMirror mounts here on the first open; the vendor bundle is injected
        then too, never at boot — the terminal's payload stays lean. -->
@@ -824,6 +833,11 @@
     <button class="icon-btn" type="button" id="btn-reader-download"
             aria-label="Download this file"><svg><use href="#i-download"/></svg></button>
     <button type="button" id="btn-reader-edit">Edit</button>
+    <!-- The editor bar's pair, for the same reason. -->
+    <button class="icon-btn dock-only dock-expand" type="button"
+            aria-label="Expand the file pane"><svg><use href="#i-expand"/></svg></button>
+    <button class="icon-btn dock-only dock-close" type="button"
+            aria-label="Close the file pane"><svg><use href="#i-close"/></svg></button>
   </div>
   <!-- The scroller, so the topbar stays put while the document moves. -->
   <div id="reader-scroll">
@@ -1366,11 +1380,28 @@
        the download then sits a gap from the X instead of at an offset measured
        off the X's own width. -->
   <div class="viewer-actions">
+    <!-- Docked, this row is the pane's bar and is read as one: the arrow goes
+         back to the folder the file was tapped in, and the cross at the end
+         closes the pane — the editor's and the reader's arrangement, so one
+         file view in the pane looks exactly like another. The × after them is
+         the full-screen shape's own close and stands down there (styles.css),
+         which is what keeps the row from carrying two crosses at once. -->
+    <button class="icon-btn viewer-btn dock-only" type="button" id="btn-viewer-back"
+            aria-label="Back to the folder"><svg><use href="#i-back"/></svg></button>
     <button class="icon-btn viewer-btn" type="button" id="btn-viewer-download" aria-label="Download this file"><svg><use href="#i-download"/></svg></button>
+    <button class="icon-btn viewer-btn dock-only dock-expand" type="button"
+            aria-label="Expand the file pane"><svg><use href="#i-expand"/></svg></button>
+    <button class="icon-btn viewer-btn dock-only dock-close" type="button"
+            aria-label="Close the file pane"><svg><use href="#i-close"/></svg></button>
     <button class="icon-btn viewer-btn viewer-close" type="button" id="btn-viewer-close" aria-label="Close image">&times;</button>
   </div>
   <img id="viewer-img" alt="">
   <video id="viewer-video" controls playsinline preload="metadata"></video>
+  <!-- The PDF, drawn by the browser's own reader. Not sandboxed: the sandbox
+       attribute is what turns the built-in reader off, and a PDF is not a page
+       — its own scripts run inside the reader, with no reach into this
+       document or the token it holds. -->
+  <iframe id="viewer-frame" title="PDF"></iframe>
 </div>
 
 <script src="vendor/xterm.js?v=__CACHE_VERSION__"></script>

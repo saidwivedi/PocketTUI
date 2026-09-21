@@ -563,6 +563,37 @@ def test_signed_file_tampered_path_is_rejected(client, tree, shot):
     assert client.get(url).status_code == 200
 
 
+def test_a_pdf_is_served_inline_and_whole(client, tree):
+    """The viewer's frame (and a phone's own tab) gets the file as it is.
+
+    No ceiling anywhere on the way: this one is twice what the editor would
+    read, and it comes back in full and typed, with nothing that would make
+    the browser save it instead of drawing it.
+    """
+    paper = tree / "report.pdf"
+    paper.write_bytes(b"%PDF-1.4\n" + b"x" * (4 * 1024 * 1024) + b"\n%%EOF\n")
+
+    direct = client.get("/api/file", params={"path": str(paper)})
+    assert direct.status_code == 200
+    assert direct.headers["content-type"] == "application/pdf"
+    assert len(direct.content) == paper.stat().st_size
+
+    url, _ = mint_file(client, paper)
+    r = client.get(url)
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/pdf"
+    assert len(r.content) == paper.stat().st_size
+    # Neither of the two headers that would stop a frame drawing it: an
+    # attachment makes it a download, and the sandbox CSP api_fs_site sends
+    # turns the browser's own PDF reader off.
+    assert "content-disposition" not in r.headers
+    assert "content-security-policy" not in r.headers
+    # And the frame's reader asks for ranges as it pages through.
+    part = client.get(url, headers={"Range": "bytes=0-7"})
+    assert part.status_code == 206
+    assert part.content == b"%PDF-1.4"
+
+
 def test_a_download_link_is_not_a_viewer_link(client, shot):
     """Each purpose signs under its own tag, on the one shared key."""
     target = str(shot)

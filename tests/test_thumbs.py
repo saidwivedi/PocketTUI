@@ -71,6 +71,47 @@ def cutout(tmp_path):
     return p
 
 
+def tiny_pdf(width: int = 612, height: int = 792) -> bytes:
+    """One US-letter page with a red rectangle on it, written out by hand.
+
+    The fixtures around it are real files for the reason the module docstring
+    gives, and so is this one — it is a PDF poppler and Ghostscript both
+    rasterise. Written here rather than generated because no PDF library is
+    installed and adding one to render four objects would be a dependency for
+    nothing. The cross-reference offsets are measured as the body is built, so
+    the file is valid rather than merely plausible.
+    """
+    stream = b"0.9 0.2 0.2 rg 72 72 200 300 re f\n"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}]"
+         " /Contents 4 0 R >>").encode(),
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"endstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for n, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % n + body + b"\nendobj\n"
+    start = len(out)
+    out += b"xref\n0 %d\n" % (len(objects) + 1)
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += b"%010d 00000 n \n" % offset
+    out += (b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+            % (len(objects) + 1, start))
+    return bytes(out)
+
+
+@pytest.fixture
+def paper(tmp_path):
+    """A one-page PDF, whose tile is that page."""
+    p = tmp_path / "paper.pdf"
+    p.write_bytes(tiny_pdf())
+    return p
+
+
 @pytest.fixture
 def clip(tmp_path):
     """Two seconds of video, long enough for the frame grab at one second."""
@@ -173,6 +214,41 @@ def test_a_clip_shorter_than_the_seek_still_renders(client, tmp_path):
     r = thumb(client, p)
     assert r.status_code == 200, r.text
     assert jpeg_size(r.content) == (64, 48)
+
+
+@pytest.mark.skipif(A.pdf_renderer() is None,
+                    reason="no pdftoppm, gs or sips to rasterise a page with")
+def test_pdf_thumb_is_page_one_within_the_tile(client, paper, thumbs):
+    """The cover, at the same bound and through the same encoder as a photo."""
+    r = thumb(client, paper)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/jpeg"
+    w, h = jpeg_size(r.content)
+    assert max(w, h) == A.THUMB_MAX_PX
+    # The page's own shape, which is what says the tile came from its geometry
+    # rather than from some default the renderer picked.
+    assert abs(w / h - 612 / 792) < 0.02
+    # A page carries no alpha, so the tile is a JPEG like a video frame's.
+    assert [c.suffix for c in thumbs.glob("*")] == [".jpg"]
+
+
+@pytest.mark.skipif(A.pdf_renderer() is None, reason="no PDF renderer")
+def test_an_unreadable_pdf_is_a_422(client, tmp_path):
+    p = tmp_path / "torn.pdf"
+    p.write_bytes(b"%PDF-1.4\nnot really\n")
+    r = thumb(client, p)
+    assert r.status_code == 422
+    assert r.json()["error"] == "thumb_failed"
+
+
+def test_a_pdf_is_unsupported_where_nothing_can_render_one(client, paper,
+                                                           monkeypatch):
+    """An install with no renderer answers the way it does for vector art:
+    a fact about what it can make, not a render that failed."""
+    monkeypatch.setattr(A, "pdf_renderer", lambda: None)
+    r = thumb(client, paper)
+    assert r.status_code == 415
+    assert r.json()["error"] == "unsupported_type"
 
 
 def test_ffmpeg_failure_is_a_422(client, tmp_path):
@@ -317,3 +393,14 @@ def test_the_capability_follows_ffmpeg(client, monkeypatch):
     assert A.server_capabilities()["thumbs"] is True
     monkeypatch.setattr(A, "ffmpeg_exe", lambda: None)
     assert A.server_capabilities()["thumbs"] is False
+
+
+def test_the_pdf_capability_is_its_own(client, monkeypatch):
+    """A machine can have ffmpeg and no way to rasterise a page, so the grid
+    is told about the two separately."""
+    assert "pdf_thumbs" in client.get("/api/version").json()["capabilities"]
+    monkeypatch.setattr(A, "pdf_renderer", lambda: ("pdftoppm", "/usr/bin/pdftoppm"))
+    assert A.server_capabilities()["pdf_thumbs"] is True
+    monkeypatch.setattr(A, "pdf_renderer", lambda: None)
+    assert A.server_capabilities()["pdf_thumbs"] is False
+    assert A.server_capabilities()["thumbs"] is True
