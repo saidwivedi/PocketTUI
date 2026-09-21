@@ -440,11 +440,11 @@ function restoreFileView(session) {
   // A record a reload left behind names the pane rather than carrying one:
   // nothing was ever stashed, so the pane opens the way opening it by hand
   // does — the changes of this session's repo, the explorer at its cwd, the
-  // browser at the one page that record does carry.
+  // browser on the tabs that record does carry.
   if (view.boot) {
     if (!isWideLayout()) return;
     if (view.boot === "diff") diffSetOpen(true);
-    else if (view.boot === "browser") openBrowser(view.bootUrl);
+    else if (view.boot === "browser") openBrowser(view.bootUrl, view.bootTabs, view.bootTab);
     else filesFollowSession();
     return;
   }

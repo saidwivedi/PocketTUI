@@ -244,6 +244,17 @@
       <path d="M13.5 4.5H19.5V10.5"/>
       <path d="M19 5l-8.5 8.5"/>
     </symbol>
+    <!-- The network glyph every router page and settings panel draws: one node
+         above, a trunk down to a bar, two nodes hanging off it. It opens a tab
+         in the browser pane, where a page is fetched from the network the
+         computer is on rather than from this device's. -->
+    <symbol id="i-lan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9.25" y="3" width="5.5" height="4.5" rx="1.2"/>
+      <rect x="3.5" y="16.5" width="5.5" height="4.5" rx="1.2"/>
+      <rect x="15" y="16.5" width="5.5" height="4.5" rx="1.2"/>
+      <path d="M12 7.5v4.5"/>
+      <path d="M6.25 16.5V12h11.5v4.5"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -683,21 +694,14 @@
              autocorrect="off" autocomplete="off" spellcheck="false"
              placeholder="http://localhost:3000" aria-label="Address">
     </div>
-    <!-- The page again in the laptop's own browser, still fetched through the
-         computer: a top-level tab is the one place a proxied page is the top
+    <!-- The page again in a window of the device's own, still fetched through
+         the computer: a top-level tab is the one place this page is the top
          window, which an app that owns its own frames needs. Hidden on a
          server without the mode, and on a computer that served this shell
          itself (syncBrowseCap). -->
     <button class="icon-btn" id="btn-browser-tab" hidden
-            aria-label="Open in a tab through the computer"
-            title="Open in a tab through the computer"><svg><use href="#i-external"/></svg></button>
-    <!-- An empty tab through the computer: it lands on the backend's own start
-         page, which is the one address bar a tab has that types into this
-         computer rather than into the laptop. Shown and hidden with the button
-         beside it — same token, same flavour, same refusals. -->
-    <button class="icon-btn" id="btn-browser-newtab" hidden
-            aria-label="New tab through the computer"
-            title="New tab through the computer"><svg><use href="#i-plus"/></svg></button>
+            aria-label="Open in its own window"
+            title="Open in its own window"><svg><use href="#i-external"/></svg></button>
     <!-- Keep this page, or stop keeping it: one press either way, since the
          bar below says which it was. Hidden on a server with no route to save
          to (syncBrowseCap). -->
@@ -735,16 +739,34 @@
        position:fixed — docked, the terminal beside it is live and must not be
        dimmed by a menu in here. -->
   <div id="browser-menu-scrim"></div>
+  <!-- The tabs, where a browser puts them: a row of chips above the page, the
+       lone one included — a window with one tab still shows it. The button
+       that opens another sits after the last chip, as it does in Chrome
+       (renderBrowserTabs keeps it there). -->
+  <div id="browser-tabs">
+    <!-- The chips scroll; the button after them does not. A strip of eight at
+         the docked width is wider than the pane, and a new-tab button that
+         scrolled off with the row would be the one control nobody could
+         reach. -->
+    <div id="browser-tab-row"></div>
+    <button class="icon-btn" id="btn-browser-newtab" aria-label="New tab"
+            title="New tab"><svg><use href="#i-lan"/></svg></button>
+  </div>
   <!-- The bookmarks bar, where a browser puts one: under the address row and
        above the page. Absent rather than empty while nothing is bookmarked,
        so a pane nobody has used this on looks exactly as it did. -->
   <div id="browser-bookmarks" hidden></div>
-  <div class="browser-wrap">
-    <!-- The sandbox list's order is fixed: the backend emits the same string
-         as the proxied page's Content-Security-Policy sandbox header. -->
-    <iframe id="browser-frame" title="Browser"
+  <div class="browser-wrap" id="browser-wrap">
+    <!-- One frame per tab, cut from here as the tab first loads something
+         (browserFrame, 42-browser.js) and kept in place while the tab is off
+         screen, so coming back to a tab is not a reload. A template rather
+         than markup per tab because the attributes below are the contract:
+         the sandbox list's order is fixed — the backend emits the same string
+         as the proxied page's Content-Security-Policy sandbox header — and a
+         frame built from anything else would be a frame with other powers. -->
+    <template id="browser-frame-tpl"><iframe class="browser-frame" title="Browser"
             sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads allow-popups-to-escape-sandbox"
-            allow="fullscreen" referrerpolicy="no-referrer"></iframe>
+            allow="fullscreen" referrerpolicy="no-referrer"></iframe></template>
   </div>
 </div>
 

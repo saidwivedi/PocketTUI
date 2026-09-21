@@ -20,47 +20,101 @@
 // its anchor clicks into location.replace and its pushState calls into
 // replaceState — neither costs a joint history entry — and reports each
 // landing as a postMessage, and this file keeps the list.
+//
+// The pane has tabs, and they are a browser's: a strip of chips above the page,
+// one frame per tab kept in the wrap while its tab is off screen, and the last
+// tab's cross closing the pane the way a window's does. So everything that was
+// once this file's own state — the stack, where in it the frame is, what it
+// last loaded — belongs to a tab (browserNewTab below), and browserTab() is the
+// one the chrome reads: the address field, the arrows, the zoom key and the
+// star are the active tab's. A landing is routed the other way round, to
+// whichever tab's frame posted it, so a tab that is not on screen still keeps
+// its stack and its chip's name up to date.
 
 let browserDocked = false;      // in the slot beside the terminal, not over it
 let browserOpen = false;        // either shape is up
 let browserToken = null;        // {token, prefix} once api/browse has answered
-let browserStack = [];          // the addresses visited, oldest first
-let browserIdx = -1;            // where in that list the frame currently is
-// True from the moment this pane asks the frame to load until the shim reports
-// the landing: that report is the load we asked for, not a page navigating
-// itself, so it corrects the entry the navigation already made instead of
-// adding one.
-let browserNavigating = false;
 // Which screen the full-screen shape covered, to put back when it closes.
 let browserOriginFrom = null;
-// The frame has been navigated. Until it has, its one free navigation is worth
-// spending on the first real page: an iframe's first src assignment replaces
-// its initial entry, and every one after that adds a joint history entry that
-// the shell's own back would spend on the frame instead of on the screen.
-let browserPrimed = false;
-// What the frame was last sent to, so reopening the pane on the page it is
-// already showing costs no reload.
-let browserLoadedUrl = "";
-// A fresh token has already been minted for the navigation in flight. A second
-// expiry before anything has loaded is a real refusal, not a stale token.
-let browserReminted = false;
-// The address of the navigation in flight, when this pane picked its scheme
-// rather than reading one. Only then is a refusal worth retrying the other way
-// round — and only until something lands, which is what clears it.
-let browserGuessed = "";
 let browserExpanded = cfg.browserExpanded;
-// The unsandboxed token the "open in a tab" button builds its address from,
-// minted beside the pane's when the pane opens: the click has to hand a window
-// an address in one step, and a mint inside it would be a round trip the popup
-// blocker counts against the gesture.
+// The unsandboxed token the "open in its own window" button builds its address
+// from, minted beside the pane's when the pane opens: the click has to hand a
+// window an address in one step, and a mint inside it would be a round trip the
+// popup blocker counts against the gesture.
 let browserTabToken = null;
-// The tabs this pane has opened. They are the pane's own windows, shown in the
-// laptop's browser because the page inside them cannot be framed, so they close
-// when the pane does.
-let browserTabs = [];
+// The windows this pane has opened elsewhere — the device's own browser, where
+// a page that cannot be framed is shown. Not the pane's tabs, which are below:
+// these close when the pane does.
+let browserWindows = [];
 // This computer serves the shell as well, so it will not mint an unsandboxed
 // token (see the mint's same-origin gate). Asked once, and the button goes.
 let browserTabBlocked = false;
+
+// As many as the strip holds and anybody keeps track of. Eight chips still
+// carry a readable name at the docked width; past that a tab is a sliver.
+const BROWSER_TAB_MAX = 8;
+
+// One tab. `frame` is made on its first navigation (browserFrame) and stays in
+// the wrap, hidden, while another tab is on screen — which is what makes going
+// back to a tab free rather than a reload of whatever it was running.
+function browserNewTab() {
+  return {
+    frame: null,
+    // Its chip in the strip, made with the tab's first drawing and kept: the
+    // strip is updated in place rather than redrawn (renderBrowserTabs), and
+    // this is the element that stays put under the keyboard.
+    chip: null,
+    stack: [],          // the addresses this tab visited, oldest first
+    idx: -1,            // where in that list its frame currently is
+    // What its frame was last sent to, so showing a tab it is already on costs
+    // no reload — and "" for a tab restored from a record, which is how a
+    // reload's other tabs stay unloaded until somebody asks for one.
+    loaded: "",
+    // What the page called itself, and which address said so: a tab that has
+    // moved on carries no name until its new page reports one.
+    title: "",
+    titleFor: "",
+    // True from the moment this pane asks the frame to load until the shim
+    // reports the landing: that report is the load we asked for, not a page
+    // navigating itself, so it corrects the entry the navigation already made
+    // instead of adding one.
+    navigating: false,
+    // The frame has been navigated. Until it has, its one free navigation is
+    // worth spending on the first real page: an iframe's first src assignment
+    // replaces its initial entry, and every one after that adds a joint history
+    // entry that the shell's own back would spend on the frame instead of on
+    // the screen.
+    primed: false,
+    // A fresh token has already been minted for the navigation in flight. A
+    // second expiry before anything has loaded is a real refusal, not a stale
+    // token.
+    reminted: false,
+    // The address of the navigation in flight, when this pane picked its scheme
+    // rather than reading one. Only then is a refusal worth retrying the other
+    // way round — and only until something lands, which is what clears it.
+    guessed: "",
+  };
+}
+
+// Left to right, as the strip draws them, and never empty: a pane with no tab
+// is a pane with no address field to type into, so closing the last one closes
+// the pane and leaves a fresh tab behind for the next opening.
+let browserTabs = [browserNewTab()];
+let browserActive = 0;
+
+function browserTab() { return browserTabs[browserActive]; }
+
+// The pane's own life, counted. A navigation goes away to the computer for a
+// token and comes back to whatever the pane is by then: the tab it was started
+// for may have been closed under it, and the pane itself may have been torn
+// down or moved to another computer — either of which leaves the record it was
+// holding out of browserTabs and every list rebuilt around it. A frame made for
+// such a record is an orphan in the wrap loading a page nobody is looking at,
+// so every await in the paths below is followed by this.
+let browserGen = 0;
+function browserAlive(tab, gen) {
+  return gen === browserGen && browserTabs.indexOf(tab) >= 0;
+}
 
 // The backend's origin and path prefix, read off apiURL() at each use rather
 // than captured once: a profile switch changes the computer, and `tailscale
@@ -93,12 +147,16 @@ const BROWSE_SCHEME_RETRY = { refused: 1, timeout: 1, tls: 1 };
 const BROWSE_MINT_ERRORS = {
   bad_url: "That is not an address to open",
   loop: "That address is PocketTUI itself",
-  browse_unavailable: "This computer's pockettui cannot proxy pages yet",
+  browse_unavailable: "Browsing isn't available on this computer yet",
 };
 
-function browserCurrentUrl() {
-  return browserIdx >= 0 ? (browserStack[browserIdx] || "") : "";
+// Where a tab is, and where the pane is: the pane is wherever its active tab
+// is, which is the rule the whole topbar follows.
+function browserUrlIn(tab) {
+  return tab && tab.idx >= 0 ? (tab.stack[tab.idx] || "") : "";
 }
+
+function browserCurrentUrl() { return browserUrlIn(browserTab()); }
 
 // Every address the pane keeps, shows or compares goes through here first:
 // typed into the field, tapped in the terminal, reported by the shim, read
@@ -209,16 +267,6 @@ function browserEnterUrl(proxied, rec) {
   return head + "/enter?to=" + encodeURIComponent(proxied.slice(head.length));
 }
 
-// Where an empty tab starts: the computer's own page, with a field that types
-// into the proxy and the bookmarks this computer keeps. A tab has no chrome of
-// ours — the browser's address bar belongs to the laptop, and an address typed
-// there would be fetched by the laptop — so this is the tab's home, and the
-// browser's own back button is the way back to it. It carries the same
-// Clear-Site-Data the /enter hop does, being the entry in its own right.
-function browserStartUrl(rec) {
-  return browserOrigin() + rec.prefix + "/b/" + rec.token + "/start";
-}
-
 // One token per shell load, minted on the first navigation and kept. The
 // backend hands the same record back for a second ask, so a reload that
 // re-mints lands on the token the persisted URLs were built with.
@@ -284,7 +332,7 @@ async function browserEnsureTabToken() {
       // pane is sandboxed on every install.
       browserTabBlocked = true;
       syncBrowseCap();
-      toast("Opening in a tab needs the app from pockettui.com, not from this computer");
+      toast("Opening this in its own window needs the app from pockettui.com");
     }
     return null;
   }
@@ -296,28 +344,36 @@ async function browserEnsureTabToken() {
 // stays an object after its window is gone and only .closed says so, so the
 // list is pruned wherever it is touched rather than swept.
 function browserTrackTab(w) {
-  browserTabs = browserTabs.filter((t) => t && !t.closed);
-  browserTabs.push(w);
+  browserWindows = browserWindows.filter((t) => t && !t.closed);
+  browserWindows.push(w);
 }
 
-// Both tab buttons' shape. The window is opened blank inside the click and
-// sent somewhere once the token is in hand: a popup blocker allows the window
-// a gesture opens, not one opened a round trip later. `dest` says where, given
-// the token, because only the token can spell it. The pre-mint on openBrowser
-// means there is usually nothing to wait for; where there is not — a token
-// that has just aged out — the window is already open and the blocker has
-// already let it through.
+// The shape of opening a page in a window of the device's own. The window is
+// opened blank inside the click and sent somewhere once the token is in hand:
+// a popup blocker allows the window a gesture opens, not one opened a round
+// trip later. `dest` says where, given the token, because only the token can
+// spell it. The pre-mint on openBrowser means there is usually nothing to wait
+// for; where there is not — a token that has just aged out — the window is
+// already open and the blocker has already let it through.
 function browserOpenTab(dest) {
+  const gen = browserGen;
   const w = window.open("", "_blank");
   if (!w) { toast("This browser blocked the tab"); return; }
   // No handle back on this window: the tab is not sandboxed, and opener is
   // what a page there would navigate the shell through.
   try { w.opener = null; } catch (e) {}
   browserEnsureTabToken().then((rec) => {
-    const target = rec ? dest(rec) : "";
+    // The mint is a round trip, and the pane it was asked for may have gone
+    // down inside it — taking its windows with it (browserCloseTabs). This one
+    // was opened blank and is still empty, so it goes the same way rather than
+    // being sent to a page on the computer that was left.
+    const target = rec && gen === browserGen ? dest(rec) : "";
     if (!target) {
       try { w.close(); } catch (e) {}
-      if (!browserTabBlocked) toast("Couldn't open that in a tab");
+      // Nothing to say about a pane that is no longer there.
+      if (!browserTabBlocked && gen === browserGen) {
+        toast("Couldn't open that in its own window");
+      }
       return;
     }
     w.location = target;
@@ -325,11 +381,11 @@ function browserOpenTab(dest) {
   });
 }
 
-// Every way out of the pane ends here. A tab is the pane's own window shown
-// elsewhere, so it goes when the pane goes — but not on a navigation inside
-// the pane, where the tab is still the page the user sent there.
+// Every way out of the pane ends here. Such a window is the pane's own page
+// shown elsewhere, so it goes when the pane goes — but not on a navigation
+// inside the pane, where it is still the page the user sent there.
 function browserCloseTabs() {
-  for (const w of browserTabs) {
+  for (const w of browserWindows) {
     try {
       if (!w || w.closed) continue;
       // Asked rather than closed outright. The tab was opened with its opener
@@ -341,7 +397,7 @@ function browserCloseTabs() {
       w.close();
     } catch (e) {}
   }
-  browserTabs = [];
+  browserWindows = [];
 }
 
 function browserSetField(url) {
@@ -349,31 +405,81 @@ function browserSetField(url) {
   if (f) f.value = url || "";
 }
 
-function syncBrowserNav() {
-  const back = $("btn-browser-back"), fwd = $("btn-browser-fwd");
-  if (back) back.disabled = browserIdx <= 0;
-  if (fwd) fwd.disabled = browserIdx < 0 || browserIdx >= browserStack.length - 1;
+// A tab's own frame, cut from the template the markup keeps so that every one
+// of them carries the same sandbox list — that list and the proxy's CSP header
+// have to agree word for word, and a frame built any other way would be a frame
+// with other powers. Made on first use rather than with the tab: a tab restored
+// from a record has an address and nothing loaded, and making its frame here is
+// what keeps that promise.
+function browserFrame(tab) {
+  if (tab.frame) return tab.frame;
+  // A record the strip no longer holds is a tab that has been closed, or one
+  // from before a teardown: whatever was still in flight for it gets no frame
+  // out of this, whoever asks and however late.
+  if (browserTabs.indexOf(tab) < 0) return null;
+  const tpl = $("browser-frame-tpl");
+  if (!tpl) return null;
+  tab.frame = tpl.content.firstElementChild.cloneNode(true);
+  tab.frame.hidden = tab !== browserTab();
+  $("browser-wrap").appendChild(tab.frame);
+  return tab.frame;
 }
 
-// A landing becomes the newest entry, and everything that was forward of it is
-// gone — the same thing a browser's own back-then-elsewhere does. Landing
-// again on the entry we are already on is a reload, not a new entry.
-function browserPush(url) {
-  if (!url || browserStack[browserIdx] === url) return;
-  browserStack = browserStack.slice(0, browserIdx + 1);
-  browserStack.push(url);
-  browserIdx = browserStack.length - 1;
+// Every frame this pane holds, gone — for a teardown, a profile switch, or the
+// last tab's close. The tabs keep their addresses; what goes is the page.
+function browserDropFrames() {
+  for (const tab of browserTabs) {
+    if (tab.frame) tab.frame.remove();
+    tab.frame = null;
+    tab.primed = false;
+    tab.loaded = "";
+    tab.navigating = false;
+  }
+}
+
+function syncBrowserNav() {
+  const tab = browserTab();
+  const back = $("btn-browser-back"), fwd = $("btn-browser-fwd");
+  if (back) back.disabled = tab.idx <= 0;
+  if (fwd) fwd.disabled = tab.idx < 0 || tab.idx >= tab.stack.length - 1;
+}
+
+// A landing becomes that tab's newest entry, and everything that was forward of
+// it is gone — the same thing a browser's own back-then-elsewhere does. Landing
+// again on the entry the tab is already on is a reload, not a new entry.
+function browserPush(tab, url) {
+  if (!url || tab.stack[tab.idx] === url) return;
+  tab.stack = tab.stack.slice(0, tab.idx + 1);
+  tab.stack.push(url);
+  tab.idx = tab.stack.length - 1;
 }
 
 // Where the docked pane was left, against the session it was left in — read
 // back at the next boot through the same record the other two panes use
 // (cfg.sidePane, 02-debug-log.js). One localStorage write per landing, which
-// is cheaper than any other way of not losing the page on a reload.
-function browserRemember(url) {
+// is cheaper than any other way of not losing the pages on a reload. Every
+// tab's address goes in, and `url` stays the active one's: an older shell
+// reading this record knows only that key, and the tab it puts back should be
+// the tab that was on screen.
+function browserRemember() {
   if (!browserDocked) return;
   const rec = cfg.sidePane;
   if (!rec || rec.owner !== "browser") return;
-  cfg.sidePane = { owner: "browser", session: rec.session, url: url || "" };
+  // A tab with nothing in it yet is not an address to come back to, so it is
+  // left out — and the index has to be the one the shortened list spells,
+  // which is what the walk below counts.
+  const tabs = [];
+  let at = 0;
+  for (let i = 0; i < browserTabs.length; i++) {
+    const u = browserUrlIn(browserTabs[i]);
+    if (!u) continue;
+    if (i <= browserActive) at = tabs.length;
+    tabs.push(u);
+  }
+  cfg.sidePane = {
+    owner: "browser", session: rec.session, url: browserCurrentUrl(),
+    tabs: tabs, tab: at,
+  };
 }
 
 // The URL a pane opened with nothing to show should go to: whatever this
@@ -385,33 +491,41 @@ function browserRememberedUrl() {
     ? browserNormalize(rec.url || "") : "";
 }
 
-// Send the frame somewhere. `push` is false for the moves that are not new
-// places: back, forward, reload, and putting a restored pane back on the page
-// it was already on.
-async function browserNavigate(raw, push = true) {
+// Send a tab's frame somewhere. `push` is false for the moves that are not new
+// places: back, forward, reload, and putting a restored tab back on the page it
+// was already on. Every part of it that is chrome rather than frame — the
+// address field, the arrows, the zoom key — is done only for the tab on screen;
+// a background tab that is still loading has no business moving them.
+async function browserNavigateIn(tab, raw, push = true) {
+  const gen = browserGen;
   const typed = browserHasScheme(String(raw || "").trim());
   const url = browserNormalize(raw);
   if (!url) return;
   // A scheme this pane picked is a guess this navigation may have to take
   // back, and only its failure says so. Held for this navigation alone: the
   // retry below spells its scheme out, and a landing clears it.
-  browserGuessed = typed ? "" : url;
+  tab.guessed = typed ? "" : url;
   // A new destination is a new navigation, so the one silent re-mint it is
   // allowed comes back. Back, forward and reload keep whatever is left of it.
-  if (push) browserReminted = false;
+  if (push) tab.reminted = false;
   if (!await browserEnsureToken(url)) return;
+  // The mint is a round trip, and this may be a tab the strip has closed or a
+  // pane that has been taken down since it was asked for. Nothing below this
+  // line is worth doing then, and the frame it would make is worse than
+  // nothing.
+  if (!browserAlive(tab, gen)) return;
   const target = browserProxied(url);
   if (!target) { toast("That is not an address to open"); return; }
-  const frame = $("browser-frame");
+  const frame = browserFrame(tab);
   if (!frame) return;
   // Before the load rather than after its landing: the frame's width is the
   // viewport the page lays itself out against, so setting it here is what
   // saves the zoomed page a reflow on its first paint.
-  browserApplyZoom(browserZoomFor(browserZoomHost(url)));
-  syncBrowserZoom(browserZoomHost(url));
+  browserApplyZoom(browserZoomFor(browserZoomHost(url)), frame);
+  if (tab === browserTab()) syncBrowserZoom(browserZoomHost(url));
   // The landing this load reports is this load, not a page moving itself.
-  browserNavigating = true;
-  if (browserPrimed) {
+  tab.navigating = true;
+  if (tab.primed) {
     // replace(), not assign(): a cross-origin frame's navigations still land
     // on the shell's joint history, and back would then walk the page stack
     // instead of leaving the screen. Allowed cross-origin, unlike reading the
@@ -425,13 +539,18 @@ async function browserNavigate(raw, push = true) {
     // — which is the whole reason the branch above exists, and why nothing
     // else in this file ever writes src.
     frame.src = target;
-    browserPrimed = true;
+    tab.primed = true;
   }
-  browserLoadedUrl = url;
-  if (push) browserPush(url);
-  browserSetField(url);
-  syncBrowserNav();
-  browserRemember(url);
+  tab.loaded = url;
+  if (push) browserPush(tab, url);
+  if (tab === browserTab()) { browserSetField(url); syncBrowserNav(); }
+  renderBrowserTabs();
+  browserRemember();
+}
+
+// The tab on screen, which is what every control in the topbar acts on.
+function browserNavigate(raw, push = true) {
+  return browserNavigateIn(browserTab(), raw, push);
 }
 
 // ---- zoom ------------------------------------------------------------------
@@ -466,8 +585,11 @@ function browserZoomFor(host) {
 // overlay at factor times where it meant to. The institute dropdown opened on
 // top of the control it hung from, and the mouseup that ended the click
 // landed in the list and dismissed it again.
-function browserApplyZoom(factor) {
-  const frame = $("browser-frame");
+//
+// The frame is named rather than looked up: zoom belongs to the host, a
+// landing in a tab that is not on screen is still that host's page, and the
+// frame it has to be applied to is that tab's.
+function browserApplyZoom(factor, frame = browserTab().frame) {
   if (!frame) return;
   const pct = (100 / factor) + "%";
   frame.style.width = pct;
@@ -649,6 +771,224 @@ function syncBrowserStar() {
   btn.classList.toggle("on", on);
 }
 
+// ---- the tabs --------------------------------------------------------------
+
+// What a chip is called: what the page called itself, failing that the host it
+// came from, failing that a tab that has been opened and not yet sent anywhere.
+function browserTabName(tab) {
+  const url = browserUrlIn(tab);
+  // The name only while it is still this page's name. A navigation that never
+  // landed reported none — the proxy's failure page is not the page — and the
+  // chip would otherwise sit at an address it could not reach under the name of
+  // the page its tab has left.
+  if (tab.title && tab.titleFor === url) return tab.title;
+  if (!url) return "New tab";
+  try { return new URL(url).host; } catch (e) { return url; }
+}
+
+// The strip. Each tab keeps its own chip and this updates it in place — the
+// words, the title, which one is on — rather than drawing the row again:
+// a chip is a button somebody may have tabbed to, and an element replaced under
+// the keyboard takes the focus with it, after which Escape is the document's
+// and not the pane's and the pane stops closing. Elements are made and dropped
+// only where tabs are. The "+" after them is markup and is not touched, being
+// outside the row they live in.
+function renderBrowserTabs() {
+  const bar = $("browser-tab-row");
+  const plus = $("btn-browser-newtab");
+  if (!bar || !plus) return;
+  browserTabs.forEach((tab, i) => {
+    const name = browserTabName(tab);
+    if (!tab.chip) {
+      // The tab rather than its index: where a tab sits changes every time one
+      // before it is closed, and a handler that captured the old number would
+      // act on its neighbour.
+      const open = el("button", {
+        type: "button", class: "tab-name",
+        onclick: () => browserShowTab(browserTabs.indexOf(tab)),
+      });
+      const shut = el("button", {
+        type: "button", class: "tab-del", "aria-label": "Close this tab",
+        onclick: (e) => { e.stopPropagation(); browserCloseTab(browserTabs.indexOf(tab)); },
+      }, "×");
+      tab.chip = el("div", { class: "tab-chip" }, open, shut);
+    }
+    const open = tab.chip.firstElementChild;
+    if (open.textContent !== name) {
+      open.textContent = name;
+      open.setAttribute("title", name);
+    }
+    tab.chip.classList.toggle("on", i === browserActive);
+    if (bar.children[i] !== tab.chip) bar.insertBefore(tab.chip, bar.children[i] || null);
+    // A strip wider than the pane can leave the tab being switched to off the
+    // end of it. Scrolled to only when it is: an active chip already in view
+    // stays where the reader left the row.
+    if (i === browserActive) {
+      const chip = tab.chip;
+      requestAnimationFrame(() => {
+        const r = chip.getBoundingClientRect(), b = bar.getBoundingClientRect();
+        if (r.left < b.left || r.right > b.right) {
+          chip.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      });
+    }
+  });
+  // Whatever is left at the end of the row belongs to a tab that is gone — a
+  // close, a seeded strip, a switch of computer.
+  while (bar.children.length > browserTabs.length) bar.lastElementChild.remove();
+  // Dimmed rather than disabled at the cap: the press is the only place the
+  // reason can be said, and a disabled button never gets one.
+  plus.classList.toggle("off", browserTabs.length >= BROWSER_TAB_MAX);
+}
+
+// The one-shot recovery a new tab arms on the address field (browserAddTab
+// below), as a way to take it back off. Every blur the user asked for looks
+// exactly like the frame stealing the keyboard, so the places that mean the
+// field to lose the focus — Enter and Escape in it, and any move away from the
+// tab it was armed for — say so here rather than being read as the frame.
+let browserGrabOff = null;
+function browserCancelGrab() {
+  if (browserGrabOff) { browserGrabOff(); browserGrabOff = null; }
+}
+
+// Bring a tab to the front. Everything the topbar shows is the active tab's, so
+// all of it is re-read here; the page itself is already in its own frame, and
+// showing it is one attribute.
+function browserShowTab(i) {
+  const tab = browserTabs[i];
+  if (!tab) return;
+  browserCancelGrab();
+  browserActive = i;
+  for (const t of browserTabs) if (t.frame) t.frame.hidden = t !== tab;
+  showBrowserZoomMenu(false);
+  const url = browserUrlIn(tab);
+  browserSetField(url);
+  syncBrowserNav();
+  renderBrowserTabs();
+  // Which chip carries the page on screen has just changed, and the star with
+  // it: both are about the page this tab is on.
+  renderBrowserMarks();
+  browserRemember();
+  // A tab a reload or a session switch put back carries its address and no
+  // frame. This is where it loads — the first time anybody has asked to see
+  // it, rather than at the boot that restored it: eight dev servers reloading
+  // themselves because a shell was refreshed is not what reopening a pane
+  // should cost.
+  if (url && url !== tab.loaded) browserNavigateIn(tab, url, false);
+  else {
+    browserApplyZoom(browserZoomFor(browserZoomHost(url)), tab.frame);
+    syncBrowserZoom(browserZoomHost(url));
+  }
+}
+
+// The "+". A browser's new tab opens on its home page with the address field
+// waiting, and so does this one.
+function browserAddTab() {
+  if (browserTabs.length >= BROWSER_TAB_MAX) {
+    toast("Eight tabs is as many as this pane holds");
+    return;
+  }
+  browserCancelGrab();
+  const gen = browserGen;
+  const tab = browserNewTab();
+  browserTabs.push(tab);
+  browserActive = browserTabs.length - 1;
+  for (const t of browserTabs) if (t.frame) t.frame.hidden = true;
+  showBrowserZoomMenu(false);
+  browserSetField("");
+  syncBrowserNav();
+  renderBrowserTabs();
+  renderBrowserMarks();
+  const f = $("browser-url");
+  // Focused inside the click rather than after the navigation: on a phone the
+  // keyboard comes up for a focus a gesture asked for and for no other, and the
+  // address only lands a turn later. Selected once it has, so the first
+  // keystroke replaces it the way typing into a new tab does.
+  if (f) f.focus();
+  const opened = Date.now();
+  browserNavigateIn(tab, BROWSER_HOME).then(() => {
+    if (!f || document.activeElement !== f) return;   // the user has moved on
+    // The tab this was opened for, not whichever is in front now: a load takes
+    // a moment, and in it the tab can be closed, switched away from or taken
+    // down with the pane.
+    if (!browserAlive(tab, gen) || tab !== browserTab()) return;
+    f.select();
+    // A frame takes the focus a moment after its document lands, and in a tab
+    // opened to be typed into that takes the keyboard away from the field it
+    // was opened for. Taken back once, and only where the focus went to that
+    // frame — or to nothing at all, which is how a browser reports a move into
+    // a cross-origin document — inside the seconds the first page was still
+    // coming up. A tap into the page after that is somebody choosing to read
+    // it, and it keeps what it was given.
+    const regrab = (e) => {
+      browserGrabOff = null;                          // spent, once either way
+      if (e.relatedTarget && e.relatedTarget !== tab.frame) return;
+      if (Date.now() - opened > 5000) return;
+      if (!browserAlive(tab, gen) || tab !== browserTab()) return;
+      f.focus();
+      f.select();
+    };
+    f.addEventListener("focusout", regrab, { once: true });
+    browserGrabOff = () => f.removeEventListener("focusout", regrab);
+  });
+}
+
+// A chip's cross. The last one is the window's last tab: the pane goes with it,
+// and so does the page — which is what makes it different from closing the
+// pane, where every tab is still there when it is opened again.
+function browserCloseTab(i) {
+  const tab = browserTabs[i];
+  if (!tab) return;
+  browserCancelGrab();
+  if (browserTabs.length === 1) {
+    browserDropFrames();
+    browserTabs = [browserNewTab()];
+    browserActive = 0;
+    browserSetField("");
+    syncBrowserNav();
+    renderBrowserTabs();
+    if (browserDocked) closeDockedBrowser();
+    else history.back();
+    return;
+  }
+  const wasActive = i === browserActive;
+  if (tab.frame) tab.frame.remove();
+  browserTabs.splice(i, 1);
+  if (browserActive > i) browserActive--;
+  // The tab that slid into the closed one's place, or the last one if it was
+  // the end of the row — a browser's own choice.
+  if (wasActive) browserShowTab(Math.min(i, browserTabs.length - 1));
+  else { renderBrowserTabs(); browserRemember(); }
+}
+
+// The tabs a record kept, as tabs again: addresses and nothing else, so only
+// the one that comes up loads anything (browserShowTab does the rest, when and
+// if a chip is tapped).
+function browserSeedTabs(urls, active) {
+  const list = [];
+  const want = Math.max(0, active | 0);
+  let at = 0;
+  const raw = urls.slice(0, BROWSER_TAB_MAX);
+  for (let i = 0; i < raw.length; i++) {
+    const url = browserNormalize(raw[i]);
+    if (!url) continue;
+    // The index moves with the list, the way browserRemember's walk counts it
+    // out: an address dropped here is a tab the strip never gets, and an index
+    // counted against the record's own list would name the tab beside the one
+    // that was on screen — which the pane would then send to the address it
+    // kept beside them, showing the same page in two tabs.
+    if (i <= want) at = list.length;
+    const tab = browserNewTab();
+    tab.stack = [url];
+    tab.idx = 0;
+    list.push(tab);
+  }
+  if (!list.length) return;
+  browserDropFrames();
+  browserTabs = list;
+  browserActive = Math.min(at, list.length - 1);
+}
+
 // ---- the two shapes --------------------------------------------------------
 
 // Expanded is the pane's own state, but the class lives on #screen-term, for
@@ -673,7 +1013,7 @@ function openDockedBrowser() {
   $("screen-browser").classList.add("active");
   syncBrowserExpand();
   sideClaim("browser");
-  browserRemember(browserCurrentUrl());
+  browserRemember();
 }
 
 // The frame keeps its page: the pane is a tap away again, and reloading a dev
@@ -729,82 +1069,100 @@ const BROWSER_HOME = "https://www.google.com/";
 
 // Every way in lands here — the globe key, the header button, a tapped private
 // URL in the terminal, a restored session — so the two shapes are one entry
-// point, the way openExplorer is for the folder.
-function openBrowser(url) {
+// point, the way openExplorer is for the folder. `tabs` and `at` are the strip
+// a reload is putting back (restoreFileView, 09-image-viewer.js); every other
+// caller opens the pane on whatever it was left holding.
+function openBrowser(url, tabs, at) {
   if (needsSetup()) { openSettings(true); return; }
   if (demoMode) { toast("No browser in the demo"); return; }
+  if (Array.isArray(tabs) && tabs.length) browserSeedTabs(tabs, at);
   if (isWideLayout() && $("screen-term").classList.contains("active")) openDockedBrowser();
   else openFullBrowser();
   browserLoadMarks();
   // Ahead of any press, so the button's own click has nothing to wait for.
   browserEnsureTabToken();
+  renderBrowserTabs();
   const target = browserNormalize(url);
   if (target) { browserNavigate(target); return; }
-  // Opened with nothing to go to: the page this pane was last on, whether it
-  // is still in the frame (a close keeps it) or only in this session's record
-  // (a reload does not).
+  // Opened with nothing to go to: the page the active tab was last on, whether
+  // it is still in its frame (a close keeps it) or only in this session's
+  // record (a reload does not).
   // Failing both, a search page: a browser that opens on a blank frame reads
   // as broken, and the address field is one tap away either way.
+  const tab = browserTab();
   const last = browserCurrentUrl() || browserRememberedUrl() || BROWSER_HOME;
-  if (last !== browserLoadedUrl) browserNavigate(last, browserIdx < 0);
+  if (last !== tab.loaded) browserNavigate(last, tab.idx < 0);
   else { browserSetField(last); syncBrowserNav(); }
 }
 
 // ---- what the proxied page says back ---------------------------------------
 
 window.addEventListener("message", (e) => {
-  const frame = $("browser-frame");
-  // The source is the identity check: this is the frame this pane owns, not
-  // some other window. The origin is only a second gate, and the origin to
-  // expect is "null" — the frame is sandboxed without allow-same-origin (the
-  // iframe attribute, and the sandbox CSP the proxy puts on every page it
-  // serves), so a proxied page sits on an opaque origin and posts from it.
-  // The backend's own origin is allowed beside it for a page served without
-  // that sandbox.
-  if (!frame || e.source !== frame.contentWindow) return;
+  // Which tab said it. The source is the identity check: this is a frame this
+  // pane owns, not some other window, and it names the tab the report belongs
+  // to rather than assuming the one on screen — a tab loading in the
+  // background keeps its own stack and its own chip's name. The origin is only
+  // a second gate, and the origin to expect is "null" — the frame is sandboxed
+  // without allow-same-origin (the iframe attribute, and the sandbox CSP the
+  // proxy puts on every page it serves), so a proxied page sits on an opaque
+  // origin and posts from it. The backend's own origin is allowed beside it
+  // for a page served without that sandbox.
+  const tab = browserTabs.find((t) => t.frame && e.source === t.frame.contentWindow);
+  if (!tab) return;
   if (e.origin !== "null" && e.origin !== browserOrigin()) return;
   const d = e.data;
   if (!d || typeof d !== "object") return;
+  const live = tab === browserTab();
 
   if (d.type === "pockettui-nav") {
     const url = browserNormalize(typeof d.url === "string" ? d.url : "");
     if (!url) return;
     // Not while it is being typed into: the user is mid-address and the page
     // finishing its load must not take the field away from them.
-    if (document.activeElement !== $("browser-url")) browserSetField(url);
-    if (browserNavigating) {
+    if (live && document.activeElement !== $("browser-url")) browserSetField(url);
+    if (tab.navigating) {
       // The load this pane asked for, so this is the address it landed on
       // rather than somewhere new: it corrects the entry the navigation made,
       // which is how a redirect ends up recorded as where it went.
-      browserNavigating = false;
-      if (browserIdx < 0) browserPush(url);
-      else browserStack[browserIdx] = url;
+      tab.navigating = false;
+      if (tab.idx < 0) browserPush(tab, url);
+      else tab.stack[tab.idx] = url;
     } else {
       // The page moved itself. A shim reports a landing more than once (the
       // document is ready, then the load finishes), and the ones after the
       // first name the entry we are already on, which browserPush lets be.
-      browserPush(url);
+      browserPush(tab, url);
     }
-    browserLoadedUrl = url;
+    tab.loaded = url;
     // Zoom belongs to the host and the frame keeps whatever scale it was
     // given, so a landing corrects it — including back to 1 for a host that
     // was never zoomed. A load reports more than once and each report sets
     // the same factor, which is a no-op after the first.
-    browserApplyZoom(browserZoomFor(browserZoomHost(url)));
-    syncBrowserZoom(browserZoomHost(url));
-    // What the page calls itself, for the chip a bookmark of it would carry:
-    // the document is cross-origin, so this report is the only time it says.
-    if (typeof d.title === "string" && d.title) browserMarkTitles[url] = d.title;
-    // The page moved under the panel, and what it was showing was about the
-    // page that was there. The bar redraws for the same reason: which chip is
-    // the one on screen has just changed.
-    showBrowserZoomMenu(false);
-    renderBrowserMarks();
+    browserApplyZoom(browserZoomFor(browserZoomHost(url)), tab.frame);
+    if (live) syncBrowserZoom(browserZoomHost(url));
+    // What the page calls itself, for this tab's chip and for the chip a
+    // bookmark of it would carry: the document is cross-origin, so this report
+    // is the only time it says. A tab that has moved to another page drops the
+    // old name first, so a chip never carries the title of a page its tab has
+    // left.
+    if (url !== tab.titleFor) { tab.title = ""; tab.titleFor = url; }
+    if (typeof d.title === "string" && d.title) {
+      browserMarkTitles[url] = d.title;
+      tab.title = d.title;
+    }
+    renderBrowserTabs();
+    if (live) {
+      // The page moved under the panel, and what it was showing was about the
+      // page that was there. The bar redraws for the same reason: which chip is
+      // the one on screen has just changed.
+      showBrowserZoomMenu(false);
+      renderBrowserMarks();
+      syncBrowserNav();
+    }
     // A page that loaded is a token that works and a scheme that was right.
-    browserReminted = false;
-    browserGuessed = "";
-    syncBrowserNav();
-    browserRemember(url);
+    tab.reminted = false;
+    tab.guessed = "";
+    browserRemember();
     return;
   }
 
@@ -812,52 +1170,58 @@ window.addEventListener("message", (e) => {
   // letting it walk the shell's joint history and close the pane.
   if (d.type === "pockettui-history") {
     const delta = typeof d.delta === "number" ? d.delta : 0;
-    if (Number.isFinite(delta) && delta) browserStep(Math.trunc(delta));
+    if (Number.isFinite(delta) && delta) browserStepIn(tab, Math.trunc(delta));
     return;
   }
 
   if (d.type === "pockettui-browse-error") {
     const code = typeof d.code === "string" ? d.code : "";
-    // Where this pane thinks it is, never the address the message carries:
+    // Where this tab thinks it is, never the address the message carries:
     // that one is the error page's own location, which is a proxied address,
     // and retrying it asks the backend to proxy itself — the layer that made
     // the founder's remembered URL twenty deep.
-    const here = browserCurrentUrl();
+    const here = browserUrlIn(tab);
     // The token has a sliding expiry and a restart mints a new one, so a pane
     // left open finds its own gone. One silent re-mint and one retry per
     // navigation; a second expiry with nothing landed in between is news.
-    if (code === "expired" && here && !browserReminted) {
-      browserReminted = true;
+    if (code === "expired" && here && !tab.reminted) {
+      tab.reminted = true;
       browserToken = null;
-      browserNavigate(here, false);
+      browserNavigateIn(tab, here, false);
       return;
     }
     // A scheme this pane guessed, on a host that does not answer it: the other
     // one, once, in place of this entry rather than after it. The address bar
     // never showed a scheme, so neither should the stack.
-    if (BROWSE_SCHEME_RETRY[code] && browserGuessed && browserGuessed === here) {
+    if (BROWSE_SCHEME_RETRY[code] && tab.guessed && tab.guessed === here) {
       const other = browserFlipScheme(here);
       if (other) {
-        browserGuessed = "";
-        if (browserIdx >= 0) browserStack[browserIdx] = other;
-        browserNavigate(other, false);
+        tab.guessed = "";
+        if (tab.idx >= 0) tab.stack[tab.idx] = other;
+        browserNavigateIn(tab, other, false);
         return;
       }
     }
-    toast(BROWSE_ERRORS[code] || "That page could not be loaded");
+    // Only for the tab being read: a toast names no tab, and one raised by a
+    // page loading out of sight would be about something the user is not
+    // looking at.
+    if (live) toast(BROWSE_ERRORS[code] || "That page could not be loaded");
   }
 });
 
 // ---- the topbar ------------------------------------------------------------
 
-// One step along the pane's own list, for the two buttons and for a page that
-// called history.back() inside the frame. A step off either end is no step.
-function browserStep(delta) {
-  const i = browserIdx + delta;
-  if (browserIdx < 0 || i === browserIdx || i < 0 || i >= browserStack.length) return;
-  browserIdx = i;
-  browserNavigate(browserStack[browserIdx], false);
+// One step along a tab's own list, for the two buttons and for a page that
+// called history.back() inside the frame. A step off either end is no step, and
+// a page stepping in a background tab moves that tab and nothing else.
+function browserStepIn(tab, delta) {
+  const i = tab.idx + delta;
+  if (tab.idx < 0 || i === tab.idx || i < 0 || i >= tab.stack.length) return;
+  tab.idx = i;
+  browserNavigateIn(tab, tab.stack[i], false);
 }
+
+function browserStep(delta) { browserStepIn(browserTab(), delta); }
 
 $("btn-browser-back").addEventListener("click", () => browserStep(-1));
 $("btn-browser-fwd").addEventListener("click", () => browserStep(1));
@@ -875,22 +1239,19 @@ $("browser-zoom-plus").addEventListener("click", () => browserStepZoom(1));
 $("browser-zoom-pct").addEventListener("click", () => browserSetZoom(1));
 $("browser-menu-scrim").addEventListener("click", () => showBrowserZoomMenu(false));
 $("btn-browser-star").addEventListener("click", () => browserToggleMark());
-// The page as a top-level tab in this laptop's own browser, still fetched
+// The page on screen, again as a window of the device's own and still fetched
 // through the computer: the backend serves it under the unsandboxed token, so
-// the tab's documents share one real origin and an app written to be the top
-// window works — top is the page itself and its frames are its own to script,
-// neither of which is true in the pane. The pane's own frame keeps its sandbox.
+// that window's documents share one real origin and an app written to be the
+// top window works — top is the page itself and its frames are its own to
+// script, neither of which is true in the pane. The pane's own frames keep
+// their sandbox.
 $("btn-browser-tab").addEventListener("click", () => {
   const url = browserCurrentUrl();
   if (!url) return;
   browserOpenTab((rec) => browserEnterUrl(browserProxied(url, rec), rec));
 });
-// The same tab with nothing in it yet, which is the computer's start page: an
-// address typed there is fetched by the computer, where one typed into the
-// browser's own bar would be fetched by the laptop and reach none of this.
-$("btn-browser-newtab").addEventListener("click", () => {
-  browserOpenTab(browserStartUrl);
-});
+// Another tab in the pane, at the end of the strip where a browser keeps it.
+$("btn-browser-newtab").addEventListener("click", () => browserAddTab());
 $("btn-browser-expand").addEventListener("click", () => {
   browserExpanded = !browserExpanded;
   cfg.browserExpanded = browserExpanded;
@@ -906,7 +1267,11 @@ $("browser-url").addEventListener("keydown", (e) => {
     const v = $("browser-url").value.trim();
     if (v) browserNavigate(v);
     // Blurred either way: on a phone the address bar is what the keyboard is
-    // up for, and the page underneath is what the tap was about.
+    // up for, and the page underneath is what the tap was about. A new tab's
+    // recovery goes with it — this blur is the user's own, and taking the field
+    // back from the page they just asked for would be the opposite of the help
+    // it was armed to give.
+    browserCancelGrab();
     $("browser-url").blur();
     return;
   }
@@ -915,6 +1280,7 @@ $("browser-url").addEventListener("keydown", (e) => {
     // Not the pane's Escape — this one only puts the field back.
     e.stopPropagation();
     browserSetField(browserCurrentUrl());
+    browserCancelGrab();
     $("browser-url").blur();
   }
 });
@@ -960,19 +1326,32 @@ attachEdgeSwipe($("screen-browser"), () => history.back());
 // The pane goes down with the session it belongs to (fileViews,
 // 09-image-viewer.js). No history is touched here: the caller is replacing
 // every screen at once and spends the entries itself.
+// The addresses, not the pages: the frames go with the pane (browserTeardown
+// below), so the session that comes back gets its tabs, its stacks and its
+// names, and the tab it is left on loads. Keeping the frames alive instead
+// would keep every session's pages in the document at once, for a switch that
+// costs one page load.
 function browserStash() {
   return {
-    docked: browserDocked, url: browserCurrentUrl(),
-    stack: browserStack.slice(), idx: browserIdx,
+    docked: browserDocked, active: browserActive,
+    tabs: browserTabs.map((t) => ({
+      stack: t.stack.slice(), idx: t.idx, title: t.title, titleFor: t.titleFor,
+    })),
   };
 }
 
 function browserTeardown() {
   const wasDocked = browserDocked;
+  // Anything still in flight for the tabs being put away belongs to the pane
+  // that is going, and must not come back and build a frame in the one that
+  // takes its place.
+  browserGen++;
+  browserCancelGrab();
   browserDocked = false;
   browserOpen = false;
   browserOriginFrom = null;
   browserCloseTabs();
+  browserDropFrames();
   showBrowserZoomMenu(false);
   $("screen-browser").classList.remove("docked");
   $("screen-browser").classList.remove("active");
@@ -983,16 +1362,28 @@ function browserTeardown() {
 // happen under. The full-screen pane covers the list the switch is made from,
 // so a session is never left with one up.
 function browserRestore(s) {
+  const recs = Array.isArray(s.tabs) ? s.tabs : [];
+  browserDropFrames();
   // Through the normaliser rather than as they were kept: a stash written
   // before a restart can hold a proxied address, and restoring one as a page
   // address is what the pane would then navigate to.
-  browserStack = (s.stack || []).map((u) => browserNormalize(u));
-  browserIdx = typeof s.idx === "number" ? s.idx : browserStack.length - 1;
+  browserTabs = recs.length ? recs.map((r) => {
+    const tab = browserNewTab();
+    tab.stack = (r.stack || []).map((u) => browserNormalize(u));
+    tab.idx = typeof r.idx === "number" ? r.idx : tab.stack.length - 1;
+    tab.title = typeof r.title === "string" ? r.title : "";
+    tab.titleFor = typeof r.titleFor === "string" ? r.titleFor : "";
+    return tab;
+  }) : [browserNewTab()];
+  browserActive = Math.min(Math.max(0, s.active | 0), browserTabs.length - 1);
+  renderBrowserTabs();
   if (!s.docked) { syncBrowserNav(); return; }
   openDockedBrowser();
+  // The tab that was on screen, and it alone: the rest load when a chip asks
+  // for one, for browserShowTab's reason.
   const u = browserCurrentUrl();
-  if (u && u !== browserLoadedUrl) browserNavigate(u, false);
-  else { browserSetField(u); syncBrowserNav(); }
+  if (u) browserNavigate(u, false);
+  else { browserSetField(""); syncBrowserNav(); }
 }
 
 // Everything the pane holds about the computer being left, for a switch to
@@ -1001,31 +1392,32 @@ function browserRestore(s) {
 function browserResetForProfile() {
   if (browserDocked) closeDockedBrowser();
   else browserTeardown();
+  // Again on its own account: the docked path above goes through
+  // closeDockedBrowser, which is not a teardown, and a mint in flight for the
+  // machine being left must not land in the pane the next one gets.
+  browserGen++;
+  browserCancelGrab();
   browserToken = null;
   // The next computer answers for itself, both on the flavour and on whether
   // it is the one that served this shell.
   browserTabToken = null;
   browserTabBlocked = false;
-  browserStack = [];
-  browserIdx = -1;
-  browserLoadedUrl = "";
-  browserReminted = false;
-  browserGuessed = "";
-  browserApplyZoom(1);
+  // Every tab with it, frames and all: they are pages on the machine being
+  // left. A fresh one takes their place, the way a closed pane's does.
+  browserDropFrames();
+  browserTabs = [browserNewTab()];
+  browserActive = 0;
+  renderBrowserTabs();
   // Another computer keeps its own list, and the one on screen is this one's.
   browserMarks = [];
   browserMarksAsked = false;
   browserMarkTitles = {};
   renderBrowserMarks();
   showBrowserZoomMenu(false);
-  // Blanked through the frame's own location, not through src: the pane may
-  // well be reopened on the new computer, and an src assignment would put an
-  // entry on the shell's history that back would spend on the frame.
-  const frame = $("browser-frame");
-  if (frame && browserPrimed) {
-    try { frame.contentWindow.location.replace("about:blank"); }
-    catch (e) { frame.removeAttribute("src"); browserPrimed = false; }
-  }
+  // Nothing is blanked through a frame's location any more: browserDropFrames
+  // takes the elements out of the document, which discards their browsing
+  // contexts and the joint history entries with them. Assigning src is still
+  // the thing never done — that would spend an entry the shell's back needs.
   browserSetField("");
   syncBrowserNav();
 }
@@ -1049,11 +1441,10 @@ function syncBrowseCap() {
   // Strictly checked too, and with the computer's own refusal on top of it: a
   // server too old for the mode answers with the pane's sandboxed token, and a
   // tab opened on that cannot do the one thing it was opened for.
-  const tab = !hasCapStrict("browse_tab") || browserTabBlocked;
-  $("btn-browser-tab").hidden = tab;
-  // The empty tab is the same flavour of token on the same route, so it stands
-  // or falls with the button beside it.
-  $("btn-browser-newtab").hidden = tab;
+  // The pane's own new tab is not gated: it opens a frame in here, which every
+  // computer that can proxy a page at all can serve.
+  $("btn-browser-tab").hidden = !hasCapStrict("browse_tab") || browserTabBlocked;
 }
 
+renderBrowserTabs();
 syncBrowserNav();
