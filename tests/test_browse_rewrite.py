@@ -31,6 +31,10 @@ TOK = "TESTTOKEN"
 ORIGIN = "https://pockettui.com"
 CTX = A.BrowseCtx(PREFIX, TOK, "h", "127.0.0.1:3000", ORIGIN)
 CTX_S = A.BrowseCtx(PREFIX, TOK, "s", "box.example.net:443", ORIGIN)
+# The unsandboxed flavour, which a tab put on the computer's own network is
+# served under. Everything the pane's own flavour does is byte-for-byte what it
+# was; only this one grows a script wrapper.
+CTX_TAB = A.BrowseCtx(PREFIX, TOK, "h", "127.0.0.1:3000", ORIGIN, sandbox=False)
 BASE = f"{PREFIX}/b/{TOK}"
 SHIM = A.browse_shim_tag(CTX, ORIGIN)
 
@@ -310,6 +314,96 @@ def test_rewrite_html_script_text_is_untouched():
         f'<html><head>{SHIM}<script>var u="/api/x";</script></head><body></body></html>')
 
 
+SHIM_TAB = A.browse_shim_tag(CTX_TAB, ORIGIN)
+
+
+def rewrite_tab(src):
+    """The document as the tab flavour serves it, minus the shim itself.
+
+    The shim carries the same wrapper as a string, so an assertion about what
+    the page got would otherwise match the shim's own copy of it.
+    """
+    body, ctype = A.browse_rewrite_html(src, CTX_TAB, "text/html")
+    assert ctype == "text/html; charset=utf-8"
+    out = body.decode("utf-8")
+    assert SHIM_TAB in out
+    return out.replace(SHIM_TAB, "")
+
+
+def test_inline_script_reads_the_pages_own_top_in_the_tab_flavour():
+    # A page on the computer's own network is a document in its own right, but
+    # it is still drawn in the pane's frame: `top` is the shell and reading it
+    # throws. `with` points the bare word at what the shim worked out the page's
+    # own top would be, and the member spelling is rewritten because `with`
+    # cannot reach it.
+    out = rewrite_tab(b"<html><head><script>if(top===self){go()}</script>"
+                      b"</head><body></body></html>")
+    assert "with(window.__pt||{}){if(top===self){go()}\n}" in out
+
+
+def test_inline_script_is_untouched_in_the_panes_own_flavour():
+    # The pane's pages are exactly what they were. This is the whole of the
+    # blast radius: one flavour changed, the other not at all.
+    src = b"<html><head><script>if(top===self){go()}</script></head><body></body></html>"
+    assert rewrite(src) == (
+        f"<html><head>{SHIM}<script>if(top===self){{go()}}</script>"
+        "</head><body></body></html>")
+
+
+def test_a_script_that_never_mentions_either_word_is_left_alone():
+    # `with` scopes a top-level let/const/class to the block, so a script with
+    # no stake in this is not wrapped at all — which is most of them.
+    out = rewrite_tab(b"<html><head><script>const x=1;</script></head>"
+                      b"<body></body></html>")
+    assert "<script>const x=1;</script>" in out
+    assert "__pt" not in out
+
+
+def test_a_module_and_a_json_island_are_left_alone():
+    # A module has its own scope rules and `with` is a SyntaxError in one; a
+    # JSON island is not code at all.
+    for attr in ('type="module"', 'type="application/json"',
+                 'type="text/x-template"'):
+        out = rewrite_tab(f"<html><head><script {attr}>"
+                          "{\"top\": 1}</script></head><body></body></html>"
+                          .encode("utf-8"))
+        assert "with(window.__pt" not in out, attr
+
+
+def test_a_strict_script_is_left_alone():
+    # `with` is a SyntaxError in strict code, so such a script is handed on.
+    out = rewrite_tab(b'<html><head><script>"use strict";var a=top;</script>'
+                      b"</head><body></body></html>")
+    assert "with(window.__pt" not in out
+    assert '<script>"use strict";var a=top;</script>' in out
+    # Even behind the comments a build tool leaves in front of the directive.
+    assert A.browse_wrap_js("// c\n/* d */\n'use strict'\nvar a=top;") == (
+        "// c\n/* d */\n'use strict'\nvar a=top;")
+
+
+def test_only_the_two_members_of_a_named_global_are_rewritten():
+    # window.top / self.parent / globalThis.top, and nothing else: a .top on
+    # somebody else's object is that object's own property.
+    got = A.browse_wrap_js("a=window.top;b=self.parent;c=globalThis.top;"
+                           "d=el.top;e=o.window.top;")
+    assert "a=__pt.top;b=__pt.parent;c=__pt.top;d=el.top;" in got
+    # o.window.top is window.top by any other name, and is rewritten as one.
+    assert "e=o.__pt.top;" in got or "e=o.window.top;" in got
+
+
+def test_a_script_ending_in_a_line_comment_still_closes():
+    # The brace goes on a line of its own, or the last line's // swallows it.
+    assert A.browse_wrap_js("var a=top;//end").endswith("//end\n}")
+
+
+def test_the_wrapper_never_ends_the_script_element():
+    # The one invariant that has to hold whatever the wrapper does: a
+    # </script> inside a string is the page's business, and nothing added
+    # around it may introduce another one.
+    body = 'var s="</scr"+"ipt>";var t=top;'
+    assert "</scr" + "ipt" not in A.browse_wrap_js(body).replace(body, "")
+
+
 def test_rewrite_html_drops_integrity_when_the_url_moved():
     src = (b'<html><head>'
            b'<link rel="stylesheet" href="/s.css" integrity="sha384-abc">'
@@ -435,7 +529,7 @@ def test_shim_is_small_enough_to_sit_on_every_page():
     # room rather than trimming what the shim does — which is what the tab
     # flavour did: window.open, the storage gate and the close listener are
     # three behaviours the pane has no other way to get.
-    assert len(A.BROWSE_SHIM.encode("utf-8")) < 8704
+    assert len(A.BROWSE_SHIM.encode("utf-8")) < 10240
 
 
 def test_shim_reads_a_proxy_path_without_the_token():
@@ -561,12 +655,12 @@ console.log(JSON.stringify(opened));
     assert got[2] == [None, None, None]
 
 
-def test_shim_closes_a_tab_the_pane_asks_to_close():
-    """The pane holds the window but nulled its opener, so on the computer's
-    own origin — which is where a tab-flavour page lives, never the shell's —
-    its close() is refused. The page closes itself instead, and only for the
-    shell the token was minted for."""
-    assert 'e.origin===C.origin&&e.data==="pockettui-close"' in A.BROWSE_SHIM
+def test_shim_asks_no_page_to_close_itself():
+    """Nothing opens a window of the device's own any more: a page on the
+    computer's network is shown in the pane's own frame, and the frame goes
+    when the tab does. The listener that used to close such a window is gone
+    with the only thing that ever posted to it."""
+    assert "pockettui-close" not in A.BROWSE_SHIM
 
 
 def test_shim_leaves_an_unsandboxed_page_its_own_storage():
@@ -587,6 +681,96 @@ def test_shim_never_zooms_the_page_it_sits_on():
     # dropdown opened on top of the control it hung from, and the mouseup that
     # ended the opening click landed in the list and dismissed it.
     assert "zoom" not in A.BROWSE_SHIM.lower()
+
+
+def _shim_top_harness(tmp_path, cfg, chain: str):
+    """Run the shim under a stub window and report what __pt came out as."""
+    harness = """
+globalThis.window = globalThis;
+globalThis.location = {origin: "http://box.example.net:8080",
+  host: "box.example.net:8080", protocol: "http:",
+  href: "http://box.example.net:8080/", pathname: "/", search: "", hash: ""};
+globalThis.document = {currentScript: {dataset: {cfg: CFG}}, baseURI: "/",
+  addEventListener() {}};
+globalThis.addEventListener = function () {};
+globalThis.history = {};
+CHAIN
+SHIM
+console.log(JSON.stringify({top: window.__pt.top.NAME || "self",
+                            parent: window.__pt.parent.NAME || "self"}));
+"""
+    f = tmp_path / "top.mjs"
+    f.write_text(harness.replace("CFG", json.dumps(json.dumps(cfg)))
+                 .replace("CHAIN", chain)
+                 .replace("SHIM", A.BROWSE_SHIM), encoding="utf-8")
+    out = subprocess.run([shutil.which("node"), str(f)], check=True,
+                         capture_output=True)
+    return json.loads(out.stdout.decode("utf-8"))
+
+
+TAB_CFG = {"prefix": PREFIX, "tok": TOK, "sch": "h", "hostport": "127.0.0.1:3000",
+           "origin": ORIGIN, "sandbox": False}
+
+
+def test_shim_gives_a_framed_page_itself_as_top_and_parent(tmp_path):
+    # The shell above is another origin, so reading its location throws — which
+    # is how the walk knows where the chain ends. A page whose parent is the
+    # shell is then its own top and its own parent, exactly what it would be in
+    # a window the user opened themselves.
+    if shutil.which("node") is None:
+        pytest.skip("node is not on PATH")
+    shell = """
+const shell = {NAME: "shell"};
+Object.defineProperty(shell, "location", {get() { throw new Error("cross"); }});
+shell.parent = shell;
+window.parent = shell;
+window.NAME = "page";
+"""
+    assert _shim_top_harness(tmp_path, TAB_CFG, shell) == {"top": "page",
+                                                           "parent": "page"}
+
+
+def test_shim_walks_a_readable_chain_up_to_its_outermost(tmp_path):
+    # A view nested inside the page: its parent is readable and the framework
+    # page above it is what both names have to mean.
+    if shutil.which("node") is None:
+        pytest.skip("node is not on PATH")
+    chain = """
+const shell = {NAME: "shell"};
+Object.defineProperty(shell, "location", {get() { throw new Error("cross"); }});
+shell.parent = shell;
+const framework = {NAME: "framework", location: {href: "x"}, parent: shell};
+window.parent = framework;
+window.NAME = "view";
+"""
+    assert _shim_top_harness(tmp_path, TAB_CFG, chain) == {"top": "framework",
+                                                           "parent": "framework"}
+
+
+def test_shim_leaves_the_panes_own_pages_without_the_pair(tmp_path):
+    # The sandboxed flavour is untouched: no __pt, no eval patch, nothing.
+    if shutil.which("node") is None:
+        pytest.skip("node is not on PATH")
+    cfg = dict(TAB_CFG, sandbox=True)
+    harness = """
+globalThis.window = globalThis;
+globalThis.location = {origin: "http://box.example.net:8080",
+  host: "box.example.net:8080", protocol: "http:",
+  href: "http://box.example.net:8080/", pathname: "/", search: "", hash: ""};
+globalThis.document = {currentScript: {dataset: {cfg: CFG}}, baseURI: "/",
+  addEventListener() {}};
+globalThis.addEventListener = function () {};
+globalThis.history = {};
+window.parent = window;
+SHIM
+console.log(JSON.stringify({pt: window.__pt === undefined}));
+"""
+    f = tmp_path / "nopt.mjs"
+    f.write_text(harness.replace("CFG", json.dumps(json.dumps(cfg)))
+                 .replace("SHIM", A.BROWSE_SHIM), encoding="utf-8")
+    out = subprocess.run([shutil.which("node"), str(f)], check=True,
+                         capture_output=True)
+    assert json.loads(out.stdout.decode("utf-8")) == {"pt": True}
 
 
 def test_shim_cannot_close_its_own_script_element():

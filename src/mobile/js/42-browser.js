@@ -37,17 +37,12 @@ let browserToken = null;        // {token, prefix} once api/browse has answered
 // Which screen the full-screen shape covered, to put back when it closes.
 let browserOriginFrom = null;
 let browserExpanded = cfg.browserExpanded;
-// The unsandboxed token the "open in its own window" button builds its address
-// from, minted beside the pane's when the pane opens: the click has to hand a
-// window an address in one step, and a mint inside it would be a round trip the
-// popup blocker counts against the gesture.
+// The permission a tab put on the computer's own network is served under,
+// asked for when the pane opens rather than at the press: the key should turn a
+// page round, not first wait on a round trip to the computer.
 let browserTabToken = null;
-// The windows this pane has opened elsewhere — the device's own browser, where
-// a page that cannot be framed is shown. Not the pane's tabs, which are below:
-// these close when the pane does.
-let browserWindows = [];
-// This computer serves the shell as well, so it will not mint an unsandboxed
-// token (see the mint's same-origin gate). Asked once, and the button goes.
+// This computer serves the shell itself, so it will not grant that (see the
+// mint's same-origin gate). Asked once, and the key goes.
 let browserTabBlocked = false;
 
 // As many as the strip holds and anybody keeps track of. Eight chips still
@@ -93,6 +88,12 @@ function browserNewTab() {
     // rather than reading one. Only then is a refusal worth retrying the other
     // way round — and only until something lands, which is what clears it.
     guessed: "",
+    // On the computer's own network: this tab's pages are fetched as pages in
+    // their own right rather than as something shown inside the app, so each
+    // one is the top window of its own document and may reach the views it
+    // writes. Per tab, so one portal can have it while the tab beside it does
+    // not, and kept in the pane's record so a reload brings it back.
+    lan: false,
   };
 }
 
@@ -311,8 +312,8 @@ async function browserEnsureToken(url) {
 
 // The other flavour's, kept until it is close to its own expiry rather than
 // asked for per press: a token that has expired heals to the pane's, which is
-// the sandboxed one, and a sandboxed tab is the one thing this button must not
-// end up opening.
+// the sandboxed one, and a sandboxed page is the one thing a tab in this mode
+// must not end up being served.
 async function browserEnsureTabToken() {
   if (browserTabBlocked || !hasCapStrict("browse_tab")) return null;
   const now = Math.round(Date.now() / 1000);
@@ -326,78 +327,18 @@ async function browserEnsureTabToken() {
   }
   if (!rec.token) {
     if (rec.error === "same_origin") {
-      // The shell came off this same computer, so a page served without the
-      // sandbox would land on the origin the pairing token is kept on, and the
-      // computer refuses to mint one for it. Only the button is affected: the
-      // pane is sandboxed on every install.
+      // The shell came off this same computer, so a page fetched as a page in
+      // its own right would land on the origin the pairing lives on, and the
+      // computer refuses to allow it. Only this key is affected: every other
+      // tab works on every install.
       browserTabBlocked = true;
       syncBrowseCap();
-      toast("Opening this in its own window needs the app from pockettui.com");
+      toast("The local network needs the app from pockettui.com");
     }
     return null;
   }
   browserTabToken = rec;
   return browserTabToken;
-}
-
-// A window this pane opened, minus the ones already closed: a WindowProxy
-// stays an object after its window is gone and only .closed says so, so the
-// list is pruned wherever it is touched rather than swept.
-function browserTrackTab(w) {
-  browserWindows = browserWindows.filter((t) => t && !t.closed);
-  browserWindows.push(w);
-}
-
-// The shape of opening a page in a window of the device's own. The window is
-// opened blank inside the click and sent somewhere once the token is in hand:
-// a popup blocker allows the window a gesture opens, not one opened a round
-// trip later. `dest` says where, given the token, because only the token can
-// spell it. The pre-mint on openBrowser means there is usually nothing to wait
-// for; where there is not — a token that has just aged out — the window is
-// already open and the blocker has already let it through.
-function browserOpenTab(dest) {
-  const gen = browserGen;
-  const w = window.open("", "_blank");
-  if (!w) { toast("This browser blocked the tab"); return; }
-  // No handle back on this window: the tab is not sandboxed, and opener is
-  // what a page there would navigate the shell through.
-  try { w.opener = null; } catch (e) {}
-  browserEnsureTabToken().then((rec) => {
-    // The mint is a round trip, and the pane it was asked for may have gone
-    // down inside it — taking its windows with it (browserCloseTabs). This one
-    // was opened blank and is still empty, so it goes the same way rather than
-    // being sent to a page on the computer that was left.
-    const target = rec && gen === browserGen ? dest(rec) : "";
-    if (!target) {
-      try { w.close(); } catch (e) {}
-      // Nothing to say about a pane that is no longer there.
-      if (!browserTabBlocked && gen === browserGen) {
-        toast("Couldn't open that in its own window");
-      }
-      return;
-    }
-    w.location = target;
-    browserTrackTab(w);
-  });
-}
-
-// Every way out of the pane ends here. Such a window is the pane's own page
-// shown elsewhere, so it goes when the pane goes — but not on a navigation
-// inside the pane, where it is still the page the user sent there.
-function browserCloseTabs() {
-  for (const w of browserWindows) {
-    try {
-      if (!w || w.closed) continue;
-      // Asked rather than closed outright. The tab was opened with its opener
-      // nulled and it lives on the computer's origin, not this shell's, and a
-      // window that is neither the caller's own nor same-origin refuses
-      // close() — the page's shim hears this and closes itself. The direct
-      // close is what answers on an install where the two do share an origin.
-      w.postMessage("pockettui-close", browserOrigin());
-      w.close();
-    } catch (e) {}
-  }
-  browserWindows = [];
 }
 
 function browserSetField(url) {
@@ -420,6 +361,14 @@ function browserFrame(tab) {
   const tpl = $("browser-frame-tpl");
   if (!tpl) return null;
   tab.frame = tpl.content.firstElementChild.cloneNode(true);
+  // A tab on the computer's own network is this list's absence and nothing
+  // else. The sandbox is what gives a proxied document an origin of its own,
+  // and an origin of its own is exactly what stops a page being the top window
+  // its scripts look for or reaching the views it wrote. Taken off the element
+  // before it is in the document, because the attribute is read when a frame
+  // loads: a frame that has already loaded cannot change its mind, which is
+  // why browserSetLan replaces the element rather than editing it.
+  if (tab.lan) tab.frame.removeAttribute("sandbox");
   tab.frame.hidden = tab !== browserTab();
   $("browser-wrap").appendChild(tab.frame);
   return tab.frame;
@@ -474,7 +423,10 @@ function browserRemember() {
     const u = browserUrlIn(browserTabs[i]);
     if (!u) continue;
     if (i <= browserActive) at = tabs.length;
-    tabs.push(u);
+    // A bare address for an ordinary tab, the pair only where there is
+    // something more to say: a shell too old to know about the mode reads the
+    // strings and still gets every one of those tabs back.
+    tabs.push(browserTabs[i].lan ? { url: u, lan: true } : u);
   }
   cfg.sidePane = {
     owner: "browser", session: rec.session, url: browserCurrentUrl(),
@@ -508,13 +460,29 @@ async function browserNavigateIn(tab, raw, push = true) {
   // A new destination is a new navigation, so the one silent re-mint it is
   // allowed comes back. Back, forward and reload keep whatever is left of it.
   if (push) tab.reminted = false;
-  if (!await browserEnsureToken(url)) return;
-  // The mint is a round trip, and this may be a tab the strip has closed or a
-  // pane that has been taken down since it was asked for. Nothing below this
-  // line is worth doing then, and the frame it would make is worse than
-  // nothing.
-  if (!browserAlive(tab, gen)) return;
-  const target = browserProxied(url);
+  // Which permission this tab's pages are fetched under, and where its frame is
+  // sent. On the computer's own network it is the other one, and a frame that
+  // has not loaded anything yet goes in through the hop that clears this
+  // computer's address of whatever a shell it once served left there — before
+  // the first document that could read it runs. Past that hop the pages are
+  // ordinary ones: going through it again would wipe what the page itself has
+  // since put there, which is the session the user just logged in with.
+  let target;
+  if (tab.lan) {
+    const rec = await browserEnsureTabToken();
+    if (!browserAlive(tab, gen)) return;
+    if (!rec) { toast("Couldn't reach the computer"); return; }
+    const proxied = browserProxied(url, rec);
+    target = tab.primed ? proxied : browserEnterUrl(proxied, rec);
+  } else {
+    if (!await browserEnsureToken(url)) return;
+    // The mint is a round trip, and this may be a tab the strip has closed or a
+    // pane that has been taken down since it was asked for. Nothing below this
+    // line is worth doing then, and the frame it would make is worse than
+    // nothing.
+    if (!browserAlive(tab, gen)) return;
+    target = browserProxied(url);
+  }
   if (!target) { toast("That is not an address to open"); return; }
   const frame = browserFrame(tab);
   if (!frame) return;
@@ -551,6 +519,41 @@ async function browserNavigateIn(tab, raw, push = true) {
 // The tab on screen, which is what every control in the topbar acts on.
 function browserNavigate(raw, push = true) {
   return browserNavigateIn(browserTab(), raw, push);
+}
+
+// ---- the computer's own network --------------------------------------------
+
+// The key's own state, read off the tab on screen — which is what makes the
+// mode a tab's rather than the pane's: a switch re-reads it here, and a tab
+// that was never turned round is dark beside one that was.
+function syncBrowserLan() {
+  const btn = $("btn-browser-tab");
+  if (!btn) return;
+  const on = !!(browserTab() && browserTab().lan);
+  btn.classList.toggle("on", on);
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+// Turn one tab round, or back. The frame is replaced rather than edited: what
+// the mode comes down to is one attribute on it, and that attribute is read
+// when a frame loads, so a frame already running cannot change its mind. The
+// replacement also throws away the document that was running under the old
+// powers, which is the point — the page is fetched again as the other kind.
+function browserSetLan(tab, on) {
+  if (!!tab.lan === !!on) return;
+  tab.lan = !!on;
+  if (tab.frame) { tab.frame.remove(); tab.frame = null; }
+  tab.primed = false;
+  tab.loaded = "";
+  tab.navigating = false;
+  tab.reminted = false;
+  if (tab === browserTab()) syncBrowserLan();
+  renderBrowserTabs();
+  browserRemember();
+  const url = browserUrlIn(tab);
+  // In place rather than as a new entry: this is the page the tab is already
+  // on, fetched with other powers.
+  if (url) browserNavigateIn(tab, url, false);
 }
 
 // ---- zoom ------------------------------------------------------------------
@@ -737,10 +740,15 @@ function renderBrowserMarks() {
   for (const b of browserMarks) {
     if (!b || typeof b.url !== "string") continue;
     const url = b.url;
+    // The star before the title does what a favicon does on a desktop
+    // browser's own bar: it is what makes a row of words read as a row of
+    // saved pages rather than as more tabs. There are no favicons to fetch
+    // through this proxy, so every one of them wears the key that saved it.
     const open = el("button", {
       type: "button", class: "bm-open", title: browserMarkHost(url),
       onclick: () => browserNavigate(url),
-    }, b.title || browserMarkName(url));
+    }, svgIcon("i-star"), el("span", { class: "bm-name" },
+                             b.title || browserMarkName(url)));
     const drop = el("button", {
       type: "button", class: "bm-del", "aria-label": "Remove this bookmark",
       onclick: () => {
@@ -819,6 +827,10 @@ function renderBrowserTabs() {
       open.setAttribute("title", name);
     }
     tab.chip.classList.toggle("on", i === browserActive);
+    // Which tabs are on the computer's own network. The key above says it for
+    // the tab on screen; this says it for the rest, so a strip of eight still
+    // reads at a glance.
+    tab.chip.classList.toggle("lan", !!tab.lan);
     if (bar.children[i] !== tab.chip) bar.insertBefore(tab.chip, bar.children[i] || null);
     // A strip wider than the pane can leave the tab being switched to off the
     // end of it. Scrolled to only when it is: an active chip already in view
@@ -864,6 +876,7 @@ function browserShowTab(i) {
   const url = browserUrlIn(tab);
   browserSetField(url);
   syncBrowserNav();
+  syncBrowserLan();
   renderBrowserTabs();
   // Which chip carries the page on screen has just changed, and the star with
   // it: both are about the page this tab is on.
@@ -897,6 +910,7 @@ function browserAddTab() {
   showBrowserZoomMenu(false);
   browserSetField("");
   syncBrowserNav();
+  syncBrowserLan();
   renderBrowserTabs();
   renderBrowserMarks();
   const f = $("browser-url");
@@ -970,7 +984,10 @@ function browserSeedTabs(urls, active) {
   let at = 0;
   const raw = urls.slice(0, BROWSER_TAB_MAX);
   for (let i = 0; i < raw.length; i++) {
-    const url = browserNormalize(raw[i]);
+    // Either shape the record may hold (cfg.sidePane, 02-debug-log.js): the
+    // address alone, or the address and the mode it was left in.
+    const e = raw[i];
+    const url = browserNormalize(typeof e === "string" ? e : (e && e.url) || "");
     if (!url) continue;
     // The index moves with the list, the way browserRemember's walk counts it
     // out: an address dropped here is a tab the strip never gets, and an index
@@ -979,6 +996,7 @@ function browserSeedTabs(urls, active) {
     // kept beside them, showing the same page in two tabs.
     if (i <= want) at = list.length;
     const tab = browserNewTab();
+    tab.lan = !!(e && e.lan);
     tab.stack = [url];
     tab.idx = 0;
     list.push(tab);
@@ -1023,7 +1041,6 @@ function closeDockedBrowser() {
   if (!browserDocked) return;
   browserDocked = false;
   browserOpen = false;
-  browserCloseTabs();
   showBrowserZoomMenu(false);
   $("screen-browser").classList.remove("docked");
   $("screen-browser").classList.remove("active");
@@ -1052,7 +1069,6 @@ function openFullBrowser() {
 // The pop's half: the entry is already spent by the time this runs, so nothing
 // here touches history.
 function closeFullBrowser() {
-  browserCloseTabs();
   showBrowserZoomMenu(false);
   $("screen-browser").classList.remove("active");
   const back = browserOriginFrom || "screen-list";
@@ -1079,9 +1095,13 @@ function openBrowser(url, tabs, at) {
   if (isWideLayout() && $("screen-term").classList.contains("active")) openDockedBrowser();
   else openFullBrowser();
   browserLoadMarks();
-  // Ahead of any press, so the button's own click has nothing to wait for.
+  // Ahead of any press, so the key's own click has nothing to wait for.
   browserEnsureTabToken();
   renderBrowserTabs();
+  // Every way in passes here, including the one a reload takes: a strip seeded
+  // from the record (browserSeedTabs) never goes through browserShowTab, so
+  // this is where a tab put back on the computer's own network lights its key.
+  syncBrowserLan();
   const target = browserNormalize(url);
   if (target) { browserNavigate(target); return; }
   // Opened with nothing to go to: the page the active tab was last on, whether
@@ -1186,7 +1206,9 @@ window.addEventListener("message", (e) => {
     // navigation; a second expiry with nothing landed in between is news.
     if (code === "expired" && here && !tab.reminted) {
       tab.reminted = true;
-      browserToken = null;
+      // Whichever of the two this tab's pages are fetched under is the one that
+      // has aged out.
+      if (tab.lan) browserTabToken = null; else browserToken = null;
       browserNavigateIn(tab, here, false);
       return;
     }
@@ -1239,16 +1261,26 @@ $("browser-zoom-plus").addEventListener("click", () => browserStepZoom(1));
 $("browser-zoom-pct").addEventListener("click", () => browserSetZoom(1));
 $("browser-menu-scrim").addEventListener("click", () => showBrowserZoomMenu(false));
 $("btn-browser-star").addEventListener("click", () => browserToggleMark());
-// The page on screen, again as a window of the device's own and still fetched
-// through the computer: the backend serves it under the unsandboxed token, so
-// that window's documents share one real origin and an app written to be the
-// top window works — top is the page itself and its frames are its own to
-// script, neither of which is true in the pane. The pane's own frames keep
-// their sandbox.
-$("btn-browser-tab").addEventListener("click", () => {
-  const url = browserCurrentUrl();
-  if (!url) return;
-  browserOpenTab((rec) => browserEnterUrl(browserProxied(url, rec), rec));
+// This tab, on the computer's own network: the same address in the same frame,
+// fetched this time as a page in its own right. An app written to be the top
+// window then works — top is the page itself, the views it writes are its own
+// to reach, and the storage and cookies a real visit would have are there —
+// none of which is true of a tab in the ordinary mode. A second press puts the
+// tab back, and the tab beside it is unaffected either way.
+$("btn-browser-tab").addEventListener("click", async () => {
+  const tab = browserTab();
+  if (tab.lan) { browserSetLan(tab, false); return; }
+  if (!browserUrlIn(tab)) return;
+  // Asked before anything changes: without the computer's permission there is
+  // nothing to turn the page round with, and a tab left in a mode that was
+  // refused is a tab with nothing in it.
+  if (!await browserEnsureTabToken()) {
+    if (!browserTabBlocked) toast("Couldn't reach the computer");
+    return;
+  }
+  // The ask is a round trip, and the strip may have moved on inside it.
+  if (tab !== browserTab()) return;
+  browserSetLan(tab, true);
 });
 // Another tab in the pane, at the end of the strip where a browser keeps it.
 $("btn-browser-newtab").addEventListener("click", () => browserAddTab());
@@ -1336,6 +1368,7 @@ function browserStash() {
     docked: browserDocked, active: browserActive,
     tabs: browserTabs.map((t) => ({
       stack: t.stack.slice(), idx: t.idx, title: t.title, titleFor: t.titleFor,
+      lan: t.lan,
     })),
   };
 }
@@ -1350,7 +1383,6 @@ function browserTeardown() {
   browserDocked = false;
   browserOpen = false;
   browserOriginFrom = null;
-  browserCloseTabs();
   browserDropFrames();
   showBrowserZoomMenu(false);
   $("screen-browser").classList.remove("docked");
@@ -1373,10 +1405,12 @@ function browserRestore(s) {
     tab.idx = typeof r.idx === "number" ? r.idx : tab.stack.length - 1;
     tab.title = typeof r.title === "string" ? r.title : "";
     tab.titleFor = typeof r.titleFor === "string" ? r.titleFor : "";
+    tab.lan = !!r.lan;
     return tab;
   }) : [browserNewTab()];
   browserActive = Math.min(Math.max(0, s.active | 0), browserTabs.length - 1);
   renderBrowserTabs();
+  syncBrowserLan();
   if (!s.docked) { syncBrowserNav(); return; }
   openDockedBrowser();
   // The tab that was on screen, and it alone: the rest load when a chip asks
@@ -1408,6 +1442,7 @@ function browserResetForProfile() {
   browserTabs = [browserNewTab()];
   browserActive = 0;
   renderBrowserTabs();
+  syncBrowserLan();
   // Another computer keeps its own list, and the one on screen is this one's.
   browserMarks = [];
   browserMarksAsked = false;
@@ -1439,12 +1474,14 @@ function syncBrowseCap() {
   // save with a 404 the user only learns about after tapping the star.
   $("btn-browser-star").hidden = !hasCapStrict("bookmarks");
   // Strictly checked too, and with the computer's own refusal on top of it: a
-  // server too old for the mode answers with the pane's sandboxed token, and a
-  // tab opened on that cannot do the one thing it was opened for.
-  // The pane's own new tab is not gated: it opens a frame in here, which every
-  // computer that can proxy a page at all can serve.
+  // server too old for the mode answers with the pane's own permission, and a
+  // tab turned round on that is a tab that cannot do the one thing it was
+  // turned round for.
+  // Opening another tab is not gated: it is a frame in here, which every
+  // computer that can show a page at all can serve.
   $("btn-browser-tab").hidden = !hasCapStrict("browse_tab") || browserTabBlocked;
 }
 
 renderBrowserTabs();
 syncBrowserNav();
+syncBrowserLan();
