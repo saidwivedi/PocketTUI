@@ -9,12 +9,15 @@
 // takes — no multipart, no form parser on the backend.
 //
 // Two ways in. The desktop's Ctrl+V arrives here as a paste event, caught in
-// the capture phase below. The phone has no paste event to catch, so it comes
-// through pasteFromClipboard() in 19-voice-capture.js, which reads the
-// clipboard itself and hands an image blob to uploadImage().
+// the capture phase below, and it carries whatever the clipboard holds: a
+// screenshot takes the route above, a file copied in Finder or Explorer the one
+// the "+" uses. The phone has no paste event to catch, so it comes through
+// pasteFromClipboard() in 19-voice-capture.js, which reads the clipboard itself
+// and hands an image blob to uploadImage().
 // A third arrives from the "+" on the composer strip, which picks files rather
-// than reading a clipboard and sends anything that is not a picture the other
-// way, to /api/upload. See the attach section at the foot of this file.
+// than reading a clipboard. It and a paste of anything but a lone picture meet
+// at attachFiles(), which sends pictures the sniffing way and everything else
+// to /api/upload. See the attach section at the foot of this file.
 
 // The server's own cap (MAX_IMAGE_BYTES, app.py), checked here so a 12-megapixel
 // screenshot on a phone link is refused in a millisecond rather than after a
@@ -132,7 +135,7 @@ function insertImagePath(path, target) {
 
 // Desktop Ctrl+V. Capture phase so this is read before xterm's hidden textarea
 // gets the event. Text aimed at that textarea goes through term.paste() here as
-// well as images: xterm leaves the browser's default paste alive after sending
+// well as files: xterm leaves the browser's default paste alive after sending
 // the clipboard bytes, so the same text can remain inside its invisible field
 // and be emitted again by a later IME-style key event (space is one route seen
 // in agent TUIs). Owning the event keeps the textarea empty while preserving
@@ -142,13 +145,18 @@ document.addEventListener("paste", (e) => {
   if (!currentSession) return;              // demo shell: nothing to upload to
   const items = e.clipboardData && e.clipboardData.items;
   if (!items) return;
-  let image = null, hasText = false;
+  const files = [];
+  let hasText = false;
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
-    if (!image && it.kind === "file" && it.type && it.type.startsWith("image/")) image = it;
-    else if (it.kind === "string" && it.type === "text/plain") hasText = true;
+    if (it.kind === "file") {
+      // getAsFile() answers null for an entry the browser cannot hand over,
+      // and a null in the batch would be counted as a failed attachment.
+      const f = it.getAsFile();
+      if (f) files.push(f);
+    } else if (it.kind === "string" && it.type === "text/plain") hasText = true;
   }
-  if (!image) {
+  if (!files.length) {
     // Only take the paste that is actually aimed at xterm's private input.
     // Compose, search, settings, the file path field and CodeMirror all need
     // their own selection/caret-aware browser behavior.
@@ -162,14 +170,23 @@ document.addEventListener("paste", (e) => {
     term.paste(text);
     return;
   }
+  // One picture and nothing else is the pasted screenshot this file was
+  // written for, and it keeps the direct route, toasts and all. Anything else —
+  // a document, a pile of files, a mix — goes the way the "+" sends it, with no
+  // target, so the caret decides where the paths land.
+  const lonePicture = files.length === 1 && attachIsImage(files[0]);
   // A rich copy from a web page carries both the picture and its text. Which
   // one was meant depends on where the user is typing: in the composer they
   // are writing a sentence, so the text wins; over the terminal there is
   // nothing being written, so the picture is the only reason to paste at all.
-  if (hasText && document.activeElement === $("compose-text")) return;
+  // Only the picture has this argument to lose: a web page puts no document on
+  // the clipboard, and the text beside a file copied out of a file manager is
+  // its bare name, which is worse than the staged path.
+  if (lonePicture && hasText && document.activeElement === $("compose-text")) return;
   e.preventDefault();
   e.stopPropagation();
-  uploadImage(image.getAsFile());
+  if (lonePicture) uploadImage(files[0]);
+  else attachFiles(files);
 }, true);
 
 // ============================================================
@@ -177,9 +194,10 @@ document.addEventListener("paste", (e) => {
 // ============================================================
 // The same errand as a paste, started from the picker instead: on a phone the
 // thing to attach is in Photos or Files, and there is no clipboard step worth
-// making the user take. Pictures keep the sniffing route above, since an agent
-// wants them staged the way a pasted screenshot is; everything else goes to
-// /api/upload, which keeps the name and asks no questions about the bytes.
+// making the user take. A desktop paste arrives here too, with whatever files
+// it found on the clipboard. Pictures keep the sniffing route above, since an
+// agent wants them staged the way a pasted screenshot is; everything else goes
+// to /api/upload, which keeps the name and asks no questions about the bytes.
 
 // MAX_UPLOAD_BYTES in app.py, checked here for the reason IMG_MAX_BYTES is: a
 // video picked by mistake is refused before it spends a minute on the wire.
@@ -211,7 +229,7 @@ function syncComposeAttach() {
 
 // One file up, and the same single retry the image route takes, for the same
 // reason. Answers true when a path landed in the box.
-async function uploadAttachment(f, retried) {
+async function uploadAttachment(f, target, retried) {
   dbg("attach: uploading type=" + (f.type || "?") + " bytes=" + f.size);
   if (f.size > ATTACH_MAX_BYTES) { toast("Too large to attach (50 MB max)"); return false; }
   const ctl = new AbortController();
@@ -232,12 +250,12 @@ async function uploadAttachment(f, retried) {
     const data = await r.json();
     const path = data && typeof data.path === "string" ? data.path : "";
     if (!path) { toast("Couldn't attach " + f.name); return false; }
-    insertPathIntoCompose(path, "compose");
+    insertPathIntoCompose(path, target);
     return true;
   } catch (e) {
     if (e && e.name !== "AbortError" && !retried) {
       await new Promise(r => setTimeout(r, IMG_RETRY_DELAY));
-      return uploadAttachment(f, true);
+      return uploadAttachment(f, target, true);
     }
     dbg("attach: upload error:", e);
     toast("Couldn't attach " + f.name);
@@ -249,8 +267,10 @@ async function uploadAttachment(f, retried) {
 
 // A pick, one file at a time: the paths have to land in the box in the order
 // they were chosen, and a pile of parallel uploads over a phone link would
-// finish in whatever order the network decided.
-async function attachFiles(files) {
+// finish in whatever order the network decided. `target` is the surface the
+// gesture belongs to — the "+" is the composer's — and a paste leaves it out so
+// the caret decides, the way a pasted screenshot always has.
+async function attachFiles(files, target) {
   const canImage = hasCapStrict("image_paste"), canFile = hasCapStrict("upload");
   if (!canImage && !canFile) { toast("This server can't take attachments yet"); return; }
   let done = 0, failed = 0;
@@ -261,8 +281,8 @@ async function attachFiles(files) {
     holdToast(files.length > 1 ? "Attaching " + (i + 1) + " of " + files.length + "…"
                                : "Attaching…");
     let ok;
-    if (attachIsImage(f) && canImage) ok = await uploadImage(f, "compose");
-    else if (canFile) ok = await uploadAttachment(f);
+    if (attachIsImage(f) && canImage) ok = await uploadImage(f, target);
+    else if (canFile) ok = await uploadAttachment(f, target);
     else ok = false;      // a picture-only server, handed something else
     if (ok) done++; else failed++;
   }
@@ -292,6 +312,6 @@ async function attachFiles(files) {
     // reset that lets the same file fire change a second time.
     const files = Array.from(ev.target.files || []);
     ev.target.value = "";
-    if (files.length) attachFiles(files);
+    if (files.length) attachFiles(files, "compose");
   });
 })();
