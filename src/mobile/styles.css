@@ -3464,10 +3464,20 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* ============================================================
    IN-APP BROWSER
    ============================================================ */
+/* The editor's and the reader's fixed column, not the explorer's page scroll:
+   the frame inside has to be given a height, and an auto-height block gives it
+   none. The docked rules above override every part of this. */
 #screen-browser {
+  position: fixed; inset: 0;
+  flex-direction: column;
+  background: var(--paper);
   padding-top: var(--safe-top);
-  padding-bottom: calc(40px + var(--safe-bot));
+  padding-bottom: var(--safe-bot);
 }
+#screen-browser.active { display: flex; }
+/* The list screens scroll the page under a sticky topbar; this one is a fixed
+   column, so its bar just sits in the flow, the editor bar's arrangement. */
+.browser-topbar { position: static; flex: 0 0 auto; gap: 4px; padding: 8px 12px; }
 .browser-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 /* Absolute against the wrap rather than sized to its own content — the iOS
    iframe-height fix. */

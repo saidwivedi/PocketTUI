@@ -426,6 +426,10 @@ function stashFileView(session, kind) {
   // slot is given back here (diffSetOpen, and filesTeardown's own sideDrop) and
   // the record above is the whole of what puts it up again.
   if (diffOpen) { view.diff = true; diffSetOpen(false); }
+  // The third thing that can hold it, and the only one that carries state
+  // worth more than a re-fetch: the page on screen and the way back through
+  // the ones before it.
+  if (browserOpen) { view.browser = browserStash(); browserTeardown(); }
   filesTeardown();
   fileViews.set(session, view);
 }
@@ -435,10 +439,12 @@ function restoreFileView(session) {
   fileViews.delete(session);
   // A record a reload left behind names the pane rather than carrying one:
   // nothing was ever stashed, so the pane opens the way opening it by hand
-  // does — the changes of this session's repo, the explorer at its cwd.
+  // does — the changes of this session's repo, the explorer at its cwd, the
+  // browser at the one page that record does carry.
   if (view.boot) {
     if (!isWideLayout()) return;
     if (view.boot === "diff") diffSetOpen(true);
+    else if (view.boot === "browser") openBrowser(view.bootUrl);
     else filesFollowSession();
     return;
   }
@@ -460,6 +466,7 @@ function restoreFileView(session) {
   // The other thing that can hold the slot, back in it against this session's
   // repo — diffSetOpen's own poll asks for it.
   if (view.diff) diffSetOpen(true);
+  if (view.browser) browserRestore(view.browser);
   if (!view.editor && !view.reader) return;
   history.pushState(view.editor ? { editor: true } : { reader: true }, "", location.href);
   if (view.editor) edRestore(view.editor);
@@ -540,6 +547,14 @@ function openTerminal(name, resumed) {
     if (diffOpen && name !== currentSession) {
       if (currentSession) stashFileView(currentSession, null);
       else diffSetOpen(false);
+    }
+    // The browser pane is the third thing that can hold that slot, and docked
+    // it reaches here under the diff's rule. Full screen it is over the rail
+    // rather than beside it, and closes where the full-screen explorer above
+    // closes — there is no terminal under it that the page belongs to.
+    if (browserOpen && name !== currentSession) {
+      if (browserDocked && currentSession) stashFileView(currentSession, null);
+      else browserTeardown();
     }
   }
   // Whether this open is a switch inside an already-open terminal pane —

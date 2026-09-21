@@ -356,12 +356,14 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_alt_on", "1");
     else localStorage.removeItem("pockettui_alt_on");
   },
-  // Which pane, if either, is split out beside the terminal on a wide layout —
-  // the git changes ("diff"), the file explorer ("files"), or neither — and the
-  // session it was open in. One key rather than one per pane because it is one
-  // slot (26-side-pane.js). The session is half the answer because the pane is
-  // that session's own: a reload brings it back for that session and for no
-  // other. Null by default: the whole pane is the terminal's until something
+  // Which pane, if any, is split out beside the terminal on a wide layout —
+  // the git changes ("diff"), the file explorer ("files"), the in-app browser
+  // ("browser"), or none — and the session it was open in. One key rather than
+  // one per pane because it is one slot (26-side-pane.js). The browser keeps
+  // the page it was on in the same record, since a pane restored to a blank
+  // frame would have lost the whole of what it was showing. The session is
+  // half the answer because the pane is that session's own: a reload brings it
+  // back for that session and for no other. Null by default: the whole pane is the terminal's until something
   // asks for the split. The width is shared for the same reason, and is 0 until
   // one has been dragged, which reads as "half the main pane" at the next open.
   //
@@ -371,13 +373,19 @@ const cfg = {
   get sidePane() {
     let v = null;
     try { v = JSON.parse(localStorage.getItem("pockettui_side_pane")); } catch (e) {}
-    if (!v || (v.owner !== "diff" && v.owner !== "files")) return null;
-    return { owner: v.owner, session: typeof v.session === "string" ? v.session : "" };
+    if (!v || (v.owner !== "diff" && v.owner !== "files" && v.owner !== "browser")) return null;
+    return {
+      owner: v.owner,
+      session: typeof v.session === "string" ? v.session : "",
+      url: typeof v.url === "string" ? v.url : "",
+    };
   },
   set sidePane(v) {
-    if (v && (v.owner === "diff" || v.owner === "files") && v.session) {
-      localStorage.setItem("pockettui_side_pane",
-                           JSON.stringify({ owner: v.owner, session: v.session }));
+    if (v && (v.owner === "diff" || v.owner === "files" || v.owner === "browser")
+        && v.session) {
+      const rec = { owner: v.owner, session: v.session };
+      if (v.owner === "browser" && v.url) rec.url = v.url;
+      localStorage.setItem("pockettui_side_pane", JSON.stringify(rec));
     } else localStorage.removeItem("pockettui_side_pane");
   },
   get sideWidth() {
@@ -435,6 +443,13 @@ const cfg = {
   set filesExpanded(v) {
     if (v) localStorage.setItem("pockettui_files_expanded", "1");
     else localStorage.removeItem("pockettui_files_expanded");
+  },
+  // The same for the browser pane, kept apart from the explorer's: a page read
+  // full width and a folder read full width are separate habits.
+  get browserExpanded() { return localStorage.getItem("pockettui_browser_expanded") === "1"; },
+  set browserExpanded(v) {
+    if (v) localStorage.setItem("pockettui_browser_expanded", "1");
+    else localStorage.removeItem("pockettui_browser_expanded");
   },
   // What order the file explorer lists a folder in: "name" (the backend's own
   // dirs-first, alphabetical order, the default), "newest", "oldest" or

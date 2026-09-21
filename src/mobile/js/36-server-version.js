@@ -108,6 +108,7 @@ async function fetchServerVersion() {
   syncComposeAttach();
   syncRefCap();
   syncThumbsCap();
+  syncBrowseCap();
   syncPairCard();
 }
 
@@ -124,6 +125,9 @@ function versionResetForProfile() {
   updateFailed = false;
   updateResumeChecked = false;
   syncVersionRow();
+  // The browser pane's two entry points are gated on a capability that is now
+  // unknown again, and an unknown server has none (hasCapStrict).
+  syncBrowseCap();
 }
 
 // A computer says its own name, and the profile keeps it: "mac-mini" reads

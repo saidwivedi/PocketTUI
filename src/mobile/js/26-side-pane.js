@@ -1,13 +1,13 @@
 // ============================================================
 // Side pane — the one slot beside the terminal
 // ============================================================
-// Two panes want the terminal's right edge: the git changes (37-git-diff.js)
-// and the file explorer docked rather than opened over the terminal
-// (28-file-explorer.js). They are one slot, not two — a laptop has room for a
-// terminal and one thing beside it, and two seams to drag would leave neither
-// pane a width worth reading at. So the geometry lives here: one width, one
-// remembered width, one gutter to drag it by, and whoever opens takes the slot
-// off whoever had it.
+// Three panes want the terminal's right edge: the git changes (37-git-diff.js),
+// the file explorer docked rather than opened over the terminal
+// (28-file-explorer.js), and the in-app browser (42-browser.js). They are one
+// slot, not three — a laptop has room for a terminal and one thing beside it,
+// and a second seam to drag would leave neither pane a width worth reading at.
+// So the geometry lives here: one width, one remembered width, one gutter to
+// drag it by, and whoever opens takes the slot off whoever had it.
 //
 // Wide layouts only, and that gate is the stylesheet's (see GIT DIFF PANE and
 // the docked explorer's rules): dropping below the breakpoint stops those
@@ -22,7 +22,7 @@ const SIDE_TERM_MIN = 320;
 // plus five controls and needs the extra.
 const SIDE_MIN = { diff: 300, files: 340, browser: 360 };
 
-let sideOwner = null;   // "diff", "files" or null — who holds the slot
+let sideOwner = null;   // "diff", "files", "browser" or null — who holds the slot
 let sideWidth = 0;      // 0 until sized — see sideClaim()
 
 // The main pane is the window less the rail and the seam it is drawn on, read
@@ -55,6 +55,7 @@ function sideClaim(who) {
   if (sideOwner === who) return;
   if (sideOwner === "diff") diffSetOpen(false);
   else if (sideOwner === "files") closeDockedFiles();
+  else if (sideOwner === "browser") closeDockedBrowser();
   sideOwner = who;
   // Remembered against the session it was opened in, not against the app: the
   // slot is that session's (see fileViews, 09-image-viewer.js), and a reload
