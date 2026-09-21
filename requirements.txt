@@ -32,3 +32,10 @@ pywebpush>=2.0
 # which has no binary — app.py's ffmpeg_exe() falls back to a system ffmpeg
 # there, so this is a convenience, not a dependency of the decode path.
 imageio-ffmpeg>=0.6
+
+# The in-app browser's upstream client: the /b/ reverse proxy fetches the page
+# the phone asked for (a localhost dev server, a LAN host) with it and keeps
+# that target's cookies in a per-token jar. Optional at runtime: app.py imports
+# it lazily and answers browse:false without it, so an install that skipped
+# this wheel still boots and only loses the browser pane.
+httpx>=0.27,<1
