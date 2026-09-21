@@ -48,6 +48,9 @@ const KEYS = [
   // they are — arrow work and file browsing are different errands anyway.
   { icon: "i-folder", files: true, narrow: true, only: "collapsed",
     cls: "k-files", aria: "Browse files in the session's folder" },
+  // Pill only, like the report key below and hidden by the same CSS: the pane
+  // wants the width of a two-pane layout, so the phone does not carry a way
+  // into it (founder, 2026-09-21). Shown only once a server says it can proxy.
   { icon: "i-globe", browser: true, narrow: true, only: "collapsed",
     cls: "k-browser", aria: "Open a browser" },
   // The arrows' alternates are the nav keys that live beside them on a real

@@ -278,6 +278,22 @@ function writeActiveProfile(field, v) {
   setActiveProfile(addProfile({ [field]: v }).id);
 }
 
+// A host -> zoom-factor map with everything that is not one of those thrown
+// away, used on the way in and on the way out of cfg.browserZoom: what is read
+// back is whatever survived the last write, and a hand-edited or older record
+// must not put a factor the pane cannot use into the frame.
+function browserZoomClean(v) {
+  const out = {};
+  if (!v || typeof v !== "object") return out;
+  for (const h of Object.keys(v)) {
+    const z = v[h];
+    if (typeof z === "number" && Number.isFinite(z) && z >= 0.25 && z <= 5 && z !== 1) {
+      out[h] = z;
+    }
+  }
+  return out;
+}
+
 // The active profile's credentials, mirrored into the two keys this app used
 // before profiles existed. Nothing here reads them back — it is cheap insurance
 // for an older shell still cached on the same origin, which knows only those.
@@ -450,6 +466,23 @@ const cfg = {
   set browserExpanded(v) {
     if (v) localStorage.setItem("pockettui_browser_expanded", "1");
     else localStorage.removeItem("pockettui_browser_expanded");
+  },
+  // How big the browser pane draws a host's pages, as a factor per host: a dev
+  // server read at 125% is still at 125% the next time it is opened, which is
+  // what a desktop browser's per-site zoom does. Only the hosts that are not
+  // at 1 are written, so the record stays the size of the handful of pages
+  // someone has actually zoomed. The bounds are the proxied page's shim's own
+  // (app.py BROWSE_SHIM): anything outside them is not a factor this app wrote.
+  get browserZoom() {
+    let v = null;
+    try { v = JSON.parse(localStorage.getItem("pockettui_browser_zoom")); } catch (e) {}
+    return browserZoomClean(v);
+  },
+  set browserZoom(v) {
+    const rec = browserZoomClean(v);
+    if (Object.keys(rec).length) {
+      localStorage.setItem("pockettui_browser_zoom", JSON.stringify(rec));
+    } else localStorage.removeItem("pockettui_browser_zoom");
   },
   // What order the file explorer lists a folder in: "name" (the backend's own
   // dirs-first, alphabetical order, the default), "newest", "oldest" or

@@ -193,6 +193,19 @@
       <circle cx="10.5" cy="10.5" r="6.5"/>
       <path d="M20 20l-4.8-4.8"/>
     </symbol>
+    <!-- The browser pane's two zoom keys: #i-search's magnifier with a minus
+         and a plus in the lens, which is the one glyph everybody already reads
+         as zoom. -->
+    <symbol id="i-zoom-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="10.5" cy="10.5" r="6.5"/>
+      <path d="M20 20l-4.8-4.8"/>
+      <path d="M7.5 10.5h6"/>
+    </symbol>
+    <symbol id="i-zoom-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="10.5" cy="10.5" r="6.5"/>
+      <path d="M20 20l-4.8-4.8"/>
+      <path d="M7.5 10.5h6M10.5 7.5v6"/>
+    </symbol>
     <symbol id="i-chev-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M5 15l7-7 7 7"/>
     </symbol>
@@ -264,6 +277,10 @@
     </div>
     <div class="right">
       <button class="icon-btn" id="btn-files" aria-label="Browse files"><svg><use href="#i-folder"/></svg></button>
+      <!-- Not a control: never displayed on either layout (styles.css), and
+           here only because buildKeybar() reads the browse capability off this
+           button's hidden state, which syncBrowseCap() keeps in step. The way
+           into the pane is the key bar's globe, on a two-pane layout. -->
       <button class="icon-btn" id="btn-browser" aria-label="Open a browser" hidden><svg><use href="#i-globe"/></svg></button>
       <button class="icon-btn" id="btn-reload" aria-label="Reload sessions"><svg><use href="#i-reload"/></svg></button>
       <!-- Three named choices rather than a cycle: with one palette chosen for
@@ -657,6 +674,12 @@
              placeholder="http://localhost:3000" aria-label="Address">
     </div>
     <button class="icon-btn" id="btn-browser-tab" aria-label="Open in a browser tab"><svg><use href="#i-external"/></svg></button>
+    <!-- Zoom, in both shapes rather than dock-only: a phone framing an
+         intranet page built for a desktop is the case that needs it most. The
+         frame is cross-origin, so these do not restyle it — they message the
+         shim the proxy put on the page (app.py BROWSE_SHIM). -->
+    <button class="icon-btn" id="btn-browser-zoom-out" aria-label="Zoom out"><svg><use href="#i-zoom-out"/></svg></button>
+    <button class="icon-btn" id="btn-browser-zoom-in" aria-label="Zoom in"><svg><use href="#i-zoom-in"/></svg></button>
     <!-- The docked pane's own two controls, shown only while the browser is
          beside the terminal rather than over it — files-expand/close's pair. -->
     <button class="icon-btn dock-only" id="btn-browser-expand"

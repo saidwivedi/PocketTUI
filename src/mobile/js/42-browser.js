@@ -41,9 +41,13 @@ let browserPrimed = false;
 // What the frame was last sent to, so reopening the pane on the page it is
 // already showing costs no reload.
 let browserLoadedUrl = "";
-// The one address a fresh token has already been minted for. A second
-// expiry on the same address is a real refusal, not a stale token.
-let browserRemintUrl = "";
+// A fresh token has already been minted for the navigation in flight. A second
+// expiry before anything has loaded is a real refusal, not a stale token.
+let browserReminted = false;
+// The address of the navigation in flight, when this pane picked its scheme
+// rather than reading one. Only then is a refusal worth retrying the other way
+// round — and only until something lands, which is what clears it.
+let browserGuessed = "";
 let browserExpanded = cfg.browserExpanded;
 
 // The backend's origin and path prefix, read off apiURL() at each use rather
@@ -66,6 +70,12 @@ const BROWSE_ERRORS = {
   upstream: "That page could not be loaded",
 };
 
+// The failures that mean "not on this scheme, perhaps": nothing listening on
+// the port, nothing answering in time, or a plaintext port that turned out to
+// want TLS. A guessed scheme gets one retry as the other one on these; the
+// rest are the target answering, and answering is not a reason to try again.
+const BROWSE_SCHEME_RETRY = { refused: 1, timeout: 1, tls: 1 };
+
 // Why the mint refused, same idea. bad_prefix and bad_origin are the shell's
 // own bugs rather than the user's, so they read as one failure.
 const BROWSE_MINT_ERRORS = {
@@ -80,18 +90,81 @@ function browserCurrentUrl() {
 
 // Every address the pane keeps, shows or compares goes through here first:
 // typed into the field, tapped in the terminal, reported by the shim, read
-// back out of cfg. An address with no scheme is http, the way every address
-// bar reads one, and the parser then spells the rest the one way — a default
-// port dropped, an empty path a slash. That is the spelling the shim's report
-// carries back (its unmap does the same two things), so a typed address and
-// its own landing compare equal instead of stacking up as two entries.
+// back out of cfg. An address with no scheme gets one guessed for it, and the
+// parser then spells the rest the one way — a default port dropped, an empty
+// path a slash. That is the spelling the shim's report carries back (its unmap
+// does the same two things), so a typed address and its own landing compare
+// equal instead of stacking up as two entries. And an address that is really
+// one of the proxy's own is unwrapped to the page it stands for, wherever it
+// came from: a stale record, a restart's error page, a poisoned stash.
 function browserNormalize(raw) {
   const s = (raw || "").trim();
   if (!s) return "";
-  const full = /^[a-z][a-z0-9+.-]*:/i.test(s) ? s : "http://" + s;
+  const full = browserHasScheme(s) ? s : browserGuessScheme(s) + s;
   // Unparseable is left as typed: browserProxied refuses it a step later, and
   // its toast is the one the user should get.
-  try { return new URL(full).href; } catch (e) { return full; }
+  let out;
+  try { out = new URL(full).href; } catch (e) { return full; }
+  // A proxied address is not a place: it is this proxy's way of spelling one,
+  // and storing it as the page's address is how the pane ends up asking the
+  // backend to proxy itself. Down to the real target, however deep it goes.
+  for (let i = 0; i < 8; i++) {
+    const inner = browserUnwrap(out);
+    if (!inner) break;
+    out = inner;
+  }
+  return out;
+}
+
+// Whether an address carries a scheme of its own. A colon alone does not say
+// so: "localhost:3000" and "box.example.net:8080" are a host and a port, and
+// every character in them is one a scheme may hold — which is why the parser
+// reads the first as the scheme "localhost" and hands back exactly what it was
+// given. A digit after the colon is a port; anything else is a scheme.
+function browserHasScheme(raw) {
+  return /^[a-z][a-z0-9+.-]*:(?!\d)/i.test(raw);
+}
+
+// The scheme for an address typed without one. A dev server on a private host
+// speaks http far more often than https, and everything with a public name is
+// the other way round — an intranet portal that only answers https would
+// otherwise hang on port 80, which is what the founder hit. isPrivateHost is
+// 08-links.js's, the same list the terminal's links are read against.
+function browserGuessScheme(raw) {
+  let host = raw.split(/[/?#]/)[0];
+  host = host.slice(host.lastIndexOf("@") + 1);
+  // A v6 literal keeps its brackets and its colons; anything else loses a port.
+  const name = host.charAt(0) === "[" ? host.slice(0, host.indexOf("]") + 1)
+                                      : host.split(":")[0];
+  return isPrivateHost(name) ? "http://" : "https://";
+}
+
+// One layer of "this is the proxy's address for somewhere, not somewhere".
+// Matched without the token, because a restart mints a new one and the URLs
+// the pane is holding still carry the old, and on any host, because the layer
+// a runaway wrapped names this backend's own public name. The backend's prefix
+// counts on the backend's own origin; a bare /b/ counts anywhere.
+function browserUnwrap(url) {
+  let u;
+  try { u = new URL(url); } catch (e) { return ""; }
+  let path = u.pathname;
+  const pre = browserPrefix();
+  if (pre && u.origin === browserOrigin() && path.indexOf(pre + "/b/") === 0) {
+    path = path.slice(pre.length);
+  }
+  const m = /^\/b\/[^/]+\/([hs])\/([^/]+)(\/.*)?$/.exec(path);
+  if (!m) return "";
+  const inner = (m[1] === "s" ? "https://" : "http://") + m[2]
+              + (m[3] || "/") + u.search + u.hash;
+  try { return new URL(inner).href; } catch (e) { return ""; }
+}
+
+// The same address the other way round, for the one retry a guessed scheme
+// gets. "" when there is nothing to flip.
+function browserFlipScheme(url) {
+  if (url.indexOf("https://") === 0) return "http://" + url.slice(8);
+  if (url.indexOf("http://") === 0) return "https://" + url.slice(7);
+  return "";
 }
 
 // The address as the proxy serves it. Built here rather than asked for per
@@ -184,8 +257,16 @@ function browserRememberedUrl() {
 // places: back, forward, reload, and putting a restored pane back on the page
 // it was already on.
 async function browserNavigate(raw, push = true) {
+  const typed = browserHasScheme(String(raw || "").trim());
   const url = browserNormalize(raw);
   if (!url) return;
+  // A scheme this pane picked is a guess this navigation may have to take
+  // back, and only its failure says so. Held for this navigation alone: the
+  // retry below spells its scheme out, and a landing clears it.
+  browserGuessed = typed ? "" : url;
+  // A new destination is a new navigation, so the one silent re-mint it is
+  // allowed comes back. Back, forward and reload keep whatever is left of it.
+  if (push) browserReminted = false;
   if (!await browserEnsureToken(url)) return;
   const target = browserProxied(url);
   if (!target) { toast("That is not an address to open"); return; }
@@ -214,6 +295,63 @@ async function browserNavigate(raw, push = true) {
   browserSetField(url);
   syncBrowserNav();
   browserRemember(url);
+}
+
+// ---- zoom ------------------------------------------------------------------
+
+// The steps the two buttons walk, a desktop browser's own set. 1 is one of
+// them, so a page that has been zoomed always has a step back to its size.
+const BROWSER_ZOOMS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+
+// Zoom belongs to the host, not to the page: a dev server read at 125% is read
+// at 125% on every page it serves, which is what a desktop browser's per-site
+// zoom does. The port is part of the key — :3000 and :8000 are two apps.
+function browserZoomHost(url) {
+  try { return new URL(url || browserCurrentUrl()).host; } catch (e) { return ""; }
+}
+
+function browserZoomFor(host) {
+  const z = host ? cfg.browserZoom[host] : 0;
+  return typeof z === "number" ? z : 1;
+}
+
+// Ask the page to draw itself at this size. The shell cannot restyle the frame
+// — a proxied page sits on an opaque origin — so the shim the proxy put on it
+// does the work, and "*" is the only targetOrigin that reaches an opaque
+// origin at all. The shim's own check is that the message came from its
+// parent, which is this window.
+function browserPostZoom(factor) {
+  const frame = $("browser-frame");
+  if (!frame || !frame.contentWindow) return;
+  try { frame.contentWindow.postMessage({ type: "pockettui-zoom", zoom: factor }, "*"); }
+  catch (e) { dbg("browse: zoom post failed", e); }
+}
+
+// A zoom the user asked for: applied, remembered against the host, and said
+// out loud — the page resizing under the tap is the only other signal, and a
+// page that ignores it would otherwise look like a dead button.
+function browserSetZoom(factor) {
+  browserPostZoom(factor);
+  const host = browserZoomHost();
+  if (host) {
+    const rec = cfg.browserZoom;
+    if (factor === 1) delete rec[host]; else rec[host] = factor;
+    cfg.browserZoom = rec;
+  }
+  toast("Zoom " + Math.round(factor * 100) + "%");
+}
+
+// One button press. The next step past where the host is rather than the step
+// after its index, so a remembered factor that is not on the list still moves
+// one step the right way. At either end it re-applies what is already set,
+// which is the honest answer to a press that cannot go further.
+function browserStepZoom(delta) {
+  if (!browserZoomHost()) return;          // nothing loaded, nothing to zoom
+  const cur = browserZoomFor(browserZoomHost());
+  const up = BROWSER_ZOOMS.filter((z) => z > cur + 1e-6);
+  const down = BROWSER_ZOOMS.filter((z) => z < cur - 1e-6);
+  const next = delta > 0 ? up[0] : down[down.length - 1];
+  browserSetZoom(next === undefined ? cur : next);
 }
 
 // ---- the two shapes --------------------------------------------------------
@@ -346,7 +484,14 @@ window.addEventListener("message", (e) => {
       browserPush(url);
     }
     browserLoadedUrl = url;
-    browserRemintUrl = "";     // a page that loaded is a token that works
+    // Every document starts at 1, so a host that was left zoomed has to be
+    // told again on each landing. A load reports more than once and this
+    // re-sends on each, which is a postMessage the page ignores as a no-op.
+    const z = browserZoomFor(browserZoomHost(url));
+    if (z !== 1) browserPostZoom(z);
+    // A page that loaded is a token that works and a scheme that was right.
+    browserReminted = false;
+    browserGuessed = "";
     syncBrowserNav();
     browserRemember(url);
     return;
@@ -362,14 +507,31 @@ window.addEventListener("message", (e) => {
 
   if (d.type === "pockettui-browse-error") {
     const code = typeof d.code === "string" ? d.code : "";
-    const url = (typeof d.url === "string" && d.url) || browserCurrentUrl();
-    // The token has a sliding expiry, so a pane left open overnight finds it
-    // gone. One silent re-mint and one retry, then it is news.
-    if (code === "expired" && url && browserRemintUrl !== url) {
-      browserRemintUrl = url;
+    // Where this pane thinks it is, never the address the message carries:
+    // that one is the error page's own location, which is a proxied address,
+    // and retrying it asks the backend to proxy itself — the layer that made
+    // the founder's remembered URL twenty deep.
+    const here = browserCurrentUrl();
+    // The token has a sliding expiry and a restart mints a new one, so a pane
+    // left open finds its own gone. One silent re-mint and one retry per
+    // navigation; a second expiry with nothing landed in between is news.
+    if (code === "expired" && here && !browserReminted) {
+      browserReminted = true;
       browserToken = null;
-      browserNavigate(url, false);
+      browserNavigate(here, false);
       return;
+    }
+    // A scheme this pane guessed, on a host that does not answer it: the other
+    // one, once, in place of this entry rather than after it. The address bar
+    // never showed a scheme, so neither should the stack.
+    if (BROWSE_SCHEME_RETRY[code] && browserGuessed && browserGuessed === here) {
+      const other = browserFlipScheme(here);
+      if (other) {
+        browserGuessed = "";
+        if (browserIdx >= 0) browserStack[browserIdx] = other;
+        browserNavigate(other, false);
+        return;
+      }
     }
     toast(BROWSE_ERRORS[code] || "That page could not be loaded");
   }
@@ -392,6 +554,8 @@ $("btn-browser-reload").addEventListener("click", () => {
   const u = browserCurrentUrl();
   if (u) browserNavigate(u, false);
 });
+$("btn-browser-zoom-out").addEventListener("click", () => browserStepZoom(-1));
+$("btn-browser-zoom-in").addEventListener("click", () => browserStepZoom(1));
 // The relay path, untouched: this hands the address to the phone's own browser
 // exactly as a tapped link used to, port forwarding and all (08-links.js).
 $("btn-browser-tab").addEventListener("click", () => {
@@ -481,7 +645,10 @@ function browserTeardown() {
 // happen under. The full-screen pane covers the list the switch is made from,
 // so a session is never left with one up.
 function browserRestore(s) {
-  browserStack = (s.stack || []).slice();
+  // Through the normaliser rather than as they were kept: a stash written
+  // before a restart can hold a proxied address, and restoring one as a page
+  // address is what the pane would then navigate to.
+  browserStack = (s.stack || []).map((u) => browserNormalize(u));
   browserIdx = typeof s.idx === "number" ? s.idx : browserStack.length - 1;
   if (!s.docked) { syncBrowserNav(); return; }
   openDockedBrowser();
@@ -500,7 +667,8 @@ function browserResetForProfile() {
   browserStack = [];
   browserIdx = -1;
   browserLoadedUrl = "";
-  browserRemintUrl = "";
+  browserReminted = false;
+  browserGuessed = "";
   // Blanked through the frame's own location, not through src: the pane may
   // well be reopened on the new computer, and an src assignment would put an
   // entry on the shell's history that back would spend on the frame.
@@ -514,10 +682,11 @@ function browserResetForProfile() {
 }
 
 // Whether the computer on the other end can proxy pages at all. Strictly
-// checked: a server too old for api/browse 404s the mint, and both the header
-// button and the pill's globe key are hidden rather than left to fail. The key
-// reads its state off the button (buildKeybar, 19-voice-capture.js), so this
-// is the one place the answer lands.
+// checked: a server too old for api/browse 404s the mint, and the pill's globe
+// key stays hidden rather than being left to fail. The header button is not a
+// control any more (the pane is a two-pane feature) — it is what buildKeybar
+// reads the answer off on a rebuild, which is why its hidden state is still
+// kept, and this is the one place either of them is set.
 function syncBrowseCap() {
   const on = hasCapStrict("browse");
   const btn = $("btn-browser");
