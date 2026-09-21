@@ -952,10 +952,18 @@ def view_name(target: str, dev: str) -> str:
     base = f"{dev}-{target}"
     # The name is user-facing on both ends, so it can collide with a real
     # session the user made. Reuse it only when it is already a view of this
-    # target; otherwise step aside rather than attaching to the wrong session.
+    # target — the same *group*, not a group of the same name: a group keeps
+    # the name it was born with, so after a rename the target's group is
+    # called something else entirely (see mint_view_clear_of_stale_group), and
+    # comparing names would step aside from the device's own view on every
+    # reconnect. An ungrouped target has no view yet by definition, so
+    # anything already holding the name is someone else's session.
+    group = session_group(target)
     name = base
     for n in range(2, 10):
-        if not session_exists(name) or session_group(name) == target:
+        if not session_exists(name):
+            return name
+        if group and session_group(name) == group:
             return name
         name = f"{base}-{n}"
     return name
@@ -975,6 +983,58 @@ def attach_argv(target: str, view: str) -> list[str]:
     if session_exists(view):
         return [*TMUX_BIN, "attach", "-d", "-t", f"={view}"]
     return [*TMUX_BIN, "new-session", "-s", view, "-t", f"={target}"]
+
+
+def mint_view_clear_of_stale_group(target: str, view: str) -> bool:
+    """Make `view` ahead of the attach when a stale group named after `target`
+    would otherwise swallow it. Did it make one?
+
+    tmux keys session groups by *name*: a group is named after the session it
+    was born around and keeps that name for as long as any member lives, since
+    `rename-session` renames the session and never its group. Rename `work` to
+    `old` and a group called "work" is left behind holding `old` alone. A new
+    session the user then calls `work` is ungrouped and fine — right up to the
+    moment a device asks for a view of it, because `new-session -t =work` goes
+    through session_group_new("work"), which hands back the *existing* group
+    of that name. The new `work` and its view are pulled into `old`'s group:
+    the phone paints the renamed session's windows, and the new `work` drops
+    off the list, no longer the oldest member of the group it now belongs to.
+
+    The way past it is to name the group ourselves. The target is renamed to a
+    private name, the view is made against that — tmux names the new group
+    after it — and the target is renamed straight back, always, so a failed
+    middle step cannot leave the user's session under a name they never chose.
+    The stale group keeps the renamed session and nothing else.
+
+    The cost is that the target answers only to the temporary name for the two
+    tmux round trips in between, so a request racing this one finds no session
+    under the real name for that long. That is the better end of the trade:
+    the alternative is the device attaching to the wrong session outright.
+    """
+    rows = session_rows()
+    row = find_row(rows, target)
+    # A grouped target already has its group, whatever it is called, and the
+    # attach child joins that one rather than creating anything.
+    if row is None or row["grouped"]:
+        return False
+    if not any(r["grouped"] and r["group"] == target for r in rows):
+        return False
+
+    tmp = f"ptui-grp-{row['sid']}"
+    n = 2
+    while find_row(rows, tmp) is not None:
+        tmp = f"ptui-grp-{row['sid']}-{n}"
+        n += 1
+
+    if tmux("rename-session", "-t", f"={target}", tmp)[0] != 0:
+        return False
+    try:
+        made = tmux("new-session", "-d", "-s", view, "-t", f"={tmp}")[0] == 0
+    finally:
+        tmux("rename-session", "-t", f"={tmp}", target)
+    if made:
+        log(f"minted view={view} clear of the stale group {target!r}")
+    return made
 
 
 def enable_mouse(view: str) -> None:
@@ -1515,6 +1575,12 @@ def api_session_rename(request: Request, body: dict = Body(...)) -> Response:
     The device views grouped onto the session are killed first rather than
     carried across — they are throwaway caches named after the old name, and
     every phone reconnecting mints a fresh view against the new one.
+
+    What the rename cannot touch is the tmux session *group*, which keeps the
+    old name for as long as any member of it lives: after this the session is
+    the sole member of a group still called `old`. That is why nothing here
+    reads a group name as a session name, and why a later session the user
+    gives the old name to needs mint_view_clear_of_stale_group.
     """
     refusal = throttled("session_mutate", RATE_SESSION_MUTATE, request)
     if refusal is not None:
@@ -7625,6 +7691,14 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                 except asyncio.TimeoutError:
                     log(f"conn {cid} previous attachment slow to exit; "
                         "continuing")
+            # A group tmux still holds under this session's name would
+            # swallow the view the attach child is about to make, so the view
+            # is made here instead in that one case (see
+            # mint_view_clear_of_stale_group) and the attach below finds it
+            # waiting. Under the lock and after the history capture: the
+            # target answers to a private name while it runs.
+            await asyncio.to_thread(
+                mint_view_clear_of_stale_group, session_name, view)
             pid, fd = spawn_pty(attach_argv(session_name, view), cols, rows)
             os.set_blocking(fd, False)
             # PTY reads land in this queue via add_reader; None marks the PTY

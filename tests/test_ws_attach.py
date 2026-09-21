@@ -939,6 +939,10 @@ class TestRealTmux:
         rc, out = A.tmux("list-clients", "-t", session, "-F", "#{client_tty}")
         return out.split() if rc == 0 else []
 
+    def windows(self, session):
+        rc, out = A.tmux("list-windows", "-t", session, "-F", "#{window_id}")
+        return out.split() if rc == 0 else []
+
     def test_list_and_representative_rule(self):
         self.new_session("base")
         assert "base" in [s["name"] for s in A.list_sessions()]
@@ -989,6 +993,75 @@ class TestRealTmux:
         assert r.status_code == 200
         assert not A.session_exists("renamed")
         assert not A.session_exists("phone-renamed")
+
+    def test_view_name_reuses_the_view_of_a_renamed_session(self):
+        # A group keeps the name it was born with, so the view of a renamed
+        # session is grouped onto "a" while the session is called "b".
+        # Deciding reuse by group *name* minted a second view here, and
+        # resolve_target then missed the one the device is actually on.
+        self.new_session("a")
+        for args in (("new-session", "-d", "-s", "phone-a", "-t", "=a"),
+                     ("kill-session", "-t", "=phone-a"),
+                     ("rename-session", "-t", "=a", "b"),
+                     ("new-session", "-d", "-s", "phone-b", "-t", "=b")):
+            assert A.tmux(*args)[0] == 0, args
+        assert A.session_group("phone-b") == "a"
+        assert A.view_name("b", "phone") == "phone-b"
+
+        # A session of the user's own under that name still steps aside.
+        assert A.tmux("kill-session", "-t", "=phone-b")[0] == 0
+        assert A.tmux("new-session", "-d", "-s", "phone-b")[0] == 0
+        assert A.view_name("b", "phone") == "phone-b-2"
+
+    def test_a_new_session_under_a_renamed_name_keeps_its_own_windows(
+            self, client, monkeypatch):
+        # The reported bug end to end: rename a session, make a new one with
+        # the old name, and the next attach used to join the renamed
+        # session's group — tmux keys groups by name and the old group
+        # outlives the rename.
+        monkeypatch.setattr(A, "LINGER_S", 0.5)
+        self.new_session("foo")
+        with client.websocket_connect("/ws/attach/foo") as ws:
+            hello(ws)
+            assert wait_for(lambda: self.clients("phone-foo") != [])
+        assert wait_for(lambda: not A.session_exists("phone-foo"), timeout=5)
+
+        resp = client.post("/api/session/rename",
+                           json={"session": "foo", "name": "bar"})
+        assert resp.status_code == 200
+        # The group is the stale part: it is still called "foo".
+        assert A.session_group("bar") == "foo"
+
+        # api_new_session pins ZDOTDIR via `new-session -e`, which tmux only
+        # grew in 3.2 (see test_create_endpoint_end_to_end).
+        if A.tmux("new-session", "-d", "-e", "P=1", "-s", "e-probe")[0] != 0:
+            pytest.skip("this tmux predates new-session -e (3.2), "
+                        "which /api/session depends on")
+        A.tmux("kill-session", "-t", "=e-probe")
+        resp = client.post("/api/session", json={"name": "foo"})
+        assert resp.status_code == 200
+        own = self.windows("foo")
+        assert own and own != self.windows("bar")
+
+        with client.websocket_connect("/ws/attach/foo") as ws:
+            hello(ws)
+            assert wait_for(lambda: self.clients("phone-foo") != [])
+            # The phone is looking at the new session's window, not at bar's,
+            # and the new session kept the window it was made with.
+            assert self.windows("phone-foo") == own
+            assert self.windows("foo") == own
+            # Its own group, under a name of ours; bar keeps the stale one.
+            assert A.session_group("foo").startswith("ptui-grp-")
+            assert A.session_group("phone-foo") == A.session_group("foo")
+            assert A.session_group("bar") == "foo"
+            # The sandwich handed the name back and left nothing behind, and
+            # the new session stands for its own group in the list again.
+            names = [row["name"] for row in A.session_rows()]
+            assert not [n for n in names if n.startswith("ptui-grp-")]
+            reps = {row["name"] for row in A.session_rows()
+                    if row["representative"]}
+            assert {"foo", "bar"} <= reps
+            assert [s["name"] for s in A.list_sessions()].count("foo") == 1
 
     def test_capture_history_returns_scrollback_not_screen(self):
         self.new_session("hist")
