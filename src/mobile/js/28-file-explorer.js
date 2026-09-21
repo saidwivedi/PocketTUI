@@ -1881,10 +1881,6 @@ for (const type of ["dragover", "drop"]) {
 // ---- navigation chrome -----------------------------------------------------
 
 $("btn-files").addEventListener("click", () => openExplorer(""));
-// 42-browser.js defines openBrowser(); guarded the same way the key bar's
-// browser key is, since this button is hidden until a server says it can
-// proxy anyway.
-$("btn-browser").addEventListener("click", () => { if (typeof openBrowser === "function") openBrowser(); });
 $("btn-files-back").addEventListener("click", filesBack);
 
 // Straight back to the terminal, however deep the browsing went. Not

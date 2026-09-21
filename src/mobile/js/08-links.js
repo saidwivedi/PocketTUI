@@ -320,15 +320,23 @@ function isPrivateHost(host) {
   return PRIVATE_HOST_SUFFIXES.some((sfx) => h.endsWith(sfx)) || h === backendHost();
 }
 
-// Whether this tap belongs to the pane rather than to a new tab. Strictly
-// gated on the capability for the reason the relay is: a server too old for
-// api/browse would 404 the mint and leave the tap doing nothing at all.
+// Whether this tap belongs to the pane rather than to a new tab. On a two-pane
+// layout every http(s) URL does: a link printed in the terminal is on the
+// computer, and the founder's rule is that it opens there rather than in the
+// browser of whatever device is holding the app. Public sites are proxied the
+// same way, and the pane's "Open in tab" button is the way out to the device's
+// own browser. Strictly gated on the capability for the reason the relay is:
+// a server too old for api/browse would 404 the mint and leave the tap doing
+// nothing at all. (isPrivateHost is still the list browserNormalize picks a
+// typed address's scheme from, 42-browser.js.)
 function browsePaneWanted(raw) {
+  // Two-pane layouts only: the phone has no way into the pane at all
+  // (founder, 2026-09-21), so a tap there keeps the new-tab relay it had.
+  if (!isWideLayout()) return false;
   if (demoMode || needsSetup() || !hasCapStrict("browse")) return false;
   let u;
   try { u = new URL(raw); } catch (e) { return false; }
-  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
-  return isPrivateHost(u.hostname);
+  return u.protocol === "http:" || u.protocol === "https:";
 }
 
 // A URL printed by a program running on the workstation names a host this phone

@@ -484,11 +484,107 @@ def test_a_head_request_answers_without_a_body(client, site):
 # ---------------------------------------------------------------------------
 
 def test_an_unknown_token_is_an_expired_page(client, site):
+    """With nothing live to point it at — the case below is the other one."""
     r = client.get(f"/b/nosuchtoken/h/127.0.0.1:{site}/")
     assert r.status_code == 403
     assert '"expired"' in r.text
     assert "pockettui-browse-error" in r.text
     assert r.headers["content-security-policy"] == A.BROWSE_SANDBOX
+
+
+def test_an_unknown_token_is_re_pointed_at_the_live_one(client, site):
+    """A restart mints a new token; the addresses the pane holds carry the old.
+
+    Answering those with the live token is what keeps a restart from costing
+    the pane a re-mint and a retry — and the retry was the loop: it was aimed
+    at the error page's own address, which is this proxy's.
+    """
+    tok = mint(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+    r = client.get(f"/b/deadtoken/h/127.0.0.1:{site}/whoami",
+                   follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == f"/b/{tok}/h/127.0.0.1:{site}/whoami"
+    assert client.get(r.headers["location"]).text.startswith("cookie=")
+
+
+def test_an_unknown_token_keeps_the_query_it_arrived_with(client, site):
+    tok = mint(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+    r = client.get(f"/b/deadtoken/h/127.0.0.1:{site}/whoami?q=1&r=2",
+                   follow_redirects=False)
+    assert r.headers["location"] == f"/b/{tok}/h/127.0.0.1:{site}/whoami?q=1&r=2"
+
+
+def test_a_stale_token_under_the_public_prefix_is_re_pointed_too(client, site):
+    tok = mint(client, f"http://127.0.0.1:{site}/").json()["token"]
+    r = client.get(f"/b/deadtoken/h/127.0.0.1:{site}/whoami",
+                   follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == f"{PREFIX}/b/{tok}/h/127.0.0.1:{site}/whoami"
+
+
+# ---------------------------------------------------------------------------
+# The proxy reached through itself
+# ---------------------------------------------------------------------------
+# The founder's runaway: a page left open under a token a restart had replaced
+# reported its own proxied address as where it was, the pane wrapped that as a
+# target, and the backend proxied its own public name — which the loop guard
+# cannot see, because `tailscale serve` fronts it on 443 and the guard knows
+# only LISTEN_PORT. Twenty layers inside a second, and one more per reload.
+#
+# The fixture site stands in for that public name here: a target whose path is
+# itself a proxy path is the shape, whoever is serving it.
+
+def test_a_target_that_is_this_proxy_is_peeled_to_the_real_one(client, site):
+    tok = mint(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+    inner = f"/b/{tok}/h/127.0.0.1:{site}/whoami"
+    r = client.get(f"/b/{tok}/h/127.0.0.1:{site}{inner}", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == inner
+    assert client.get(r.headers["location"]).text.startswith("cookie=")
+
+
+def test_three_layers_are_peeled_in_one_answer(client, site):
+    """Not one layer per round trip: the pane would spend the round trips."""
+    tok = mint(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+    hop = f"/b/{tok}/h/127.0.0.1:{site}"
+    r = client.get(f"{hop}{hop}{hop}/whoami", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == f"{hop}/whoami"
+
+
+def test_a_nested_layer_carrying_the_public_prefix_is_peeled(client, site):
+    """The shape the founder's URL actually had: the prefix is inside it.
+
+    `tailscale serve` strips /pockettui before this server sees the request,
+    so the outer layer arrives bare — but the layer that was wrapped around
+    the public name kept the prefix the browser saw.
+    """
+    tok = mint(client, f"http://127.0.0.1:{site}/").json()["token"]
+    r = client.get(f"/b/{tok}/h/127.0.0.1:{site}{PREFIX}/b/{tok}"
+                   f"/h/127.0.0.1:{site}/whoami", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == f"{PREFIX}/b/{tok}/h/127.0.0.1:{site}/whoami"
+
+
+def test_a_nested_layer_under_a_dead_token_lands_on_the_live_one(client, site):
+    """Both halves at once: the outer token is gone and the path is wrapped."""
+    tok = mint(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+    r = client.get(f"/b/deadtoken/h/127.0.0.1:{site}/b/oldertoken"
+                   f"/h/127.0.0.1:{site}/whoami", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == f"/b/{tok}/h/127.0.0.1:{site}/whoami"
+
+
+def test_an_ordinary_path_that_merely_starts_with_b_is_not_peeled(client, site):
+    """/b/ on the target is only this proxy's when the rest of it matches.
+
+    The 404 is the fixture site's own, which is the assertion: the request
+    went upstream rather than being answered here with a redirect.
+    """
+    tok = mint(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+    r = client.get(f"/b/{tok}/h/127.0.0.1:{site}/b/thing/echo-headers",
+                   follow_redirects=False)
+    assert r.status_code == 404
 
 
 def test_an_expired_record_is_retired_by_the_request_that_finds_it(client, site):
@@ -726,6 +822,15 @@ def test_this_server_is_refused_by_the_socket_route_too(client, echo, monkeypatc
     monkeypatch.setattr(A, "LISTEN_PORT", echo.port)
     assert closed_with(client.websocket_connect(
         f"/b/{tok}/h/127.0.0.1:{echo.port}/echo")) == 4400
+
+
+def test_a_socket_at_this_proxy_is_refused_rather_than_carried(client, echo):
+    """A socket cannot be redirected, so the nested shape is simply not one."""
+    tok = mint(client, f"http://127.0.0.1:{echo.port}/",
+               prefix="").json()["token"]
+    assert closed_with(client.websocket_connect(
+        f"/b/{tok}/h/127.0.0.1:{echo.port}/b/{tok}"
+        f"/h/127.0.0.1:{echo.port}/echo")) == 4400
 
 
 def test_nothing_listening_closes_the_socket_as_a_bad_gateway(client, echo):

@@ -5197,8 +5197,13 @@ def browse_map_url(raw: str, ctx: BrowseCtx) -> str:
     base = f"{ctx.prefix}/b/"
     if u.startswith(base):
         # Already ours. Keeping this idempotent is what lets the shim map a URL
-        # the HTML rewriter has already mapped without doubling the prefix.
-        return raw
+        # the HTML rewriter has already mapped without doubling the prefix; the
+        # peel is what keeps a token this process no longer mints, or a layer
+        # some earlier pass wrapped on, from surviving into the page.
+        inner = browse_peel(u, ctx.prefix)
+        if inner is None:
+            return raw
+        return f"{base}{ctx.tok}/{inner[0]}/{inner[1]}{inner[2]}"
 
     m = _BROWSE_ABS.match(u)
     if m:
@@ -5223,6 +5228,12 @@ def browse_map_url(raw: str, ctx: BrowseCtx) -> str:
     rest = body[cut:]
     if not rest.startswith("/"):
         rest = "/" + rest
+    # An absolute URL whose path is a proxy path is this proxy on some host —
+    # after a restart, its own public name with a dead token inside it. What it
+    # names is the target at the bottom, whichever host was serving the layers.
+    inner = browse_peel(rest, ctx.prefix)
+    if inner is not None:
+        letter, hostport, rest = inner
     return f"{base}{ctx.tok}/{letter}/{hostport}{rest}"
 
 
@@ -5235,6 +5246,34 @@ def browse_unmap_path(path: str, prefix: str) -> tuple[str, str, str] | None:
     if len(parts) < 3 or parts[1] not in ("h", "s") or not parts[2]:
         return None
     return (parts[1], parts[2], "/" + (parts[3] if len(parts) > 3 else ""))
+
+
+# How many layers to undo before a path is just a path. One wrapping begets the
+# next — the founder's was twenty deep within a second — so the bound is only
+# there to keep a crafted address from spinning this loop.
+BROWSE_PEEL_MAX = 32
+
+
+def browse_peel(path: str, prefix: str) -> tuple[str, str, str] | None:
+    """The innermost target of a path that names this proxy, else None.
+
+    `browse_unmap_path` reads one layer under one prefix; this reads as many as
+    are there, under the prefix and bare. Both spellings, because a URL that
+    wrapped itself around this server's public name carries the public prefix
+    inside it, and neither reads the token segment: a layer minted by a process
+    that has since restarted is still this proxy's address.
+    """
+    found = None
+    cur = path
+    for _ in range(BROWSE_PEEL_MAX):
+        un = browse_unmap_path(cur, prefix)
+        if un is None and prefix:
+            un = browse_unmap_path(cur, "")
+        if un is None:
+            break
+        found = un
+        cur = un[2]
+    return found
 
 
 def browse_rewrite_css(text: str, ctx: BrowseCtx) -> str:
@@ -5477,6 +5516,13 @@ var S=document.currentScript,C=null;
 try{C=JSON.parse(S.dataset.cfg)}catch(e){return}
 if(!C)return;
 var B=C.prefix+"/b/"+C.tok+"/",O=location.origin,SKIP=/^(#|data:|blob:|javascript:|mailto:|about:|tel:)/i;
+// This proxy's own path shape, on any host and under any token: B builds, this
+// reads. A restart mints a new token, so a page still open under the old one
+// would otherwise read its own proxied address as somewhere to go and wrap it
+// one layer deeper on every link it follows.
+var RX=new RegExp("^("+C.prefix.replace(/\./g,"\.")+")?/b/[^/]+/([hs])/([^/]+)(/.*)?$");
+function peel(p){var m,o=null;for(var i=0;i<32;i++){m=RX.exec(p);if(!m)break;o=m;p=m[4]||"/"}
+ return o?[o[2],o[3],p]:null}
 function P(f){try{f()}catch(e){}}
 function dport(p){return (p==="https:"||p==="wss:")?"443":"80"}
 function letter(p){return (p==="https:"||p==="wss:")?"s":"h"}
@@ -5487,11 +5533,9 @@ function map(u){
  var r;try{r=new URL(t,document.baseURI)}catch(e){return u}
  var p=r.protocol;
  if(p!=="http:"&&p!=="https:"&&p!=="ws:"&&p!=="wss:")return u;
- var tail=r.pathname+r.search+r.hash;
- if(r.host===location.host){
-  if(r.pathname.indexOf(B)===0)return u;
-  return O+B+C.sch+"/"+C.hostport+tail;
- }
+ var tail=r.pathname+r.search+r.hash,q=peel(r.pathname);
+ if(q)return O+B+q[0]+"/"+q[1]+q[2]+r.search+r.hash;
+ if(r.host===location.host)return O+B+C.sch+"/"+C.hostport+tail;
  return O+B+letter(p)+"/"+r.hostname+":"+(r.port||dport(p))+tail;
 }
 function mapset(v){
@@ -5508,13 +5552,10 @@ function wsmap(u){
 }
 function unmap(h){
  try{
-  var r=new URL(h,location.href);
-  if(r.host!==location.host||r.pathname.indexOf(B)!==0)return r.href;
-  var a=r.pathname.slice(B.length).split("/");
-  if(a.length<2)return r.href;
-  var s=a[0]==="s",hp=a[1];
-  hp=hp.replace(s?/:443$/:/:80$/,"");
-  return (s?"https://":"http://")+hp+"/"+a.slice(2).join("/")+r.search+r.hash;
+  var r=new URL(h,location.href),q=peel(r.pathname);
+  if(!q)return r.href;
+  var s=q[0]==="s";
+  return (s?"https://":"http://")+q[1].replace(s?/:443$/:/:80$/,"")+q[2]+r.search+r.hash;
  }catch(e){return String(h)}
 }
 function report(){P(function(){
@@ -5523,6 +5564,22 @@ function report(){P(function(){
   url:unmap(location.pathname+location.search+location.hash),
   title:document.title},C.origin||"*");
 })}
+// How big this page draws itself, asked for by the pane: the frame is
+// cross-origin, so the shell cannot touch this document's style and has to
+// send the factor in. Only the parent is listened to — anything else on the
+// page can postMessage as well, and a page is not allowed to resize itself
+// out of the pane's record of where it is.
+P(function(){addEventListener("message",function(e){P(function(){
+ if(window.parent===window||e.source!==window.parent)return;
+ var d=e.data;if(!d||d.type!=="pockettui-zoom")return;
+ var z=Number(d.zoom);if(!isFinite(z)||z<0.25||z>5)return;
+ var s=document.documentElement.style;
+ // CSS zoom reflows the page at the new size, which is what a browser's own
+ // zoom does. The transform is the fallback for an engine without it, widened
+ // by the same factor so the scaled layout still fills the frame.
+ if("zoom" in s)s.zoom=z;
+ else{s.transform="scale("+z+")";s.transformOrigin="0 0";s.width=(100/z)+"%"}
+})})});
 P(function(){var f=window.fetch;if(!f)return;
  window.fetch=function(i,o){
   try{
@@ -5982,6 +6039,36 @@ def browse_target(tok: str, sch: str, hostport: str):
     return (rec, "https" if sch == "s" else "http", host, num)
 
 
+def browse_live() -> "BrowseToken | None":
+    """The token this process is minting now, if it still has one."""
+    now = time.time()
+    for rec in BROWSE.values():
+        if browse_expiry(rec) > now:
+            return rec
+    return None
+
+
+def browse_redirect(rec: "BrowseToken", sch: str, hostport: str, path: str,
+                    query: str) -> Response:
+    """A 302 to where this request should have gone, under the live token.
+
+    Two shapes end up here and both are the same arithmetic. A path wrapped
+    around another proxy path is peeled to the target at the bottom of it: left
+    alone, a page reached under a dead token hands its own proxied address back
+    to the pane, which wraps it again, and the address gains a layer per load.
+    A path under a token that no longer exists is re-pointed at the one that
+    does, which is all a backend restart should cost anybody.
+    """
+    inner = browse_peel(path, rec.prefix)
+    if inner is not None:
+        sch, hostport, path = inner
+    dest = f"{rec.prefix}/b/{rec.token}/{sch}/{hostport}{path}"
+    if query:
+        dest += "?" + query
+    return Response(status_code=302,
+                    headers={"location": dest, "cache-control": "no-store"})
+
+
 def browse_error_response(code: str, detail: str, origin: "str | None") -> Response:
     """One failure as the page the iframe renders and the pane listens to."""
     return Response(browse_error_page(code, detail, origin),
@@ -6327,6 +6414,16 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
         rec = BROWSE.get(tok)
         if target == "expired" and rec is not None:
             await browse_drop(rec)
+        live = browse_live() if target == "expired" else None
+        if live is not None and sch in ("h", "s") and ":" in hostport:
+            # A restart mints a new token and every address the pane is still
+            # holding carries the old one. Answering those with the live token
+            # is what keeps a restart from costing the pane a re-mint and a
+            # retry — a retry aimed, as it turned out, at a proxied address.
+            log(f"browse: stale token, {hostport} re-pointed at the live one")
+            return browse_redirect(live, sch, hostport,
+                                   browse_upstream_path(request, rest),
+                                   request.url.query)
         return browse_error_response(
             target, hostport if target in ("loop", "bad_target") else "",
             rec.origin if rec is not None else None)
@@ -6340,6 +6437,14 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
     target_origin = f"{scheme}://{authority}"
 
     path = browse_upstream_path(request, rest)
+    nested = browse_peel(path, rec.prefix)
+    if nested is not None:
+        # This proxy reached through itself. `tailscale serve` fronts it on
+        # 443, so the loop guard — which knows only LISTEN_PORT — does not see
+        # its own public name coming; the path is what gives it away. Answer
+        # with the target at the bottom instead of fetching ourselves.
+        log(f"browse: nested proxy path, unwrapped to {nested[1]}")
+        return browse_redirect(rec, sch, hostport, path, request.url.query)
     url = target_origin + path
     if request.url.query:
         url += "?" + request.url.query
@@ -6549,6 +6654,14 @@ async def api_browse_ws(ws: WebSocket, tok: str, sch: str, hostport: str,
     authority = browse_authority(sch, host, port)
     origin = f"{scheme}://{authority}"
     path = browse_upstream_path(ws, rest)
+    if browse_peel(path, rec.prefix) is not None:
+        # The proxy's own address as a socket target, the HTTP route's nesting
+        # in the one shape that cannot be redirected out of. Refused rather
+        # than peeled: the page that built it is already on the wrong address,
+        # and it will get the right one from the document's own redirect.
+        log(f"browse: nested proxy path refused on a socket to {hostport}")
+        await browse_ws_reject(ws, 4400, "nested")
+        return
     # The URI too: the handshake's Host line comes from it.
     uri = f"{'wss' if secure else 'ws'}://{authority}{path}"
     query = ws.scope.get("query_string", b"").decode("latin-1")
