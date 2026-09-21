@@ -162,6 +162,20 @@
       <path d="M12 7.5v3.6"/>
       <circle cx="12" cy="13.2" r=".6" fill="currentColor" stroke="none"/>
     </symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="8.5"/>
+      <ellipse cx="12" cy="12" rx="3.6" ry="8.5"/>
+      <path d="M3.5 12h17"/>
+    </symbol>
+    <!-- #i-back, mirrored: the browser pane's forward arrow. -->
+    <symbol id="i-forward" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 5l7 7-7 7"/>
+    </symbol>
+    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 6.5H5.5a2 2 0 0 0-2 2V18a2 2 0 0 0 2 2h9.5a2 2 0 0 0 2-2v-3.5"/>
+      <path d="M13.5 4.5H19.5V10.5"/>
+      <path d="M19 5l-8.5 8.5"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -205,6 +219,7 @@
     </div>
     <div class="right">
       <button class="icon-btn" id="btn-files" aria-label="Browse files"><svg><use href="#i-folder"/></svg></button>
+      <button class="icon-btn" id="btn-browser" aria-label="Open a browser" hidden><svg><use href="#i-globe"/></svg></button>
       <button class="icon-btn" id="btn-reload" aria-label="Reload sessions"><svg><use href="#i-reload"/></svg></button>
       <!-- Three named choices rather than a cycle: with one palette chosen for
            light and another for dark, a press has to say which of the two it is
@@ -570,6 +585,46 @@
     <div id="files-list"></div>
     <div id="files-empty">Empty folder</div>
     <div id="files-error">Couldn't read this folder.</div>
+  </div>
+</div>
+
+<!-- ============================================================
+     IN-APP BROWSER
+     ============================================================ -->
+<div class="screen" id="screen-browser">
+  <div class="topbar browser-topbar">
+    <!-- Same button, same reason: hidden until openBrowser sees the terminal
+         behind the pane. -->
+    <button class="icon-btn" id="btn-browser-term" aria-label="Back to the terminal"
+            style="display:none"><svg><use href="#i-logo"/></svg></button>
+    <button class="icon-btn" id="btn-browser-back" aria-label="Back"><svg><use href="#i-back"/></svg></button>
+    <button class="icon-btn" id="btn-browser-fwd" aria-label="Forward"><svg><use href="#i-forward"/></svg></button>
+    <button class="icon-btn" id="btn-browser-reload" aria-label="Reload"><svg><use href="#i-reload"/></svg></button>
+    <!-- Flexes to fill the bar between the arrows and the actions after it —
+         files-path-wrap's job, minus the crumbs; the pane has only ever the
+         one field. -->
+    <div id="browser-url-wrap">
+      <!-- inputmode="url" and autocapitalize/autocorrect off for the same
+           reason the backend address field in Settings uses them: an address
+           is typed, not composed. -->
+      <input type="text" id="browser-url" inputmode="url" autocapitalize="off"
+             autocorrect="off" autocomplete="off" spellcheck="false"
+             placeholder="http://localhost:3000" aria-label="Address">
+    </div>
+    <button class="icon-btn" id="btn-browser-tab" aria-label="Open in a browser tab"><svg><use href="#i-external"/></svg></button>
+    <!-- The docked pane's own two controls, shown only while the browser is
+         beside the terminal rather than over it — files-expand/close's pair. -->
+    <button class="icon-btn dock-only" id="btn-browser-expand"
+            aria-label="Expand the browser pane"><svg><use href="#i-expand"/></svg></button>
+    <button class="icon-btn dock-only" id="btn-browser-close"
+            aria-label="Close the browser pane"><svg><use href="#i-close"/></svg></button>
+  </div>
+  <div class="browser-wrap">
+    <!-- The sandbox list's order is fixed: the backend emits the same string
+         as the proxied page's Content-Security-Policy sandbox header. -->
+    <iframe id="browser-frame" title="Browser"
+            sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads allow-popups-to-escape-sandbox"
+            allow="fullscreen" referrerpolicy="no-referrer"></iframe>
   </div>
 </div>
 

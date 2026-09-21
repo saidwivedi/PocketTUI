@@ -20,7 +20,7 @@ const SIDE_TERM_MIN = 320;
 // The narrowest each pane is worth drawing at. Below 300 a hunk header wraps
 // and the diff stops being readable at all; the explorer's bar carries a path
 // plus five controls and needs the extra.
-const SIDE_MIN = { diff: 300, files: 340 };
+const SIDE_MIN = { diff: 300, files: 340, browser: 360 };
 
 let sideOwner = null;   // "diff", "files" or null — who holds the slot
 let sideWidth = 0;      // 0 until sized — see sideClaim()

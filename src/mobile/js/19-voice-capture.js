@@ -1769,6 +1769,10 @@ function buildKeybar() {
     // it: reportAvailable() cannot be asked on the first build, which runs
     // before 35-report.js does.
     if (k.report) b.classList.toggle("show", $("report-row").classList.contains("show"));
+    // Gated on the capability directly, the same idea as the report key's
+    // gate: no server old enough to lack /api/browse can proxy anything for
+    // the pane to show.
+    if (k.browser) b.classList.toggle("show", typeof hasCapStrict === "function" && hasCapStrict("browse"));
     if (k.mod) modButtons[k.mod] = b;
     // Every key but the focusing ones must leave focus exactly where it is:
     // stealing it would drop the soft keyboard, and handing it back would raise
@@ -1871,6 +1875,10 @@ function buildKeybar() {
       if (swiped) { swiped = false; return; }   // the swipe already sent its alternate
       if (k.compose) { toggleCompose(); return; }
       if (k.files) { openFilesAtCwd(); return; }
+      // 42-browser.js defines openBrowser(); guarded the same way
+      // btn-browser's own click handler is, so this key does nothing until
+      // it lands.
+      if (k.browser) { if (typeof openBrowser === "function") openBrowser(); return; }
       if (k.report) { openReport(); return; }
       if (k.arrows) { setArrows(true); return; }
       if (k.collapse) { setArrows(false); return; }

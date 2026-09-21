@@ -1673,6 +1673,7 @@ html.term-open, body.term-open {
      do not carry: it is here only while there is a backend to report about. */
   #keybar > .k-files,
   #keybar > .k-report.show,
+  #keybar > .k-browser.show,
   #keybar > .k-compose {
     display: inline-flex;
     /* The docked row shares its slack from a basis of 0; in a pill that is
@@ -1697,6 +1698,7 @@ html.term-open, body.term-open {
      paints the border back in. */
   .keybar > .k-files,
   .keybar > .k-report,
+  .keybar > .k-browser,
   .keybar > .k-compose {
     background: transparent;
     border-color: transparent;
@@ -3298,14 +3300,17 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .dock-only { display: none; }
 
 @media (min-width: 768px) and (min-height: 500px) {
-  #screen-files.docked .dock-only { display: inline-flex; }
+  #screen-files.docked .dock-only,
+  #screen-browser.docked .dock-only { display: inline-flex; }
   /* Living inside #screen-term is what saves the diff pane a visibility rule;
      this pane is a screen of its own, so it says the same thing in a selector:
      it is only on view while the terminal it is docked to is. The plain
      .docked rule outweighs .screen.active, and the sibling rule outweighs
      both. */
-  #screen-files.docked { display: none; }
-  #screen-term.active ~ #screen-files.docked.active {
+  #screen-files.docked,
+  #screen-browser.docked { display: none; }
+  #screen-term.active ~ #screen-files.docked.active,
+  #screen-term.active ~ #screen-browser.docked.active {
     display: flex;
     flex-direction: column;
     position: fixed;
@@ -3325,7 +3330,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* Expanded: the pane takes the whole main area and the terminal sits under
      it — the phone's full-screen explorer, seated beside the rail. The seam
      goes with the split it no longer divides. */
-  #screen-term.side-full.active ~ #screen-files.docked.active {
+  #screen-term.side-full.active ~ #screen-files.docked.active,
+  #screen-term.side-full.active ~ #screen-browser.docked.active {
     left: calc(var(--sidebar-w) + var(--rail-gutter));
     width: auto;
   }
@@ -3341,7 +3347,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
      the bar stays put because it is the flex item that does not scroll, not
      because it is stuck to a viewport. Still positioned — #files-suggest is
      absolute against it. */
-  #screen-files.docked .topbar {
+  #screen-files.docked .topbar,
+  #screen-browser.docked .topbar {
     position: relative;
     top: 0;
     flex: 0 0 auto;
@@ -3357,8 +3364,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   /* The rail's own compaction, for the same reason: eight controls and a path
      across 340px, where the phone's bar had the whole window. */
-  #screen-files.docked .icon-btn { padding: 6px; }
-  #screen-files.docked .icon-btn svg { width: 17px; height: 17px; }
+  #screen-files.docked .icon-btn,
+  #screen-browser.docked .icon-btn { padding: 6px; }
+  #screen-files.docked .icon-btn svg,
+  #screen-browser.docked .icon-btn svg { width: 17px; height: 17px; }
   #screen-files.docked #btn-files-view { padding: 5px 8px; font-size: 12px; }
   #screen-files.docked #btn-files-ref {
     padding: 5px 8px; font-size: 12px; max-width: 92px;
@@ -3386,6 +3395,38 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 .sheet-menu button:active { transform: scale(0.98); background: var(--card-2); }
 .sheet-menu button.danger { color: var(--bad); }
+
+/* ============================================================
+   IN-APP BROWSER
+   ============================================================ */
+#screen-browser {
+  padding-top: var(--safe-top);
+  padding-bottom: calc(40px + var(--safe-bot));
+}
+.browser-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+/* Absolute against the wrap rather than sized to its own content — the iOS
+   iframe-height fix. */
+#browser-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--paper);
+}
+#browser-url-wrap { flex: 1; min-width: 0; display: flex; }
+/* Same field as #files-path-input, compacted for the topbar row. */
+#browser-url {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+#browser-url:focus { border-color: var(--umber); outline: none; }
 
 /* ============================================================
    EDITOR
@@ -3690,7 +3731,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-term, #screen-editor, #screen-reader {
     left: calc(var(--sidebar-w) + var(--rail-gutter));
   }
-  #screen-files { margin-left: calc(var(--sidebar-w) + var(--rail-gutter)); }
+  #screen-files, #screen-browser { margin-left: calc(var(--sidebar-w) + var(--rail-gutter)); }
 
   /* The rail's row for the session open in the main pane, in the accent the
      app already speaks. The phone never shows the list and a terminal
@@ -3713,7 +3754,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* No folder button on the rail: the terminal beside it has the key bar's
      folder key and, since paths in it are links, the folders it prints. The
      phone's list keeps its button — there the list is a screen of its own. */
-  #screen-list #btn-files { display: none; }
+  #screen-list #btn-files,
+  #screen-list #btn-browser { display: none; }
   @container (max-width: 280px) {
     #screen-list .right { gap: 0; padding-left: 4px; }
   }
@@ -3852,6 +3894,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   #screen-term.active ~ #wide-empty,
   #screen-files.active ~ #wide-empty,
+  #screen-browser.active ~ #wide-empty,
   #screen-editor.active ~ #wide-empty,
   #screen-reader.active ~ #wide-empty { display: none; }
 
