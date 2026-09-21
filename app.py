@@ -1445,6 +1445,11 @@ def server_capabilities() -> dict:
         # /api/fs/thumb — the explorer grid's tiles. False on an install with
         # no ffmpeg to render them with, where the grid keeps its icons.
         "thumbs": ffmpeg_exe() is not None,
+        # /api/fs/thumb for a .pdf, whose page one needs a renderer ffmpeg's
+        # presence says nothing about — a machine can have ffmpeg and no
+        # poppler, so this is its own flag rather than part of "thumbs". False
+        # there, and the grid keeps the pdf icon.
+        "pdf_thumbs": pdf_renderer() is not None,
     }
 
 
@@ -3327,6 +3332,10 @@ MEDIA_TYPES = {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
     ".mov": "video/quicktime",
+    # Served like the pictures above rather than downloaded: every browser has
+    # a PDF reader of its own, and FileResponse streams the file with Range
+    # support, so a hundred-page scan costs no more up front than a photo.
+    ".pdf": "application/pdf",
 }
 
 
@@ -3362,7 +3371,7 @@ def media_file(raw: str) -> tuple[Path, str] | None:
 
 @app.get("/api/file")
 def api_file(request: Request, path: str = "") -> Response:
-    """Serve an image or video by absolute path, for tap-to-view in the terminal.
+    """Serve an image, video or PDF by absolute path, for tap-to-view in the terminal.
 
     Every rejection answers 404 alike, so a probe learns nothing about which
     check failed — or about what exists. Range requests (which iOS video needs)
@@ -4073,7 +4082,10 @@ THUMB_MAX_PX = 256
 # dictation's decode runs against a spinner they expect to wait on.
 THUMB_TIMEOUT_S = 10
 # Every media type but SVG, which is vector art ffmpeg does not rasterise.
-# The grid shows its own icon for anything not listed here.
+# The grid shows its own icon for anything not listed here. A PDF is in, but
+# only halfway: ffmpeg rasterises it no more than it does an SVG, so page one
+# is rendered by one of the tools below first and the scale step then treats
+# that page as the picture it is.
 THUMB_EXTS = frozenset(MEDIA_TYPES) - {".svg"}
 # The containers that can hold an alpha channel, whose tiles are PNGs so a
 # transparent source stays transparent instead of being flattened onto black.
@@ -4138,9 +4150,64 @@ def render_thumb(src: Path, out: Path, video: bool) -> bool:
     return False
 
 
+# Page one of a PDF, as the PNG the scale step above then makes a tile of.
+# Whichever of these the machine has, first found wins: poppler's pdftoppm is
+# what a Linux box with any PDF tooling carries, Ghostscript is the fallback
+# where it is not, and sips renders page one natively on a Mac, so a Mac needs
+# nothing installed at all. With none of the three there are no PDF tiles —
+# see the pdf_thumbs capability, which is this hunt's answer.
+PDF_RENDERERS = ("pdftoppm", "gs", "sips")
+# A point per pixel. Every page bigger than 3.6 inches on its long side
+# therefore arrives larger than a tile and is scaled down to exactly the bound
+# the pictures get, and a smaller page stays its own size — which is what the
+# scale filter would have done with it anyway.
+THUMB_PDF_DPI = 72
+
+
+def pdf_renderer() -> tuple[str, str] | None:
+    """The PDF page renderer this install has, as (name, path), or None."""
+    for name in PDF_RENDERERS:
+        exe = shutil.which(name)
+        if exe:
+            return name, exe
+    return None
+
+
+def render_pdf_page(src: Path, out: Path) -> bool:
+    """Write page one of `src` to `out` (a .png). False when it could not.
+
+    Page one alone in every flavour: a tile is the cover, and rendering a
+    thousand-page report to throw all of it away but the first page is the one
+    way this route could cost real time. Bounded by THUMB_TIMEOUT_S like the
+    ffmpeg run it feeds, and judged on the file it produced rather than on the
+    exit code alone, for render_thumb's reason.
+    """
+    found = pdf_renderer()
+    if found is None:
+        return False
+    name, exe = found
+    if name == "pdftoppm":
+        # It appends the format's own suffix to the name it is given, so what
+        # it wants is `out` with the suffix taken back off.
+        cmd = [exe, "-singlefile", "-f", "1", "-l", "1", "-r", str(THUMB_PDF_DPI),
+               "-png", str(src), str(out.with_suffix(""))]
+    elif name == "gs":
+        cmd = [exe, "-q", "-dNOPAUSE", "-dBATCH", "-sDEVICE=png16m",
+               "-dFirstPage=1", "-dLastPage=1", f"-r{THUMB_PDF_DPI}",
+               f"-sOutputFile={out}", str(src)]
+    else:
+        cmd = [exe, "-s", "format", "png", str(src), "--out", str(out)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=THUMB_TIMEOUT_S)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return proc.returncode == 0 and out.exists() and out.stat().st_size > 0
+
+
 @app.get("/api/fs/thumb")
 def api_fs_thumb(request: Request, path: str = "") -> Response:
-    """A small image of an image or video file, for the explorer's grid tiles.
+    """A small image of an image, a video or a PDF's first page, for the grid's tiles.
 
     Path handling is /api/fs/read's, with media_file()'s resolve() on top
     because the cache is keyed on the file the bytes actually came from. The
@@ -4172,6 +4239,13 @@ def api_fs_thumb(request: Request, path: str = "") -> Response:
         return fs_error("not_found", 404)
     if p.suffix.lower() not in THUMB_EXTS:
         return fs_error("unsupported_type", 415)
+    # A PDF on a machine with no renderer for one is the same answer an .svg
+    # gets, not a failed render: nothing here can ever make that tile, and the
+    # grid shows the file's own icon for it. The client knows as much from the
+    # pdf_thumbs capability and does not normally ask.
+    pdf = p.suffix.lower() == ".pdf"
+    if pdf and pdf_renderer() is None:
+        return fs_error("unsupported_type", 415)
 
     etag = f'"{thumb_key(p, st)}"'
     headers = {"Cache-Control": "private, max-age=3600", "ETag": etag}
@@ -4190,7 +4264,14 @@ def api_fs_thumb(request: Request, path: str = "") -> Response:
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / f"thumb{suffix}"
         video = MEDIA_TYPES[p.suffix.lower()].startswith("video/")
-        if not render_thumb(p, out, video):
+        # A PDF reaches the scale step as the page just rasterised beside it,
+        # so the bound, the encoder and the timeout are the pictures' own.
+        src = p
+        if pdf:
+            src = Path(tmp) / "page.png"
+            if not render_pdf_page(p, src):
+                return fs_error("thumb_failed", 422)
+        if not render_thumb(src, out, video):
             return fs_error("thumb_failed", 422)
         data = out.read_bytes()
     try:

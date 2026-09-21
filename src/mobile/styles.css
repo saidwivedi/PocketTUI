@@ -2842,6 +2842,21 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* showImage() picks one of these per open; this is just the at-rest default so
    they never both render before the first tap sets it explicitly. */
 .viewer video { display: none; }
+/* The PDF frame fills the box it is given rather than being letterboxed inside
+   it: there is no aspect ratio to keep, and the reader has margins of its own.
+   Sized off the box and not the window, so it goes on filling whatever the
+   viewer is. White underneath, because a page is paper whatever the theme. */
+.viewer iframe {
+  display: none;
+  width: 100%; height: 100%;
+  border: 0;
+  border-radius: 4px;
+  background: #fff;
+}
+/* A PDF is the one tenant that draws a toolbar of its own, along the top edge
+   where this overlay keeps its buttons: the frame starts below them rather
+   than under them, so neither row is a press the other swallows. */
+.viewer.pdf { padding-top: calc(56px + var(--safe-top)); }
 /* Download and close, in the corner the X alone used to hold. */
 .viewer .viewer-actions {
   position: absolute;
@@ -3397,7 +3412,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
 
 @media (min-width: 768px) and (min-height: 500px) {
   #screen-files.docked .dock-only,
-  #screen-browser.docked .dock-only { display: inline-flex; }
+  #screen-browser.docked .dock-only,
+  #screen-editor.docked .dock-only,
+  #screen-reader.docked .dock-only,
+  #viewer.docked .dock-only { display: inline-flex; }
   /* Living inside #screen-term is what saves the diff pane a visibility rule;
      this pane is a screen of its own, so it says the same thing in a selector:
      it is only on view while the terminal it is docked to is. The plain
@@ -3439,6 +3457,50 @@ html.term-open #dbg-panel { opacity: 0.85; }
      nothing beside them to out-stack. */
   #screen-editor, #screen-reader { z-index: 65; }
 
+  /* A file opened from the docked pane opens in the pane: the same slot, the
+     same width, expanding with it, and the listing left active underneath —
+     so the slot stays claimed and one cross still closes one thing
+     (28-file-explorer.js). Only the box is said here: each of these screens
+     keeps its own paper, padding and layout, which is what makes this a rule
+     rather than a second copy of the pane. Above the listing it covers and
+     below the seam at 60, which is still there to drag. */
+  #screen-term.active ~ #screen-editor.docked.active,
+  #screen-term.active ~ #screen-reader.docked.active,
+  #screen-term.active ~ #viewer.docked.show {
+    top: 0; right: 0; bottom: 0;
+    left: auto;
+    width: var(--side-w);
+    z-index: 56;
+  }
+  #screen-term.side-full.active ~ #screen-editor.docked.active,
+  #screen-term.side-full.active ~ #screen-reader.docked.active,
+  #screen-term.side-full.active ~ #viewer.docked.show {
+    left: calc(var(--sidebar-w) + var(--rail-gutter));
+    width: auto;
+  }
+  /* Docked, the viewer is the pane rather than a room the lights went out in:
+     the near-opaque ground exists so an image can be judged against nothing,
+     and here the thing beside it is a live terminal that must not be dimmed.
+     The pane's own paper and grain, for the reason the listing gives. */
+  #screen-term.active ~ #viewer.docked.show {
+    background-color: var(--paper);
+    background-image: var(--grain);
+    background-size: 200px 200px;
+  }
+  /* The row is the pane's bar now, so it spans the pane: the arrow sits at the
+     left edge where the editor's and the reader's back sits, and the rest keep
+     the corner they have always had. */
+  #viewer.docked .viewer-actions { left: 10px; }
+  #viewer.docked #btn-viewer-back { margin-right: auto; }
+  /* On paper the row's dark chips would be four inkblots over a photograph;
+     the pane's own icon buttons are what a bar in here looks like. */
+  #viewer.docked .viewer-btn { color: var(--secondary); background: transparent; }
+  #viewer.docked .viewer-btn:hover { color: var(--ink); background: var(--umber-tint); }
+  /* The full-screen shape's own close. Docked the arrow at the head of the row
+     is the way back and the cross before this one ends the pane, and a third
+     way out wearing a second × would be a coin flip. */
+  #viewer.docked .viewer-close { display: none; }
+
   /* The page-scrolling screen becomes a column that scrolls inside itself:
      the bar stays put because it is the flex item that does not scroll, not
      because it is stuck to a viewport. Still positioned — #files-suggest is
@@ -3461,9 +3523,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* The rail's own compaction, for the same reason: eight controls and a path
      across 340px, where the phone's bar had the whole window. */
   #screen-files.docked .icon-btn,
-  #screen-browser.docked .icon-btn { padding: 6px; }
+  #screen-browser.docked .icon-btn,
+  #screen-editor.docked .icon-btn,
+  #screen-reader.docked .icon-btn { padding: 6px; }
   #screen-files.docked .icon-btn svg,
-  #screen-browser.docked .icon-btn svg { width: 17px; height: 17px; }
+  #screen-browser.docked .icon-btn svg,
+  #screen-editor.docked .icon-btn svg,
+  #screen-reader.docked .icon-btn svg { width: 17px; height: 17px; }
   #screen-files.docked #btn-files-view { padding: 5px 8px; font-size: 12px; }
   #screen-files.docked #btn-files-ref {
     padding: 5px 8px; font-size: 12px; max-width: 92px;

@@ -548,15 +548,18 @@ async function openReader(path) {
   body.appendChild(mdRender(data.content));
   mdTypeset(body);
   $("reader-scroll").scrollTop = 0;
-  $("screen-files").classList.remove("active");
+  // In the pane if that is where the file was tapped, over the whole window
+  // otherwise, and docked it pushes no entry — the editor's rule, for the same
+  // reason (dockFileView, 28-file-explorer.js).
+  const docked = dockFileView($("screen-reader"));
   $("screen-reader").classList.add("active");
-  history.pushState({ reader: true }, "", location.href);
+  if (!docked) history.pushState({ reader: true }, "", location.href);
   if (data.lossy) toast("Not valid UTF-8 — some characters are missing");
 }
 
 function closeReader() {
   $("screen-reader").classList.remove("active");
-  $("screen-files").classList.add("active");
+  undockFileView($("screen-reader"));
   $("reader-body").innerHTML = "";
   readerPath = "";
 }
@@ -578,6 +581,9 @@ function readerStash() {
   const s = { path: readerPath, scroll: scroll, page: page };
   readerPath = "";
   $("screen-reader").classList.remove("active");
+  // The shape goes with the screen rather than into the record: the restore
+  // asks the pane it comes back to, which is the pane this session left.
+  $("screen-reader").classList.remove("docked");
   return s;
 }
 
@@ -588,7 +594,7 @@ function readerRestore(s) {
   const body = $("reader-body");
   body.innerHTML = "";
   body.appendChild(s.page);
-  $("screen-files").classList.remove("active");
+  dockFileView($("screen-reader"));
   $("screen-reader").classList.add("active");
   // After the class, and after a layout has actually been computed from it: the
   // screen was display:none a statement ago, and a scrollTop set against a box
@@ -598,7 +604,12 @@ function readerRestore(s) {
   box.scrollTop = s.scroll;
 }
 
-$("btn-reader-back").addEventListener("click", () => history.back());
+// Docked the reader pushed no entry, so its own back is the close rather than
+// a pop — the editor's arrangement, and there is nothing here to ask about.
+$("btn-reader-back").addEventListener("click", () => {
+  if ($("screen-reader").classList.contains("docked")) closeReader();
+  else history.back();
+});
 // The .md file itself rather than the page rendered from it. No size here, so
 // downloadFile() takes the browser's way round.
 $("btn-reader-download").addEventListener("click", () => {
@@ -614,6 +625,7 @@ $("btn-reader-edit").addEventListener("click", async () => {
   await openEditor(readerPath, { noHistory: true });
   if ($("screen-editor").classList.contains("active")) {
     $("screen-reader").classList.remove("active");
+    $("screen-reader").classList.remove("docked");
     $("reader-body").innerHTML = "";
     readerPath = "";
   }

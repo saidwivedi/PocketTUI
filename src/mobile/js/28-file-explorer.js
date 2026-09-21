@@ -75,6 +75,10 @@ let filesRepoAsked = "";
 // over /api/file rather than in the editor.
 const FILES_MEDIA_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|mp4|webm|mov)$/i;
 
+// A PDF is servable media too (it is in the same allowlist), but it opens its
+// own way rather than in the viewer's image path — see openPdf below.
+const FILES_PDF_RE = /\.pdf$/i;
+
 // Markdown opens rendered, in the reader (33-md-reader.js), rather than in the
 // editor — Edit there is one tap away.
 const FILES_MD_RE = /\.(?:md|markdown)$/i;
@@ -229,9 +233,12 @@ function closeExplorer() {
 function syncFilesExpand() {
   const on = filesDocked && filesExpanded;
   $("screen-term").classList.toggle("side-full", on);
-  const btn = $("btn-files-expand");
-  btn.querySelector("use").setAttribute("href", on ? "#i-collapse" : "#i-expand");
-  btn.setAttribute("aria-label", on ? "Shrink the file pane" : "Expand the file pane");
+  // Every bar the pane can wear one in: the listing's own, and the editor's,
+  // the reader's and the viewer's while a file is open in it.
+  for (const btn of document.querySelectorAll(".dock-expand")) {
+    btn.querySelector("use").setAttribute("href", on ? "#i-collapse" : "#i-expand");
+    btn.setAttribute("aria-label", on ? "Shrink the file pane" : "Expand the file pane");
+  }
 }
 
 // Opening the pane a second time is a navigation within it, not a fresh entry:
@@ -255,6 +262,9 @@ function openDockedFiles(path) {
 
 function closeDockedFiles() {
   if (!filesDocked) return;
+  // A file opened in the pane goes with the pane, and the editor gets the same
+  // say about unsaved work that its own back gives it.
+  if (!closeDockedFileView()) return;
   closeFilesMenus();
   closePathEdit();
   filesDocked = false;
@@ -265,6 +275,51 @@ function closeDockedFiles() {
   $("screen-files").classList.remove("active");
   syncFilesExpand();         // takes .side-full off the terminal with it
   sideDrop("files");
+}
+
+// ---- a file opened in the pane ---------------------------------------------
+// The editor, the reader and the media viewer open inside the docked pane
+// rather than over the whole window: same slot, same width, and the listing
+// left active underneath them, so the slot stays claimed and closing the pane
+// still closes one thing. The class is the whole of it — the geometry is the
+// stylesheet's — and a phone, which has no pane, never gets it. The answer is
+// handed back because the two shapes differ in more than geometry: the
+// full-screen one owns a history entry and the docked one owns none.
+function dockFileView(el) {
+  if (filesDocked) { el.classList.add("docked"); return true; }
+  el.classList.remove("docked");
+  // Full screen the view covers the explorer rather than sitting in it, and
+  // an active screen under another one would be two screens at once.
+  $("screen-files").classList.remove("active");
+  return false;
+}
+
+// The mirror, asked of the screen itself rather than of filesDocked: a view
+// opened in one shape has to be put away in the one it was opened in.
+function undockFileView(el) {
+  if (el.classList.contains("docked")) { el.classList.remove("docked"); return true; }
+  $("screen-files").classList.add("active");
+  return false;
+}
+
+// Which of the three the pane is showing over its listing, or null for none.
+function dockedFileView() {
+  for (const id of ["screen-editor", "screen-reader", "viewer"]) {
+    if ($(id).classList.contains("docked")) return $(id);
+  }
+  return null;
+}
+
+// Put that view away. False is the editor asking about unsaved work and being
+// told to stay: the press that got here is spent on the question, and whatever
+// was going to close the pane has to stand down with it.
+function closeDockedFileView() {
+  const el = dockedFileView();
+  if (!el) return true;
+  if (el.id === "screen-editor") return editorCloseDocked();
+  if (el.id === "screen-reader") closeReader();
+  else hideImage();
+  return true;
 }
 
 // The docked pane owns no history entries, so its back arrow has to do what a
@@ -283,13 +338,20 @@ function filesBack() {
   closeDockedFiles();
 }
 
-$("btn-files-expand").addEventListener("click", () => {
-  filesExpanded = !filesExpanded;
-  cfg.filesExpanded = filesExpanded;
-  syncFilesExpand();
-  refit(0);
-});
-$("btn-files-close").addEventListener("click", () => closeDockedFiles());
+// Wired by class rather than by id: the pane's two controls appear in four
+// bars now — the listing's, and one per file view seated over it — and they do
+// the same thing in all of them.
+for (const btn of document.querySelectorAll(".dock-expand")) {
+  btn.addEventListener("click", () => {
+    filesExpanded = !filesExpanded;
+    cfg.filesExpanded = filesExpanded;
+    syncFilesExpand();
+    refit(0);
+  });
+}
+for (const btn of document.querySelectorAll(".dock-close")) {
+  btn.addEventListener("click", () => closeDockedFiles());
+}
 
 // The pane a session comes back to with no folder to put in it: a reload
 // remembered that this session had the explorer docked (cfg.sidePane), and the
@@ -1067,6 +1129,10 @@ function wantsThumb(e) {
   if (e.type === "dir" || !thumbsOn()) return false;
   if (/\.svg$/i.test(e.name)) return false;
   const kind = fileKind(e.name);
+  // A PDF's tile is its first page, rasterised by a tool ffmpeg's presence
+  // says nothing about — a machine can have ffmpeg and no PDF renderer — so it
+  // has a capability of its own, and without it the tile keeps the pdf icon.
+  if (kind === "pdf") return hasCapStrict("pdf_thumbs");
   return kind === "image" || kind === "video";
 }
 
@@ -1386,6 +1452,11 @@ function openEntry(e, dir=filesPath) {
     else showImage(full);
     return;
   }
+  if (FILES_PDF_RE.test(e.name)) {
+    if (filesRef) toast("Can't preview PDFs from " + filesRef);
+    else openPdf(full);
+    return;
+  }
   if (FILES_MD_RE.test(e.name)) { openReader(full); return; }
   if (FILES_HTML_RE.test(e.name) && !filesRef) { openRendered(full); return; }
   openEditor(full);
@@ -1406,6 +1477,38 @@ async function openRendered(path) {
   let url;
   try {
     const r = await fetch(apiURL("api/fs/render_link?path=" + encodeURIComponent(path)),
+                          { cache: "no-store", headers: authHeaders() });
+    if (r.status === 401) { rejectToken(); return; }
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    url = apiURL((await r.json()).url);
+  } catch (e) {
+    toast("Couldn't open " + baseName(path));
+    return;
+  }
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// A PDF opens two ways, because a phone browser will not draw one in a frame:
+// iOS Safari paints page one of an <iframe>'d PDF and stops there, and Android
+// Chrome paints nothing at all. So a two-pane layout gets the viewer, where an
+// image of the same tap lands, and a phone gets a tab — both of those browsers
+// have a reader, they just will not lend it to a frame. The mint and the
+// anchor are openRendered's above, over the viewer's signed link rather than
+// the page one's, and the mint costs the click its synchrony for the same
+// reason. Nothing is capped on the way: the file is streamed, by Range, from
+// whichever of the two is showing it.
+async function openPdf(path) {
+  if (isWideLayout()) { showImage(path); return; }
+  let url;
+  try {
+    const r = await fetch(apiURL("api/file_link?path=" + encodeURIComponent(path)),
                           { cache: "no-store", headers: authHeaders() });
     if (r.status === 401) { rejectToken(); return; }
     if (!r.ok) throw new Error("HTTP " + r.status);
@@ -1913,6 +2016,21 @@ $("btn-files-term").addEventListener("click", jumpToTerminal);
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!$("screen-files").classList.contains("active")) return;
+  // A file open in the pane is the top thing to dismiss, and it goes back to
+  // the listing rather than closing the pane — the in-pane back arrow's job.
+  // Scoped to a press aimed inside it for the reason below. The viewer answers
+  // its own Escape first (09-image-viewer.js) and stops the key there, so this
+  // reaches it only where that handler stood aside.
+  const view = dockedFileView();
+  if (view) {
+    if (!view.contains(e.target)) return;
+    // Not out of the buffer: inside CodeMirror the key is the document's own —
+    // vim's way out of insert mode, and the only way out there is.
+    if (view.id === "screen-editor" && $("editor-host").contains(e.target)) return;
+    e.preventDefault();
+    closeDockedFileView();
+    return;
+  }
   // Docked, the terminal beside the pane is live and Escape is one of its
   // keys — so only a press aimed inside the pane is the pane's to answer.
   if (filesDocked && !$("screen-files").contains(e.target)) return;
@@ -1937,8 +2055,13 @@ document.addEventListener("keydown", (e) => {
 // back unwinds them one screen at a time. The terminal's own popstate handler
 // ignores these pops — #screen-term is not active while either screen is up.
 window.addEventListener("popstate", () => {
-  if ($("screen-editor").classList.contains("active")) { editorPopped(); return; }
-  if ($("screen-reader").classList.contains("active")) { closeReader(); return; }
+  // Docked, these two pushed nothing either (dockFileView above), so a pop is
+  // never theirs: it is the terminal's, and the terminal's own handler takes
+  // it — the pane and the file in it go down together with the session.
+  if (!dockedFileView()) {
+    if ($("screen-editor").classList.contains("active")) { editorPopped(); return; }
+    if ($("screen-reader").classList.contains("active")) { closeReader(); return; }
+  }
   // The docked pane pushed nothing, so no pop is ever its own: this one is the
   // terminal's, and closeTerminal() above has already spent it.
   if (filesDocked) return;

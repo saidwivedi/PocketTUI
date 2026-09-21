@@ -219,13 +219,13 @@ function edDefineVimEx() {
     // Discarding is dropping the dirty flag before the pop: editorPopped's
     // confirm is what a bare :q is meant to hit and a :q! is meant to skip.
     if (bang(params)) edSetDirty(false);
-    history.back();
+    editorLeave();
   };
   const saveQuit = async () => {
     // editorSave clears dirty only on a write that landed, and no-ops on a
     // read-only buffer — either way, closing is what did not fail.
     if (!edReadOnly) await editorSave();
-    if (!edDirty) history.back();
+    if (!edDirty) editorLeave();
   };
   // The filename argument is ignored: this editor has exactly one file open.
   V.defineEx("write", "w", () => { editorSave(); });
@@ -269,9 +269,15 @@ async function openEditor(path, opts) {
   edSyncVimButton();
   if (cfg.editorVimOn) { edDefineVimEx(); edLoadVimrc(); }
 
-  $("screen-files").classList.remove("active");
+  // In the pane if that is where the file was tapped, over the whole window
+  // otherwise (dockFileView, 28-file-explorer.js). Docked it pushes no entry:
+  // every other interaction in the pane pushes none either, and back beside a
+  // live terminal is the terminal's.
+  const docked = dockFileView($("screen-editor"));
   $("screen-editor").classList.add("active");
-  if (!(opts && opts.noHistory)) history.pushState({ editor: true }, "", location.href);
+  if (!docked && !(opts && opts.noHistory)) {
+    history.pushState({ editor: true }, "", location.href);
+  }
   if (lossy) toast("Not valid UTF-8 — opened read-only");
 }
 
@@ -336,6 +342,9 @@ function edStash() {
   edPath = "";
   edSetDirty(false);
   $("screen-editor").classList.remove("active");
+  // The shape goes with the screen rather than into the record: the restore
+  // asks the pane it comes back to, which is the pane this session left.
+  $("screen-editor").classList.remove("docked");
   return s;
 }
 
@@ -363,7 +372,7 @@ function edRestore(s) {
   edSetDirty(s.dirty);
   edSyncWrapButton();
   edSyncVimButton();
-  $("screen-files").classList.remove("active");
+  dockFileView($("screen-editor"));
   $("screen-editor").classList.add("active");
   // Deliberately not focused: a freshly opened editor is not either, and a
   // restore that raised the soft keyboard would be a tablet's rude surprise.
@@ -439,7 +448,7 @@ function editorPopped() {
 
 function closeEditor() {
   $("screen-editor").classList.remove("active");
-  $("screen-files").classList.add("active");
+  undockFileView($("screen-editor"));
   if (edView) { edView.destroy(); edView = null; }
   edSetDirty(false);
   edPath = "";
@@ -447,7 +456,25 @@ function closeEditor() {
   if (filesPath) loadDir(filesPath);
 }
 
-$("btn-editor-back").addEventListener("click", () => history.back());
+// Docked, the view pushed no entry, so there is no pop to answer: the question
+// about unsaved work is asked here instead and a "stay" is the whole of what
+// the press does. False says the editor is staying, which every caller has to
+// stand down for.
+function editorCloseDocked() {
+  if (edDirty && !confirm("Discard your unsaved changes?")) return false;
+  closeEditor();
+  return true;
+}
+
+// The one way out, whichever shape the editor is in: full screen it spends the
+// entry it owns and editorPopped answers the pop, docked there is no entry and
+// the close happens here. The back arrow and vim's :q share it.
+function editorLeave() {
+  if ($("screen-editor").classList.contains("docked")) editorCloseDocked();
+  else history.back();
+}
+
+$("btn-editor-back").addEventListener("click", editorLeave);
 $("btn-editor-save").addEventListener("click", () => editorSave());
 // The file as it is on the disk, not the buffer: an unsaved edit is not what
 // gets saved to the phone. No size to hand over here, so downloadFile() takes

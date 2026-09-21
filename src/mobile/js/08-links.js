@@ -413,6 +413,19 @@ function openUrl(raw) {
 let viewerOpenedAt = 0;
 
 const VIDEO_EXT_RE = /\.(?:mp4|webm|mov)$/i;
+// The viewer's third tenant, and the only one it does not render itself: a
+// PDF goes into a frame and the browser's own reader draws it. Only ever on a
+// two-pane layout — see openPdf (28-file-explorer.js) for what a phone does
+// instead.
+const PDF_EXT_RE = /\.pdf$/i;
+
+// Which of the three the overlay is showing. The name alone says it: the path
+// is all a tap carries, and it is what the tile, the row and the terminal link
+// all agree on.
+function viewerKind(path) {
+  if (VIDEO_EXT_RE.test(path)) return "video";
+  return PDF_EXT_RE.test(path) ? "pdf" : "image";
+}
 
 // What the overlay is showing, and which fill is allowed to land in it. The
 // path rather than the src is the identity: every open mints its own signed
@@ -428,30 +441,60 @@ function dropSrc(el) {
   el.removeAttribute("src");
 }
 
+// The frame is a browsing context of its own, and a browsing context's
+// navigations land on this document's history: dropping its src navigates it
+// to about:blank and loading the next PDF into it navigates it again, so a
+// file looked at and closed would leave two back presses that go nowhere.
+// Replacing the element takes the context away instead — the document goes,
+// and the entries it owned go with it — and a frame that has never navigated
+// spends nothing on its first load. Measured in Chrome: emptying the frame in
+// place cost one entry per open and one per close.
+function dropFrame() {
+  const frame = $("viewer-frame");
+  const fresh = frame.cloneNode(false);
+  fresh.removeAttribute("src");
+  frame.replaceWith(fresh);
+}
+
 function showImage(path) {
-  const isVideo = VIDEO_EXT_RE.test(path);
-  const img = $("viewer-img"), video = $("viewer-video");
+  const kind = viewerKind(path);
   // Re-opening the same path (mouse users get both the link and the tap path)
   // would otherwise reload and re-decode it.
   const fresh = viewerPath !== path;
+  // Before anything reads the elements: whenever the frame is not going on
+  // showing what it already holds, it is replaced rather than emptied, and
+  // every reference below has to be to the element that survives.
+  if (fresh || kind !== "pdf") dropFrame();
+  const img = $("viewer-img"), video = $("viewer-video"), frame = $("viewer-frame");
   viewerPath = path;
   viewerOpenedAt = Date.now();
   resetZoom();
-  if (isVideo) {
-    img.style.display = "none";
-    dropSrc(img);
-    video.style.display = "block";
-    if (fresh) { video.pause(); dropSrc(video); }
-  } else {
-    video.style.display = "none";
-    video.pause();
-    dropSrc(video);
-    img.style.display = "";
-    if (fresh) dropSrc(img);
+  const on = kind === "video" ? video : kind === "pdf" ? frame : img;
+  // The two that are not showing go away empty: a video left with a src keeps
+  // its decoder running off-screen, and a frame left with one keeps a whole
+  // document alive behind the picture that replaced it.
+  for (const el of [img, video, frame]) {
+    if (el === on) continue;
+    el.style.display = "none";
+    if (el === video) video.pause();
+    dropSrc(el);
+  }
+  on.style.display = on === img ? "" : "block";
+  if (fresh) {
+    if (on === video) video.pause();
+    dropSrc(on);
   }
   $("btn-viewer-download").style.display = canDownload(path) ? "" : "none";
+  // In the pane while the explorer is docked in it, over the whole window
+  // otherwise — the editor's and the reader's rule (dockFileView,
+  // 28-file-explorer.js), said here rather than through it because this one is
+  // an overlay: it covers the listing without taking its class away, whichever
+  // shape it is in. The PDF's own toolbar is what the second class is for
+  // (styles.css).
+  $("viewer").classList.toggle("docked", filesDocked);
+  $("viewer").classList.toggle("pdf", kind === "pdf");
   $("viewer").classList.add("show");
-  if (fresh) fillViewer(path, isVideo);
+  if (fresh) fillViewer(path, kind);
 }
 
 // The tag fetches the bytes itself and a tag carries no pairing header, so the
@@ -460,11 +503,12 @@ function showImage(path) {
 // awaited so showImage() stays the synchronous call its callers make; opening
 // something else while a mint is in flight wins, and the late answer is
 // dropped instead of overwriting what is now on screen.
-async function fillViewer(path, isVideo) {
+async function fillViewer(path, kind) {
   const fill = ++viewerFill;
   const fail = () => {
     hideImage();
-    toast(isVideo ? "Couldn't load video" : "Couldn't load image");
+    toast(kind === "video" ? "Couldn't load video"
+          : kind === "pdf" ? "Couldn't load PDF" : "Couldn't load image");
   };
   let url;
   try {
@@ -479,7 +523,8 @@ async function fillViewer(path, isVideo) {
     return;
   }
   if (fill !== viewerFill) return;
-  const el = isVideo ? $("viewer-video") : $("viewer-img");
+  const el = kind === "video" ? $("viewer-video")
+           : kind === "pdf" ? $("viewer-frame") : $("viewer-img");
   el.onerror = fail;
   el.src = url;
 }
@@ -497,9 +542,33 @@ function hideImage() {
   const video = $("viewer-video");
   video.pause();
   dropSrc(video);
+  // And the document the frame was holding, for the same reason — plus the
+  // history entries it would otherwise leave behind.
+  dropFrame();
+  $("viewer").classList.remove("docked", "pdf");
+}
+
+// ---- putting the overlay away (see fileViews in 09-image-viewer.js) --------
+// The path is the whole of the state: the media itself is a signed link the
+// restore mints again, and the zoom is at rest by the time a rail switch can
+// happen. Same shape as the editor's and the reader's, so stashFileView can
+// treat the three alike.
+function viewerStash() {
+  const s = { path: viewerPath };
+  hideImage();
+  return s;
+}
+
+function viewerRestore(s) {
+  // Not fed through dockFileView either: showImage asks the pane it is coming
+  // back to, and filesRestore has already put that pane back up.
+  showImage(s.path);
 }
 
 $("btn-viewer-close").addEventListener("click", hideImage);
+// Docked, the way back is an arrow to the folder rather than a cross, and it
+// is the same close: the listing it returns to is right there underneath.
+$("btn-viewer-back").addEventListener("click", hideImage);
 // The media as a file. stopPropagation because the overlay below reads any
 // click off the image or the video as a dismiss, and saving it is not leaving
 // it; the size is not known here, so downloadFile() takes the browser's route.
@@ -509,10 +578,17 @@ $("btn-viewer-download").addEventListener("click", (e) => {
 });
 // Anywhere off the image/video itself closes; the media keeps its own taps (and
 // the video its native controls) so interacting with it is not read as a dismiss.
+// A frame is in the list for the same reason, though a click inside one is the
+// reader's own and never reaches this document at all.
 $("viewer").addEventListener("click", (e) => {
   if (Date.now() - viewerOpenedAt < 500) return;
   if (Date.now() - gestureEndedAt < 350) return;
-  if (e.target !== $("viewer-img") && e.target !== $("viewer-video")) hideImage();
+  // The row of buttons is not "off the media" either: each of them has its own
+  // answer to the press — expanding the pane, closing it — and dismissing as
+  // well would undo the one that was asked for.
+  if (e.target.closest(".viewer-actions")) return;
+  if (e.target !== $("viewer-img") && e.target !== $("viewer-video")
+      && e.target !== $("viewer-frame")) hideImage();
 });
 
 // A pinch, a pan or a double-tap can end with a click the browser synthesizes on
