@@ -34,6 +34,15 @@ const KEYS = [
   { label: "⌫",     seq: "\x7f",  narrow: true, repeat: true, cls: "span-2 k-bs", aria: "Backspace",
     swipe: { seq: "\x1b[3~" } },
   { icon: "i-arrows", arrows: true, narrow: true, only: "collapsed", aria: "Show arrow keys" },
+  // Focus is the point of this key, not a side effect — it opens the compose
+  // strip and puts the caret in it, so it shares the keyboard toggle's exemption
+  // from the focus-preserving preventDefault below. It keeps the mic face while
+  // a take runs: it is what the microphone being open looks like, while ending
+  // the take belongs to the strip's Send button. Not built at all on touch (see
+  // buildKeybar()): there the strip is always up and its own button is the mic.
+  // First in the pill, so the row reads mic, folder, browser, report.
+  { icon: "i-mic", compose: true, focusing: true, narrow: true,
+    cls: "k-compose", aria: "Show or hide the message bar" },
   // The terminal's way into the file explorer, at the pane's own cwd.
   // Collapsed-row only, so the expanded grid's hand-placed columns stay as
   // they are — arrow work and file browsing are different errands anyway.
@@ -51,14 +60,6 @@ const KEYS = [
     swipe: { seq: "\x1b[5~" } },
   { label: "→",     seq: "\x1b[C", narrow: true, repeat: true, cls: "k-right", only: "expanded",
     swipe: { seq: "\x1b[F" } },
-  // Focus is the point of this key, not a side effect — it opens the compose
-  // strip and puts the caret in it, so it shares the keyboard toggle's exemption
-  // from the focus-preserving preventDefault below. It keeps the mic face while
-  // a take runs: it is what the microphone being open looks like, while ending
-  // the take belongs to the strip's Send button. Not built at all on touch (see
-  // buildKeybar()): there the strip is always up and its own button is the mic.
-  { icon: "i-mic", compose: true, focusing: true, narrow: true,
-    cls: "k-compose", aria: "Show or hide the message bar" },
   // Pill only, and only once there is a backend to report about — the phone
   // never shows this key, because the Settings row is its way in and the
   // docked row has no width to spare. Collapsed-row only for the reason the
