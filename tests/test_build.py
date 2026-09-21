@@ -152,6 +152,26 @@ def test_the_browser_topbar_carries_one_zoom_key_and_a_star(doc):
     assert 'id="i-star"' in doc and 'id="i-star-fill"' in doc
 
 
+def test_the_topbar_offers_the_page_as_a_tab_through_the_computer(doc):
+    """The way out for a page that cannot run framed: an app written to be the
+    top window (a portal reading top.EPCM through its views) needs a top-level
+    tab, which the backend serves under its unsandboxed token. Hidden until the
+    computer says it has the mode, like the star."""
+    assert 'id="btn-browser-tab" hidden' in doc
+    assert 'aria-label="Open in a tab through the computer"' in doc
+    assert '"browse_tab"' in doc or "hasCapStrict(\"browse_tab\")" in doc
+    # Opened blank inside the click, sent somewhere once the token is in hand.
+    assert 'window.open("", "_blank")' in doc
+    # And sent to the hop that wipes this origin's storage, never straight to
+    # the proxied page: the shell may once have been served from this same
+    # address, and its pairing token would still be sitting there.
+    assert '"/enter?to=" + encodeURIComponent(' in doc
+    assert "function browserCloseTabs(" in doc
+    # Asked to close, not closed: cross-origin, with the opener nulled, the
+    # shell's own close() on that window is refused.
+    assert 'w.postMessage("pockettui-close", browserOrigin())' in doc
+
+
 def test_vendor_script_tags_survive(doc):
     for name in ("xterm.js", "addon-fit.js", "addon-webgl.js"):
         assert f'src="vendor/{name}?v=__CACHE_VERSION__"' in doc

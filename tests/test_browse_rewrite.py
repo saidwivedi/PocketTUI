@@ -432,8 +432,10 @@ def test_a_quote_in_a_rewritten_value_is_escaped():
 def test_shim_is_small_enough_to_sit_on_every_page():
     # A budget, not a protocol limit: the shim rides on every proxied document,
     # so it is kept small deliberately. Raise the cap when behaviour needs the
-    # room rather than trimming what the shim does.
-    assert len(A.BROWSE_SHIM.encode("utf-8")) < 8192
+    # room rather than trimming what the shim does — which is what the tab
+    # flavour did: window.open, the storage gate and the close listener are
+    # three behaviours the pane has no other way to get.
+    assert len(A.BROWSE_SHIM.encode("utf-8")) < 8704
 
 
 def test_shim_reads_a_proxy_path_without_the_token():
@@ -518,6 +520,63 @@ console.log(JSON.stringify(written));
     assert got[4] == cases[4]
 
 
+def test_shim_maps_the_window_the_page_opens(tmp_path):
+    # A portal opens its views in windows of their own. Unmapped, each one
+    # leaves the proxy for an address only the workstation can reach — and in
+    # a tab, where these actually work, that is the whole navigation.
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    cfg = {"prefix": PREFIX, "tok": TOK, "sch": "h",
+           "hostport": "127.0.0.1:3000", "origin": ORIGIN, "sandbox": False}
+    here = "http://box.example.net:8080" + BASE + "/h/127.0.0.1:3000/page"
+    harness = """
+const opened = [];
+globalThis.window = globalThis;
+globalThis.location = {origin: "http://box.example.net:8080",
+  host: "box.example.net:8080", protocol: "http:", href: HERE,
+  pathname: new URL(HERE).pathname, search: "", hash: "", reload() {}};
+globalThis.document = {currentScript: {dataset: {cfg: CFG}}, baseURI: HERE,
+  addEventListener() {}, write() {}, writeln() {}};
+globalThis.addEventListener = function () {};
+globalThis.history = {};
+globalThis.open = function (u, n, f) { opened.push([u, n, f]); return {}; };
+SHIM
+window.open("/child", "view1");
+window.open("http://other.example.net/x");
+window.open();
+console.log(JSON.stringify(opened));
+"""
+    f = tmp_path / "open.mjs"
+    # the shim goes in last, for the reason the document.write harness gives.
+    f.write_text(harness.replace("CFG", json.dumps(json.dumps(cfg)))
+                 .replace("HERE", json.dumps(here))
+                 .replace("SHIM", A.BROWSE_SHIM), encoding="utf-8")
+    out = subprocess.run([node, str(f)], check=True, capture_output=True)
+    got = json.loads(out.stdout.decode("utf-8"))
+    site = "http://box.example.net:8080" + BASE
+    assert got[0] == [f"{site}/h/127.0.0.1:3000/child", "view1", None]
+    assert got[1][0] == f"{site}/h/other.example.net:80/x"
+    # An open with no address is a blank window, and stays one.
+    assert got[2] == [None, None, None]
+
+
+def test_shim_closes_a_tab_the_pane_asks_to_close():
+    """The pane holds the window but nulled its opener, so on the computer's
+    own origin — which is where a tab-flavour page lives, never the shell's —
+    its close() is refused. The page closes itself instead, and only for the
+    shell the token was minted for."""
+    assert 'e.origin===C.origin&&e.data==="pockettui-close"' in A.BROWSE_SHIM
+
+
+def test_shim_leaves_an_unsandboxed_page_its_own_storage():
+    """The polyfill is for a document that has none: sandboxed, it sits on an
+    opaque origin where every storage access throws. A tab-flavour page is on
+    this server's real origin — which the mint only hands out to a shell served
+    from somewhere else — and the storage it has is the one it should use."""
+    assert 'if(!C.sandbox&&window.origin!=="null")return;' in A.BROWSE_SHIM
+
+
 def test_shim_never_zooms_the_page_it_sits_on():
     # The pane scales its own iframe; nothing scales the document from inside
     # it. CSS zoom on a document is not a scale a page can be positioned
@@ -539,7 +598,15 @@ def test_shim_tag_config_round_trips():
     raw = re.search(r"data-cfg='([^']*)'", tag).group(1)
     assert json.loads(html.unescape(raw)) == {
         "prefix": PREFIX, "tok": TOK, "sch": "h",
-        "hostport": "127.0.0.1:3000", "origin": ORIGIN}
+        "hostport": "127.0.0.1:3000", "origin": ORIGIN, "sandbox": True}
+
+
+def test_shim_tag_config_says_which_kind_of_document_it_is_in():
+    """The tab flavour's page is on this server's real origin, not an opaque
+    one, and what the shim may leave to the browser turns on that."""
+    ctx = A.BrowseCtx(PREFIX, TOK, "h", "127.0.0.1:3000", ORIGIN, False)
+    raw = re.search(r"data-cfg='([^']*)'", A.browse_shim_tag(ctx, ORIGIN)).group(1)
+    assert json.loads(html.unescape(raw))["sandbox"] is False
 
 
 def test_shim_tag_config_cannot_break_out_of_its_attribute():
