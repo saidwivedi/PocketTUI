@@ -574,10 +574,20 @@ body {
 }
 .item .item-meta .sep { color: var(--whisper); }
 .item .item-meta .cmd { color: var(--umber); font-weight: 600; }
+/* What the pane is holding — an agent's conversation summary, or the folder a
+   shell is in. It is the one field with no length anyone controls, so it gives
+   up its width first and ellipsises rather than wrapping the row onto a second
+   line, on the phone and in the rail alike. */
+.item .item-meta .where {
+  min-width: 0; max-width: 46%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 /* The pane watcher's badge: amber for a session waiting on its human, green
-   for one producing output right now. Idle sessions carry nothing. */
+   for one producing output right now, and a quiet grey "done" for an agent
+   that has finished its turn. Idle sessions carry nothing. */
 .item .item-meta .state.waiting { color: var(--warn); font-weight: 600; }
 .item .item-meta .state.active { color: var(--good); }
+.item .item-meta .state.ready { color: var(--secondary); font-weight: 600; }
 
 #list-empty, #list-error {
   text-align: center;
