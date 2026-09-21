@@ -40,24 +40,33 @@ class FakeTmux:
                 return s
         return None
 
+    # Every #{…} app.py asks list-sessions for. The format matters:
+    # session_rows and session_group ask for different ones, so a fixed
+    # answer would feed one of them the other's fields.
+    FIELDS = {
+        "session_name": lambda s: s["name"],
+        "session_created": lambda s: str(s.get("created", 0)),
+        "session_attached": lambda s: str(s.get("attached", 0)),
+        "session_windows": lambda s: str(s.get("windows", 1)),
+        "session_grouped": lambda s: "1" if s.get("group") else "0",
+        "session_group": lambda s: s.get("group", ""),
+        "session_id": lambda s: f"${s['sid']}",
+        "@alias": lambda s: s.get("alias", ""),
+        "@notify": lambda s: s.get("notify", ""),
+        "@ptui_view": lambda s: "1" if s.get("view") else "",
+    }
+
     def __call__(self, *args):
         self.calls.append(args)
         cmd = args[0]
         if cmd == "list-sessions":
+            fmt = args[args.index("-F") + 1]
             lines = []
             for s in self.sessions:
-                lines.append("\t".join([
-                    s["name"],
-                    str(s.get("created", 0)),
-                    str(s.get("attached", 0)),
-                    str(s.get("windows", 1)),
-                    "1" if s.get("group") else "0",
-                    s.get("group", ""),
-                    f"${s['sid']}",
-                    s.get("alias", ""),
-                    s.get("notify", ""),
-                    "1" if s.get("view") else "",
-                ]))
+                line = fmt
+                for key, field in self.FIELDS.items():
+                    line = line.replace("#{%s}" % key, field(s))
+                lines.append(line)
             return 0, "".join(line + "\n" for line in lines)
         if cmd == "has-session":
             return (0, "") if self.find(args[-1].lstrip("=")) else (1, "")
@@ -317,6 +326,86 @@ def test_alias_follows_the_representative_rule(client, monkeypatch):
     # … and the view never is.
     r = client.post("/api/alias", json={"session": "phone-work", "alias": "x"})
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Device views and the group a rename leaves behind
+# ---------------------------------------------------------------------------
+
+def test_view_name_reuses_the_view_of_a_renamed_target(monkeypatch):
+    # The group keeps the name the base was born with, so the device's own
+    # view of "work2" sits in a group called "work". Reuse decided by group
+    # name would step aside here and mint a second view per reconnect.
+    fake(monkeypatch, (
+        {"name": "work2", "created": 100, "group": "work"},
+        {"name": "phone-work2", "created": 200, "group": "work"},
+    ))
+    assert A.view_name("work2", "phone") == "phone-work2"
+
+
+def test_view_name_steps_aside_from_a_session_of_the_users_own(monkeypatch):
+    fake(monkeypatch, (
+        {"name": "work", "created": 100, "group": "work"},
+        {"name": "phone-work", "created": 200},
+    ))
+    assert A.view_name("work", "phone") == "phone-work-2"
+
+
+def test_view_name_steps_aside_when_the_target_has_no_group(monkeypatch):
+    # Nothing can be a view of a target that is not grouped at all, whatever
+    # group the name-holder happens to be in.
+    fake(monkeypatch, (
+        {"name": "work", "created": 100},
+        {"name": "phone-work", "created": 200, "group": "other"},
+    ))
+    assert A.view_name("work", "phone") == "phone-work-2"
+
+
+# A session renamed out of the way, its group left behind under the old name,
+# and a new session the user gave that name to.
+STALE_GROUP = (
+    {"name": "old", "created": 100, "group": "work"},
+    {"name": "work", "created": 300, "sid": 7},
+)
+
+
+def test_a_stale_group_makes_the_view_under_a_private_name(monkeypatch):
+    tmux = fake(monkeypatch, STALE_GROUP)
+    assert A.mint_view_clear_of_stale_group("work", "phone-work") is True
+    assert [c for c in tmux.calls
+            if c[0] in ("rename-session", "new-session")] == [
+        ("rename-session", "-t", "=work", "ptui-grp-7"),
+        ("new-session", "-d", "-s", "phone-work", "-t", "=ptui-grp-7"),
+        ("rename-session", "-t", "=ptui-grp-7", "work"),
+    ]
+    assert tmux.find("work") is not None
+    assert tmux.find("ptui-grp-7") is None
+
+
+def test_the_target_gets_its_name_back_when_the_view_cannot_be_made(
+        monkeypatch):
+    tmux = fake(monkeypatch, STALE_GROUP)
+
+    def stubborn(*args):
+        if args[0] == "new-session":
+            return 1, ""
+        return tmux(*args)
+
+    monkeypatch.setattr(A, "tmux", stubborn)
+    assert A.mint_view_clear_of_stale_group("work", "phone-work") is False
+    assert tmux.find("work") is not None
+
+
+@pytest.mark.parametrize("sessions", [
+    ({"name": "work", "created": 100},),                      # no stale group
+    ({"name": "work", "created": 100, "group": "work"},),     # already grouped
+])
+def test_the_attach_child_makes_the_view_when_no_group_is_in_the_way(
+        monkeypatch, sessions):
+    tmux = fake(monkeypatch, sessions)
+    assert A.mint_view_clear_of_stale_group("work", "phone-work") is False
+    assert not [c for c in tmux.calls
+                if c[0] in ("rename-session", "new-session")]
 
 
 # ---------------------------------------------------------------------------
