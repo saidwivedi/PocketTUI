@@ -272,6 +272,10 @@ async function browserNavigate(raw, push = true) {
   if (!target) { toast("That is not an address to open"); return; }
   const frame = $("browser-frame");
   if (!frame) return;
+  // Before the load rather than after its landing: the frame's width is the
+  // viewport the page lays itself out against, so setting it here is what
+  // saves the zoomed page a reflow on its first paint.
+  browserApplyZoom(browserZoomFor(browserZoomHost(url)));
   // The landing this load reports is this load, not a page moving itself.
   browserNavigating = true;
   if (browserPrimed) {
@@ -315,23 +319,34 @@ function browserZoomFor(host) {
   return typeof z === "number" ? z : 1;
 }
 
-// Ask the page to draw itself at this size. The shell cannot restyle the frame
-// — a proxied page sits on an opaque origin — so the shim the proxy put on it
-// does the work, and "*" is the only targetOrigin that reaches an opaque
-// origin at all. The shim's own check is that the message came from its
-// parent, which is this window.
-function browserPostZoom(factor) {
+// Draw the page at this size, by scaling the frame element rather than the
+// document inside it: the frame is laid out at 1/factor of the pane and
+// scaled back down, so the page still reflows to a wider viewport the way a
+// browser's own zoom does, while keeping a CSS pixel of its own.
+//
+// Zooming the document instead — `zoom` on its documentElement, which is what
+// this used to message the shim to do — is what broke the MPG login page.
+// Under CSS zoom a rect comes back multiplied by the factor and a length
+// written from it is multiplied again, so every script that reads an
+// element's rect and writes the number back as a top (jQuery's .offset() into
+// an absolutely positioned overlay: select2, date pickers, tooltips) lands the
+// overlay at factor times where it meant to. The institute dropdown opened on
+// top of the control it hung from, and the mouseup that ended the click
+// landed in the list and dismissed it again.
+function browserApplyZoom(factor) {
   const frame = $("browser-frame");
-  if (!frame || !frame.contentWindow) return;
-  try { frame.contentWindow.postMessage({ type: "pockettui-zoom", zoom: factor }, "*"); }
-  catch (e) { dbg("browse: zoom post failed", e); }
+  if (!frame) return;
+  const pct = (100 / factor) + "%";
+  frame.style.width = pct;
+  frame.style.height = pct;
+  frame.style.transform = factor === 1 ? "" : "scale(" + factor + ")";
 }
 
 // A zoom the user asked for: applied, remembered against the host, and said
 // out loud — the page resizing under the tap is the only other signal, and a
 // page that ignores it would otherwise look like a dead button.
 function browserSetZoom(factor) {
-  browserPostZoom(factor);
+  browserApplyZoom(factor);
   const host = browserZoomHost();
   if (host) {
     const rec = cfg.browserZoom;
@@ -484,11 +499,11 @@ window.addEventListener("message", (e) => {
       browserPush(url);
     }
     browserLoadedUrl = url;
-    // Every document starts at 1, so a host that was left zoomed has to be
-    // told again on each landing. A load reports more than once and this
-    // re-sends on each, which is a postMessage the page ignores as a no-op.
-    const z = browserZoomFor(browserZoomHost(url));
-    if (z !== 1) browserPostZoom(z);
+    // Zoom belongs to the host and the frame keeps whatever scale it was
+    // given, so a landing corrects it — including back to 1 for a host that
+    // was never zoomed. A load reports more than once and each report sets
+    // the same factor, which is a no-op after the first.
+    browserApplyZoom(browserZoomFor(browserZoomHost(url)));
     // A page that loaded is a token that works and a scheme that was right.
     browserReminted = false;
     browserGuessed = "";
@@ -669,6 +684,7 @@ function browserResetForProfile() {
   browserLoadedUrl = "";
   browserReminted = false;
   browserGuessed = "";
+  browserApplyZoom(1);
   // Blanked through the frame's own location, not through src: the pane may
   // well be reopened on the new computer, and an src assignment would put an
   // entry on the shell's history that back would spend on the frame.

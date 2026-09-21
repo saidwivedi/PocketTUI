@@ -3503,6 +3503,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   height: 100%;
   border: 0;
   background: var(--paper);
+  /* Zoom scales this element (browserApplyZoom), which over-constrains the
+     inset and leaves top/left the winners — so the corner the scale grows
+     from is the corner the frame is pinned to. */
+  transform-origin: 0 0;
 }
 #browser-url-wrap { flex: 1; min-width: 0; display: flex; }
 /* Same field as #files-path-input, compacted for the topbar row. */
