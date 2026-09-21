@@ -3581,8 +3581,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* The list screens scroll the page under a sticky topbar; this one is a fixed
    column, so its bar just sits in the flow, the editor bar's arrangement —
    relative rather than static only so it can be given a layer, which is what
-   keeps the zoom panel's scrim below the bar the panel hangs off (the file
-   bar's sticky topbar gets the same 50 for the same reason). */
+   keeps the zoom panel's scrim off the address row — the panel itself hangs
+   off a key in the tab row above and out-stacks this at 55 (the file bar's
+   sticky topbar gets the same 50 for the same reason). */
 .browser-topbar {
   position: relative;
   z-index: 50;
@@ -3670,6 +3671,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
 #btn-browser-zoom.on, #btn-browser-star.on, #btn-browser-tab.on,
 #btn-browser-tab[aria-pressed="true"] { color: var(--umber); }
 #btn-browser-star[hidden] { display: none; }
+/* The network key hides the same way when the computer has no tab flavour to
+   offer (an older server, or a shell served from the computer itself). */
+#btn-browser-tab[hidden] { display: none; }
 /* #files-view-scrim's recipe, in the pane rather than over the window:
    #screen-browser is position:fixed, so absolute already means "this pane",
    and docked the live terminal beside it must not dim for a menu in here. */
@@ -3697,6 +3701,12 @@ html.term-open #dbg-panel { opacity: 0.85; }
   gap: 2px;
   padding: 5px 8px 0;
   background: var(--card-2);
+  /* The zoom panel hangs off a key in this row now, so the row has to be able
+     to out-stack the address row it hangs over (50) and the scrim that dims
+     the page for it (45) — the bar a panel comes out of is never the thing the
+     panel dims, which is the reason .browser-topbar carries a layer too. */
+  position: relative;
+  z-index: 55;
 }
 /* The chips alone scroll: the button beside them keeps its place at the end of
    the row, where a strip too wide for the pane would otherwise carry it off. */
@@ -3792,6 +3802,21 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 #btn-browser-newtab svg { width: 14px; height: 14px; }
 #btn-browser-newtab.off { opacity: 0.4; }
+/* A window's controls, at the other end of the row its tabs are in: bookmark,
+   zoom, and docked the pane's own expand and close. Pushed flush right by the
+   margin rather than by a spacer, so the tabs and the "+" stay together at the
+   left and a strip too wide for the pane scrolls inside #browser-tab-row
+   instead of pushing these off the edge. Centred on the band and clear of its
+   bottom edge, because the line the tabs bottom out against belongs to the
+   active tab's card — these sit on the band, not on it. */
+#browser-tab-actions {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-bottom: 3px;
+}
 /* The bookmarks bar, in the order they were added the way a browser's own is.
    Scrolls sideways with no bar of its own (.keybar's recipe) rather than
    wrapping to a second row: the pane is a pane, and the page below it is what

@@ -135,12 +135,12 @@ def test_browser_zoom_scales_the_frame_not_the_page(doc):
     assert "transform-origin: 0 0;" in rule
 
 
-def test_the_browser_topbar_carries_one_zoom_key_and_a_star(doc):
-    """Zoom is a key and a panel, and the bar's other new key is the bookmark.
+def test_the_browser_pane_carries_one_zoom_key_and_a_star(doc):
+    """Zoom is a key and a panel, and the pane's other new key is the bookmark.
 
-    The two zoom keys are gone from the bar itself — the panel under the one
+    The two zoom keys are gone from the row itself — the panel under the one
     key is the only place a minus and a plus are left, which is what frees the
-    slots on a bar that is 360px wide docked.
+    slots on a pane that is 360px wide docked.
     """
     assert 'id="btn-browser-zoom"' in doc
     assert 'id="btn-browser-star"' in doc
@@ -161,8 +161,15 @@ def test_the_topbar_toggles_a_tab_onto_the_computers_own_network(doc):
     star. What it is called says nothing about how it is fetched: that is the
     computer's business, not the reader's."""
     assert 'id="btn-browser-tab" hidden' in doc
-    assert 'aria-label="Local network"' in doc
-    assert 'title="Local network"' in doc
+    # A glyph nobody has met before says nothing on its own, so the key says
+    # what pressing it would do, and once pressed what it did — the tooltip and
+    # the label carrying the same words either way (syncBrowserLan).
+    off = "Use the computer's network for this tab"
+    on = "This tab uses the computer's network"
+    assert f'aria-label="{off}"' in doc and f'title="{off}"' in doc
+    assert f'"{on}"' in doc
+    assert 'btn.setAttribute("aria-label", said);' in doc
+    assert 'btn.setAttribute("title", said);' in doc
     # A toggle says so to a reader who cannot see the tint, not only to one
     # who can.
     assert 'aria-pressed="false"' in doc
@@ -186,12 +193,43 @@ def test_the_topbar_toggles_a_tab_onto_the_computers_own_network(doc):
 
 def test_the_toggles_order_in_the_address_row(doc):
     """Left of reload, where a browser keeps the keys that act on the page
-    rather than on the address — and both of them before the field."""
+    rather than on the address — and both of them before the field, which now
+    has the whole rest of the row to itself."""
     at = {name: doc.index(f'id="{name}"')
           for name in ("btn-browser-back", "btn-browser-fwd", "btn-browser-tab",
                        "btn-browser-reload", "browser-url-wrap", "browser-url")}
-    assert (at["btn-browser-fwd"] < at["btn-browser-tab"]
+    assert (at["btn-browser-back"] < at["btn-browser-fwd"] < at["btn-browser-tab"]
             < at["btn-browser-reload"] < at["browser-url-wrap"] < at["browser-url"])
+
+
+def test_the_window_controls_sit_in_the_tab_row(doc):
+    """A browser window's top row: tabs at one end, the window's own controls
+    at the other. Bookmark, zoom, and docked the pane's expand and close all
+    act on the window or on the page as a whole, so they belong up there rather
+    than on the address row, which is left to the address and the keys that
+    move it."""
+    at = {name: doc.index(f'id="{name}"')
+          for name in ("browser-tabs", "browser-tab-row", "btn-browser-newtab",
+                       "browser-tab-actions", "btn-browser-star",
+                       "browser-zoom-wrap", "btn-browser-zoom",
+                       "btn-browser-expand", "btn-browser-close")}
+    bar = doc.index('class="topbar browser-topbar"')
+    # Every one of them inside the group, the group inside the tab row, and the
+    # whole of it above the address row.
+    assert (at["browser-tabs"] < at["browser-tab-row"] < at["btn-browser-newtab"]
+            < at["browser-tab-actions"] < at["btn-browser-star"]
+            < at["browser-zoom-wrap"] < at["btn-browser-zoom"]
+            < at["btn-browser-expand"] < at["btn-browser-close"] < bar)
+    # The group is flush right on the band by a margin, not by a spacer: the
+    # tabs and the "+" stay together at the left and a strip too wide for the
+    # pane scrolls inside its own box rather than pushing the keys off.
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    rule = re.search(r"#browser-tab-actions \{[^}]*\}", css).group(0)
+    assert "margin-left: auto;" in rule
+    # The panel hangs off a key in the tab row now, so that row has to out-stack
+    # the address row below it and the scrim that dims the page for it.
+    band = re.search(r"#browser-tabs \{[^}]*\}", css).group(0)
+    assert "position: relative;" in band and "z-index: 55;" in band
 
 
 def test_the_bookmarks_bar_is_a_row_of_links_not_a_second_row_of_tabs(doc):
