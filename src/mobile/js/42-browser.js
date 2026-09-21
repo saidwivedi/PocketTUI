@@ -532,6 +532,14 @@ function syncBrowserLan() {
   const on = !!(browserTab() && browserTab().lan);
   btn.classList.toggle("on", on);
   btn.setAttribute("aria-pressed", on ? "true" : "false");
+  // A glyph nobody has met before says nothing on its own, so the key says what
+  // pressing it would do — and, once it is pressed, what it did. The tooltip
+  // and the label are the same words: a reader who hovers and a reader who
+  // listens are being told the same thing.
+  const said = on ? "This tab uses the computer's network"
+                  : "Use the computer's network for this tab";
+  btn.setAttribute("aria-label", said);
+  btn.setAttribute("title", said);
 }
 
 // Turn one tab round, or back. The frame is replaced rather than edited: what
