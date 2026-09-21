@@ -14,7 +14,9 @@ tailnet name in this repo fails the deploy's leak scan.
 
 import gzip
 import json
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -544,6 +546,127 @@ def test_the_enter_hop_goes_nowhere_but_this_proxy(client, site, to):
 
 
 # ---------------------------------------------------------------------------
+# The page a tab with nothing in it starts on
+# ---------------------------------------------------------------------------
+# A tab has no chrome of ours, and the browser's own address bar types into the
+# laptop rather than into the computer. /start is the one address bar a tab has
+# that goes through the proxy — this server's own page, on this server's
+# origin, carrying the same wipe /enter does because it is the entry itself.
+
+def start_url(tok: str, prefix: str = PREFIX) -> str:
+    return f"{prefix}/b/{tok}/start"
+
+
+def test_the_start_page_is_this_servers_own_page_unsandboxed(client, site):
+    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
+    r = client.get(start_url(tok)[len(PREFIX):])
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert r.headers["clear-site-data"] == '"storage"'
+    assert r.headers["cache-control"] == "no-store"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    # The tab flavour's whole point: no opaque origin, so the page it sends the
+    # browser to is the top window and its frames are its own to script.
+    assert "content-security-policy" not in r.headers
+    assert 'id="addr"' in r.text and '<form id="go">' in r.text
+    assert socket.gethostname() in r.text
+
+
+def test_the_start_page_is_refused_to_the_pane_token(client, site):
+    """The pane has an address bar of its own, and a sandboxed tab is the one
+    thing the flavour exists to avoid."""
+    tok = mint(client, f"http://127.0.0.1:{site}/").json()["token"]
+    r = client.get(start_url(tok)[len(PREFIX):])
+    assert r.status_code == 403
+    assert "clear-site-data" not in r.headers
+
+
+def test_the_start_page_is_refused_once_its_token_has_gone(client, site):
+    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
+    A.BROWSE[tok].last_used = 0
+    assert client.get(start_url(tok)[len(PREFIX):]).status_code == 403
+    assert client.get(start_url("nosuchtoken")[len(PREFIX):]).status_code == 403
+
+
+def test_the_start_page_lists_the_bookmarks_as_proxied_links(client, site, marks):
+    """Written by this server, not built by its script: a start page with
+    JavaScript off still reaches everything the computer has kept."""
+    client.put("/api/browse/bookmarks", json={"bookmarks": [ONE]}, headers=HDRS)
+    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
+    r = client.get(start_url(tok)[len(PREFIX):])
+    assert f'href="{PREFIX}/b/{tok}/s/wiki.example.net:443/start"' in r.text
+    assert ">Start<" in r.text
+    assert ">wiki.example.net<" in r.text
+
+
+def test_a_bookmark_title_cannot_write_the_start_page(client, site, marks):
+    client.put("/api/browse/bookmarks", headers=HDRS, json={"bookmarks": [
+        dict(ONE, title='</a><img src=x onerror=alert(1)>')]})
+    tok = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
+    r = client.get(start_url(tok)[len(PREFIX):])
+    assert "<img src=x" not in r.text
+    assert "&lt;/a&gt;&lt;img src=x onerror=alert(1)&gt;" in r.text
+
+
+# What the field does with an address, run as the page runs it. The guess is a
+# port of the shell's (isPrivateHost in 08-links.js), and it is the whole of
+# what makes a scheme-less address work in a tab, so it is exercised rather
+# than read: a private host is http, everything else https, and the rest of the
+# URL survives either way.
+START_CASES = [
+    ("localhost:3000", "/h/localhost:3000/"),
+    ("10.0.0.5", "/h/10.0.0.5:80/"),
+    ("box.local", "/h/box.local:80/"),
+    ("portal.example.net", "/s/portal.example.net:443/"),
+    ("https://x.example.net/a?b", "/s/x.example.net:443/a?b"),
+    ("x.example.net:8443", "/s/x.example.net:8443/"),
+    ("   ", ""),
+]
+
+
+def test_the_start_pages_field_guesses_a_scheme_the_way_the_pane_does(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    harness = """
+const typed = [];
+let where = "";
+globalThis.window = globalThis;
+globalThis.location = { get href() { return where },
+                        set href(v) { where = v } };
+const input = { value: "" };
+const on = {};
+globalThis.document = {
+  currentScript: { dataset: { cfg: CFG } },
+  getElementById(id) {
+    return id === "addr" ? input
+                         : { addEventListener(t, fn) { on[t] = fn } };
+  },
+};
+SCRIPT
+for (const c of CASES) {
+  where = "";
+  input.value = c;
+  on.submit({ preventDefault() {} });
+  typed.push(where);
+}
+console.log(JSON.stringify(typed));
+"""
+    f = tmp_path / "start.mjs"
+    # the script goes in last, for the reason the shim harnesses give: its own
+    # text must not be searched for the placeholders after it.
+    f.write_text(harness
+                 .replace("CFG", json.dumps(json.dumps({"prefix": PREFIX,
+                                                        "tok": "TOKEN123"})))
+                 .replace("CASES", json.dumps([c for c, _ in START_CASES]))
+                 .replace("SCRIPT", A.BROWSE_START_JS), encoding="utf-8")
+    out = subprocess.run([node, str(f)], check=True, capture_output=True)
+    got = json.loads(out.stdout.decode("utf-8"))
+    want = [f"{PREFIX}/b/TOKEN123{tail}" if tail else "" for _, tail in START_CASES]
+    assert got == want
+
+
+# ---------------------------------------------------------------------------
 # What a proxied page may ask this server for
 # ---------------------------------------------------------------------------
 # Nothing. A tab-flavour page runs on this origin, so a call from it would
@@ -922,6 +1045,66 @@ def test_a_name_that_does_not_resolve_is_an_unknown_host_page(client, site):
     r = client.get(f"/b/{body['token']}/h/nothing-resolves-here.invalid:80/")
     assert r.status_code == 502
     assert '"unknown_host"' in r.text
+
+
+# A scheme is the one thing an address typed without one was guessed at, so a
+# failure that a scheme could be the whole of offers the other one. It matters
+# in a tab above all: there is no pane there to retry on the user's behalf.
+
+def token_for(prefix=PREFIX):
+    return A.BrowseToken(token="TOK", prefix=prefix, origin=SHELL_ORIGIN,
+                         created=time.time(), last_used=time.time(), client=None)
+
+
+@pytest.mark.parametrize("code", ["tls", "refused", "timeout", "unknown_host"])
+def test_a_secure_target_that_will_not_talk_offers_http(code):
+    rec = token_for()
+    alt = A.browse_other_scheme(rec, "s", "box.example.net:443", "/app", "q=1")
+    assert alt == f"{PREFIX}/b/TOK/h/box.example.net:80/app?q=1"
+    page = A.browse_error_page(code, "box.example.net:443", SHELL_ORIGIN, alt)
+    assert f'href="{alt}"' in page
+    assert "Try http:// instead" in page
+    # The retry the pane has always had stays where it was.
+    assert 'onclick="location.reload()"' in page
+
+
+def test_a_plain_target_that_will_not_talk_offers_https():
+    rec = token_for()
+    alt = A.browse_other_scheme(rec, "h", "box.example.net:80", "/", "")
+    assert alt == f"{PREFIX}/b/TOK/s/box.example.net:443/"
+    page = A.browse_error_page("refused", "box.example.net:80", SHELL_ORIGIN, alt)
+    assert f'href="{alt}"' in page
+    assert "Try https:// instead" in page
+
+
+def test_a_port_somebody_wrote_out_is_not_guessed_at():
+    """Only a default port means "no port was meant"; :8080 names one server."""
+    rec = token_for()
+    assert A.browse_other_scheme(rec, "h", "box.example.net:8080", "/", "") is None
+    assert A.browse_other_scheme(rec, "s", "box.example.net:8443", "/", "") is None
+
+
+@pytest.mark.parametrize("code", ["loop", "bad_target", "upstream", "expired"])
+def test_a_failure_a_scheme_cannot_explain_offers_nothing(code):
+    """A 502 from a target that did answer, or a token that has gone, says
+    nothing about the scheme, and a link there would be noise."""
+    page = A.browse_error_page(code, "box.example.net:443", SHELL_ORIGIN,
+                               f"{PREFIX}/b/TOK/h/box.example.net:80/")
+    assert "Try http" not in page
+
+
+def test_the_proxy_puts_the_other_scheme_on_the_page_it_serves(client, site):
+    """End to end, on the one failure a test can have without a network: a
+    name that cannot resolve, addressed each way round."""
+    body, _ = opened(client, site)
+    tok = body["token"]
+    r = client.get(f"/b/{tok}/h/nothing-resolves-here.invalid:80/app")
+    assert f'href="{PREFIX}/b/{tok}/s/nothing-resolves-here.invalid:443/app"' in r.text
+    r = client.get(f"/b/{tok}/s/nothing-resolves-here.invalid:443/")
+    assert f'href="{PREFIX}/b/{tok}/h/nothing-resolves-here.invalid:80/"' in r.text
+    # And nothing to offer where the port was written out.
+    r = client.get(f"/b/{tok}/h/nothing-resolves-here.invalid:8080/")
+    assert "Try http" not in r.text and "Try https" not in r.text
 
 
 def test_a_target_that_stops_talking_is_a_timeout_page(client, site, monkeypatch):

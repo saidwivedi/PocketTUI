@@ -209,6 +209,16 @@ function browserEnterUrl(proxied, rec) {
   return head + "/enter?to=" + encodeURIComponent(proxied.slice(head.length));
 }
 
+// Where an empty tab starts: the computer's own page, with a field that types
+// into the proxy and the bookmarks this computer keeps. A tab has no chrome of
+// ours — the browser's address bar belongs to the laptop, and an address typed
+// there would be fetched by the laptop — so this is the tab's home, and the
+// browser's own back button is the way back to it. It carries the same
+// Clear-Site-Data the /enter hop does, being the entry in its own right.
+function browserStartUrl(rec) {
+  return browserOrigin() + rec.prefix + "/b/" + rec.token + "/start";
+}
+
 // One token per shell load, minted on the first navigation and kept. The
 // backend hands the same record back for a second ask, so a reload that
 // re-mints lands on the token the persisted URLs were built with.
@@ -288,6 +298,31 @@ async function browserEnsureTabToken() {
 function browserTrackTab(w) {
   browserTabs = browserTabs.filter((t) => t && !t.closed);
   browserTabs.push(w);
+}
+
+// Both tab buttons' shape. The window is opened blank inside the click and
+// sent somewhere once the token is in hand: a popup blocker allows the window
+// a gesture opens, not one opened a round trip later. `dest` says where, given
+// the token, because only the token can spell it. The pre-mint on openBrowser
+// means there is usually nothing to wait for; where there is not — a token
+// that has just aged out — the window is already open and the blocker has
+// already let it through.
+function browserOpenTab(dest) {
+  const w = window.open("", "_blank");
+  if (!w) { toast("This browser blocked the tab"); return; }
+  // No handle back on this window: the tab is not sandboxed, and opener is
+  // what a page there would navigate the shell through.
+  try { w.opener = null; } catch (e) {}
+  browserEnsureTabToken().then((rec) => {
+    const target = rec ? dest(rec) : "";
+    if (!target) {
+      try { w.close(); } catch (e) {}
+      if (!browserTabBlocked) toast("Couldn't open that in a tab");
+      return;
+    }
+    w.location = target;
+    browserTrackTab(w);
+  });
 }
 
 // Every way out of the pane ends here. A tab is the pane's own window shown
@@ -845,28 +880,16 @@ $("btn-browser-star").addEventListener("click", () => browserToggleMark());
 // the tab's documents share one real origin and an app written to be the top
 // window works — top is the page itself and its frames are its own to script,
 // neither of which is true in the pane. The pane's own frame keeps its sandbox.
-//
-// The window is opened blank inside the click and sent somewhere once the
-// token is in hand: a popup blocker allows the window a gesture opens, not one
-// opened a round trip later.
 $("btn-browser-tab").addEventListener("click", () => {
   const url = browserCurrentUrl();
   if (!url) return;
-  const w = window.open("", "_blank");
-  if (!w) { toast("This browser blocked the tab"); return; }
-  // No handle back on this window: the tab is not sandboxed, and opener is
-  // what a page there would navigate the shell through.
-  try { w.opener = null; } catch (e) {}
-  browserEnsureTabToken().then((rec) => {
-    const target = rec ? browserEnterUrl(browserProxied(url, rec), rec) : "";
-    if (!target) {
-      try { w.close(); } catch (e) {}
-      if (!browserTabBlocked) toast("Couldn't open that in a tab");
-      return;
-    }
-    w.location = target;
-    browserTrackTab(w);
-  });
+  browserOpenTab((rec) => browserEnterUrl(browserProxied(url, rec), rec));
+});
+// The same tab with nothing in it yet, which is the computer's start page: an
+// address typed there is fetched by the computer, where one typed into the
+// browser's own bar would be fetched by the laptop and reach none of this.
+$("btn-browser-newtab").addEventListener("click", () => {
+  browserOpenTab(browserStartUrl);
 });
 $("btn-browser-expand").addEventListener("click", () => {
   browserExpanded = !browserExpanded;
@@ -1026,7 +1049,11 @@ function syncBrowseCap() {
   // Strictly checked too, and with the computer's own refusal on top of it: a
   // server too old for the mode answers with the pane's sandboxed token, and a
   // tab opened on that cannot do the one thing it was opened for.
-  $("btn-browser-tab").hidden = !hasCapStrict("browse_tab") || browserTabBlocked;
+  const tab = !hasCapStrict("browse_tab") || browserTabBlocked;
+  $("btn-browser-tab").hidden = tab;
+  // The empty tab is the same flavour of token on the same route, so it stands
+  // or falls with the button beside it.
+  $("btn-browser-newtab").hidden = tab;
 }
 
 syncBrowserNav();
