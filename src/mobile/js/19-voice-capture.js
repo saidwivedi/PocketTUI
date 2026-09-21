@@ -1769,10 +1769,6 @@ function buildKeybar() {
     // it: reportAvailable() cannot be asked on the first build, which runs
     // before 35-report.js does.
     if (k.report) b.classList.toggle("show", $("report-row").classList.contains("show"));
-    // And the search key, from the shortcut row syncSearchCap() keeps in step
-    // with it, for the same reason: the capability map has not landed yet on
-    // the first build, and hasCap() would answer for a server nobody has asked.
-    if (k.search) b.classList.toggle("show", !$("key-search").hidden);
     if (k.mod) modButtons[k.mod] = b;
     // Every key but the focusing ones must leave focus exactly where it is:
     // stealing it would drop the soft keyboard, and handing it back would raise
@@ -1876,7 +1872,6 @@ function buildKeybar() {
       if (k.compose) { toggleCompose(); return; }
       if (k.files) { openFilesAtCwd(); return; }
       if (k.report) { openReport(); return; }
-      if (k.search) { openSearch(); return; }
       if (k.arrows) { setArrows(true); return; }
       if (k.collapse) { setArrows(false); return; }
       if (k.mod) { setMod(k.mod, !mods[k.mod]); return; }
