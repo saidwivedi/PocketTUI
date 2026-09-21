@@ -5336,11 +5336,6 @@ _BROWSE_META_CHARSET = re.compile(
 _BROWSE_TOP_WORD = re.compile(r"\b(?:top|parent)\b")
 _BROWSE_TOP_MEMBER = re.compile(
     r"\b(?:window|self|globalThis)\s*\.\s*(top|parent)\b")
-# A "use strict" directive at the head of a script, after whatever whitespace
-# and comments come before it. `with` is a SyntaxError in strict code, so a
-# script that opens with one is handed on exactly as it came.
-_BROWSE_USE_STRICT = re.compile(
-    r"""^(?:\s+|/\*[\s\S]*?\*/|//[^\n]*(?:\n|$))*(['"])use strict\1""")
 
 # The types a <script> element may declare and still be JavaScript the browser
 # will run. Anything else in there — a module, a JSON island, a template — is
@@ -5357,6 +5352,34 @@ BROWSE_JS_TYPES = frozenset({
     "text/javascript", "application/javascript", "application/x-javascript",
     "text/ecmascript", "application/ecmascript", "text/jscript",
 })
+
+
+def browse_starts_strict(src: str) -> bool:
+    """Whether a script opens with a "use strict" directive.
+
+    That is, after whatever whitespace and comments come before it: `with` is a
+    SyntaxError in strict code, so a script that opens with one is handed on
+    exactly as it came. Walked a token at a time rather than matched, because
+    the regex that says this — a quantifier over runs of whitespace and lazy
+    block comments — backtracks exponentially over a minified library that
+    opens with hundreds of comments and no directive behind them, and the loop
+    thread is what pays for it.
+    """
+    i, n = 0, len(src)
+    while i < n:
+        if src[i].isspace():
+            i += 1
+        elif src.startswith("/*", i):
+            end = src.find("*/", i + 2)
+            if end < 0:
+                return False        # unterminated: no directive can follow it
+            i = end + 2
+        elif src.startswith("//", i):
+            end = src.find("\n", i + 2)
+            i = n if end < 0 else end + 1
+        else:
+            break
+    return src.startswith("'use strict'", i) or src.startswith('"use strict"', i)
 
 
 def browse_wrap_js(src: str) -> str:
@@ -5383,7 +5406,7 @@ def browse_wrap_js(src: str) -> str:
     """
     if not src.strip():
         return src
-    if not _BROWSE_TOP_WORD.search(src) or _BROWSE_USE_STRICT.match(src):
+    if not _BROWSE_TOP_WORD.search(src) or browse_starts_strict(src):
         return src
     # The closing brace on a line of its own, because the last line of a script
     # may be a // comment with no newline after it.
@@ -7305,17 +7328,33 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
             text = body.decode(m.group(1) if m else "utf-8", errors="replace")
         except LookupError:
             text = body.decode("utf-8", errors="replace")
-        out = (browse_wrap_js(text) if js
-               else browse_rewrite_css(text, ctx)).encode("utf-8")
-        # Re-encoded utf-8 like the HTML path, so the declared charset has to
-        # follow it or a stylesheet written in latin-1 comes out mojibake. A
-        # script gets no page headers: it is not a document, and the sandbox
+
+        def rewrite() -> tuple[bytes, str]:
+            # Re-encoded utf-8 like the HTML path, so the declared charset has
+            # to follow it or a stylesheet written in latin-1 comes out
+            # mojibake.
+            return ((browse_wrap_js(text) if js
+                     else browse_rewrite_css(text, ctx)).encode("utf-8"),
+                    f"{base}; charset=utf-8")
+
+        # A script gets no page headers: it is not a document, and the sandbox
         # header belongs to the document that loads it.
-        new_ctype = f"{base}; charset=utf-8"
         extra: dict = {}
     else:
-        out, new_ctype = browse_rewrite_html(body, ctx, ctype)
+        def rewrite() -> tuple[bytes, str]:
+            return browse_rewrite_html(body, ctx, ctype)
+
         extra = browse_page_headers(rec.sandbox)
+    # Off the loop thread and on a clock: the rewriters are pure functions over
+    # this body, but a pathological one is the whole server's problem where it
+    # runs here, and a body handed on as it came still renders.
+    try:
+        out, new_ctype = await asyncio.wait_for(asyncio.to_thread(rewrite),
+                                                BROWSE_REWRITE_WAIT)
+    except asyncio.TimeoutError:
+        log(f"browse: rewrite of {base or 'body'} from {hostport} timed out, "
+            "passed through unrewritten")
+        out, new_ctype = body, ctype or base
     pairs = browse_response_headers(resp, ctx, drop=frozenset(
         {"content-length", "content-encoding", "content-type"}
         | {k.lower() for k in extra}))
