@@ -805,19 +805,21 @@
             style="display:none"><svg><use href="#i-logo"/></svg></button>
     <button class="icon-btn" id="btn-browser-back" aria-label="Back"><svg><use href="#i-back"/></svg></button>
     <button class="icon-btn" id="btn-browser-fwd" aria-label="Forward"><svg><use href="#i-forward"/></svg></button>
-    <!-- Which browser this tab is. Pressed — which every tab is, on a computer
-         that has a browser to stream from — the page runs in the computer's own
+    <!-- Which browser this site is. Pressed, the page runs in the computer's own
          Chrome and what travels is pixels (43-full-browser.js): a real origin,
          a real profile, the logins and the service workers a site expects, and
-         the computer's own network without asking. Pressed again, the tab steps
-         down to the lightweight proxy beside it, which is the fallback and the
-         phone's mode. Left of the network key because it is the larger choice of
-         the two, and the network key has nothing to offer a tab that is already
-         on the computer's network — syncBrowserLan hides it there. Hidden where
-         no browser was found (syncBrowseCap). -->
+         the computer's own network without asking. That is what the pages the
+         proxy cannot serve need, and the press is remembered against the host,
+         so the next tab opened there starts streamed. Pressed again, the tab
+         steps back to the lightweight proxy beside it — quicker, with this
+         device's own sound and video — and the host comes off the record. Left
+         of the network key because it is the larger choice of the two, and the
+         network key has nothing to offer a tab that is already on the computer's
+         network — syncBrowserLan hides it there. Hidden where no browser was
+         found (syncBrowseCap). -->
     <button class="icon-btn" id="btn-browser-full" hidden aria-pressed="false"
-            aria-label="Run this tab in the computer's Chrome"
-            title="Run this tab in the computer's Chrome"><svg><use href="#i-monitor"/></svg></button>
+            aria-label="Stream this site from the computer's Chrome"
+            title="Stream this site from the computer's Chrome"><svg><use href="#i-monitor"/></svg></button>
     <!-- This tab, on the network the computer is on. Pressed, the page is
          re-fetched and re-drawn in the same frame under a different set of
          powers: it becomes the top window of its own document, its frames are
@@ -1121,21 +1123,25 @@
     <input id="backend-port" type="text" inputmode="numeric" autocapitalize="off"
            autocorrect="off" spellcheck="false" placeholder="5560">
     <!-- What the in-app browser's tabs are, and what the computer has to be
-         them with. A tab is the computer's own Chrome by default and the
-         checkbox is the way back to the lightweight proxy — for a slow link, or
-         for a machine whose browser is better left alone. The line under it is
-         the computer's answer about itself (browserSyncSetting, 42-browser.js),
-         read when the sheet is opened: which browser was found, and what it is
-         allowed to use, or the command that installs one. Hidden on a computer
-         that cannot browse at all, and during the first run, where the only
-         question is which computer. -->
+         them with. A tab is a proxied page framed here, which is the quick one
+         and the one with the device's own sound and video; the checkbox makes
+         every new tab a streamed one instead, for a machine whose browser is
+         wanted for everything. Under it are the sites that are streamed anyway —
+         put there by the key on the address row, or by the proxy handing over a
+         page it cannot serve — each with a cross that takes it off the list. The
+         line between them is the computer's answer about itself
+         (browserSyncSetting, 42-browser.js), read when the sheet is opened:
+         which browser was found, and what it is allowed to use, or the command
+         that installs one. Hidden on a computer that cannot browse at all, and
+         during the first run, where the only question is which computer. -->
     <div id="browser-setting" hidden>
       <label>Browser</label>
       <div class="toggle-row">
-        <label for="browser-proxy-toggle">Prefer the lightweight proxy</label>
-        <input id="browser-proxy-toggle" type="checkbox">
+        <label for="browser-stream-toggle">Stream every tab from the computer's Chrome</label>
+        <input id="browser-stream-toggle" type="checkbox">
       </div>
       <p class="sheet-note" id="browser-status-line"></p>
+      <p class="sheet-note" id="browser-stream-hosts" hidden></p>
       <!-- Sign out of everything at once: the streamed browser's whole profile
            on the computer — cookies, logins, site data — deleted, which is the
            only place any of that is kept. Shaped like the Forget below it

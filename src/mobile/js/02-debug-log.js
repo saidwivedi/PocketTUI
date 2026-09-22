@@ -301,6 +301,18 @@ function browserZoomClean(v) {
   return out;
 }
 
+// The set of hosts whose pages the browser pane streams, as a host -> true map
+// with anything else thrown away — the same treatment cfg.browserZoom's record
+// gets, and for the same reason: what is read back is whatever survived the last
+// write, and a hand-edited or older record must not name a host in a shape the
+// pane cannot read.
+function browserStreamHostsClean(v) {
+  const out = {};
+  if (!v || typeof v !== "object") return out;
+  for (const h of Object.keys(v)) if (h && v[h] === true) out[h] = true;
+  return out;
+}
+
 // The column's rows as the column can hold them: instance ids of the three pane
 // types and no other string, each of them once, and two at the most — the column
 // beside the terminal stacks no deeper, and it holds at most two of a kind, so
@@ -627,17 +639,34 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_browser_expanded", "1");
     else localStorage.removeItem("pockettui_browser_expanded");
   },
-  // Whether the browser pane's new tabs are proxy tabs rather than the
-  // computer's own Chrome. Off: a tab is a real browser on the computer wherever
-  // there is one to stream from (browser_full), and the proxy is the fallback.
-  // On is the way back to it — a link too slow for pixels, or a machine whose
-  // browser is better left alone — and it moves nothing that is already open.
-  get browserPreferProxy() {
-    return localStorage.getItem("pockettui_browser_prefer_proxy") === "1";
+  // Whether every new tab in the browser pane is streamed from the computer's
+  // own Chrome. Off, which is what it is: a tab is a proxied page framed here —
+  // quick, and it carries sound and video the stream cannot — and the stream is
+  // where the pages the proxy cannot serve go, one host at a time. On makes the
+  // stream the default for tabs opened after it, and moves nothing already open.
+  get browserStreamAll() {
+    return localStorage.getItem("pockettui_browser_stream_all") === "1";
   },
-  set browserPreferProxy(v) {
-    if (v) localStorage.setItem("pockettui_browser_prefer_proxy", "1");
-    else localStorage.removeItem("pockettui_browser_prefer_proxy");
+  set browserStreamAll(v) {
+    if (v) localStorage.setItem("pockettui_browser_stream_all", "1");
+    else localStorage.removeItem("pockettui_browser_stream_all");
+  },
+  // The hosts whose pages are streamed rather than proxied, as a set. Written by
+  // the key on the address row — a site put on the stream stays there, the way a
+  // zoomed host stays zoomed — and by the proxy handing a page over that it
+  // cannot serve. Forgotten by the same key, or from Settings.
+  get browserStreamHosts() {
+    let v = null;
+    try {
+      v = JSON.parse(localStorage.getItem("pockettui_browser_stream_hosts"));
+    } catch (e) {}
+    return browserStreamHostsClean(v);
+  },
+  set browserStreamHosts(v) {
+    const rec = browserStreamHostsClean(v);
+    if (Object.keys(rec).length) {
+      localStorage.setItem("pockettui_browser_stream_hosts", JSON.stringify(rec));
+    } else localStorage.removeItem("pockettui_browser_stream_hosts");
   },
   // How big the browser pane draws a host's pages, as a factor per host: a dev
   // server read at 125% is still at 125% the next time it is opened, which is
