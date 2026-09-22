@@ -101,7 +101,7 @@ BROWSER_CONFIG_DEFAULTS = {
     "freeze_after_s": 300,
     "idle_exit_s": 600,
     "dpr_max": 2,
-    "jpeg_quality": 60,
+    "jpeg_quality": 70,
     "binary": None,
 }
 
@@ -1076,6 +1076,33 @@ SETTLE_MIN_GAP_S = 0.3
 PAINTING_FRAMES = 3
 PAINTING_WINDOW_S = 0.3
 
+# The input above is not the only way a page comes to rest, and it was the only
+# one that ever produced a sharp frame: a page that loads and then sits there —
+# a result list, an article, anything nobody has touched yet — was shown at the
+# screencast's resolution, which on a 2x client is half the page's own. So
+# quiet is a trigger of its own: this long after the last frame went out, with
+# nothing waiting on an input's settle, one settled picture, and no further one
+# until something happens again. Measured against Chrome 153 on a 1200x800 CSS
+# page at 2x: the frames are 1200x800 and the picture is 2400x1600.
+IDLE_STILL_S = 0.35
+
+# Taking the picture makes frames of its own: the capture forces a surface
+# commit and the screencast reports it, measured at the moment the still goes
+# out and again about 90 ms later. They are frames of the picture that was just
+# taken, so they are sent (they cost nothing extra — the browser made them
+# either way) and they do not start the clock above: winding it on the capture's
+# own echo is a page at rest photographing itself every half second for as long
+# as it is left alone, which is what a first cut of this did, 10 pictures and
+# 3.5 Mbit/s for a page nobody had touched. The price of the window is a page
+# that changes once, inside it, and not again: that frame is shown soft.
+STILL_ECHO_S = 0.25
+
+# And for a tab whose page never fires a load event — an adopted target, a page
+# that was already there when the pane found it — the clock is started again
+# this long after it was shown, in case the quiet above began before the stream
+# did.
+SHOW_STILL_S = 1.5
+
 # A native popup — a <select>'s menu, a date picker — is drawn by the browser
 # outside the page's surface, so it is in a screenshot and not in a screencast
 # frame. While one is open the tab is painted from screenshots instead.
@@ -1118,8 +1145,12 @@ CAST_START_S = 2.0
 # gave the quality back to buy the pixel ratio (measured: 41 KB a frame at
 # either ratio, since the ratio is not on the stream) was a step down that
 # made the link's problem worse.
+#
+# The top rung's quality is 70 rather than the 60 it was: measured on the same
+# page, a frame is 74.6 KB at q60 and 85.9 KB at q70, and 15% more bytes on the
+# rung that is only chosen while the link has room is worth the edges it keeps.
 STREAM_LEVELS = (
-    (None, 60, 24, 1.0),
+    (None, 70, 24, 1.0),
     (None, 45, 24, 1.0),
     (1.0, 45, 16, 1.0),
     (1.0, 40, 10, 0.7),
@@ -1648,10 +1679,15 @@ class PaneTab:
         self._level_at = 0.0
         self._input_at = 0.0
         self._settle_at = 0.0
+        # The settled pictures this tab has sent, and when the last one went.
+        self._stills = 0
+        self._still_at = 0.0
         # One pointer probe at a time: a move over a paragraph asks twenty
         # times a second and each ask is a round trip into the page.
         self.probe_busy = False
         self._settle_task: "asyncio.Task | None" = None
+        self._quiet_task: "asyncio.Task | None" = None   # the quiet page's still
+        self._show_task: "asyncio.Task | None" = None    # its fallback, after show
         self._freeze_task: "asyncio.Task | None" = None
         self._state_task: "asyncio.Task | None" = None
         self._popup_open = False
@@ -1690,7 +1726,7 @@ class PaneTab:
         setting: a user who asked for 80 gets 80 while the link can carry it,
         and the rungs below are this module's numbers.
         """
-        top = int(self.config.get("jpeg_quality") or 60)
+        top = int(self.config.get("jpeg_quality") or 70)
         return top if self._level == 0 else min(top, STREAM_LEVELS[self._level][1])
 
     def _frame_gap(self) -> float:
@@ -1816,7 +1852,14 @@ class PaneTab:
                 "quality": self._quality(),
                 "fps": round(self._fps, 1) if self._streaming() else 0.0,
                 "kbps": round(self._kbps) if self._streaming() else 0,
-                "rttMs": round(self._rtt_ms)}
+                "rttMs": round(self._rtt_ms),
+                # The sharp frames: how many this tab has sent and how long ago
+                # the last one went. A page that looks soft is a page with no
+                # recent still, which is the one question a screenshot of the
+                # pane cannot answer. Zero for a tab that has never sent one.
+                "stills": self._stills,
+                "lastStillMs": (round((time.monotonic() - self._still_at) * 1000)
+                                if self._still_at else 0)}
 
     def _streaming(self) -> bool:
         return self.live and time.monotonic() - self._last_emit < RATE_STALE_S
@@ -1890,6 +1933,7 @@ class PaneTab:
         if self._is_main(params.get("frameId", "")):
             self.loading = False
             self._schedule_state()
+            self._arm_idle_still()
             if self.live and self._cast_pending and not self.dead:
                 # There is a page to stream now. See `_start_cast`.
                 self._cast_pending = False
@@ -1938,6 +1982,12 @@ class PaneTab:
         await self._start_cast()
         self.live = True
         self.shown_at = time.monotonic()
+        # A page that is already loaded and sitting still gets its sharp
+        # picture from the quiet that follows; one still arriving gets it from
+        # its load event. The second timer is for a tab that fires neither.
+        self._arm_idle_still()
+        self._cancel(self._show_task)
+        self._show_task = asyncio.ensure_future(self._still_after_show())
 
     async def hide(self) -> None:
         """Stop the stream, and start the clock on freezing the tab."""
@@ -1945,6 +1995,11 @@ class PaneTab:
             return
         self.live = False
         self._popup_open = False
+        # No stream to come to rest: a timer left running here would take its
+        # picture of whatever the tab is showing when it is next streamed.
+        self._cancel(self._quiet_task)
+        self._cancel(self._show_task)
+        self._quiet_task = self._show_task = None
         await self._stop_cast()
         if not self.dead:
             self._freeze_task = asyncio.ensure_future(self._freeze_later())
@@ -2042,6 +2097,13 @@ class PaneTab:
             self._send_cast(sid, body)
         if self._input_at:
             self._arm_settle()
+        elif not self._still_at or (time.monotonic() - self._still_at
+                                    >= STILL_ECHO_S):
+            # Nobody asked for this frame, so it is the page painting itself —
+            # and the picture it leaves behind, once it stops, is what the
+            # settled capture is for. Unless it is the last capture's own echo
+            # (see STILL_ECHO_S), which shows what that capture already sent.
+            self._arm_idle_still()
 
     def _hold_paced(self, sid, body: bytes, wait: float) -> None:
         if self._paced is not None:     # the browser owes us only one at a time
@@ -2227,8 +2289,66 @@ class PaneTab:
         """
         if self.dead or not self.live:
             return
+        # An input's own settle supersedes the quiet page's: this one knows
+        # what it is waiting for.
+        self._cancel(self._quiet_task)
+        self._quiet_task = None
         self._cancel(self._settle_task)
         self._settle_task = asyncio.ensure_future(self._settle())
+
+    def _arm_idle_still(self) -> None:
+        """Start the clock on the settled picture a page at rest gets.
+
+        One timer, not one per frame: the clock is read from `_last_emit`
+        inside it, so a timer already waiting is already waiting for the right
+        moment and a page painting at 24 fps costs no task a frame.
+        """
+        if self.dead or not self.live or self._capturing:
+            return
+        if self._quiet_task is not None and not self._quiet_task.done():
+            return
+        self._quiet_task = asyncio.ensure_future(self._idle_still())
+
+    async def _still_after_show(self) -> None:
+        """The clock started again a while after `show`. See SHOW_STILL_S.
+
+        A fallback and nothing more: a tab whose page has already been
+        photographed since it was shown is left alone, or every show would
+        cost a second capture of a picture that had not changed.
+        """
+        try:
+            await asyncio.sleep(SHOW_STILL_S)
+        except asyncio.CancelledError:
+            return
+        if self._still_at >= self.shown_at:
+            return
+        self._arm_idle_still()
+
+    async def _idle_still(self) -> None:
+        """One settled picture for a page that has gone quiet on its own.
+
+        Nothing above this asks for it: the stream is what a page shows while
+        it moves, and the picture is what it deserves once it stops.
+        """
+        try:
+            await asyncio.sleep(IDLE_STILL_S)
+            # Frames may still be in the air — one held for the pace has not
+            # gone out yet — and the quiet is measured from the last one that
+            # did. A page that is really painting re-arms this timer with
+            # every frame and never reaches the capture below at all.
+            while True:
+                left = self._last_emit + IDLE_STILL_S - time.monotonic()
+                if left <= 0 and self._paced is None:
+                    break
+                await asyncio.sleep(max(left, 0.05))
+        except asyncio.CancelledError:
+            return
+        if self._input_at or (self._settle_task is not None
+                              and not self._settle_task.done()):
+            return          # an input's settle is in flight; that one wins
+        if self._painting() or not self._still_worth_it():
+            return
+        await self._take_still()
 
     def _painting(self) -> bool:
         """Is the page carrying itself? Frames still coming, none asked for."""
@@ -2261,16 +2381,29 @@ class PaneTab:
             # length of an encode to send that picture a second time.
             if self._painting() or not self._still_worth_it():
                 self._input_at = 0.0
+                # The page is carrying itself, or a frame already showed what
+                # the input did. Either way the picture is owed to the quiet
+                # that follows rather than to this input.
+                self._arm_idle_still()
                 return
             gap = SETTLE_MIN_GAP_S - (time.monotonic() - self._settle_at)
             if gap > 0:
                 await asyncio.sleep(gap)
                 if self._painting() or not self._still_worth_it():
                     self._input_at = 0.0
+                    self._arm_idle_still()
                     return
         except asyncio.CancelledError:
             return
         self._input_at = 0.0
+        await self._take_still()
+
+    async def _take_still(self) -> None:
+        """The capture itself: the stream held for one screenshot.
+
+        Both ways in end here — the input that stopped and the page that went
+        quiet — so a still costs the same and is decided the same either way.
+        """
         if self.dead or not self.live:
             return
         self._settle_at = time.monotonic()
@@ -2303,9 +2436,13 @@ class PaneTab:
             return
         self._held = []
         try:
-            self._emit("still", base64.b64decode(res.get("data") or ""), "jpeg")
+            sent = self._emit("still", base64.b64decode(res.get("data") or ""),
+                              "jpeg")
         except (ValueError, TypeError):
-            pass
+            return
+        if sent is not None:
+            self._stills += 1
+            self._still_at = time.monotonic()
 
     def _flush_held(self) -> None:
         """Send the frames held during a capture, already acknowledged."""
@@ -2356,7 +2493,7 @@ class PaneTab:
         dropdown and sees nothing happen.
         """
         end = time.monotonic() + POPUP_MAX_S
-        quality = int(self.config.get("jpeg_quality") or 60)
+        quality = int(self.config.get("jpeg_quality") or 70)
         try:
             while (self._popup_open and self.live and not self.dead
                    and time.monotonic() < end):
@@ -2372,6 +2509,9 @@ class PaneTab:
             pass
         finally:
             self._popup_open = False
+            # The menu is gone and the page under it is what the pane is
+            # showing again — at the screencast's resolution until this.
+            self._arm_idle_still()
 
     # -- the page asking something -----------------------------------------
     # Four things a page can do that a picture of a page cannot answer: put up
@@ -2619,7 +2759,13 @@ class PaneTab:
         return True
 
     def _on_load(self, params: dict) -> None:
-        if self.dead or (self._icon_task is not None and not self._icon_task.done()):
+        if self.dead:
+            return
+        # The page is there. What the stream showed while it was arriving is
+        # the soft half-resolution one, so the quiet after the load is when the
+        # sharp picture is owed.
+        self._arm_idle_still()
+        if self._icon_task is not None and not self._icon_task.done():
             return
         self._icon_task = asyncio.ensure_future(self._read_favicon())
 
@@ -2692,6 +2838,8 @@ class PaneTab:
         if self.live:
             await self._stop_cast()
             await self._start_cast()
+            # A new size or zoom is a new picture to be sharp about.
+            self._arm_idle_still()
 
     # -- end ---------------------------------------------------------------
     async def close(self) -> None:
@@ -2753,6 +2901,8 @@ class PaneTab:
         # has been round, and a state push that saw one of these would take it
         # for a push already on its way and send nothing.
         self._settle_task = None
+        self._quiet_task = None
+        self._show_task = None
         self._freeze_task = None
         self._popup_task = None
         self._pace_task = None
@@ -2779,7 +2929,8 @@ class PaneTab:
         self._auth = None
         self._chooser = None
         self._fetch_on = False
-        for task in (self._settle_task, self._freeze_task, self._popup_task,
+        for task in (self._settle_task, self._quiet_task, self._show_task,
+                     self._freeze_task, self._popup_task,
                      self._pace_task, self._state_task, self._dialog_task,
                      self._auth_task, self._fetch_task, self._linger_task,
                      self._icon_task):

@@ -173,6 +173,40 @@ def test_open_data_url_receives_cast_frame_then_still(tmp_path, monkeypatch):
     live(body, tmp_path)
 
 
+def test_a_quiet_page_gets_a_sharp_frame_without_input(tmp_path, monkeypatch):
+    """The founder's report: a page that loads and sits there looked blurred.
+
+    A screencast frame comes back at the CSS size whatever pixel ratio the page
+    is rendered at, so on a 2x client every frame is half the resolution of the
+    page. Nobody touches this tab, so nothing on the input path runs: the sharp
+    frame has to come from the quiet itself.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def body(fb):
+        sink = Sink()
+        fb.attach_pane("p1", sink)
+        tab = await fb.open("p1", "t1", HI, css_w=400, css_h=300, dpr=2, zoom=1)
+        await tab.show()
+
+        cast, _ = await wait_frame(sink, "cast")
+        assert (cast["w"], cast["h"]) == (400, 300)     # the soft one
+        tab.ack(cast["seq"])
+
+        still, data = await wait_frame(sink, "still", timeout=3)
+        assert (still["w"], still["h"]) == (800, 600)   # the page's own pixels
+        assert data[:2] == b"\xff\xd8"
+        assert tab.info()["stills"] == 1
+
+        # And one is all a page at rest is worth: a capture holds the stream
+        # for the length of an encode, and the picture has not changed.
+        await asyncio.sleep(2.0)
+        assert sink.kinds().count("still") == 1, sink.kinds()
+        assert tab.info()["stills"] == 1
+
+    live(body, tmp_path)
+
+
 def test_resize_changes_frame_dimensions(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
 
