@@ -171,6 +171,87 @@ async function browserSaveMarks() {
   }
 }
 
+// ---- full mode -------------------------------------------------------------
+// A tab is one of two things: a page fetched through the backend's proxy and
+// framed here, or the same page open in a real browser on the computer with its
+// pixels streamed over (43-full-browser.js). The second is what a tab is
+// wherever the computer has a browser to stream from — a genuine origin, the
+// user's own profile, the logins and service workers a site expects, and the
+// computer's network without asking for it — and the proxy is the fallback: no
+// browser found, the preference below, or a tab stepped down by its own key.
+
+function browserFullWanted() {
+  // Strictly checked, like every other capability the shell sends *to* the
+  // computer: a server too old for the route has no socket to open, and a tab
+  // waiting on one would be a tab with nothing in it.
+  return hasCapStrict("browser_full") && !cfg.browserPreferProxy;
+}
+
+// The id the computer knows a streamed tab by. Made with the tab and kept in the
+// record a reload reads, because it is also how the page comes back: the backend
+// holds its tabs under (pane, id) and answers a second open for one it already
+// has by describing the page that is on it rather than by loading anything
+// (chromium.py's FullBrowser.open).
+let browserFidN = 0;
+function browserFid() {
+  browserFidN += 1;
+  return "t" + browserFidN + Math.random().toString(36).slice(2, 8);
+}
+
+// Which browser the computer found, out of the path it found it at — the same
+// four answers the installer's own search can give. The version string is the
+// whole four-part number and the major is what anybody reads.
+function browserFullProduct(path) {
+  const p = String(path || "");
+  if (/\.pockettui\/chromium\//.test(p)) return "Chrome for Testing";
+  if (/edge/i.test(p)) return "Microsoft Edge";
+  if (/chromium/i.test(p)) return "Chromium";
+  if (/chrome/i.test(p)) return "Google Chrome";
+  return "A browser";
+}
+
+// The Browser group in Settings: the switch's state, and the computer's own
+// answer about what a tab would run in. Asked when the section is looked at
+// rather than at boot — it spawns `--version` on the computer the first time —
+// and hidden outright on a computer that cannot browse at all, where there is
+// nothing for either line to be about.
+async function browserSyncSetting() {
+  const block = $("browser-setting");
+  if (!block) return;
+  const on = !demoMode && !needsSetup() && hasCapStrict("browse");
+  block.hidden = !on;
+  $("browser-proxy-toggle").checked = cfg.browserPreferProxy;
+  const line = $("browser-status-line");
+  if (!on || !line) return;
+  if (!hasCapStrict("browser_full")) {
+    line.textContent = "No browser on the computer: run `pockettui browser install` there";
+    return;
+  }
+  let d = null;
+  try {
+    const r = await fetch(apiURL("api/browser/status"),
+                          { cache: "no-store", headers: authHeaders() });
+    d = await r.json();
+    if (!r.ok || !d) throw new Error("http " + r.status);
+  } catch (e) {
+    dbg("browser status: ask failed", e);
+    line.textContent = "Couldn't ask the computer about its browser";
+    return;
+  }
+  if (!d.found) {
+    line.textContent = d.launch_error
+      || "No browser on the computer: run `pockettui browser install` there";
+    return;
+  }
+  const major = String(d.found.version || "").split(".")[0];
+  const cap = typeof d.capMb === "number" ? d.capMb : 0;
+  line.textContent = browserFullProduct(d.found.path)
+    + (major ? " " + major : "") + " on the computer"
+    + (cap ? ", memory cap " + cap + " MB" : "")
+    // A browser that could not be started says so, whatever was found.
+    + (d.launch_error ? " — " + d.launch_error : "");
+}
+
 // The panes the column has, by the id it knows each of them by ("browser" for
 // the one the markup ships, "browser#2" for the copy made beside it). Everything
 // below the factory that the rest of the app calls is a dispatcher over this.
@@ -237,6 +318,29 @@ let browserExpanded = id === "browser" ? cfg.browserExpanded : false;
 function browserNewTab() {
   return {
     frame: null,
+    // Which of the two kinds of tab this is, and the view when it is the
+    // streamed one. Null is a tab nothing has been asked of yet: whether the
+    // computer has a browser to stream from is not known at the load that makes
+    // this pane's first tab, so the mode is settled by the first navigation
+    // (browserIsFull, browserNavigateIn) rather than guessed here.
+    fullMode: null,
+    // The live view, made on the tab's first navigation the way `frame` is, and
+    // kept while another tab is on screen — a hidden view stops its stream and
+    // keeps its page (43-full-browser.js).
+    full: null,
+    // What the computer calls this tab on the wire, and which target its page is
+    // on: the pair that gets the page back after a reload rather than loading it
+    // again (browserRemember, browserFullView).
+    fid: browserFid(),
+    target: "",
+    // Where its own history can go, as the computer last reported it: a streamed
+    // tab's history is the real browser's, and only it knows how far back it
+    // goes. The two arrows read these instead of the stack below.
+    canBack: false,
+    canFwd: false,
+    // The factor its view was last told, so a landing that reports itself four
+    // times does not restart the stream four times (browserApplyZoom).
+    zoomAt: 0,
     // Its chip in the strip, made with the tab's first drawing and kept: the
     // strip is updated in place rather than redrawn (renderBrowserTabs), and
     // this is the element that stays put under the keyboard.
@@ -559,23 +663,115 @@ function browserFrame(tab) {
   return tab.frame;
 }
 
-// Every frame this pane holds, gone — for a teardown, a profile switch, or the
-// last tab's close. The tabs keep their addresses; what goes is the page.
-function browserDropFrames() {
+// ---- full mode, in this pane -----------------------------------------------
+
+// One socket per pane, made with its first streamed tab and kept: every tab in
+// the pane shares it, and each binary frame names the tab it is a picture of
+// (43-full-browser.js). Lazily, because a pane whose tabs are all proxy tabs —
+// or a computer with no browser to stream from — should not be holding one open.
+let fullLink = null;
+
+function browserFullLink() {
+  if (!fullLink) fullLink = fullBrowserLink(id);
+  return fullLink;
+}
+
+// The socket, gone, for a pane that is going with it: a teardown or a switch of
+// computer. Not for a pane that is merely closed — its tabs still hold their
+// pages, and the socket is what they hold them through. A reopened pane makes
+// another one with its next streamed tab.
+function browserDropLink() {
+  if (!fullLink) return;
+  fullLink.close();
+  fullLink = null;
+}
+
+// Whether this tab is the streamed kind. A tab that has not been sent anywhere
+// has no mode of its own yet and reads as whatever its first navigation would
+// give it, so the key on the row says what it would do rather than nothing.
+function browserIsFull(tab) {
+  if (!tab) return false;
+  return tab.fullMode === null ? browserFullWanted() : tab.fullMode;
+}
+
+// One message about one streamed tab. Nothing is sent for a tab with no view:
+// there is no page on the computer to act on until the view has opened one.
+function browserFullSend(tab, type) {
+  if (!tab.full || !fullLink) return;
+  fullLink.send({ type: type, tab: tab.fid });
+}
+
+// This tab's view, made on first use the way browserFrame makes its frame — and
+// refused for the same reason, a record the strip no longer holds.
+function browserFullView(tab) {
+  if (tab.full) return tab.full;
+  if (browserTabs.indexOf(tab) < 0) return null;
+  const link = browserFullLink();
+  const view = fullBrowserMake(id, tab.fid, link, {
+    // The chords that belong to the shell rather than to the page, which has the
+    // keyboard for everything else.
+    focusAddress: () => { const f = q("browser-url"); if (f) { f.focus(); f.select(); } },
+    reload: () => browserFullSend(tab, "reload"),
+    zoomStep: (delta) => { if (delta) browserStepZoom(delta); else browserSetZoom(1); },
+    // A middle click or a Ctrl+click in the page, which is the same ask as a
+    // proxied page's window.open.
+    openTab: (href) => browserOpenFrom(tab, href),
+    retry: () => { const u = browserUrlIn(tab); if (u) browserNavigateIn(tab, u, false); },
+    onError: (msg) => browserFullFailed(tab, msg),
+    onTab: (msg) => browserFullTab(tab, msg),
+  });
+  tab.full = view;
+  tab.zoomAt = 0;                       // a fresh view is at 100% whatever was
+  view.el.hidden = tab !== browserTab();
+  q("browser-wrap").appendChild(view.el);
+  return view;
+}
+
+// This tab's view, gone, and the page on the computer with it. The view's own
+// destroy leaves the tab open there — a hidden tab is still a page to come back
+// to — so closing it is the pane's, wherever the pane is done with the tab.
+function browserDropFull(tab) {
+  if (!tab.full) return;
+  tab.full.destroy();
+  browserFullSend(tab, "close");        // while the tab still has one to name
+  tab.full = null;
+  tab.target = "";
+  tab.zoomAt = 0;
+  tab.canBack = false;
+  tab.canFwd = false;
+}
+
+// Every page this pane holds, gone — for a teardown, a profile switch, or the
+// last tab's close: the frames out of the document, the streamed tabs closed on
+// the computer. The tabs keep their addresses; what goes is the page.
+function browserDropPages() {
   for (const tab of browserTabs) {
     if (tab.frame) tab.frame.remove();
     tab.frame = null;
+    browserDropFull(tab);
     tab.primed = false;
     tab.loaded = "";
     tab.navigating = false;
   }
 }
 
+// The streamed tab on screen stops streaming when nobody is looking at the pane.
+// A frame costs nothing while its pane is closed; a picture of a page arriving
+// many times a second costs the link it arrives over.
+function browserHideFulls() {
+  for (const tab of browserTabs) if (tab.full) tab.full.hide();
+}
+
 function syncBrowserNav() {
   const tab = browserTab();
   const back = q("btn-browser-back"), fwd = q("btn-browser-fwd");
-  if (back) back.disabled = tab.idx <= 0;
-  if (fwd) fwd.disabled = tab.idx < 0 || tab.idx >= tab.stack.length - 1;
+  // A streamed tab's history is the real browser's, not the list below: it has
+  // entries this pane never saw — a page's own pushState, a redirect chain — and
+  // the computer says on every `tab` message how far each way it goes.
+  const full = browserIsFull(tab) && tab.full;
+  if (back) back.disabled = full ? !tab.canBack : tab.idx <= 0;
+  if (fwd) fwd.disabled = full ? !tab.canFwd
+                               : (tab.idx < 0 || tab.idx >= tab.stack.length - 1);
 }
 
 // A landing becomes that tab's newest entry, and everything that was forward of
@@ -608,10 +804,15 @@ function browserRemember() {
     const u = browserUrlIn(browserTabs[i]);
     if (!u) continue;
     if (i <= browserActive) at = tabs.length;
-    // A bare address for an ordinary tab, the pair only where there is
-    // something more to say: a shell too old to know about the mode reads the
-    // strings and still gets every one of those tabs back.
-    tabs.push(browserTabs[i].lan ? { url: u, lan: true } : u);
+    // A bare address for an ordinary tab, a record only where there is
+    // something more to say: a shell too old to know about the modes reads the
+    // strings and still gets every one of those tabs back. A streamed tab keeps
+    // the pair that gets its page back rather than loading it again — the id the
+    // computer holds it under, and the target its page is on.
+    const t = browserTabs[i];
+    if (browserIsFull(t)) {
+      tabs.push({ url: u, full: true, fid: t.fid, targetId: t.target || "" });
+    } else tabs.push(t.lan ? { url: u, lan: true } : u);
   }
   // Written back over the record as it stands rather than as a record of its
   // own: the rows and their order are the column's half of this key, and the
@@ -636,16 +837,21 @@ function browserRememberedUrl() {
   return p ? browserNormalize(p.url || "") : "";
 }
 
-// Send a tab's frame somewhere. `push` is false for the moves that are not new
-// places: back, forward, reload, and putting a restored tab back on the page it
-// was already on. Every part of it that is chrome rather than frame — the
-// address field, the arrows, the zoom key — is done only for the tab on screen;
-// a background tab that is still loading has no business moving them.
+// Send a tab somewhere — its frame, or the browser on the computer holding its
+// page. `push` is false for the moves that are not new places: back, forward,
+// reload, and putting a restored tab back on the page it was already on. Every
+// part of it that is chrome rather than page — the address field, the arrows, the
+// zoom key — is done only for the tab on screen; a background tab that is still
+// loading has no business moving them.
 async function browserNavigateIn(tab, raw, push = true) {
   const gen = browserGen;
   const typed = browserHasScheme(String(raw || "").trim());
   const url = browserNormalize(raw);
   if (!url) return;
+  // The first thing asked of a tab settles what kind of tab it is. Not at the
+  // load that made it: whether this computer has a browser to stream from is an
+  // answer that arrives after the pane's first tab does.
+  if (tab.fullMode === null) tab.fullMode = browserFullWanted();
   // A scheme this pane picked is a guess this navigation may have to take
   // back, and only its failure says so. Held for this navigation alone: the
   // retry below spells its scheme out, and a landing clears it.
@@ -660,12 +866,32 @@ async function browserNavigateIn(tab, raw, push = true) {
   // (side_column_smoke.mjs). Null in every build that is not being driven by
   // one.
   if (api.navigateHook) api.navigateHook(url, push);
+  else if (tab.fullMode) { if (!browserPointFull(tab, url)) return; }
   else if (!await browserPointFrame(tab, url, gen)) return;
   tab.loaded = url;
   if (push) browserPush(tab, url);
   if (tab === browserTab()) { browserSetField(url); syncBrowserNav(); }
   renderBrowserTabs();
   browserRemember();
+}
+
+// Where a streamed tab is sent: browserPointFrame's other half, and the same
+// contract — false is a navigation that got nowhere and its caller writes
+// nothing down. The first one opens the tab on the computer (or takes back the
+// target a reload left its page on, which is what makes a reload cost no page
+// load); every one after that is an op on a tab that is already there. The zoom
+// follows rather than leads, because the message that sets it would be an error
+// on a tab the computer has not been told about yet — where browserPointFrame's
+// order is the opposite, a frame having to be sized before the page lays itself
+// out in it.
+function browserPointFull(tab, url) {
+  const view = browserFullView(tab);
+  if (!view) return false;
+  if (tab.loaded) view.navigate(url);
+  else view.open(url, tab.target);
+  browserApplyZoom(browserZoomFor(browserZoomHost(url)), tab);
+  if (tab === browserTab()) syncBrowserZoom(browserZoomHost(url));
+  return true;
 }
 
 // Which permission this tab's pages are fetched under, and where its frame is
@@ -699,7 +925,7 @@ async function browserPointFrame(tab, url, gen) {
   // Before the load rather than after its landing: the frame's width is the
   // viewport the page lays itself out against, so setting it here is what
   // saves the zoomed page a reflow on its first paint.
-  browserApplyZoom(browserZoomFor(browserZoomHost(url)), frame);
+  browserApplyZoom(browserZoomFor(browserZoomHost(url)), tab);
   if (tab === browserTab()) syncBrowserZoom(browserZoomHost(url));
   // The landing this load reports is this load, not a page moving itself.
   tab.navigating = true;
@@ -735,6 +961,12 @@ function browserNavigate(raw, push = true) {
 function syncBrowserLan() {
   const btn = q("btn-browser-tab");
   if (!btn) return;
+  // Not for a streamed tab: its page is fetched by a browser running on the
+  // computer, so it is already on the computer's network and there is nothing
+  // this key could add. Hidden here rather than in browserSyncCap, because it
+  // now depends on the tab on screen as well as on the computer's answers.
+  btn.hidden = !hasCapStrict("browse_tab") || browserTabBlocked
+               || browserIsFull(browserTab());
   const on = !!(browserTab() && browserTab().lan);
   btn.classList.toggle("on", on);
   btn.setAttribute("aria-pressed", on ? "true" : "false");
@@ -768,6 +1000,116 @@ function browserSetLan(tab, on) {
   // In place rather than as a new entry: this is the page the tab is already
   // on, fetched with other powers.
   if (url) browserNavigateIn(tab, url, false);
+}
+
+// ---- which browser this tab is ---------------------------------------------
+
+// The key's own state, the network key's rule: read off the tab on screen, so a
+// tab somebody stepped down to the proxy is dark beside a tab that was left
+// alone. Pressed is the streamed browser, which is what a tab is by default.
+function syncBrowserFull() {
+  const btn = q("btn-browser-full");
+  if (!btn) return;
+  const on = browserIsFull(browserTab());
+  btn.classList.toggle("on", on);
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  // What pressing it would do, and once it is pressed what it did — the same
+  // words in the tooltip and in the label, as the key beside it does.
+  const said = on
+    ? "This tab runs in the computer's Chrome; press to use the lightweight proxy instead"
+    : "Run this tab in the computer's Chrome";
+  btn.setAttribute("aria-label", said);
+  btn.setAttribute("title", said);
+}
+
+// Move one tab between the two kinds. Whatever the tab was showing goes — a
+// frame's document cannot become a streamed page and a streamed page cannot
+// become a frame's document — and the page is fetched again as the other kind,
+// in place rather than as a new entry. What carries over is the address, the
+// name and the zoom; the history does not, because the list the tab had was the
+// other browser's.
+function browserSetFull(tab, on) {
+  if (browserIsFull(tab) === !!on) return;
+  tab.fullMode = !!on;
+  if (on) {
+    if (tab.frame) { tab.frame.remove(); tab.frame = null; }
+    tab.primed = false;
+    tab.reminted = false;
+    // The streamed tab is on the computer's own network already, so the
+    // permission the key beside this one grants has nothing left to grant.
+    tab.lan = false;
+  } else browserDropFull(tab);
+  tab.loaded = "";
+  tab.navigating = false;
+  if (tab === browserTab()) { syncBrowserFull(); syncBrowserLan(); }
+  renderBrowserTabs();
+  browserRemember();
+  const url = browserUrlIn(tab);
+  if (url) browserNavigateIn(tab, url, false);
+  else if (tab === browserTab()) syncBrowserNav();
+}
+
+// The computer has no browser it can start, and this tab has never shown
+// anything: the proxy is what it is the fallback for, so the tab steps down and
+// the navigation is made again. One toast, because the step down is not what the
+// user asked for. A tab that was reading something keeps the overlay and its
+// Retry — stepping it down under the reader would lose the page it is on. True
+// says the failure has been dealt with and no overlay is wanted
+// (43-full-browser.js).
+function browserFullFailed(tab, msg) {
+  if (!msg || msg.code !== "unavailable" || tab.loaded) return false;
+  toast("The computer's browser could not start; using the proxy");
+  browserSetFull(tab, false);
+  return true;
+}
+
+// What the computer says about a streamed tab: where it is, what it calls
+// itself, and how far its own history goes each way. The proxy's tabs learn all
+// of that from the shim's pockettui-nav report, and this is the same bookkeeping
+// off the other mode's report — one address at a time, since a `tab` message is
+// sent for every step of a load.
+function browserFullTab(tab, msg) {
+  if (!msg) return;
+  const live = tab === browserTab();
+  // Which target its page is on, which is what gets the page back after a reload
+  // rather than loading it again (browserRemember).
+  if (typeof msg.targetId === "string" && msg.targetId) tab.target = msg.targetId;
+  tab.canBack = !!msg.canBack;
+  tab.canFwd = !!msg.canFwd;
+  const url = browserNormalize(typeof msg.url === "string" ? msg.url : "");
+  // about:blank is the target before it has been sent anywhere, not a page the
+  // tab is on: a browser's own address field is empty there too.
+  if (url && url !== "about:blank") {
+    // Not while it is being typed into: the user is mid-address and a page
+    // finishing its load must not take the field away from them.
+    if (live && document.activeElement !== q("browser-url")) browserSetField(url);
+    browserPush(tab, url);
+    tab.loaded = url;
+    // A tab that has moved on drops the old name first, so a chip never carries
+    // the title of a page its tab has left.
+    if (url !== tab.titleFor) { tab.title = ""; tab.titleFor = url; }
+    browserApplyZoom(browserZoomFor(browserZoomHost(url)), tab);
+    if (live) syncBrowserZoom(browserZoomHost(url));
+  }
+  const title = typeof msg.title === "string" ? msg.title : "";
+  if (title && tab.titleFor) {
+    tab.title = title;
+    browserMarkTitles[tab.titleFor] = title;
+  }
+  renderBrowserTabs();
+  if (live) { renderBrowserMarks(); syncBrowserNav(); }
+  browserRemember();
+}
+
+// A link a page asked to open in a window of its own: a proxied page's
+// window.open, and a middle or Ctrl+click in a streamed one. A tab of its own in
+// front, in whatever mode a new tab is in — and at the cap the tab the link was
+// clicked in, because spending it is better than the click going nowhere.
+function browserOpenFrom(tab, raw) {
+  const url = browserNormalize(typeof raw === "string" ? raw : "");
+  if (!url) return;
+  if (browserTabs.length >= BROWSER_TAB_MAX) { browserNavigateIn(tab, url); return; }
+  browserNavigateIn(browserMakeTab(tab.lan), url);
 }
 
 // ---- zoom ------------------------------------------------------------------
@@ -806,10 +1148,23 @@ function browserZoomFor(host) {
 // top of the control it hung from, and the mouseup that ended the click
 // landed in the list and dismissed it again.
 //
-// The frame is named rather than looked up: zoom belongs to the host, a
-// landing in a tab that is not on screen is still that host's page, and the
-// frame it has to be applied to is that tab's.
-function browserApplyZoom(factor, frame = browserTab().frame) {
+// A streamed tab is zoomed on the computer instead, where the browser showing
+// the page does it the way Chrome's own zoom does (a device-metrics override,
+// chromium.py) — there is no element here to scale, only a picture of one.
+//
+// The tab is named rather than looked up: zoom belongs to the host, a landing
+// in a tab that is not on screen is still that host's page, and the frame or the
+// view it has to be applied to is that tab's.
+function browserApplyZoom(factor, tab = browserTab()) {
+  if (tab.full) {
+    // Only when it has changed: a landing reports itself three or four times and
+    // each zoom message restarts the stream.
+    if (tab.zoomAt === factor) return;
+    tab.zoomAt = factor;
+    tab.full.setZoom(factor);
+    return;
+  }
+  const frame = tab.frame;
   if (!frame) return;
   const pct = (100 / factor) + "%";
   frame.style.width = pct;
@@ -1020,11 +1375,21 @@ function browserShowTab(i) {
   if (!tab) return;
   browserCancelGrab();
   browserActive = i;
-  for (const t of browserTabs) if (t.frame) t.frame.hidden = t !== tab;
+  for (const t of browserTabs) {
+    if (t.frame) t.frame.hidden = t !== tab;
+    // A streamed view that is not on screen is hidden and told to stop: the
+    // computer has one page per pane to paint, and the one it paints is this one.
+    if (t.full) {
+      t.full.el.hidden = t !== tab;
+      if (t !== tab) t.full.hide();
+    }
+  }
+  if (tab.full) tab.full.show();
   showBrowserZoomMenu(false);
   const url = browserUrlIn(tab);
   browserSetField(url);
   syncBrowserNav();
+  syncBrowserFull();
   syncBrowserLan();
   renderBrowserTabs();
   // Which chip carries the page on screen has just changed, and the star with
@@ -1038,7 +1403,7 @@ function browserShowTab(i) {
   // should cost.
   if (url && url !== tab.loaded) browserNavigateIn(tab, url, false);
   else {
-    browserApplyZoom(browserZoomFor(browserZoomHost(url)), tab.frame);
+    browserApplyZoom(browserZoomFor(browserZoomHost(url)), tab);
     syncBrowserZoom(browserZoomHost(url));
   }
 }
@@ -1050,13 +1415,21 @@ function browserShowTab(i) {
 function browserMakeTab(lan) {
   browserCancelGrab();
   const tab = browserNewTab();
-  tab.lan = !!lan;
+  // Whatever a new tab is on this computer, which is the streamed browser
+  // wherever there is one. Only a proxy tab inherits the network the tab it was
+  // opened from was on; a streamed tab is on the computer's network already.
+  tab.fullMode = browserFullWanted();
+  tab.lan = !tab.fullMode && !!lan;
   browserTabs.push(tab);
   browserActive = browserTabs.length - 1;
-  for (const t of browserTabs) if (t.frame) t.frame.hidden = true;
+  for (const t of browserTabs) {
+    if (t.frame) t.frame.hidden = true;
+    if (t.full) { t.full.el.hidden = true; t.full.hide(); }
+  }
   showBrowserZoomMenu(false);
   browserSetField("");
   syncBrowserNav();
+  syncBrowserFull();
   syncBrowserLan();
   renderBrowserTabs();
   renderBrowserMarks();
@@ -1121,7 +1494,7 @@ function browserCloseTab(i) {
   if (!tab) return;
   browserCancelGrab();
   if (browserTabs.length === 1) {
-    browserDropFrames();
+    browserDropPages();
     browserTabs = [browserNewTab()];
     browserActive = 0;
     browserSetField("");
@@ -1133,12 +1506,37 @@ function browserCloseTab(i) {
   }
   const wasActive = i === browserActive;
   if (tab.frame) tab.frame.remove();
+  // The page on the computer goes with the chip: a closed tab is not a tab to
+  // come back to, which is what tells this apart from closing the pane.
+  browserDropFull(tab);
   browserTabs.splice(i, 1);
   if (browserActive > i) browserActive--;
   // The tab that slid into the closed one's place, or the last one if it was
   // the end of the row — a browser's own choice.
   if (wasActive) browserShowTab(Math.min(i, browserTabs.length - 1));
   else { renderBrowserTabs(); browserRemember(); }
+}
+
+// Which kind of tab a record asked for. A streamed tab comes back with the id
+// the computer holds it under and the target its page is on, so the tab it gets
+// is the page it left rather than a reload of it — and as a proxy tab where the
+// computer has no browser to stream from any more, which is the honest answer
+// and the one that still shows the page.
+function browserSeedMode(tab, rec) {
+  const full = !!(rec && rec.full);
+  if (full && hasCapStrict("browser_full")) {
+    tab.fullMode = true;
+    if (typeof rec.fid === "string" && rec.fid) tab.fid = rec.fid;
+    tab.target = typeof rec.targetId === "string" ? rec.targetId : "";
+    return;
+  }
+  tab.lan = !!(rec && rec.lan);
+  // A record that named a mode is honoured as far as this computer can: a
+  // streamed tab with no browser left to stream from is a proxy tab, and so is
+  // one that was turned round onto the computer's network. A record that named
+  // none — an older shell's, which only ever wrote addresses — is whatever a new
+  // tab is here.
+  tab.fullMode = full || tab.lan ? false : null;
 }
 
 // The tabs a record kept, as tabs again: addresses and nothing else, so only
@@ -1162,13 +1560,13 @@ function browserSeedTabs(urls, active) {
     // kept beside them, showing the same page in two tabs.
     if (i <= want) at = list.length;
     const tab = browserNewTab();
-    tab.lan = !!(e && e.lan);
+    browserSeedMode(tab, e);
     tab.stack = [url];
     tab.idx = 0;
     list.push(tab);
   }
   if (!list.length) return;
-  browserDropFrames();
+  browserDropPages();
   browserTabs = list;
   browserActive = Math.min(at, list.length - 1);
 }
@@ -1230,6 +1628,9 @@ function closeDockedBrowser() {
   if (!browserDocked) return;
   browserDocked = false;
   browserOpen = false;
+  // A frame costs nothing while nobody is looking at it; a streamed page arriving
+  // many times a second costs the link it arrives over.
+  browserHideFulls();
   showBrowserZoomMenu(false);
   root.classList.remove("docked");
   root.classList.remove("active");
@@ -1258,6 +1659,7 @@ function openFullBrowser() {
 // The pop's half: the entry is already spent by the time this runs, so nothing
 // here touches history.
 function closeFullBrowser() {
+  browserHideFulls();
   showBrowserZoomMenu(false);
   root.classList.remove("active");
   const back = browserOriginFrom || "screen-list";
@@ -1292,8 +1694,14 @@ function openBrowser(url, tabs, at, opts) {
   renderBrowserTabs();
   // Every way in passes here, including the one a reload takes: a strip seeded
   // from the record (browserSeedTabs) never goes through browserShowTab, so
-  // this is where a tab put back on the computer's own network lights its key.
+  // this is where a tab put back in either mode lights its own key.
+  syncBrowserFull();
   syncBrowserLan();
+  // A streamed page stopped when the pane was closed (browserHideFulls); the tab
+  // on screen asks for it again. Before the navigation below rather than instead
+  // of it: a tab whose page is still on the computer needs nothing else, and one
+  // that is being sent somewhere is shown by the open that sends it.
+  if (browserTab().full) browserTab().full.show();
   const target = browserNormalize(url);
   if (target) { browserNavigate(target); return; }
   // Opened with nothing to go to: the page the active tab was last on, whether
@@ -1358,7 +1766,7 @@ window.addEventListener("message", (e) => {
     // given, so a landing corrects it — including back to 1 for a host that
     // was never zoomed. A load reports more than once and each report sets
     // the same factor, which is a no-op after the first.
-    browserApplyZoom(browserZoomFor(browserZoomHost(url)), tab.frame);
+    browserApplyZoom(browserZoomFor(browserZoomHost(url)), tab);
     if (live) syncBrowserZoom(browserZoomHost(url));
     // What the page calls itself, for this tab's chip and for the chip a
     // bookmark of it would carry: the document is cross-origin, so this report
@@ -1390,15 +1798,9 @@ window.addEventListener("message", (e) => {
   // for by script. The laptop's browser is not where a pane's pages go: this
   // opens a tab the way a browser answers a _blank click — in front, carrying
   // the page, and with the address field left alone, because what was asked
-  // for is a page to read and not somewhere to type. The sender's own
-  // permission comes with it: a portal's views belong on its network too.
+  // for is a page to read and not somewhere to type (browserOpenFrom).
   if (d.type === "pockettui-open") {
-    const url = browserNormalize(typeof d.url === "string" ? d.url : "");
-    if (!url) return;
-    // At the cap there is nowhere to put one, and spending the tab the link
-    // was clicked in is better than the click going nowhere.
-    if (browserTabs.length >= BROWSER_TAB_MAX) { browserNavigateIn(tab, url); return; }
-    browserNavigateIn(browserMakeTab(tab.lan), url);
+    browserOpenFrom(tab, d.url);
     return;
   }
 
@@ -1453,6 +1855,14 @@ window.addEventListener("message", (e) => {
 // called history.back() inside the frame. A step off either end is no step, and
 // a page stepping in a background tab moves that tab and nothing else.
 function browserStepIn(tab, delta) {
+  // A streamed tab steps in the browser that holds its page, which is the only
+  // one that knows what its history is: what comes back is a `tab` message, and
+  // that is what moves the field and the arrows (browserFullTab). One step
+  // either way — the deltas above are a proxied page's own history calls.
+  if (browserIsFull(tab)) {
+    browserFullSend(tab, delta < 0 ? "back" : "fwd");
+    return;
+  }
   const i = tab.idx + delta;
   if (tab.idx < 0 || i === tab.idx || i < 0 || i >= tab.stack.length) return;
   tab.idx = i;
@@ -1464,6 +1874,10 @@ function browserStep(delta) { browserStepIn(browserTab(), delta); }
 q("btn-browser-back").addEventListener("click", () => browserStep(-1));
 q("btn-browser-fwd").addEventListener("click", () => browserStep(1));
 q("btn-browser-reload").addEventListener("click", () => {
+  const tab = browserTab();
+  // The page the computer is holding, reloaded there: a navigation from here
+  // would be a second open for a tab that already has the page on it.
+  if (browserIsFull(tab)) { browserFullSend(tab, "reload"); return; }
   const u = browserCurrentUrl();
   if (u) browserNavigate(u, false);
 });
@@ -1477,6 +1891,20 @@ q("browser-zoom-plus").addEventListener("click", () => browserStepZoom(1));
 q("browser-zoom-pct").addEventListener("click", () => browserSetZoom(1));
 q("browser-menu-scrim").addEventListener("click", () => showBrowserZoomMenu(false));
 q("btn-browser-star").addEventListener("click", () => browserToggleMark());
+// Which browser this tab is. Pressed it is the computer's own, which is what a
+// tab is wherever there is one to stream from; pressed again the tab steps down
+// to the proxy, on the same address and under the same name. The tab beside it is
+// unaffected either way — a portal that only works one way round does not make
+// the tab next to it change.
+q("btn-browser-full").addEventListener("click", () => {
+  const tab = browserTab();
+  if (browserIsFull(tab)) { browserSetFull(tab, false); return; }
+  // Refused rather than attempted where the computer has no browser to stream
+  // from: the key is hidden there, and a press that arrived anyway has nothing
+  // to open.
+  if (!hasCapStrict("browser_full")) return;
+  browserSetFull(tab, true);
+});
 // This tab, on the computer's own network: the same address in the same frame,
 // fetched this time as a page in its own right. An app written to be the top
 // window then works — top is the page itself, the views it writes are its own
@@ -1577,17 +2005,18 @@ attachEdgeSwipe(root, () => history.back());
 // The pane goes down with the session it belongs to (fileViews,
 // 09-image-viewer.js). No history is touched here: the caller is replacing
 // every screen at once and spends the entries itself.
-// The addresses, not the pages: the frames go with the pane (browserTeardown
-// below), so the session that comes back gets its tabs, its stacks and its
-// names, and the tab it is left on loads. Keeping the frames alive instead
-// would keep every session's pages in the document at once, for a switch that
-// costs one page load.
+// The addresses, not the pages: the frames go with the pane and its streamed
+// tabs are closed on the computer (browserTeardown below), so the session that
+// comes back gets its tabs, its stacks and its names, and the tab it is left on
+// loads. Keeping them alive instead would keep every session's pages in the
+// document — and every session's tabs open in the computer's browser — at once,
+// for a switch that costs one page load.
 function browserStash() {
   return {
     docked: browserDocked, active: browserActive,
     tabs: browserTabs.map((t) => ({
       stack: t.stack.slice(), idx: t.idx, title: t.title, titleFor: t.titleFor,
-      lan: t.lan,
+      lan: t.lan, full: browserIsFull(t), fid: t.fid, targetId: t.target,
     })),
   };
 }
@@ -1602,7 +2031,8 @@ function browserTeardown() {
   browserDocked = false;
   browserOpen = false;
   browserOriginFrom = null;
-  browserDropFrames();
+  browserDropPages();
+  browserDropLink();
   showBrowserZoomMenu(false);
   root.classList.remove("docked");
   root.classList.remove("active");
@@ -1614,7 +2044,7 @@ function browserTeardown() {
 // so a session is never left with one up.
 function browserRestore(s) {
   const recs = Array.isArray(s.tabs) ? s.tabs : [];
-  browserDropFrames();
+  browserDropPages();
   // Through the normaliser rather than as they were kept: a stash written
   // before a restart can hold a proxied address, and restoring one as a page
   // address is what the pane would then navigate to.
@@ -1624,11 +2054,12 @@ function browserRestore(s) {
     tab.idx = typeof r.idx === "number" ? r.idx : tab.stack.length - 1;
     tab.title = typeof r.title === "string" ? r.title : "";
     tab.titleFor = typeof r.titleFor === "string" ? r.titleFor : "";
-    tab.lan = !!r.lan;
+    browserSeedMode(tab, r);
     return tab;
   }) : [browserNewTab()];
   browserActive = Math.min(Math.max(0, s.active | 0), browserTabs.length - 1);
   renderBrowserTabs();
+  syncBrowserFull();
   syncBrowserLan();
   if (!s.docked) { syncBrowserNav(); return; }
   openDockedBrowser();
@@ -1651,14 +2082,17 @@ function browserReset() {
   browserGen++;
   browserCancelGrab();
   // Every tab with it, frames and all: they are pages on the machine being
-  // left. A fresh one takes their place, the way a closed pane's does.
-  browserDropFrames();
+  // left. A fresh one takes their place, the way a closed pane's does. The socket
+  // goes too — the browser on the other end of it is the machine's own.
+  browserDropPages();
+  browserDropLink();
   browserTabs = [browserNewTab()];
   browserActive = 0;
   renderBrowserTabs();
+  syncBrowserFull();
   syncBrowserLan();
   showBrowserZoomMenu(false);
-  // Nothing is blanked through a frame's location any more: browserDropFrames
+  // Nothing is blanked through a frame's location any more: browserDropPages
   // takes the elements out of the document, which discards their browsing
   // contexts and the joint history entries with them. Assigning src is still
   // the thing never done — that would spend an entry the shell's back needs.
@@ -1666,7 +2100,7 @@ function browserReset() {
   syncBrowserNav();
 }
 
-// The two keys in this pane's own bar that a capability answer takes away. The
+// The keys in this pane's own bar that a capability answer takes away. The
 // globe key and the header button are the app's rather than a pane's and are
 // dealt with once (syncBrowseCap, under the factory), which is also what calls
 // this.
@@ -1681,44 +2115,27 @@ function browserSyncCap() {
   // turned round for.
   // Opening another tab is not gated: it is a frame in here, which every
   // computer that can show a page at all can serve.
-  q("btn-browser-tab").hidden = !hasCapStrict("browse_tab") || browserTabBlocked;
+  //
+  // Both of the mode keys are set from the tab on screen as well as from the
+  // computer's answers, so both go through their own sync rather than being
+  // written here: this key is hidden for a streamed tab, and the one beside it
+  // is hidden on a computer with no browser to stream from.
+  q("btn-browser-full").hidden = !hasCapStrict("browser_full");
+  syncBrowserFull();
+  syncBrowserLan();
 }
 
 renderBrowserTabs();
 syncBrowserNav();
+syncBrowserFull();
 syncBrowserLan();
 
 // What the column and the rest of the app can ask of this pane. Everything else
 // in the body above is the pane's own and stays in the closure.
-// ---- full mode, by hand (item 3's harness; item 4 replaces this) -----------
-// One tab put into full mode with no chrome wired to it: the view's element goes
-// in the wrap beside the frames, and the socket is this pane's own. The hrefs a
-// middle click asked for are collected rather than opened, because making them
-// tabs is the integration this stands in for.
-let fullTestLink = null;
-const fullTestOpened = [];
-function browserFullTest(url) {
-  if (!fullTestLink) fullTestLink = fullBrowserLink(id);
-  let view = null;
-  view = fullBrowserMake(id, "ft1", fullTestLink, {
-    focusAddress: () => q("browser-url").focus(),
-    reload: () => fullTestLink.send({ type: "reload", tab: "ft1" }),
-    zoomStep: (delta) => { if (delta) browserStepZoom(delta); },
-    openTab: (href) => fullTestOpened.push(href),
-    retry: () => view.open(url),
-  });
-  q("browser-wrap").appendChild(view.el);
-  view.open(url);
-  return view;
-}
-
 const api = {
   // Null in every build but one being driven by the column's smoke check, which
   // hands a pane its navigations instead of a computer (browserNavigateIn).
   navigateHook: null,
-  // See browserFullTest above: the harness's way in, not a feature.
-  fullTest: browserFullTest,
-  fullTestOpened: fullTestOpened,
   isOpen: () => browserOpen,
   isDocked: () => browserDocked,
   open: openBrowser,

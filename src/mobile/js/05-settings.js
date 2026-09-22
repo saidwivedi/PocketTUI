@@ -130,6 +130,10 @@ function selectSettingsTab(name) {
   // Same reason: the header's theme button can have moved the chrome since the
   // last look, and the Paper row previews whatever it resolves to now.
   if (name === "appearance") syncAppearance();
+  // And the same again for the browser group: what the computer has to stream a
+  // tab from is asked when the section is looked at rather than at boot
+  // (browserSyncSetting, 42-browser.js).
+  if (name === "connection") browserSyncSetting();
 }
 $("settings-tabs").addEventListener("click", (e) => {
   const tab = e.target && e.target.closest("[role=tab]");
@@ -590,6 +594,13 @@ $("dbg-toggle").addEventListener("change", (e) => {
 $("alt-toggle").addEventListener("change", (e) => {
   cfg.altKeyOn = e.target.checked;
   buildKeybar();
+});
+// Applies on the tap like the two above, and reaches only the tabs opened after
+// it: a page being read is not something a preference should re-fetch under the
+// reader, and the key on the address row is how a tab already open changes mode
+// (42-browser.js).
+$("browser-proxy-toggle").addEventListener("change", (e) => {
+  cfg.browserPreferProxy = e.target.checked;
 });
 // Fetches and paints the learned-corrections list. Hidden outright rather than
 // shown empty on a demo/unpaired session or a failed fetch, since none of those

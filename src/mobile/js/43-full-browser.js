@@ -233,8 +233,8 @@ function fullBrowserLink(paneId) {
 
 // `pane` is the pane's row id, `tabId` the id the protocol knows this tab by,
 // `link` the transport above (or item 4's own), and `cbs` the chords that are
-// the shell's: {focusAddress, reload, zoomStep, openTab, retry, onTab}. All of
-// them optional — a view with none of them still shows a page.
+// the shell's: {focusAddress, reload, zoomStep, openTab, retry, onTab, onError}.
+// All of them optional — a view with none of them still shows a page.
 function fullBrowserMake(pane, tabId, link, cbs) {
   const cb = cbs || {};
   const tpl = $("browser-full-tpl");
@@ -377,6 +377,19 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     hideError();
     sendOpen();
     show();
+  }
+
+  // Every navigation after the first. `open` is not that: it is what makes the
+  // tab — or takes back the target a reload left behind — and the computer
+  // answers a second one for a tab it already has by describing the page that is
+  // on it rather than by going anywhere (chromium.py's FullBrowser.open). So the
+  // pane's second address goes as its own op, and the `tab` message it provokes
+  // is what moves the address field.
+  function navigate(url) {
+    if (!url) return;
+    wantUrl = url;
+    hideError();
+    send({ type: "nav", tab: tabId, url: url });
   }
 
   function show() {
@@ -820,6 +833,11 @@ function fullBrowserMake(pane, tabId, link, cbs) {
 
   function error(msg) {
     if (destroyed) return;
+    // The pane first, because some failures are not this view's to show: a
+    // computer with no browser it can start has nothing to retry, and the tab
+    // is better off as a proxy tab (42-browser.js). A handler that says it took
+    // the failure has usually just destroyed this view.
+    if (cb.onError && cb.onError(msg)) return;
     const text = (msg && msg.message) ? String(msg.message)
                                       : "That page could not be shown";
     errEl.textContent = "";
@@ -866,6 +884,7 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     // The backend tab is not closed here: a hidden tab is still a page the user
     // can come back to, and closing it belongs to whoever closes the pane's tab.
     open: open,
+    navigate: navigate,
     show: show,
     hide: hide,
     resize: () => measure(true),
