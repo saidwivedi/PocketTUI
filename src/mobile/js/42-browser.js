@@ -430,10 +430,12 @@ function browserRemember() {
   }
   // Written back over the record as it stands rather than as a record of its
   // own: the rows and their order are the column's half of this key, and the
-  // browser rewriting it on every landing must not be what loses them.
-  cfg.sidePane = Object.assign({}, rec, {
-    url: browserCurrentUrl(), tabs: tabs, tab: at,
-  });
+  // browser rewriting it on every landing must not be what loses them. Under
+  // this pane's own row id, so a second browser in the other row keeps its own
+  // strip rather than the two writing over each other.
+  const panes = Object.assign({}, rec.panes);
+  panes.browser = { url: browserCurrentUrl(), tabs: tabs, tab: at };
+  cfg.sidePane = Object.assign({}, rec, { panes: panes });
 }
 
 // The URL a pane opened with nothing to show should go to: whatever this
@@ -441,8 +443,12 @@ function browserRemember() {
 // terminal and belongs to it, the way the folder and the diff do.
 function browserRememberedUrl() {
   const rec = cfg.sidePane;
-  return rec && rec.rows.includes("browser") && rec.session === (currentSession || "")
-    ? browserNormalize(rec.url || "") : "";
+  if (!rec || rec.session !== (currentSession || "")) return "";
+  // Keyed by this pane's row: the record holds an entry for every browser row it
+  // names and none for a row it does not, so this is also the check that the
+  // pane was one of them.
+  const p = rec.panes.browser;
+  return p ? browserNormalize(p.url || "") : "";
 }
 
 // Send a tab's frame somewhere. `push` is false for the moves that are not new
@@ -1040,11 +1046,21 @@ function browserSetExpanded(v) {
   syncBrowserExpand();
 }
 
+// This pane as a row of the column: the one screen it puts in its row, the way it
+// closes, and its expand, all of which are the column's to ask for and this
+// module's to do (26-side-pane.js).
+sideRegister("browser", {
+  type: "browser",
+  els: () => [$("screen-browser")],
+  close: () => closeDockedBrowser("browser"),
+  setExpanded: (on) => browserSetExpanded(on),
+});
+
 // False is the column refusing the row — the pane it would have taken is a
 // docked editor with unsaved work whose owner said stay (sideClaim,
 // 26-side-pane.js) — and nothing about the browser has moved by then.
-function openDockedBrowser() {
-  if (!sideClaim("browser")) return false;
+function openDockedBrowser(opts) {
+  if (!sideClaim("browser", opts)) return false;
   browserDocked = true;
   browserOpen = true;
   // Redundant beside a live terminal — it is right there — and the pane has
@@ -1060,7 +1076,11 @@ function openDockedBrowser() {
 // The frame keeps its page: the pane is a tap away again, and reloading a dev
 // server every time it is closed would be the wrong trade. Only the slot and
 // the classes go back.
-function closeDockedBrowser() {
+// `id` is which of the column's rows this is about, and this build has one
+// browser whose id is "browser": anything else names a row this module has no
+// pane for, and there is nothing here to close for it.
+function closeDockedBrowser(id) {
+  if (id && id !== "browser") return;
   if (!browserDocked) return;
   browserDocked = false;
   browserOpen = false;
@@ -1110,15 +1130,19 @@ const BROWSER_HOME = "https://www.google.com/";
 // URL in the terminal, a restored session — so the two shapes are one entry
 // point, the way openExplorer is for the folder. `tabs` and `at` are the strip
 // a reload is putting back (restoreFileView, 09-image-viewer.js); every other
-// caller opens the pane on whatever it was left holding.
-function openBrowser(url, tabs, at) {
+// caller opens the pane on whatever it was left holding. `id` is which of the
+// column's rows it opens as — this build has one browser, whose id is "browser",
+// and an id naming another row has no pane here to open — and `opts` is the
+// column's own (sideClaim's `keep`).
+function openBrowser(url, tabs, at, id, opts) {
+  if (id && id !== "browser") return;
   if (needsSetup()) { openSettings(true); return; }
   if (demoMode) { toast("No browser in the demo"); return; }
   if (Array.isArray(tabs) && tabs.length) browserSeedTabs(tabs, at);
   // A refused row is no pane at all: seeding a tab into one and sending it
   // somewhere would be a page loading where nothing opened.
   if (isWideLayout() && $("screen-term").classList.contains("active")) {
-    if (!openDockedBrowser()) return;
+    if (!openDockedBrowser(opts)) return;
   } else openFullBrowser();
   browserLoadMarks();
   // Ahead of any press, so the key's own click has nothing to wait for.
@@ -1147,7 +1171,8 @@ function openBrowser(url, tabs, at) {
 // so openBrowser stays the way in for everything else, and a tapped URL still
 // lands in a pane that is already open.
 function toggleBrowserPane() {
-  if (browserDocked) { closeDockedBrowser(); return; }
+  const id = sideFocusedOf("browser");
+  if (id) { closeDockedBrowser(id); return; }
   openBrowser();
 }
 
