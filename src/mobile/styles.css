@@ -1848,6 +1848,9 @@ html.term-open, body.term-open {
 .sheet.centered {
   left: 50%; right: auto; bottom: auto; top: 50%;
   width: calc(100% - 44px);
+  /* A question and two buttons; wider than this it is a slab of empty card
+     on a tablet. Outranks the wide layout's 480px for every sheet. */
+  max-width: 420px;
   border: 1px solid var(--hair);
   border-radius: 20px;
   padding-bottom: 22px;   /* the safe-area pad serves the bottom dock only */
@@ -1892,6 +1895,14 @@ html.term-open, body.term-open {
   color: var(--secondary);
   margin: -6px 0 16px;
 }
+/* In the centered pair the note is the body of the dialog, not a caption
+   under a field, so it reads a size up. With no heading above it (a page's
+   own dialog, the prompt's question) it opens the card and must not pull
+   itself up into the padding. A session name is one unbroken word that can
+   outrun the card, so the heading breaks anywhere rather than overflow. */
+.sheet.centered .sheet-note { font-size: 14px; line-height: 1.5; }
+#confirm-title[hidden] + .sheet-note, #prompt-msg { margin-top: 0; }
+#confirm-title { overflow-wrap: anywhere; }
 /* The sheet is four sections now, not one column: past a certain length a
    settings list stops being a list and becomes something to hunt through.
    Text buttons rather than a segmented control — a bordered pill row at this
@@ -2770,9 +2781,16 @@ html.term-open, body.term-open {
   border-color: var(--umber);
   color: var(--paper);
 }
-/* The confirm sheet's destructive yes: the file explorer's danger idiom
-   (.sheet-menu button.danger), worn by a standard action-row button. */
-.sheet .actions button.danger { color: var(--bad); }
+/* The confirm sheet's destructive yes: .primary's fill in the status red, so
+   the answer that destroys something is the one that looks decided and
+   Cancel stays the quiet outline. Paper on --bad clears 4.5:1 in both Paper
+   themes, and a custom palette picks --bad to clear 3:1 on the paper, which
+   is the same pair turned round. */
+.sheet .actions button.danger {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: var(--paper);
+}
 .sheet .actions button[disabled] {
   opacity: 0.45;
   cursor: default;
