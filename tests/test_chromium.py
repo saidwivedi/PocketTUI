@@ -314,6 +314,9 @@ def test_launch_flags_never_include_no_sandbox_and_strip_headless_ua():
     assert "--remote-debugging-pipe" in flags
     assert "--headless=new" in flags
     assert "--user-data-dir=/tmp/profile" in flags
+    # An unbranded build would otherwise run Chromium's field trial testing
+    # config: experiments no shipped Chrome applies.
+    assert "--disable-field-trial-config" in flags
     assert "--window-size=1280,800" in flags
     assert not any(f.startswith("http") or f == "about:blank" for f in flags)
 
@@ -1013,3 +1016,414 @@ def test_cursor_probe_js_has_no_percent():
         proc = subprocess.run(["node", "--check", "-"], input=wrapper,
                               capture_output=True, text=True)
         assert proc.returncode == 0, f"{name}: {proc.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# Memory: what the browser costs, and what the watchdog does about it
+# ---------------------------------------------------------------------------
+
+class FakeProc:
+    """A /proc of one's own: pid -> {ppid, pss, rss, cgroup}.
+
+    Every number ProcessTree reads comes through a reader, which is what makes
+    a process tree that never existed testable — including the cases the real
+    machine will not reproduce on demand: a renderer re-parented out of the
+    tree, a pid that exits between being listed and being read.
+    """
+
+    def __init__(self, table, ps="", platform="linux") -> None:
+        self.table = table
+        self.ps = ps
+        self.platform = platform
+
+    def pids(self):
+        return list(self.table)
+
+    def _get(self, pid, key, default=None):
+        return (self.table.get(pid) or {}).get(key, default)
+
+    def ppid(self, pid):
+        return self._get(pid, "ppid")
+
+    def pss_kb(self, pid):
+        return self._get(pid, "pss")
+
+    def rss_kb(self, pid):
+        return self._get(pid, "rss")
+
+    def cgroup(self, pid):
+        return self._get(pid, "cgroup", "")
+
+    def ps_text(self):
+        return self.ps
+
+
+SCOPE = "pockettui-browser-4242-1"
+IN_SCOPE = ("0::/user.slice/user-1000.slice/user@1000.service/"
+            f"app.slice/{SCOPE}.scope\n")
+ELSEWHERE = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/other.scope\n"
+
+
+def test_pss_sum_from_fake_proc_tree():
+    # systemd-run at the root, Chrome under it, two renderers under that, and
+    # one renderer whose parent went away: it hangs off init, out of the tree
+    # altogether, and is only found because its cgroup is our scope.
+    reader = FakeProc({
+        100: {"ppid": 1, "pss": 2 * 1024, "rss": 9 * 1024, "cgroup": IN_SCOPE},
+        101: {"ppid": 100, "pss": 120 * 1024, "rss": 400 * 1024, "cgroup": IN_SCOPE},
+        102: {"ppid": 101, "pss": 60 * 1024, "rss": 300 * 1024, "cgroup": IN_SCOPE},
+        103: {"ppid": 101, "pss": 40 * 1024, "rss": 280 * 1024, "cgroup": IN_SCOPE},
+        104: {"ppid": 1, "pss": 30 * 1024, "rss": 250 * 1024, "cgroup": IN_SCOPE},
+        900: {"ppid": 1, "pss": 700 * 1024, "rss": 900 * 1024, "cgroup": ELSEWHERE},
+    }, ps="")
+
+    m = C.ProcessTree.measure(100, SCOPE, reader)
+    assert m.procs == 5                       # the tree, plus the stray
+    assert m.mb == pytest.approx(252.0)       # 2 + 120 + 60 + 40 + 30
+    assert m.approx is False
+
+    # Without the unit there is nothing to find the re-parented renderer by,
+    # and the unrelated process is never counted either way.
+    plain = C.ProcessTree.measure(100, None, reader)
+    assert plain.procs == 4 and plain.mb == pytest.approx(222.0)
+    assert 900 not in C.ProcessTree.pids(100, SCOPE, reader)
+
+
+def test_rss_baseline_subtraction_macos():
+    # `ps -axo pid,ppid,rss` as macOS prints it, header and all. Every process
+    # maps the same framework, so the smallest RSS in the tree is taken as that
+    # shared baseline and counted once rather than n times.
+    reader = FakeProc({}, platform="darwin", ps=(
+        "  PID  PPID    RSS\n"
+        "    1     0  12000\n"
+        "  100     1 300000\n"
+        "  101   100 250000\n"
+        "  102   100 200000\n"
+        "  900     1 800000\n"))
+    m = C.ProcessTree.measure(100, None, reader)
+    assert m.procs == 3
+    assert m.approx is True
+    # 750000 - 2 * 200000 = 350000 KB
+    assert m.mb == pytest.approx(350000 / 1024)
+
+    assert C.ProcessTree.measure(4242, None, reader) == \
+        C.Measurement(mb=0.0, approx=True, procs=0)
+
+
+def test_measure_survives_vanished_pid():
+    # 102 has no smaps_rollup but still has a status file: RSS, marked approx.
+    # 103 has neither — it exited while this pass was reading /proc — and is
+    # skipped rather than counted as zero or raised over.
+    reader = FakeProc({
+        100: {"ppid": 1, "pss": 10 * 1024, "rss": 20 * 1024},
+        101: {"ppid": 100, "pss": 50 * 1024, "rss": 90 * 1024},
+        102: {"ppid": 100, "pss": None, "rss": 70 * 1024},
+        103: {"ppid": 100, "pss": None, "rss": None},
+    })
+    m = C.ProcessTree.measure(100, None, reader)
+    assert m.procs == 3
+    assert m.mb == pytest.approx(130.0)
+    assert m.approx is True
+
+    # And the real reader, on a pid this machine does not have: no exception,
+    # and nothing measured.
+    real = C.ProcessTree.measure(0x7FFFFFFF)
+    assert real.procs == 0 and real.mb == 0.0
+
+
+class FakeCDP:
+    """The browser connection, recording calls and minting target ids."""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+        self.sessions: list = []
+        self._n = 0
+
+    async def send(self, method, params=None, timeout=15):
+        self.calls.append((method, params or {}))
+        if method == "Target.createTarget":
+            self._n += 1
+            return {"targetId": f"TARGET-{self._n}"}
+        return {}
+
+    async def attach(self, target_id, timeout=15):
+        sess = FakeSession()
+        sess.target_id = target_id
+        sess.cdp = self
+        self.sessions.append(sess)
+        return sess
+
+    def on(self, event, callback, session=None):
+        pass
+
+    def off(self, event, callback, session=None):
+        pass
+
+    def methods(self):
+        return [m for m, _ in self.calls]
+
+    def params(self, method):
+        return [p for m, p in self.calls if m == method]
+
+
+class FakeBrowser:
+    def __init__(self, pid=4242, unit=SCOPE) -> None:
+        self.cdp = FakeCDP()
+        self.pid = pid
+        self.unit = unit
+        self.user_agent = "Mozilla/5.0 Chrome/140.0.0.0"
+        self.config: dict = {}
+        self.closed = asyncio.get_running_loop().create_future()
+        self.kills = 0
+
+    async def close(self):
+        if not self.closed.done():
+            self.closed.set_result(0)
+
+    def _signal_group(self, sig):
+        self.kills += 1
+
+
+class FakeTree:
+    """A measurement on demand, in place of this machine's /proc."""
+
+    def __init__(self, mb=100.0) -> None:
+        self.mb = mb
+        self.calls: list = []
+
+    def measure(self, root_pid, unit=None, reader=None):
+        self.calls.append((root_pid, unit))
+        return C.Measurement(mb=self.mb, approx=False, procs=9)
+
+
+def a_browser(monkeypatch, **cfg):
+    """A FullBrowser whose Chromium is two fakes, and the browsers it made."""
+    found = C.Found(path="/fake/chrome", version="140.0.0.1", major=140,
+                    source="path")
+    monkeypatch.setattr(C, "find_chromium",
+                        lambda config=None, force=False: found)
+    made: list = []
+
+    async def launch(f, config=None, width=C.DEFAULT_WIDTH, height=C.DEFAULT_HEIGHT):
+        browser = FakeBrowser()
+        made.append(browser)
+        return browser
+
+    monkeypatch.setattr(C, "launch", launch)
+    config = dict(C.BROWSER_CONFIG_DEFAULTS, memory_mb=1000, freeze_after_s=60,
+                  idle_exit_s=60, jpeg_quality=55)
+    config.update(cfg)
+    fb = C.FullBrowser(config)
+    return fb, made
+
+
+async def three_tabs(fb):
+    """t1, t2, t3 of one pane, shown in that order: t3 live, t1 hidden longest."""
+    sink = FakeSink()
+    fb.attach_pane("p1", sink)
+    tabs = []
+    for name in ("t1", "t2", "t3"):
+        tab = await fb.open("p1", name, f"https://example.net/{name}")
+        await tab.show()
+        await asyncio.sleep(0.01)   # so the shown-at order is not a tie
+        tabs.append(tab)
+    return sink, tabs
+
+
+def test_soft_cap_discards_oldest_hidden_first_never_live():
+    async def main():
+        with pytest.MonkeyPatch.context() as mp:
+            fb, made = a_browser(mp)
+            sink, (one, two, three) = await three_tabs(fb)
+            assert three.live and not one.live and not two.live
+            cdp = made[0].cdp
+
+            fb.watchdog.tree = FakeTree(900.0)      # soft is 800 of 1000
+            cdp.calls.clear()
+            sink.msgs.clear()
+            await fb.watchdog.tick()
+
+            # The oldest hidden tab, not the live one and not the newer hidden
+            # one, and its target is really given back to the browser.
+            assert ("Target.closeTarget", {"targetId": one.target_id}) in cdp.calls
+            assert one.discarded and not two.discarded and not three.discarded
+            assert three.live
+            assert {"type": "tab", "tab": "t1", "discarded": True,
+                    "url": one.url, "title": one.title} in sink.msgs
+            assert fb.snapshot()["discards"] == 1
+            assert fb.snapshot()["memMb"] == 900
+            assert fb.snapshot()["softMb"] == 800 and fb.snapshot()["procs"] == 9
+            assert fb.tab("p1", "t1") is one        # still the pane's tab
+
+            # One tab per tick, oldest first, and never the one on screen: the
+            # third tick has nothing left it is allowed to take.
+            cdp.calls.clear()
+            await fb.watchdog.tick()
+            assert two.discarded and three.live
+            cdp.calls.clear()
+            await fb.watchdog.tick()
+            assert "Target.closeTarget" not in cdp.methods()
+            assert three.live and not three.discarded
+            assert fb.snapshot()["discards"] == 2
+
+            # The browser's own news about the targets that were closed, which
+            # arrives after they are already records: a discarded tab has no
+            # target, so neither event finds it and neither takes the record
+            # away or tells the pane its tab is gone.
+            sink.msgs.clear()
+            fb._on_target_destroyed({"targetId": one.target_id})
+            fb._on_target_crashed({"targetId": two.target_id})
+            assert fb.tab("p1", "t1") is one and fb.tab("p1", "t2") is two
+            assert sink.msgs == []
+
+            await fb.shutdown()
+
+    run(main())
+
+
+def test_hard_cap_relaunches_and_reopens_records():
+    async def main():
+        with pytest.MonkeyPatch.context() as mp:
+            fb, made = a_browser(mp)
+            left = FakeSink()
+            right = FakeSink()
+            fb.attach_pane("p1", left)
+            fb.attach_pane("p2", right)
+            one = await fb.open("p1", "t1", "https://example.net/one")
+            two = await fb.open("p1", "t2", "https://example.net/two")
+            far = await fb.open("p2", "t1", "https://example.net/far")
+            await one.show()
+            await far.show()
+            first_targets = (one.target_id, far.target_id)
+
+            fb.watchdog.tree = FakeTree(1400.0)     # the cap is 1000
+            left.msgs.clear()
+            right.msgs.clear()
+            await fb.watchdog.tick()                # one strike, and a discard
+            assert fb.restarts == 0 and two.discarded
+            await fb.watchdog.tick()                # two in a row: restart
+
+            assert fb.restarts == 1
+            assert len(made) == 2 and made[0].closed.done()
+            assert fb.browser is made[1]
+
+            # Each pane hears once, and the tab it was showing is already back
+            # on a new target of the new browser.
+            for sink in (left, right):
+                restarted = [m for m in sink.msgs if m.get("code") == "restarted"]
+                assert len(restarted) == 1
+                assert restarted[0] == {"type": "error", "tab": None,
+                                        "code": "restarted",
+                                        "message": "Browser restarted: memory cap 1000 MB"}
+            assert one.live and far.live
+            assert not one.discarded and not far.discarded
+            assert (one.target_id, far.target_id) != first_targets
+            assert one.session.cdp is made[1].cdp
+
+            # The tab nobody was looking at is a record: still the pane's tab,
+            # still with its URL, and the pane was told it is discarded.
+            assert fb.tab("p1", "t2") is two and two.discarded
+            assert two.url == "https://example.net/two"
+            assert {"type": "tab", "tab": "t2", "discarded": True,
+                    "url": two.url, "title": two.title} in left.msgs
+            assert fb.snapshot()["restarts"] == 1
+
+            await fb.shutdown()
+
+    run(main())
+
+
+def test_show_of_discarded_tab_recreates_target():
+    async def main():
+        with pytest.MonkeyPatch.context() as mp:
+            fb, made = a_browser(mp)
+            sink = FakeSink()
+            fb.attach_pane("p1", sink)
+            one = await fb.open("p1", "t1", "https://example.net/one")
+            await one.show()
+            two = await fb.open("p1", "t2", "https://example.net/two")
+            await two.show()                        # t1 is hidden now
+            one.url = "https://example.net/one#where-i-was"
+            was = one.target_id
+
+            fb.watchdog.tree = FakeTree(900.0)
+            await fb.watchdog.tick()
+            assert one.discarded
+            sink.msgs.clear()
+            cdp = made[0].cdp
+            cdp.calls.clear()
+
+            await one.show()
+            assert not one.discarded and one.live
+            assert one.target_id != was
+            assert ("Target.createTarget",
+                    {"url": "about:blank", "newWindow": True}) in cdp.calls
+            # The page it was on, loaded again, and a plain `tab` message: the
+            # pane learns it has a live tab back the same way it always does.
+            assert ("Page.navigate",
+                    {"url": "https://example.net/one#where-i-was"}) in one.session.calls
+            await asyncio.sleep(0.1)
+            states = [m for m in sink.msgs
+                      if m.get("type") == "tab" and m.get("tab") == "t1"]
+            assert states and all("discarded" not in m for m in states)
+            assert states[-1]["targetId"] == one.target_id
+            assert two.live is False
+
+            await fb.shutdown()
+
+    run(main())
+
+
+def test_idle_exit_after_last_tab():
+    async def main():
+        with pytest.MonkeyPatch.context() as mp:
+            fb, made = a_browser(mp, idle_exit_s=0.05)
+            sink = FakeSink()
+            fb.attach_pane("p1", sink)
+            tab = await fb.open("p1", "t1", "https://example.net/one")
+            await tab.show()
+            assert fb.browser is made[0]
+
+            await fb.close_tab("p1", "t1")
+            # The pane is still attached, and that is not a reason to keep a
+            # browser: a pane with no full tab in it needs none.
+            await asyncio.sleep(0.2)
+            assert fb.browser is None
+            assert made[0].closed.done()
+            assert fb.watchdog._task is None
+            assert fb.snapshot()["running"] is False
+            assert fb.snapshot()["memMb"] is None
+
+            # And the next open starts one again.
+            again = await fb.open("p1", "t2", "https://example.net/two")
+            assert fb.browser is made[1] and not again.dead
+            await fb.shutdown()
+
+    run(main())
+
+
+def test_watchdog_ticks_on_its_own_and_stops_with_the_browser():
+    async def main():
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(C, "WATCHDOG_TICK_S", 0.02)
+            fb, made = a_browser(mp)
+            sink = FakeSink()
+            fb.attach_pane("p1", sink)
+            tab = await fb.open("p1", "t1", "https://example.net/one")
+            await tab.show()
+            tree = FakeTree(100.0)
+            fb.watchdog.tree = tree
+            await asyncio.sleep(0.1)
+            assert tree.calls and tree.calls[0] == (made[0].pid, SCOPE)
+            assert fb.snapshot()["memMb"] == 100
+
+            await fb.shutdown()
+            ticks = len(tree.calls)
+            # Nothing outlives the browser: uvicorn's shutdown waits on tasks.
+            assert fb.watchdog._task is None
+            await asyncio.sleep(0.1)
+            assert len(tree.calls) == ticks
+            assert not [t for t in asyncio.all_tasks()
+                        if t is not asyncio.current_task() and not t.done()]
+
+    run(main())
