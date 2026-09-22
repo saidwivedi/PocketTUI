@@ -599,8 +599,8 @@ $("alt-toggle").addEventListener("change", (e) => {
 // it: a page being read is not something a preference should re-fetch under the
 // reader, and the key on the address row is how a tab already open changes mode
 // (42-browser.js).
-$("browser-proxy-toggle").addEventListener("change", (e) => {
-  cfg.browserPreferProxy = e.target.checked;
+$("browser-stream-toggle").addEventListener("change", (e) => {
+  cfg.browserStreamAll = e.target.checked;
 });
 // The destructive one in that group: the streamed browser's profile on the
 // computer, deleted. Asked first, because every login in it goes — and the panes

@@ -2173,6 +2173,40 @@ html.term-open, body.term-open {
    switch that turns them off. A note about the row above it rather than under a
    field, so it keeps its own spacing instead of .sheet-note's. */
 #browser-status-line { margin: 8px 0 0; }
+/* The sites that are streamed whatever the switch says, as one wrapping line:
+   a set this short reads as a sentence, and the crosses are the only thing in
+   it that has to be aimed at. Sized like the note it is part of, so the hosts
+   sit in the line rather than on rows of their own. */
+/* A display of its own beats [hidden]'s, so the attribute is spelled out: with
+   no site on the list there is no line. */
+#browser-stream-hosts[hidden] { display: none; }
+#browser-stream-hosts {
+  margin: 6px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+#browser-stream-hosts .stream-host {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 2px 1px 6px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  color: var(--secondary);
+}
+#browser-stream-hosts .stream-host button {
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 5px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tertiary);
+  cursor: pointer;
+}
+#browser-stream-hosts .stream-host button:active { transform: scale(0.9); }
 /* Signing out of everything, cut like #btn-settings-forget below it: the same
    kind of thing about the same computer, so it wears the same outline rather
    than a shape of its own. No display of its own, so [hidden] can take it away

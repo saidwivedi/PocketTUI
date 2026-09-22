@@ -174,17 +174,51 @@ async function browserSaveMarks() {
 // ---- full mode -------------------------------------------------------------
 // A tab is one of two things: a page fetched through the backend's proxy and
 // framed here, or the same page open in a real browser on the computer with its
-// pixels streamed over (43-full-browser.js). The second is what a tab is
-// wherever the computer has a browser to stream from — a genuine origin, the
-// user's own profile, the logins and service workers a site expects, and the
-// computer's network without asking for it — and the proxy is the fallback: no
-// browser found, the preference below, or a tab stepped down by its own key.
+// pixels streamed over (43-full-browser.js). The proxy is what a tab is — the
+// page runs in the browser it is being read in, which is why it is quick and why
+// its video and its sound are the device's own — and the stream is where the
+// pages the proxy cannot serve go: a site that checks the top window, a sign-in,
+// a search page that wants a real browser.
+//
+// Which pages those are is not a guess anybody should have to make twice, so it
+// is remembered per host, the way the zoom is: the key on the address row puts a
+// site on the stream and takes it off again, the proxy hands a page over by
+// itself where it knows it cannot serve it (browserHandOff), and every tab
+// opened on a remembered host is streamed from the first navigation.
 
-function browserFullWanted() {
-  // Strictly checked, like every other capability the shell sends *to* the
-  // computer: a server too old for the route has no socket to open, and a tab
-  // waiting on one would be a tab with nothing in it.
-  return hasCapStrict("browser_full") && !cfg.browserPreferProxy;
+// Which host a page belongs to, for the record below: the zoom's own key, port
+// and all, since :3000 and :8000 are two apps there and here. Spelled out rather
+// than taken from browserZoomHost, which is a pane's and falls back to the page
+// that pane is on — this one answers about an address and nothing else.
+function browserStreamHost(url) {
+  try { return url ? new URL(url).host : ""; } catch (e) { return ""; }
+}
+
+function browserStreamsHost(url) {
+  const host = browserStreamHost(url);
+  return !!host && cfg.browserStreamHosts[host] === true;
+}
+
+// This host on the stream, or off it. The write is the whole record back, the
+// way the zoom's is — a set with one member changed.
+function browserRememberStream(url, on) {
+  const host = browserStreamHost(url);
+  if (!host) return;
+  const rec = cfg.browserStreamHosts;
+  if (on) rec[host] = true;
+  else delete rec[host];
+  cfg.browserStreamHosts = rec;
+  browserSyncStreamHosts();
+}
+
+// What a tab sent to this address would be. Strictly checked, like every other
+// capability the shell sends *to* the computer: a server too old for the route
+// has no socket to open, and a tab waiting on one would be a tab with nothing in
+// it. Without an address it answers for a tab with nothing in it yet, which is
+// what the key on the row is drawn from before anything has been opened.
+function browserFullWanted(url) {
+  if (!hasCapStrict("browser_full")) return false;
+  return cfg.browserStreamAll || browserStreamsHost(url);
 }
 
 // The id the computer knows a streamed tab by. Made with the tab and kept in the
@@ -220,7 +254,8 @@ async function browserSyncSetting() {
   if (!block) return;
   const on = !demoMode && !needsSetup() && hasCapStrict("browse");
   block.hidden = !on;
-  $("browser-proxy-toggle").checked = cfg.browserPreferProxy;
+  $("browser-stream-toggle").checked = cfg.browserStreamAll;
+  browserSyncStreamHosts();
   // Nothing to clear on a computer with no browser to keep a profile in.
   $("btn-browser-clear").hidden = !on || !hasCapStrict("browser_full");
   const line = $("browser-status-line");
@@ -253,6 +288,45 @@ async function browserSyncSetting() {
     // A browser that could not be started says so, whatever was found.
     + (d.launch_error ? " — " + d.launch_error : "");
 }
+
+// The sites that are on the stream, in the group under the switch: the record is
+// made one press at a time and this is the only place it can be read back, or a
+// host taken off it without opening that host again. Nothing to say with none of
+// them, and nothing to say at all on a computer with no browser to stream from.
+function browserSyncStreamHosts() {
+  const line = $("browser-stream-hosts");
+  if (!line) return;
+  const hosts = Object.keys(cfg.browserStreamHosts).sort();
+  line.hidden = !hosts.length || !hasCapStrict("browser_full");
+  line.textContent = "";
+  if (line.hidden) return;
+  line.appendChild(document.createTextNode("Streamed sites: "));
+  for (const host of hosts) {
+    const chip = document.createElement("span");
+    chip.className = "stream-host";
+    chip.appendChild(document.createTextNode(host));
+    const del = document.createElement("button");
+    del.type = "button";
+    del.dataset.host = host;
+    del.setAttribute("aria-label", "Stop streaming " + host);
+    del.textContent = "✕";
+    chip.appendChild(del);
+    line.appendChild(chip);
+  }
+}
+
+// A cross in that line: the host off the record, and the line redrawn without
+// it. The tabs already open are left alone — a page being read is not something
+// a preference should re-fetch under the reader, which is the rule the switch
+// above it follows too.
+document.addEventListener("click", (e) => {
+  const del = e.target && e.target.closest("#browser-stream-hosts button[data-host]");
+  if (!del) return;
+  const rec = cfg.browserStreamHosts;
+  delete rec[del.dataset.host];
+  cfg.browserStreamHosts = rec;
+  browserSyncStreamHosts();
+});
 
 // ---- what the streamed browser downloads ------------------------------------
 // A file a streamed page saves is saved where the browser is, which is the
@@ -431,6 +505,18 @@ function browserNewTab() {
     // writes. Per tab, so one portal can have it while the tab beside it does
     // not, and kept in the pane's record so a reload brings it back.
     lan: false,
+    // Whether the proxy has already offered this tab's page to the stream. Only
+    // read where there is no browser to stream from: the first offer arrives
+    // with the page and is the backend's own reading, the second is the user
+    // pressing the button on it, and that one is worth an answer
+    // (browserHandOff).
+    streamAsked: false,
+    // The landing watchdog's two: which landing in this tab's frame is the one
+    // being waited on, and when this tab's frame last said anything. A proxied
+    // document reports itself; one that has left the proxy cannot
+    // (browserWatchLanding).
+    landGen: 0,
+    heardAt: 0,
   };
 }
 
@@ -709,6 +795,11 @@ function browserFrame(tab) {
   // loads: a frame that has already loaded cannot change its mind, which is
   // why browserSetLan replaces the element rather than editing it.
   if (tab.lan) tab.frame.removeAttribute("sandbox");
+  // Every document the proxy serves says so, and a landing in this frame that
+  // says nothing is a document the proxy did not serve: the watchdog is what
+  // notices (browserWatchLanding). On the element rather than inside it — the
+  // document is cross-origin and there is nothing of it to listen to from here.
+  tab.frame.addEventListener("load", () => browserWatchLanding(tab));
   tab.frame.hidden = tab !== browserTab();
   q("browser-wrap").appendChild(tab.frame);
   return tab.frame;
@@ -919,8 +1010,22 @@ async function browserNavigateIn(tab, raw, push = true) {
   if (!url) return;
   // The first thing asked of a tab settles what kind of tab it is. Not at the
   // load that made it: whether this computer has a browser to stream from is an
-  // answer that arrives after the pane's first tab does.
-  if (tab.fullMode === null) tab.fullMode = browserFullWanted();
+  // answer that arrives after the pane's first tab does, and which kind of tab
+  // this is depends on where it is being sent.
+  if (tab.fullMode === null) {
+    tab.fullMode = browserFullWanted(url);
+    // A streamed tab is on the computer's network already, so the permission the
+    // tab may have inherited from the one it was opened from has nothing to
+    // grant (browserSwapMode does the same for a tab that has been somewhere).
+    if (tab.fullMode) tab.lan = false;
+  } else if (!tab.fullMode && browserStreamsHost(url)) {
+    // A proxy tab sent to a host that is on the stream: the mode changes under
+    // this navigation rather than after it, so the address is fetched once, in
+    // the browser it was going to have to be fetched in. The other way round is
+    // not automatic — a streamed tab sent somewhere unremembered stays streamed,
+    // since stepping it down mid-session is the key's business or a new tab's.
+    browserSwapMode(tab, true);
+  }
   // A scheme this pane picked is a guess this navigation may have to take
   // back, and only its failure says so. Held for this navigation alone: the
   // retry below spells its scheme out, and a landing clears it.
@@ -939,7 +1044,13 @@ async function browserNavigateIn(tab, raw, push = true) {
   else if (!await browserPointFrame(tab, url, gen)) return;
   tab.loaded = url;
   if (push) browserPush(tab, url);
-  if (tab === browserTab()) { browserSetField(url); syncBrowserNav(); }
+  // The key's own words name the host it would remember, so they follow the
+  // address the tab is on rather than only the mode it is in.
+  if (tab === browserTab()) {
+    browserSetField(url);
+    syncBrowserNav();
+    syncBrowserFull();
+  }
   renderBrowserTabs();
   browserRemember();
 }
@@ -1074,8 +1185,9 @@ function browserSetLan(tab, on) {
 // ---- which browser this tab is ---------------------------------------------
 
 // The key's own state, the network key's rule: read off the tab on screen, so a
-// tab somebody stepped down to the proxy is dark beside a tab that was left
-// alone. Pressed is the streamed browser, which is what a tab is by default.
+// tab put on the stream is lit beside a tab that was left on the proxy. What it
+// says is the whole of the bargain — a press is about this site and not only
+// about this tab, since the host it names is what the record keeps.
 function syncBrowserFull() {
   const btn = q("btn-browser-full");
   if (!btn) return;
@@ -1084,9 +1196,11 @@ function syncBrowserFull() {
   btn.setAttribute("aria-pressed", on ? "true" : "false");
   // What pressing it would do, and once it is pressed what it did — the same
   // words in the tooltip and in the label, as the key beside it does.
+  const host = browserStreamHost(browserUrlIn(browserTab()));
   const said = on
-    ? "This tab runs in the computer's Chrome; press to use the lightweight proxy instead"
-    : "Run this tab in the computer's Chrome";
+    ? "This site streams from the computer's Chrome; press to use the lightweight proxy"
+    : "Stream this site from the computer's Chrome"
+      + (host ? " (remembered for " + host + ")" : "");
   btn.setAttribute("aria-label", said);
   btn.setAttribute("title", said);
 }
@@ -1099,6 +1213,19 @@ function syncBrowserFull() {
 // other browser's.
 function browserSetFull(tab, on) {
   if (browserIsFull(tab) === !!on) return;
+  browserSwapMode(tab, on);
+  browserRemember();
+  const url = browserUrlIn(tab);
+  if (url) browserNavigateIn(tab, url, false);
+  else if (tab === browserTab()) syncBrowserNav();
+}
+
+// The tab's half of that: the mode flipped and whatever the tab was showing
+// given up, with nothing said about where the tab then goes. Its own function
+// because a navigation onto a remembered host does this much and then carries on
+// with the load it was already making, rather than starting a second one
+// (browserNavigateIn).
+function browserSwapMode(tab, on) {
   tab.fullMode = !!on;
   if (on) {
     if (tab.frame) { tab.frame.remove(); tab.frame = null; }
@@ -1112,10 +1239,6 @@ function browserSetFull(tab, on) {
   tab.navigating = false;
   if (tab === browserTab()) { syncBrowserFull(); syncBrowserLan(); }
   renderBrowserTabs();
-  browserRemember();
-  const url = browserUrlIn(tab);
-  if (url) browserNavigateIn(tab, url, false);
-  else if (tab === browserTab()) syncBrowserNav();
 }
 
 // The computer has no browser it can start, and this tab has never shown
@@ -1130,6 +1253,87 @@ function browserFullFailed(tab, msg) {
   toast("The computer's browser could not start; using the proxy");
   browserSetFull(tab, false);
   return true;
+}
+
+// How long a landing has to report itself before the pane treats it as a page
+// that has left the proxy, and how far ahead of the element's load event a
+// report may arrive and still count as that landing's. The shim reports when its
+// document is ready and again when the load finishes, and that second one is the
+// same moment as the element's load event, either side of it by a tick — so the
+// grace is a tick's worth and no more, and a report that comes later than the
+// landing counts for the whole of the window anyway.
+const BROWSER_LAND_WAIT = 1200;
+const BROWSER_LAND_GRACE = 150;
+
+// A document landed in a proxy tab's frame. Everything the proxy serves reports
+// itself here shortly afterwards — the shim's `pockettui-nav`, or the error
+// page's own message — so a landing that says nothing is a document the proxy
+// did not serve: a page that set location.href to a root-relative path, which in
+// a sandboxed frame there is no hook to catch. Under `tailscale serve` that path
+// is outside the app's mount and what lands is the front's bare "404 page not
+// found", inside the frame, with the address bar still showing the site.
+//
+// There is nothing to fetch it with here, so the tab goes to the browser that
+// can: the computer's own Chrome, on the address this pane last knew the tab to
+// be at — which for an app that moves itself with pushState is where the user
+// actually is. The host is remembered as if the key had been pressed, since the
+// next visit will leave the proxy in the same place.
+function browserWatchLanding(tab) {
+  const gen = ++tab.landGen;
+  const paneGen = browserGen;
+  const at = Date.now();
+  setTimeout(() => {
+    // A newer landing in the same frame is the one being waited on now, and this
+    // one is nobody's business any more.
+    if (tab.landGen !== gen || !browserAlive(tab, paneGen)) return;
+    if (tab.heardAt >= at - BROWSER_LAND_GRACE) return;   // the proxy's own page
+    if (browserIsFull(tab)) return;
+    // A load this pane started and has had no report of yet — including the
+    // blank document a fresh frame is made on, whose load event arrives before
+    // the address it was made for. Its own report is what will clear this, and
+    // until then there is nothing to say the frame has gone anywhere.
+    if (tab.navigating) return;
+    const url = browserUrlIn(tab);
+    // Nowhere to hand it to: the page in the frame is wrong and saying so would
+    // not make it right, and the frame is still showing whatever it landed on.
+    if (!url || !hasCapStrict("browser_full")) return;
+    browserRememberStream(url, true);
+    toast("This site left the proxy; streaming it from the computer");
+    browserSwapMode(tab, true);
+    browserNavigateIn(tab, url, false);
+  }, BROWSER_LAND_WAIT);
+}
+
+// Why the proxy gave a page up, in the words the person reading it needs: what
+// happened and what is being done about it, once.
+const BROWSER_STREAM_SAID = {
+  google_sorry: "Google wants a real browser here; streaming it from the computer",
+  login: "Sign-in pages stream from the computer's Chrome",
+};
+
+// The other direction of the step the key makes, asked for by the page rather
+// than by the user: the backend answers a document it knows the proxy cannot
+// serve with one that says so (`pockettui-stream`), and the tab it is in moves
+// to the stream on that address. The host goes on the record with it, so the
+// second visit needs none of this.
+//
+// On a computer with no browser to stream from there is nothing to move to, and
+// the page stays where it is — it carries its own button, and pressing that is
+// the second of these messages, which is the one that gets an answer.
+function browserHandOff(tab, d) {
+  const url = browserNormalize(typeof d.url === "string" ? d.url : "")
+              || browserUrlIn(tab);
+  if (!url) return;
+  if (!hasCapStrict("browser_full")) {
+    if (tab.streamAsked) toast("The computer has no browser to stream from");
+    tab.streamAsked = true;
+    return;
+  }
+  browserRememberStream(url, true);
+  toast(BROWSER_STREAM_SAID[typeof d.reason === "string" ? d.reason : ""]
+        || "Streaming this page from the computer's Chrome");
+  if (!browserIsFull(tab)) browserSwapMode(tab, true);
+  browserNavigateIn(tab, url, false);
 }
 
 // What the computer says about a streamed tab: where it is, what it calls
@@ -1554,11 +1758,12 @@ function browserShowTab(i) {
 function browserMakeTab(lan) {
   browserCancelGrab();
   const tab = browserNewTab();
-  // Whatever a new tab is on this computer, which is the streamed browser
-  // wherever there is one. Only a proxy tab inherits the network the tab it was
-  // opened from was on; a streamed tab is on the computer's network already.
-  tab.fullMode = browserFullWanted();
-  tab.lan = !tab.fullMode && !!lan;
+  // Which kind of tab it is waits for the address it is opened on: a new tab is
+  // a proxy tab, and the hosts that are not are known by their host
+  // (browserNavigateIn settles it). The network the tab it was opened from was
+  // on is inherited meanwhile, and dropped there if the tab turns out to be a
+  // streamed one, which is on the computer's network already.
+  tab.lan = !!lan;
   browserTabs.push(tab);
   browserActive = browserTabs.length - 1;
   for (const t of browserTabs) {
@@ -1894,6 +2099,12 @@ window.addEventListener("message", (e) => {
   const d = e.data;
   if (!d || typeof d !== "object") return;
   const live = tab === browserTab();
+  // Whatever it says, that it says anything is what the landing watchdog is
+  // listening for: only a document the proxy served can speak here
+  // (browserWatchLanding).
+  if (typeof d.type === "string" && d.type.indexOf("pockettui-") === 0) {
+    tab.heardAt = Date.now();
+  }
 
   if (d.type === "pockettui-nav") {
     const url = browserNormalize(typeof d.url === "string" ? d.url : "");
@@ -1939,6 +2150,9 @@ window.addEventListener("message", (e) => {
       showBrowserZoomMenu(false);
       renderBrowserMarks();
       syncBrowserNav();
+      // A page that moved itself onto another host is another host's page, and
+      // the key names the host it would remember.
+      syncBrowserFull();
     }
     // A page that loaded is a token that works and a scheme that was right.
     tab.reminted = false;
@@ -1954,6 +2168,15 @@ window.addEventListener("message", (e) => {
   // for is a page to read and not somewhere to type (browserOpenFrom).
   if (d.type === "pockettui-open") {
     browserOpenFrom(tab, d.url);
+    return;
+  }
+
+  // A page the proxy knows it cannot serve, saying so from the document it put
+  // up in its place: a search page that wants a real browser, a sign-in. The
+  // stream is what that page needs and the host is worth remembering, so the tab
+  // changes mode under the user rather than leaving them to find the key.
+  if (d.type === "pockettui-stream") {
+    browserHandOff(tab, d);
     return;
   }
 
@@ -2044,18 +2267,27 @@ q("browser-zoom-plus").addEventListener("click", () => browserStepZoom(1));
 q("browser-zoom-pct").addEventListener("click", () => browserSetZoom(1));
 q("browser-menu-scrim").addEventListener("click", () => showBrowserZoomMenu(false));
 q("btn-browser-star").addEventListener("click", () => browserToggleMark());
-// Which browser this tab is. Pressed it is the computer's own, which is what a
-// tab is wherever there is one to stream from; pressed again the tab steps down
-// to the proxy, on the same address and under the same name. The tab beside it is
-// unaffected either way — a portal that only works one way round does not make
-// the tab next to it change.
+// Which browser this tab is, and which browser this site is from here on.
+// Pressed, the page is streamed from the computer's own Chrome and the host goes
+// on the record, so every tab opened there is streamed without being asked
+// again; pressed again the tab steps down to the proxy and the host comes off
+// it, on the same address and under the same name. The tab beside it is
+// unaffected either way — what the record changes is where the tabs opened after
+// it start.
 q("btn-browser-full").addEventListener("click", () => {
   const tab = browserTab();
-  if (browserIsFull(tab)) { browserSetFull(tab, false); return; }
+  if (browserIsFull(tab)) {
+    // Forgotten before the step down, since the navigation it makes reads the
+    // record back and would put the tab straight up again.
+    browserRememberStream(browserUrlIn(tab), false);
+    browserSetFull(tab, false);
+    return;
+  }
   // Refused rather than attempted where the computer has no browser to stream
   // from: the key is hidden there, and a press that arrived anyway has nothing
   // to open.
   if (!hasCapStrict("browser_full")) return;
+  browserRememberStream(browserUrlIn(tab), true);
   browserSetFull(tab, true);
 });
 // This tab, on the computer's own network: the same address in the same frame,
