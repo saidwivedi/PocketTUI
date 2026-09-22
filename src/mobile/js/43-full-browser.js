@@ -330,8 +330,8 @@ function fullBrowserLink(paneId) {
 
 // `pane` is the pane's row id, `tabId` the id the protocol knows this tab by,
 // `link` the transport above (or item 4's own), and `cbs` the chords that are
-// the shell's: {focusAddress, reload, zoomStep, openTab, retry, onTab, onError,
-// onAsk}. All of them optional — a view with none of them still shows a page.
+// the shell's: {focusAddress, reload, zoomStep, openTab, openExternal, retry,
+// onTab, onError, onAsk}. All of them optional — a view with none of them still shows a page.
 function fullBrowserMake(pane, tabId, link, cbs) {
   const cb = cbs || {};
   const tpl = $("browser-full-tpl");
@@ -978,6 +978,10 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     item("Back", () => send({ type: "back", tab: tabId }));
     item("Forward", () => send({ type: "fwd", tab: tabId }));
     item("Reload", () => send({ type: "reload", tab: tabId }));
+    // The one item in here that is not an op on the page the computer is holding:
+    // the same page in the browser this device runs, which the shell opens and
+    // which leaves this tab streaming (browserOutPress, 42-browser.js).
+    if (cb.openExternal) item("Open in your browser", () => cb.openExternal());
     if (href || sel || editable) menu.appendChild(el("div", { class: "fb-sep" }));
     if (href) {
       item("Open link in new tab", () => { if (cb.openTab) cb.openTab(href); });

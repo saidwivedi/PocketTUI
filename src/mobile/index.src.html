@@ -271,6 +271,15 @@
       <path d="M12 16.5v3.5"/>
       <path d="M8.5 20h7"/>
     </symbol>
+    <!-- An arrow leaving its box: the way out of the pane and into the browser
+         this device runs, which is the one thing in here that is not a page in
+         the pane. The box is open at the corner the arrow leaves through, the
+         way every "opens elsewhere" mark is drawn. -->
+    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14 4.5h5.5V10"/>
+      <path d="M19.5 4.5 12.5 11.5"/>
+      <path d="M17 13.5v4.5a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5V8.5A1.5 1.5 0 0 1 6 7h4.5"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -845,6 +854,18 @@
       <input type="text" id="browser-url" inputmode="url" autocapitalize="off"
              autocorrect="off" autocomplete="off" spellcheck="false"
              placeholder="Search or type an address" aria-label="Address">
+      <!-- The way out, inside the address field (founder, 2026-09-22): this
+           page in the browser this device runs, rather than in the pane. Over
+           the right padding the field keeps for it, so the address never runs
+           under the glyph, and in the field rather than on the row because what
+           it acts on is the address and not the page. An address this device
+           cannot reach on its own goes out as the computer's own copy of the
+           page, which is what the old tapped-localhost relay did for it
+           (browserOutPress, 42-browser.js). Hidden until the tab is on
+           something: a new tab has no address to hand anywhere. -->
+      <button class="icon-btn" id="btn-browser-out" hidden
+              aria-label="Open this page in your browser"
+              title="Open this page in your browser"><svg><use href="#i-external"/></svg></button>
     </div>
   </div>
   <!-- The zoom panel's scrim, #files-view-scrim's job: take the tap that
