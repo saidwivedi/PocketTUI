@@ -2173,14 +2173,27 @@ browser_product() {
     esac
 }
 
-# One line about the browser, whatever happened. A browser that is here but
-# cannot start gets the check output indented under a warning first — it names
-# the libraries and the package command to install them, which is a thing only
-# the user can run — and then reads as "not available", because a browser the
-# pane cannot launch is not a browser the pane has.
+# The one phrase out of a --check refusal worth carrying into the summary line:
+# the first library it named, the sandbox hint, or, failing both, whatever it
+# said last. It is a pointer at output already on screen, not a replacement for
+# it — chromium.py prints the whole list and the command that installs it.
+browser_why() {
+    local detail=""
+    detail="$(printf '%s\n' "$1" | sed -n 's/^missing:[[:space:]]*\([^ ]*\).*/\1 is missing/p' | head -1)"
+    [[ -n "$detail" ]] || detail="$(printf '%s\n' "$1" | sed -n 's/^hint:[[:space:]]*//p' | head -1)"
+    [[ -n "$detail" ]] || detail="$(printf '%s\n' "$1" | grep -v '^[[:space:]]*$' | tail -1 || true)"
+    printf '%s' "${detail:-no reason given}"
+}
+
+# One line about the browser, whatever happened — and a working browser wherever
+# one can be had. A Chromium that is on the machine but will not start is
+# reported with the check output indented under a warning and then treated as no
+# browser at all, because the download is the answer to most of what it was
+# missing: the Chrome for Testing build carries its own libraries and its own
+# sandbox helper. Only when that fails too does the step give up, and then the
+# summary names what stopped it and the command that tries again.
 browser_setup() {
-    local later='Browser: not available, run `pockettui browser install` on this computer later'
-    local found="" path="" ver="" out="" rc=0
+    local found="" path="" ver="" out="" cause="" detail="" log="" rc=0
     if [[ "$NO_BROWSER" == "1" ]]; then
         say "Browser: skipped (--no-browser)"
         return 0
@@ -2206,17 +2219,23 @@ browser_setup() {
         fi
         say "  ${C_WARN}$(browser_product "$path") is installed here but will not start:${C_RESET}"
         printf '%s\n' "$out" | sed 's/^/      /'
-        say "$later"
-        note "the browser pane has no usable browser on this computer"
-        return 0
+        # Kept for the summary: if the download fails as well, this is the
+        # reason there is nothing to stream from, and the one a user can fix.
+        cause="$(browser_product "$path") cannot start here: $(browser_why "$out")"
+        say "  Fetching a browser that brings its own libraries instead."
+    else
+        say "  No Chrome, Chromium or Edge on this computer."
     fi
-    say "  No Chrome, Chromium or Edge on this computer."
-    # Its output goes straight to the terminal, for the same reason the voice
-    # download does: a hundred-odd megabytes with nothing on screen reads as a
-    # hang. `set -e` would take the install down with it, hence the explicit
-    # test — exit 2 is a build whose chromium.py cannot download yet.
-    rc=0
-    "$VENV_PY" "$INSTALL_DIR/chromium.py" --install || rc=$?
+    # The download goes to the terminal as it runs, for the reason the voice one
+    # does: a hundred-odd megabytes with nothing on screen reads as a hang. It is
+    # copied to a log at the same time so the summary can quote the last thing it
+    # said. The status is PIPESTATUS rather than $? because tee is what the
+    # pipeline ends with, and it is read inside a group whose failure is
+    # swallowed: `set -e` would otherwise take the whole install down here.
+    log="${TMPDIR:-/tmp}/pockettui-browser-install.$$.log"
+    { "$VENV_PY" "$INSTALL_DIR/chromium.py" --install 2>&1 | tee "$log"; rc="${PIPESTATUS[0]}"; } || true
+    detail="$(grep -v '^[[:space:]]*$' "$log" 2>/dev/null | tail -1 || true)"
+    rm -f "$log" 2>/dev/null || true
     if [[ "$rc" == "0" ]]; then
         found="$("$VENV_PY" "$INSTALL_DIR/chromium.py" --find 2>/dev/null | head -1 || true)"
         ver="$(printf '%s\n' "$found" | awk -F'\t' '{print $2}')"
@@ -2224,14 +2243,19 @@ browser_setup() {
         note "downloaded a browser for the browser pane"
         return 0
     fi
-    if [[ "$rc" == "2" ]]; then
-        say "  ${C_DIM}Downloading a browser is not available in this version yet.${C_RESET}"
-    else
-        say "  ${C_WARN}Could not download a browser.${C_RESET} It can be added later with:"
-        say "      pockettui browser install"
+    # Exit 2 is a chromium.py that cannot download yet, which is a failure like
+    # any other from here: the install ends without a browser either way, so it
+    # is worded as one rather than as a note about this version.
+    if [[ -z "$cause" ]]; then
+        if [[ "$rc" == "2" ]]; then
+            cause="download failed: this build cannot download a browser yet"
+        else
+            cause="download failed: ${detail:-chromium.py exited $rc}"
+        fi
     fi
-    say "$later"
-    note "the browser pane has no browser on this computer"
+    say "Browser: not installed ($cause); run \`pockettui browser install\` on this computer"
+    say "  ${C_DIM}Until then the browser pane runs in its lightweight proxy mode.${C_RESET}"
+    note "no browser for the browser pane ($cause)"
     return 0
 }
 
