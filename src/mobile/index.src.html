@@ -1496,11 +1496,14 @@
      ============================================================ -->
 <!-- appConfirm()'s one dialog, in the app's own modal idiom: a standard
      sheet — same classes, scrim, and action row as every other sheet, floated
-     to the center by the .centered modifier — holding a message line and a
-     quiet-no / danger-yes pair. Opened through showSheet(), which also closes
-     whatever sheet asked the question. -->
+     to the center by the .centered modifier — holding the question as a
+     heading, its consequence as a note, and a quiet-no / danger-yes pair. A
+     page's own alert or confirm has no heading of ours to give it, so the
+     heading hides and the message stands alone. Opened through showSheet(),
+     which also closes whatever sheet asked the question. -->
 <div class="sheet centered" id="sheet-confirm" role="alertdialog" aria-modal="true"
      aria-describedby="confirm-msg">
+  <h2 id="confirm-title" hidden></h2>
   <p class="sheet-note" id="confirm-msg"></p>
   <div class="actions">
     <button type="button" id="btn-confirm-cancel">Cancel</button>
