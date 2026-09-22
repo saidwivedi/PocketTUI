@@ -456,7 +456,7 @@ function dropFrame() {
   frame.replaceWith(fresh);
 }
 
-function showImage(path) {
+function showImage(path, pane) {
   const kind = viewerKind(path);
   // Re-opening the same path (mouse users get both the link and the tap path)
   // would otherwise reload and re-decode it.
@@ -485,13 +485,17 @@ function showImage(path) {
     dropSrc(on);
   }
   $("btn-viewer-download").style.display = canDownload(path) ? "" : "none";
-  // In the pane while the explorer is docked in it, over the whole window
-  // otherwise — the editor's and the reader's rule (dockFileView,
+  // In the pane while the explorer it was opened from is docked in it, over the
+  // whole window otherwise — the editor's and the reader's rule (dockFileView,
   // 28-file-explorer.js), said here rather than through it because this one is
   // an overlay: it covers the listing without taking its class away, whichever
-  // shape it is in. The PDF's own toolbar is what the second class is for
-  // (styles.css).
-  $("viewer").classList.toggle("docked", filesDocked);
+  // shape it is in. Which listing that is goes on the record with it: the
+  // overlay is one for both rows of the column. The PDF's own toolbar is what
+  // the second class is for (styles.css).
+  const owner = pane || filesActive();
+  const docked = !!(owner && owner.isDocked());
+  $("viewer").classList.toggle("docked", docked);
+  filesSetViewOwner(docked ? owner : null);
   $("viewer").classList.toggle("pdf", kind === "pdf");
   $("viewer").classList.add("show");
   if (fresh) fillViewer(path, kind);
@@ -545,6 +549,9 @@ function hideImage() {
   // And the document the frame was holding, for the same reason — plus the
   // history entries it would otherwise leave behind.
   dropFrame();
+  // Seated in a pane, the row it was in is no longer holding a file view
+  // (28-file-explorer.js).
+  if ($("viewer").classList.contains("docked")) filesSetViewOwner(null);
   $("viewer").classList.remove("docked", "pdf");
 }
 
