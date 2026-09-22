@@ -221,6 +221,8 @@ async function browserSyncSetting() {
   const on = !demoMode && !needsSetup() && hasCapStrict("browse");
   block.hidden = !on;
   $("browser-proxy-toggle").checked = cfg.browserPreferProxy;
+  // Nothing to clear on a computer with no browser to keep a profile in.
+  $("btn-browser-clear").hidden = !on || !hasCapStrict("browser_full");
   const line = $("browser-status-line");
   if (!on || !line) return;
   if (!hasCapStrict("browser_full")) {
@@ -250,6 +252,48 @@ async function browserSyncSetting() {
     + (cap ? ", memory cap " + cap + " MB" : "")
     // A browser that could not be started says so, whatever was found.
     + (d.launch_error ? " — " + d.launch_error : "");
+}
+
+// ---- what the streamed browser downloads ------------------------------------
+// A file a streamed page saves is saved where the browser is, which is the
+// computer: chromium.py puts it in ~/.pockettui/downloads under the name the
+// site suggested and reports it here as it goes. So the pane says what is
+// happening while it happens, and then brings the file over — because the device
+// the user asked from is the device they wanted it on.
+//
+// Up to this size it comes down without being asked for, through the explorer's
+// own download (downloadFile, 28-file-explorer.js). Past it the transfer is
+// itself worth a question: a phone on a hotel link should not spend ten minutes
+// fetching a disk image it was only told about, and the file is on the computer
+// either way.
+const BROWSER_DL_MAX = 200 * 1024 * 1024;
+
+function browserDownloaded(msg) {
+  if (!msg || !msg.guid) return;
+  const name = String(msg.name || "file");
+  const total = Number(msg.total) || 0;
+  const got = Number(msg.received) || 0;
+  if (msg.state === "inProgress") {
+    // The held line, the explorer's own transfers' line: no clock of its own, so
+    // it stays until the outcome replaces it.
+    holdToast("Downloading " + name + "… " + (total
+      ? Math.min(99, Math.floor(got * 100 / total)) + "%" : fmtSize(got)));
+    return;
+  }
+  if (msg.state === "canceled") { toast("Download cancelled"); return; }
+  if (msg.state !== "completed") return;
+  const path = String(msg.path || "");
+  // Finished, and the computer could not say where it put it: it is in the
+  // downloads folder there, and that is the whole of what can be said.
+  if (!path) { toast("Downloaded " + name + " on the computer"); return; }
+  if (total && total <= BROWSER_DL_MAX) { downloadFile(path, name, total); return; }
+  hideToast();
+  appConfirm(name + " was downloaded on the computer. Save it to this device too?",
+             { confirmLabel: "Save", danger: false }).then((yes) => {
+    // Without a size the browser has to do the fetching rather than the page
+    // (downloadFile), which is what the undefined asks for.
+    if (yes) downloadFile(path, name, total || undefined);
+  });
 }
 
 // The panes the column has, by the id it knows each of them by ("browser" for
@@ -355,6 +399,13 @@ function browserNewTab() {
     // moved on carries no name until its new page reports one.
     title: "",
     titleFor: "",
+    // The page's own icon as a data URL, where the computer could read one, and
+    // whether the computer has given this tab's page up to stay inside its
+    // memory cap. Both are the streamed mode's alone: there are no favicons to
+    // fetch through the proxy, and nothing of a framed page for a watchdog to
+    // discard (browserFullTab).
+    icon: "",
+    discarded: false,
     // True from the moment this pane asks the frame to load until the shim
     // reports the landing: that report is the load we asked for, not a page
     // navigating itself, so it corrects the entry the navigation already made
@@ -672,7 +723,18 @@ function browserFrame(tab) {
 let fullLink = null;
 
 function browserFullLink() {
-  if (!fullLink) fullLink = fullBrowserLink(id);
+  if (!fullLink) {
+    fullLink = fullBrowserLink(id);
+    // The three things the socket carries that are not about one view: a window
+    // a page opened, a file the browser is saving, and the browser having been
+    // swapped under all of its tabs to stay inside its memory cap. The last one
+    // is a line and nothing else — the tab each pane was showing is already
+    // being loaded again on the computer (chromium.py's restart_over_cap).
+    fullLink.onnewtab = (msg) => browserPopup(msg);
+    fullLink.ondownload = (msg) => browserDownloaded(msg);
+    fullLink.onrestart = (msg) => toast(String((msg && msg.message)
+                                               || "The computer's browser restarted"));
+  }
   return fullLink;
 }
 
@@ -719,6 +781,9 @@ function browserFullView(tab) {
     retry: () => { const u = browserUrlIn(tab); if (u) browserNavigateIn(tab, u, false); },
     onError: (msg) => browserFullFailed(tab, msg),
     onTab: (msg) => browserFullTab(tab, msg),
+    // The page has put a question up, or had one answered: the chip is where a
+    // tab that is not on screen says so.
+    onAsk: () => renderBrowserTabs(),
   });
   tab.full = view;
   tab.zoomAt = 0;                       // a fresh view is at 100% whatever was
@@ -739,6 +804,10 @@ function browserDropFull(tab) {
   tab.zoomAt = 0;
   tab.canBack = false;
   tab.canFwd = false;
+  // Both were the streamed page's: a tab with no page on the computer has no
+  // icon of its own and nothing left there to have been discarded.
+  tab.icon = "";
+  tab.discarded = false;
 }
 
 // Every page this pane holds, gone — for a teardown, a profile switch, or the
@@ -1076,6 +1145,15 @@ function browserFullTab(tab, msg) {
   if (typeof msg.targetId === "string" && msg.targetId) tab.target = msg.targetId;
   tab.canBack = !!msg.canBack;
   tab.canFwd = !!msg.canFwd;
+  // The page's own icon. An absent key is "nothing new", not "no icon": the
+  // probe runs on a load and its answer rides the next message, so a `tab`
+  // message without it must leave the mark the chip is already wearing alone.
+  // The computer sends "" itself when the tab moves to another host.
+  if (typeof msg.favicon === "string") tab.icon = msg.favicon;
+  // Whether the computer still has a page for this tab: the memory watchdog
+  // gives up the oldest background one and keeps the record, and showing it
+  // again is what loads it (chromium.py's discard_oldest_hidden).
+  if (typeof msg.discarded === "boolean") tab.discarded = msg.discarded;
   const url = browserNormalize(typeof msg.url === "string" ? msg.url : "");
   // about:blank is the target before it has been sent anywhere, not a page the
   // tab is on: a browser's own address field is empty there too.
@@ -1110,6 +1188,48 @@ function browserOpenFrom(tab, raw) {
   if (!url) return;
   if (browserTabs.length >= BROWSER_TAB_MAX) { browserNavigateIn(tab, url); return; }
   browserNavigateIn(browserMakeTab(tab.lan), url);
+}
+
+// A window a streamed page opened for itself: window.open, or a link with
+// target=_blank. The computer has already made it — the page is loading in a
+// target of its own by the time this arrives — and it is shown to nobody until
+// the pane says what becomes of it (chromium.py's _adopt_popup). A browser's
+// answer is a tab in front, which is what this makes: the record carries the id
+// the computer minted for it (`p1`, which no id this pane mints can collide
+// with — browserFid's are `t…`) and the target its page is already on, so the
+// navigation below takes that page over rather than loading it again
+// (browserPointFull).
+function browserPopup(msg) {
+  if (!msg || !msg.tab) return;
+  const url = browserNormalize(typeof msg.url === "string" ? msg.url : "");
+  const from = browserTabs.find((t) => t.fid === msg.opener);
+  if (browserTabs.length >= BROWSER_TAB_MAX) {
+    // No chip left to put it in. The page is still what was asked for, so the
+    // tab it was asked from goes there instead — a browser with no room in its
+    // strip can do that much — and the window on the computer is closed, since
+    // nothing here can show it.
+    if (fullLink) fullLink.send({ type: "close", tab: msg.tab });
+    if (from && url) browserNavigateIn(from, url);
+    return;
+  }
+  const tab = browserMakeTab(false);
+  // Streamed whatever a new tab would otherwise be here: the page is already
+  // open in the computer's browser, and the preference for the proxy has nothing
+  // to say about a window that exists.
+  tab.fullMode = true;
+  tab.fid = String(msg.tab);
+  tab.target = String(msg.targetId || "");
+  if (url) { browserNavigateIn(tab, url); return; }
+  // A window the page means to write into itself (window.open() with no
+  // address). There is nowhere to navigate, so the view takes the target as it
+  // stands — and the tab counts as loaded, so the next address typed into it is
+  // a navigation of the page rather than a second open.
+  const view = browserFullView(tab);
+  if (!view) return;
+  view.open("", tab.target);
+  tab.loaded = "about:blank";
+  renderBrowserTabs();
+  browserRemember();
 }
 
 // ---- zoom ------------------------------------------------------------------
@@ -1315,10 +1435,13 @@ function renderBrowserTabs() {
       // The tab rather than its index: where a tab sits changes every time one
       // before it is closed, and a handler that captured the old number would
       // act on its neighbour.
+      // The name in a span of its own, because a chip can carry a picture
+      // before it: the page's icon goes in ahead of the words and the words are
+      // still the one thing rewritten in place.
       const open = el("button", {
         type: "button", class: "tab-name",
         onclick: () => browserShowTab(browserTabs.indexOf(tab)),
-      });
+      }, el("span", { class: "tab-word" }));
       const shut = el("button", {
         type: "button", class: "tab-del", "aria-label": "Close this tab",
         onclick: (e) => { e.stopPropagation(); browserCloseTab(browserTabs.indexOf(tab)); },
@@ -1326,11 +1449,27 @@ function renderBrowserTabs() {
       tab.chip = el("div", { class: "tab-chip" }, open, shut);
     }
     const open = tab.chip.firstElementChild;
-    if (open.textContent !== name) {
-      open.textContent = name;
+    const word = open.querySelector(".tab-word");
+    if (word.textContent !== name) {
+      word.textContent = name;
       open.setAttribute("title", name);
     }
+    // The page's own icon, in place of nothing — a favicon is what a browser's
+    // chip carries, and only a streamed tab ever has one to carry.
+    let icon = open.querySelector(".tab-icon");
+    if (tab.icon) {
+      if (!icon) {
+        icon = el("img", { class: "tab-icon", alt: "" });
+        open.insertBefore(icon, word);
+      }
+      if (icon.getAttribute("src") !== tab.icon) icon.setAttribute("src", tab.icon);
+    } else if (icon) icon.remove();
     tab.chip.classList.toggle("on", i === browserActive);
+    // Waiting to be answered, and given up by the computer: both are about a tab
+    // the reader is not looking at, which is the only place there is to say it
+    // (43-full-browser.js, and chromium.py's watchdog).
+    tab.chip.classList.toggle("ask", !!(tab.full && tab.full.asking()));
+    tab.chip.classList.toggle("dim", !!tab.discarded);
     // Which tabs are on the computer's own network. The key above says it for
     // the tab on screen; this says it for the rest, so a strip of eight still
     // reads at a glance.
@@ -1597,11 +1736,25 @@ function browserSetExpanded(v) {
 // This pane as a row of the column: the one screen it puts in its row, the way it
 // closes, and its expand, all of which are the column's to ask for and this
 // module's to do (26-side-pane.js).
+// Whether the column has this row folded away behind the other one's expand.
+// The row is display:none then: the page is still in the pane and nobody can see
+// it, so a streamed tab stops streaming exactly as it does when the pane is
+// closed, and starts again when the fold comes off.
+let browserFolded = false;
+function browserSetFolded(on) {
+  if (browserFolded === !!on) return;
+  browserFolded = !!on;
+  if (on) { browserHideFulls(); return; }
+  const tab = browserTab();
+  if (browserOpen && tab.full) tab.full.show();
+}
+
 sideRegister(id, {
   type: "browser",
   els: () => [root],
   close: () => closeDockedBrowser(),
   setExpanded: (on) => browserSetExpanded(on),
+  onFold: (hidden) => browserSetFolded(hidden),
 });
 
 // False is the column refusing the row — the pane it would have taken is a
@@ -2100,6 +2253,29 @@ function browserReset() {
   syncBrowserNav();
 }
 
+// Every streamed tab in this pane, closed on the computer. The tabs stay, with
+// their addresses and their names — what goes is the page, so that nothing of
+// the browsing session is left open for the profile reset to refuse
+// (browserClearProfile, under the factory).
+function browserClearFulls() {
+  for (const tab of browserTabs) {
+    if (!tab.full) continue;
+    browserDropFull(tab);
+    tab.loaded = "";
+    tab.navigating = false;
+  }
+}
+
+// The page this pane was showing, fetched again in a browser that has just
+// forgotten every login it had. The tab on screen and no other: the rest load
+// when a chip asks for one, browserShowTab's rule.
+function browserReloadFull() {
+  if (!browserOpen) return;
+  const tab = browserTab();
+  const url = browserUrlIn(tab);
+  if (browserIsFull(tab) && url) browserNavigateIn(tab, url, false);
+}
+
 // The keys in this pane's own bar that a capability answer takes away. The
 // globe key and the header button are the app's rather than a pane's and are
 // dealt with once (syncBrowseCap, under the factory), which is also what calls
@@ -2146,6 +2322,8 @@ const api = {
   restore: browserRestore,
   teardown: browserTeardown,
   reset: browserReset,
+  clearFulls: browserClearFulls,
+  reloadFull: browserReloadFull,
 };
 browserPanes[id] = api;
 return api;
@@ -2293,6 +2471,49 @@ function browserResetForProfile() {
   browserMarksAsked = false;
   browserMarkTitles = {};
   browserRenderMarks();
+}
+
+// ---- the browsing session on the computer ------------------------------------
+
+// "Clear browsing data" in Settings. Every cookie, login and byte of site data
+// the streamed browser ever collected is in one directory on the computer, and
+// POST api/browser/reset stops the browser and deletes it — which is the whole
+// of "sign me out of everything" (app.py's api_browser_reset).
+//
+// The route refuses while a tab is open there, and rightly: the tabs are
+// somebody's screen and a reset that pulled the page out from under them would
+// be indistinguishable from a crash. So the panes close theirs first, and the
+// page each of them was showing is fetched again afterwards, in a browser that
+// has forgotten it.
+async function browserClearProfile() {
+  for (const pane of Object.values(browserPanes)) pane.clearFulls();
+  let said = "";
+  // The closes went out on the panes' own sockets and this goes out on its own
+  // connection, so the computer may not have got to them yet: a 409 here is that
+  // race rather than a refusal, and it is worth waiting out.
+  for (let i = 0; i < 4; i++) {
+    let r;
+    try {
+      r = await fetch(apiURL("api/browser/reset"),
+                      { method: "POST", cache: "no-store", headers: authHeaders() });
+    } catch (e) {
+      dbg("browser reset: ask failed", e);
+      toast("Couldn't reach the computer");
+      return false;
+    }
+    if (r.ok) {
+      toast("Browser profile cleared");
+      for (const pane of Object.values(browserPanes)) pane.reloadFull();
+      return true;
+    }
+    let d = null;
+    try { d = await r.json(); } catch (e) {}
+    said = (d && d.error) ? String(d.error) : "HTTP " + r.status;
+    if (r.status !== 409) break;
+    await new Promise((done) => setTimeout(done, 250));
+  }
+  toast(said || "Couldn't clear the browsing data");
+  return false;
 }
 
 // Whether the computer on the other end can proxy pages at all. Strictly

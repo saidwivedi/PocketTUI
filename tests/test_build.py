@@ -241,6 +241,112 @@ def test_a_tab_is_the_computers_own_browser_by_default(doc):
     assert "function browserHideFulls(" in doc
 
 
+def test_a_window_a_streamed_page_opens_becomes_a_tab_of_the_pane(doc):
+    """window.open in a streamed page makes a target on the computer that the
+    pane knows nothing about, so the backend offers it (`newtab`) and the pane
+    answers with `show` or `close`. Answered the way a browser does: a tab in
+    front, adopting the page that is already loading in that target rather than
+    loading it again — and at the cap the tab it was opened from goes there
+    instead, because spending it beats the click going nowhere."""
+    assert 'if (msg.type === "newtab")' in doc
+    assert "function browserPopup(" in doc
+    assert "const tab = browserMakeTab(false);" in doc
+    assert "tab.fid = String(msg.tab);" in doc
+    assert 'tab.target = String(msg.targetId || "");' in doc
+    # The pane's own ids are "t<n><rand>" and the computer's popups are "p<n>",
+    # so an adopted id can never be one this pane would mint for itself.
+    assert 'return "t" + browserFidN + Math.random().toString(36).slice(2, 8);' in doc
+    assert 'fullLink.send({ type: "close", tab: msg.tab });' in doc
+
+
+def test_what_a_streamed_page_asks_is_answered_by_the_pane(doc):
+    """A dialog, an HTTP challenge and a file input each stop the page on the
+    computer until an answer goes back over the pane's socket.
+
+    The dialogs are the app's own sheets — a page's confirm() is the same
+    question in the same words as every other question the app asks — with the
+    alert's second answer taken away, since an alert has none. The other two are
+    drawn over the picture of the page they belong to: with two panes open and
+    tabs behind them there would be no saying whose challenge, or whose file
+    dialog, a sheet in the middle of the window was.
+    """
+    assert 'else if (msg.type === "dialog") view.dialog(msg);' in doc
+    assert 'else if (msg.type === "auth") view.auth(msg);' in doc
+    assert 'else if (msg.type === "filechooser") view.chooser(msg);' in doc
+    assert 'send({ type: "dialog", tab: tabId, accept: accept, text: typed });' in doc
+    assert 'await appConfirm(text, { confirmLabel: "OK", okOnly: true, danger: false });' in doc
+    assert '$("btn-confirm-cancel").hidden = !!opts.okOnly;' in doc
+    assert 'await appConfirm("Leave this page?",' in doc
+    # A queue rather than one sheet over another: appConfirm and appPrompt share
+    # one resolver, and a second question raised over the first would leave the
+    # first page stopped with nobody left to answer it. A background tab's
+    # dialog waits for its tab and marks its chip meanwhile.
+    assert "function fbAskTurn(" in doc
+    assert "tab.chip.classList.toggle(\"ask\", !!(tab.full && tab.full.asking()));" in doc
+    # The challenge sheet and the file bar, in the view's own markup.
+    assert '<div class="fb-auth" hidden></div><div class="fb-ask" hidden></div>' in doc
+    assert 'type: "password"' in doc
+    assert 'send({ type: "auth", tab: tabId, cancel: true });' in doc
+    # A file input needs a gesture and the page's own press was spent on the
+    # canvas, so the bar's button is the gesture that opens the picker.
+    assert "function pickFiles(" in doc and "input.click();" in doc
+    assert 'send({ type: "files", tab: tabId, paths: paths });' in doc
+    assert 'apiURL("api/browser/upload?name=" + encodeURIComponent(file.name))' in doc
+    # As many as the op will pass on, said in both files.
+    app_py = (REPO / "app.py").read_text(encoding="utf-8")
+    assert "const FB_FILES_MAX = 32;" in doc
+    assert "BROWSER_FILES_MAX = 32" in app_py
+
+
+def test_a_download_the_computers_browser_makes_comes_to_this_device(doc):
+    """The browser is on the computer, so that is where the file lands. The pane
+    says so while it happens and then brings it over — small ones without being
+    asked, since the device that asked is the device it was wanted on, and big
+    ones on a yes, because that transfer is itself worth a question."""
+    assert "function browserDownloaded(" in doc
+    assert 'if (msg.type === "download")' in doc
+    assert "const BROWSER_DL_MAX = 200 * 1024 * 1024;" in doc
+    assert ("if (total && total <= BROWSER_DL_MAX) { downloadFile(path, name, total); return; }"
+            in doc)
+    assert 'toast("Download cancelled");' in doc
+
+
+def test_a_chip_carries_its_pages_icon_and_says_when_it_was_given_up(doc):
+    """Two things a streamed tab knows about itself that a chip can show: the
+    icon the page sent, and that the computer gave its page up to stay inside
+    the memory cap — which keeps the tab, so showing it again loads it. An
+    absent favicon key is "nothing new" rather than "no icon"."""
+    assert 'if (typeof msg.favicon === "string") tab.icon = msg.favicon;' in doc
+    assert 'if (typeof msg.discarded === "boolean") tab.discarded = msg.discarded;' in doc
+    assert 'icon = el("img", { class: "tab-icon", alt: "" });' in doc
+    assert 'tab.chip.classList.toggle("dim", !!tab.discarded);' in doc
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    assert re.search(r"\.tab-icon \{[^}]*width: 16px;", css)
+    # The browser swapped under its tabs to stay inside the cap is a line, not
+    # an overlay: the tab each pane was showing is already coming back.
+    assert 'if (msg.code === "restarted")' in doc
+
+
+def test_a_folded_row_stops_streaming_and_the_profile_can_be_cleared(doc):
+    """A row the column folds away behind the other one's expand is
+    display:none, which is nowhere to paint a picture arriving many times a
+    second — so the stream stops there exactly as it does when the pane closes.
+    And the one place the browsing session lives is a directory on the computer,
+    which Settings can throw away once the panes have given up their pages."""
+    assert "onFold: (hidden) => browserSetFolded(hidden)," in doc
+    assert 'if (inst && inst.onFold) inst.onFold(cls === "side-hidden");' in doc
+    assert "function browserSetFolded(" in doc
+    assert 'id="btn-browser-clear"' in doc
+    assert ">Clear browsing data<" in doc
+    assert "async function browserClearProfile(" in doc
+    assert 'apiURL("api/browser/reset")' in doc
+    # Refused while a tab is open there, so the tabs go first — and a 409 in the
+    # moment after that is the race, not the answer.
+    assert "for (const pane of Object.values(browserPanes)) pane.clearFulls();" in doc
+    assert "if (r.status !== 409) break;" in doc
+    assert 'toast("Browser profile cleared");' in doc
+
+
 def test_the_window_controls_sit_in_the_tab_row(doc):
     """A browser window's top row: tabs at one end, the window's own controls
     at the other. Bookmark, zoom, and docked the pane's expand and close all

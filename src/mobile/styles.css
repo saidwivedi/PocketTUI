@@ -2173,6 +2173,23 @@ html.term-open, body.term-open {
    switch that turns them off. A note about the row above it rather than under a
    field, so it keeps its own spacing instead of .sheet-note's. */
 #browser-status-line { margin: 8px 0 0; }
+/* Signing out of everything, cut like #btn-settings-forget below it: the same
+   kind of thing about the same computer, so it wears the same outline rather
+   than a shape of its own. No display of its own, so [hidden] can take it away
+   where the computer has no browser to keep a profile in. */
+#btn-browser-clear {
+  margin-top: 12px;
+  padding: 9px 16px;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+#btn-browser-clear:active { transform: scale(0.96); }
 /* The Appearance tab. Three words of equal weight and no second line to carry,
    so a segmented row rather than the stacked radios the dictation engines need:
    the whole choice reads at a glance. */
@@ -3868,6 +3885,37 @@ html.term-open #dbg-panel { opacity: 0.85; }
   cursor: pointer;
 }
 .tab-chip.on .tab-name, .tab-chip:hover .tab-name { color: var(--ink); }
+/* The page's own mark, where the computer could read one (chromium.py's
+   FAVICON_JS): a browser's chip carries its site's icon, and a strip of eight
+   hosts reads at a glance with them and as a list of words without. Rounded,
+   because a good many of them are square logos that were drawn rounded. */
+.tab-icon {
+  width: 16px; height: 16px;
+  margin-right: 5px;
+  vertical-align: -3px;
+  border-radius: 3px;
+  object-fit: contain;
+  /* Decoration on a button: the press belongs to the chip, and an icon that can
+     be dragged out of the strip as a picture is not what a tab's icon is. */
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+/* A tab whose page is stopped waiting to be answered — a dialog it put up while
+   the reader was in another tab (43-full-browser.js). The .lan dot's idiom, in
+   the other accent: at this size a mark is all that reads. */
+.tab-chip.ask .tab-name::after {
+  content: "";
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-left: 5px;
+  vertical-align: 1px;
+  border-radius: 50%;
+  background: var(--bad);
+}
+/* A tab the computer gave up to stay inside its memory cap. It keeps its name
+   and its place — it is still a tab to come back to, and coming back loads it
+   again — and it is drawn as what it is: a page that is not there at the moment. */
+.tab-chip.dim .tab-name { color: var(--tertiary); font-style: italic; }
 /* Kept in its slot rather than hidden out of it, .bm-del's reason: a chip that
    grows under the pointer moves every chip after it. Always readable on the
    active tab, which is the one anybody closes.  */
@@ -4115,6 +4163,128 @@ html.term-open #dbg-panel { opacity: 0.85; }
   cursor: pointer;
 }
 .fb-retry:hover { background: var(--umber-tint); }
+/* What the page is asking for, over the page asking. The credentials sheet dims
+   what is behind it — the page is stopped until it is answered, and nothing
+   under it is worth reading meanwhile — and the file bar does not: a page asking
+   for a file is a page the reader may need to look at to know which file. */
+.fb-auth {
+  position: absolute;
+  inset: 0;
+  z-index: 63;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  /* The sheet scrim's own wash, inside the pane rather than over the window:
+     docked, the terminal beside this is live and must not be dimmed by a login
+     box in here (#browser-menu-scrim's reason). */
+  background: rgba(20, 16, 10, 0.34);
+}
+.fb-auth[hidden] { display: none; }
+/* The settings sheet's card, at the size a pane 360px wide can hold one. */
+.fb-card {
+  width: 100%;
+  max-width: 320px;
+  padding: 18px;
+  background: var(--card);
+  border: 1px solid var(--hair-strong);
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
+}
+.fb-card-title {
+  margin: 0 0 4px;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+/* The realm, which is the server's own word for what is behind the login. */
+.fb-card-note {
+  margin: 0 0 12px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--secondary);
+  overflow-wrap: anywhere;
+}
+/* The sheet's own fields (.sheet input), said again here: a form in a pane is
+   not inside a sheet, and the two should read the same. */
+.fb-field {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  padding: 10px 12px;
+  transition: border-color 0.18s var(--ease-out);
+}
+.fb-field:focus { border-color: var(--umber); outline: none; }
+.fb-acts {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+/* The sheet's action buttons at the size this card and the bar below want. */
+.fb-btn {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--secondary);
+  background: transparent;
+  border: 1px solid var(--hair-strong);
+  border-radius: 10px;
+  padding: 7px 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fb-btn:active { transform: scale(0.96); }
+.fb-btn.go {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+}
+/* The file bar: a strip across the top of the page's picture, where a browser's
+   own permission bars sit. The press on its button is the gesture the file
+   dialog needs — the press that opened the page's input was spent on the
+   canvas. */
+.fb-ask {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  z-index: 61;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--card);
+  border-bottom: 1px solid var(--hair-strong);
+  box-shadow: 0 2px 8px rgba(20, 16, 10, 0.18);
+}
+.fb-ask[hidden] { display: none; }
+.fb-ask-said {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The picker itself, which is never seen: it is clicked the moment it is made
+   and taken out again with the answer. Out of the paint order rather than
+   display:none, .fb-focus's treatment. */
+.fb-file {
+  position: absolute;
+  top: 0; left: 0;
+  width: 1px; height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
 
 /* ============================================================
    EDITOR

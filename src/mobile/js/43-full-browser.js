@@ -26,6 +26,12 @@
 // nobody can see it. Middle click and Ctrl+click are told to nobody but the
 // backend, because a page that hears them follows the link itself.
 //
+// What the page asks of its browser comes back the other way. A dialog it put
+// up, a challenge it hit, a file input it opened: each of those stops the page
+// on the computer until an answer goes back over this socket, so each of them is
+// drawn on this end — the dialogs in the app's own sheets, the other two over
+// the picture of the page they belong to.
+//
 // This file owns the view and nothing else: which tab is in full mode, what the
 // address field says and where the socket comes from are the pane's (item 4).
 // A view is handed a transport — anything with send(obj) — and a handful of
@@ -68,11 +74,60 @@ const FB_WHEEL_LINE = 16;
 // MouseEvent.button, in the names the protocol uses.
 const FB_BUTTONS = ["left", "middle", "right", "back", "forward"];
 
+// How many files one answer to a file dialog carries, app.py's
+// BROWSER_FILES_MAX said again: the op drops the rest, and sending fifty would
+// be fifty uploads for a page that will be given thirty-two.
+const FB_FILES_MAX = 32;
+
 function fullBrowserHasFocus() {
   const at = document.activeElement;
   if (!at) return false;
-  for (const rec of fbViews) if (rec.focusEl === at) return true;
+  // The key proxy, and the fields of the two things the page can put over its
+  // own picture: the credentials sheet and the file bar. All three are somebody
+  // typing or choosing inside the pane, which is what the pane's Escape stands
+  // aside for.
+  for (const rec of fbViews) {
+    if (rec.focusEl === at || rec.wrap.contains(at)) return true;
+  }
   return false;
+}
+
+// One page dialog on screen at a time, whichever pane or tab it came from.
+// appConfirm and appPrompt share one sheet and one resolver (01-helpers.js), so
+// a second question raised over the first would leave the first page stopped
+// with nobody left to answer it. Every view's asks queue here.
+let fbAsking = false;
+const fbAskQueue = [];
+function fbAskTurn(run) {
+  if (fbAsking) { fbAskQueue.push(run); return; }
+  fbAsking = true;
+  Promise.resolve().then(run).catch((e) => dbg("full browser: ask failed", e))
+    .then(() => {
+      fbAsking = false;
+      const next = fbAskQueue.shift();
+      if (next) fbAskTurn(next);
+    });
+}
+
+// One file onto the computer, where a page's file input can be given it: the
+// raw-body shape /api/fs/upload already takes, and the answer is the path on
+// *that* machine which goes back in the `files` op. {path} or {error: what to
+// say} — the caller is uploading a handful and says one thing about the lot.
+async function fbUpload(file) {
+  try {
+    const r = await fetch(
+      apiURL("api/browser/upload?name=" + encodeURIComponent(file.name)),
+      { method: "POST", cache: "no-store", headers: authHeaders(), body: file });
+    if (r.status === 401) { rejectToken(); return { error: "" }; }
+    if (r.status === 413) return { error: "That file is too large to send (50 MB max)" };
+    if (!r.ok) throw new Error("http " + r.status);
+    const d = await r.json();
+    if (!d || !d.path) throw new Error("bad answer");
+    return { path: String(d.path) };
+  } catch (e) {
+    dbg("browser upload failed", e);
+    return { error: "Couldn't send that file to the computer" };
+  }
 }
 
 // The four booleans as the one bitmask both ends use (chromium.py's MOD_*).
@@ -158,9 +213,32 @@ function fullBrowserLink(paneId) {
       if (linkApi.onstate) linkApi.onstate(msg);
       return;
     }
+    // A tab the computer made rather than the pane: a window a page opened,
+    // already open on the other end and shown to nobody. There is no view under
+    // that id yet — the pane is what decides whether there is going to be one
+    // (browserPopup, 42-browser.js).
+    if (msg.type === "newtab") {
+      if (linkApi.onnewtab) linkApi.onnewtab(msg);
+      return;
+    }
+    // A download belongs to the browser rather than to a tab: the one that
+    // started it may be closed by the time it finishes, and `tab` is then null.
+    // So it goes to the pane, which is where the line about it is drawn.
+    if (msg.type === "download") {
+      if (linkApi.ondownload) linkApi.ondownload(msg);
+      return;
+    }
     // A failure with no tab on it is the browser itself: every view in this
     // pane is showing a page that is not there any more.
     if (msg.type === "error" && !msg.tab) {
+      // Except a restart, which is the memory watchdog having swapped the
+      // browser under its tabs and put the live ones back at their addresses
+      // (chromium.py's restart_over_cap). Nothing here is broken, so nothing
+      // here gets an overlay over a page that is coming back.
+      if (msg.code === "restarted") {
+        if (linkApi.onrestart) linkApi.onrestart(msg);
+        return;
+      }
       for (const id of Object.keys(views)) views[id].error(msg);
       return;
     }
@@ -171,6 +249,9 @@ function fullBrowserLink(paneId) {
     else if (msg.type === "cursor") view.cursor(msg);
     else if (msg.type === "link") view.link(msg);
     else if (msg.type === "hit") view.hit(msg);
+    else if (msg.type === "dialog") view.dialog(msg);
+    else if (msg.type === "auth") view.auth(msg);
+    else if (msg.type === "filechooser") view.chooser(msg);
     else if (msg.type === "error") view.error(msg);
     else if (msg.type === "gone") view.gone();
   }
@@ -212,6 +293,12 @@ function fullBrowserLink(paneId) {
     // Set by whoever wants the `ready`/`status` messages, which are the pane's
     // rather than a tab's.
     onstate: null,
+    // The three other messages that are about the pane rather than about one of
+    // its views: a window a page opened, a file the browser is saving, and the
+    // browser having been restarted under every tab in it.
+    onnewtab: null,
+    ondownload: null,
+    onrestart: null,
     attach: (tabId, view) => { views[tabId] = view; },
     detach: (tabId) => { delete views[tabId]; },
     live: () => !!sock && sock.readyState === 1,
@@ -233,8 +320,8 @@ function fullBrowserLink(paneId) {
 
 // `pane` is the pane's row id, `tabId` the id the protocol knows this tab by,
 // `link` the transport above (or item 4's own), and `cbs` the chords that are
-// the shell's: {focusAddress, reload, zoomStep, openTab, retry, onTab, onError}.
-// All of them optional — a view with none of them still shows a page.
+// the shell's: {focusAddress, reload, zoomStep, openTab, retry, onTab, onError,
+// onAsk}. All of them optional — a view with none of them still shows a page.
 function fullBrowserMake(pane, tabId, link, cbs) {
   const cb = cbs || {};
   const tpl = $("browser-full-tpl");
@@ -245,6 +332,8 @@ function fullBrowserMake(pane, tabId, link, cbs) {
   const menu = wrap.querySelector(".fb-menu");
   const tip = wrap.querySelector(".fb-tip");
   const errEl = wrap.querySelector(".fb-err");
+  const authEl = wrap.querySelector(".fb-auth");
+  const askEl = wrap.querySelector(".fb-ask");
 
   // The last picture, kept so a resize of this element can repaint rather than
   // wait for the computer's next frame.
@@ -281,6 +370,12 @@ function fullBrowserMake(pane, tabId, link, cbs) {
   // The press whose release goes nowhere, because its press did not go to the
   // page either.
   let skipUp = false;
+  // What the page is stopped waiting for an answer to: a modal dialog, an HTTP
+  // challenge, a file dialog. One of each at most — the browser sends no second
+  // one for a tab that has not answered the first.
+  let askDialog = null;
+  let askAuth = null;
+  let askFiles = null;
 
   const send = (msg) => (link && link.send ? link.send(msg) : false);
 
@@ -399,6 +494,9 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     sentW = g.cssW; sentH = g.cssH; sentDpr = g.dpr;
     send({ type: "show", tab: tabId, cssW: g.cssW, cssH: g.cssH, dpr: g.dpr,
            zoom: zoom });
+    // A dialog this tab was stopped on while it was in the background: the tab
+    // is in front now, so there is somebody to ask.
+    pumpDialog();
   }
 
   function sendHide() { send({ type: "hide", tab: tabId }); }
@@ -560,6 +658,19 @@ function fullBrowserMake(pane, tabId, link, cbs) {
   }
   focusEl.addEventListener("copy", onClip);
   focusEl.addEventListener("cut", onClip);
+
+  // Escape inside one of the overlays answers it. The pane's own Escape stands
+  // aside while the keyboard is anywhere in this view (fullBrowserHasFocus), so
+  // this is the key's only meaning here — and the page's own Escape still goes
+  // to the page, which is the field's own listener above.
+  wrap.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || e.target === focusEl) return;
+    if (!askAuth && !askFiles) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (askAuth) answerAuth(null, "");
+    else sendFiles([]);
+  });
 
   // ---- the pointer ---------------------------------------------------------
   function at(e) {
@@ -857,6 +968,205 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     error({ code: "gone", message: "This tab was closed by the browser" });
   }
 
+  // ---- what the page is asking --------------------------------------------
+  // Three things a page in a real browser does that a picture of one cannot
+  // answer: a modal dialog, an HTTP challenge and a file dialog. Each of them
+  // stops the page until something answers, and the answer has to be able to
+  // come from here.
+  //
+  // The dialog is the app's own — appConfirm and appPrompt, because a page's
+  // confirm() is the same question in the same words as every other question the
+  // app asks, and a second idiom for it would be a second thing to read. The
+  // other two are drawn in the pane, over the picture of the page they belong
+  // to: a challenge and a file dialog are that tab's, and with two panes open
+  // and tabs behind them there would otherwise be no saying whose.
+
+  // Whether this tab is waiting on the reader, which is what puts the mark on
+  // its chip while it is not the tab on screen (renderBrowserTabs).
+  function asking() { return !!(askDialog || askAuth || askFiles); }
+
+  function askChanged() { if (cb.onAsk) cb.onAsk(); }
+
+  // Whether an answer can be asked for at all: a sheet about a page nobody is
+  // looking at is a sheet about nothing, so a background tab's dialog waits for
+  // the tab to come to the front.
+  function onScreen() { return !destroyed && wantShown && !wrap.hidden; }
+
+  function dialog(msg) {
+    askDialog = msg || {};
+    askChanged();
+    pumpDialog();
+  }
+
+  function pumpDialog() {
+    const msg = askDialog;
+    if (!msg || !onScreen()) return;
+    fbAskTurn(async () => {
+      // The turn comes round after whatever was in front of it, and in that
+      // time the tab can have been closed, gone to the background, or had its
+      // dialog answered by the page itself (a navigation does that).
+      if (askDialog !== msg || !onScreen()) return;
+      const text = String(msg.message || "");
+      let accept = false;
+      let typed = "";
+      if (msg.kind === "prompt") {
+        const answer = await appPrompt(text || "This page is asking for something",
+                                       { value: String(msg.default || "") });
+        accept = answer !== null;
+        typed = answer || "";
+      } else if (msg.kind === "alert") {
+        // An alert has one answer. The page goes on either way — which is what
+        // the browser itself does with one that was dismissed — so the sheet
+        // offers the one button rather than a choice it does not have.
+        await appConfirm(text, { confirmLabel: "OK", okOnly: true, danger: false });
+        accept = true;
+      } else if (msg.kind === "beforeunload") {
+        accept = await appConfirm("Leave this page?",
+                                  { confirmLabel: "Leave", danger: false });
+      } else {
+        accept = await appConfirm(text, { confirmLabel: "OK", danger: false });
+      }
+      if (askDialog === msg) { askDialog = null; askChanged(); }
+      // Sent whatever has become of this view in the meantime: the page on the
+      // computer is stopped until something answers, and an answer that arrived
+      // too late is one the backend drops.
+      send({ type: "dialog", tab: tabId, accept: accept, text: typed });
+    });
+  }
+
+  // The credentials for a Basic or Digest challenge. Drawn here rather than in a
+  // sheet for the reason above, and cleared the moment it is answered: a
+  // password is not left in the document a press longer than it has to be.
+  function auth(msg) {
+    askAuth = msg || {};
+    askChanged();
+    drawAuth();
+  }
+
+  function drawAuth() {
+    authEl.textContent = "";
+    if (!askAuth) { authEl.hidden = true; return; }
+    const host = String(askAuth.host || "This site");
+    const realm = String(askAuth.realm || "");
+    const user = el("input", {
+      type: "text", class: "fb-field", placeholder: "User name",
+      "aria-label": "User name", autocomplete: "off", autocapitalize: "off",
+      autocorrect: "off", spellcheck: "false",
+    });
+    const pass = el("input", {
+      type: "password", class: "fb-field", placeholder: "Password",
+      "aria-label": "Password", autocomplete: "off", spellcheck: "false",
+    });
+    const submit = () => answerAuth(user.value, pass.value);
+    const enter = (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      submit();
+    };
+    user.addEventListener("keydown", enter);
+    pass.addEventListener("keydown", enter);
+    authEl.appendChild(el("div", { class: "fb-card" },
+      el("p", { class: "fb-card-title" }, host + " asks you to sign in"),
+      realm ? el("p", { class: "fb-card-note" }, realm) : null,
+      user, pass,
+      el("div", { class: "fb-acts" },
+         el("button", { type: "button", class: "fb-btn",
+                        onclick: () => answerAuth(null, "") }, "Cancel"),
+         el("button", { type: "button", class: "fb-btn go",
+                        onclick: submit }, "Sign in"))));
+    authEl.hidden = false;
+    user.focus();
+  }
+
+  // Null for the user is the cancel the protocol asks for by name; the page then
+  // gets the server's own 401 body, exactly as it would in a browser.
+  function answerAuth(user, password) {
+    if (!askAuth) return;
+    askAuth = null;
+    if (user === null) send({ type: "auth", tab: tabId, cancel: true });
+    else {
+      send({ type: "auth", tab: tabId, user: String(user || ""),
+             password: String(password || "") });
+    }
+    drawAuth();
+    askChanged();
+    focusEl.focus({ preventScroll: true });
+  }
+
+  // A file input the page opened. The dialog is the device's own — nothing else
+  // can read this phone's files — and a file input needs a gesture, which the
+  // press that opened it spent on the canvas. So the pane asks for one of its
+  // own: the bar's button is the gesture that opens the picker.
+  function chooser(msg) {
+    askFiles = msg || {};
+    askChanged();
+    drawAsk();
+  }
+
+  function drawAsk() {
+    askEl.textContent = "";
+    if (!askFiles) { askEl.hidden = true; return; }
+    const many = !!askFiles.multiple;
+    askEl.appendChild(el("span", { class: "fb-ask-said" },
+                         many ? "This page asks for files" : "This page asks for a file"));
+    askEl.appendChild(el("button", {
+      type: "button", class: "fb-btn",
+      onclick: () => sendFiles([]),
+    }, "Cancel"));
+    askEl.appendChild(el("button", {
+      type: "button", class: "fb-btn go",
+      onclick: () => pickFiles(many),
+    }, many ? "Choose files" : "Choose file"));
+    askEl.hidden = false;
+  }
+
+  // Inside the click, which is the only time a browser opens one.
+  function pickFiles(many) {
+    const input = el("input", { type: "file", class: "fb-file" });
+    if (many) input.multiple = true;
+    input.addEventListener("change", () => {
+      const files = Array.prototype.slice.call(input.files || [], 0, FB_FILES_MAX);
+      input.remove();
+      sendFiles(files);
+    });
+    // The dialog dismissed with nothing chosen, where the browser says so. Where
+    // it does not, the page keeps waiting — which is what a file dialog nobody
+    // answered does in a browser as well.
+    input.addEventListener("cancel", () => {
+      input.remove();
+      sendFiles([]);
+    });
+    wrap.appendChild(input);
+    input.click();
+  }
+
+  // An empty list is the cancel: the protocol has no other way to say so, and an
+  // input left with no files is what a cancelled dialog leaves behind anyway.
+  async function sendFiles(files) {
+    if (!askFiles) return;
+    askFiles = null;
+    drawAsk();
+    askChanged();
+    const paths = [];
+    let said = "";
+    for (let i = 0; i < files.length; i++) {
+      holdToast(files.length > 1
+        ? "Sending " + (i + 1) + " of " + files.length + " to the computer…"
+        : "Sending " + files[i].name + " to the computer…");
+      const rec = await fbUpload(files[i]);
+      if (rec.path) paths.push(rec.path);
+      else if (!said) said = rec.error;
+    }
+    if (!files.length) hideToast();
+    else if (paths.length === files.length) {
+      toast(paths.length === 1 ? "Sent " + files[0].name
+                               : "Sent " + paths.length + " files");
+    } else if (said) toast(said);
+    else hideToast();
+    send({ type: "files", tab: tabId, paths: paths });
+    if (!destroyed) focusEl.focus({ preventScroll: true });
+  }
+
   function destroy() {
     if (destroyed) return;
     destroyed = true;
@@ -873,8 +1183,10 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     wrap.remove();
   }
 
-  // What the list of views needs of one, which is not what the pane needs.
-  const rec = { focusEl: focusEl, visibility: visibility };
+  // What the list of views needs of one, which is not what the pane needs. The
+  // wrap is in it because the keyboard can be in one of the overlays over the
+  // canvas rather than in the field behind it (fullBrowserHasFocus).
+  const rec = { focusEl: focusEl, wrap: wrap, visibility: visibility };
   fbViews.push(rec);
 
   const api = {
@@ -894,6 +1206,9 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     hasFocus: () => document.activeElement === focusEl,
     info: () => info,
     selection: () => selection,
+    // Whether the page is stopped waiting on the reader, for the mark its chip
+    // wears while it is not the tab on screen.
+    asking: asking,
     // What the transport routes into this view.
     frame: frame,
     tab: onTab,
@@ -901,6 +1216,9 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     cursor: cursor,
     link: onLink,
     hit: onHit,
+    dialog: dialog,
+    auth: auth,
+    chooser: chooser,
     error: error,
     gone: gone,
     reconnected: reconnected,

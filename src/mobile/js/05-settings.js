@@ -602,6 +602,16 @@ $("alt-toggle").addEventListener("change", (e) => {
 $("browser-proxy-toggle").addEventListener("change", (e) => {
   cfg.browserPreferProxy = e.target.checked;
 });
+// The destructive one in that group: the streamed browser's profile on the
+// computer, deleted. Asked first, because every login in it goes — and the panes
+// have to give up their pages before the computer will do it, which is what
+// browserClearProfile (42-browser.js) arranges.
+$("btn-browser-clear").addEventListener("click", async () => {
+  const yes = await appConfirm(
+    "Clear every cookie and login the computer's browser is holding?",
+    { confirmLabel: "Clear" });
+  if (yes) browserClearProfile();
+});
 // Fetches and paints the learned-corrections list. Hidden outright rather than
 // shown empty on a demo/unpaired session or a failed fetch, since none of those
 // says anything true about a store on a real machine — an empty list there
