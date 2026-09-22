@@ -476,6 +476,38 @@ def test_the_pane_has_tabs_of_its_own(doc):
     assert "tab.fullMode = full || tab.lan ? false : null;" in doc
 
 
+def test_the_pane_offers_the_stream_where_a_proxied_page_did_not_work(doc):
+    """A bar over the page, naming the key that would fix it.
+
+    The proxy serves pages it cannot make work, and until now the only thing
+    that said so was a toast about the load. The bar is the offer: the monitor
+    glyph so the key is recognised on the row afterwards, the words, one press
+    that does what the key does, and a cross. Inside the wrap, so it covers the
+    page it is about and never the address row; a class rather than an id,
+    because the second pane is a copy of this markup.
+    """
+    assert 'class="browser-hint" hidden' in doc
+    assert doc.index('class="browser-hint" hidden') > doc.index('id="browser-wrap"')
+    assert doc.index('class="browser-hint" hidden') < doc.index('id="browser-frame-tpl"')
+    assert 'class="browser-hint-glyph" aria-hidden="true"><use href="#i-monitor"/>' in doc
+    assert ">Stream</button>" in doc
+    assert 'class="browser-hint-x"' in doc
+    assert "Not working here? Stream this site from the computer's Chrome" in doc
+    # The four ways a page says it did not work, and the one bar they all raise.
+    assert "function browserHint(" in doc and "function browserShowHint(" in doc
+    assert "if (!BROWSE_HINT_SKIP[code]) browserHint(tab" in doc
+    assert "if (BROWSE_WALL_CODES[d.status]) {" in doc
+    assert 'if (d.type === "pockettui-health") {' in doc
+    # Never twice for a site, never on a streamed tab, never where there is no
+    # browser to stream from — and down again on the tab's next page.
+    assert "browserHintShown[host]" in doc
+    assert "if (browserIsFull(tab)) return;" in doc
+    assert "if (tab === browserHintFor) browserHideHint();" in doc
+    # And the first proxy page this device opens says what the key is for, once.
+    assert "function browserHintTip(" in doc
+    assert 'BROWSER_HINT_SEEN_KEY = "pockettui_browser_hint_seen"' in doc
+
+
 def test_every_pane_tab_carries_the_proxys_own_sandbox_list(doc):
     """The iframe attribute and the CSP header have to agree word for word, or
     the stricter of the two wins and the page loses a capability it was
