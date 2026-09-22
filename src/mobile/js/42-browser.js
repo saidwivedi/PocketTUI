@@ -913,6 +913,8 @@ function browserDropPages() {
     tab.loaded = "";
     tab.navigating = false;
   }
+  // The bar was about one of the pages just given up.
+  browserHideHint();
 }
 
 // The streamed tab on screen stops streaming when nobody is looking at the pane.
@@ -1008,6 +1010,8 @@ async function browserNavigateIn(tab, raw, push = true) {
   const typed = browserHasScheme(String(raw || "").trim());
   const url = browserNormalize(raw);
   if (!url) return;
+  // The bar was about the page this tab is leaving, whatever it goes to next.
+  if (tab === browserHintFor) browserHideHint();
   // The first thing asked of a tab settles what kind of tab it is. Not at the
   // load that made it: whether this computer has a browser to stream from is an
   // answer that arrives after the pane's first tab does, and which kind of tab
@@ -1052,6 +1056,9 @@ async function browserNavigateIn(tab, raw, push = true) {
     syncBrowserFull();
   }
   renderBrowserTabs();
+  // After the hide above, and only for a page that is being proxied: the tip is
+  // about the key that would take this page off the proxy.
+  if (!tab.fullMode) browserHintTip(tab);
   browserRemember();
 }
 
@@ -1334,6 +1341,101 @@ function browserHandOff(tab, d) {
         || "Streaming this page from the computer's Chrome");
   if (!browserIsFull(tab)) browserSwapMode(tab, true);
   browserNavigateIn(tab, url, false);
+}
+
+// ---- the hint bar ----------------------------------------------------------
+
+// Where the proxy hands a page over by itself, the tab moves and the user is
+// told why. The rest of what the proxy cannot serve is quieter than that: a
+// wall the site answered with, a boot that threw its way out, a page that came
+// out blank. The tab stays where it is in those cases — nothing here knows the
+// stream would do better — and what the pane can do is name the key that
+// would: a bar over the page, with the key's own glyph in it, so the next time
+// the press is on the row.
+const BROWSER_HINT_SAID =
+  "Not working here? Stream this site from the computer's Chrome";
+// The first proxy page this device opens, told once what the key is for.
+const BROWSER_HINT_TIP = "Sites that need a real browser can stream from the "
+  + "computer's Chrome: press the monitor key";
+const BROWSER_HINT_TIP_MS = 8000;
+const BROWSER_HINT_SEEN_KEY = "pockettui_browser_hint_seen";
+
+// The statuses that are a wall rather than a failure (BROWSE_WALL_STATUS in
+// app.py): the site answered, and answered a browser it did not trust.
+const BROWSE_WALL_CODES = { 403: 1, 429: 1, 451: 1, 503: 1 };
+
+// The failures the stream would fail at too: nothing listening, nothing
+// resolving, nothing answering in time, a handshake refused. Chrome on the
+// computer reaches the same host over the same network, so offering it there
+// would be offering nothing. Neither is a token that aged out or this app
+// framing itself.
+const BROWSE_HINT_SKIP = { refused: 1, timeout: 1, tls: 1, unknown_host: 1,
+                           loop: 1, expired: 1 };
+
+// The hosts this pane has already offered the stream for, so a site says it
+// once: the offer is about a site and not about a page, and a second bar on the
+// third page of the same site is nagging. Per pane and per session — a record
+// that outlived the session would be a promise the pane cannot keep, since the
+// site may have been fixed since.
+const browserHintShown = Object.create(null);
+// Which tab the bar on screen is about, and the tip's own clock.
+let browserHintFor = null;
+let browserHintTimer = 0;
+
+function browserHintBar() { return root.querySelector(".browser-hint"); }
+
+function browserHideHint() {
+  const bar = browserHintBar();
+  if (bar) bar.hidden = true;
+  browserHintFor = null;
+  clearTimeout(browserHintTimer);
+}
+
+// The bar, up, about one tab. `ms` is the tip's own auto-hide; the offer itself
+// stays until the page moves or the cross is pressed.
+function browserShowHint(tab, said, ms) {
+  const bar = browserHintBar();
+  if (!bar) return;
+  const line = bar.querySelector(".browser-hint-said");
+  if (line) line.textContent = said;
+  bar.hidden = false;
+  browserHintFor = tab;
+  clearTimeout(browserHintTimer);
+  if (ms) browserHintTimer = setTimeout(() => {
+    if (browserHintFor === tab) browserHideHint();
+  }, ms);
+}
+
+// One page that did not work, whatever noticed it. The first check is what
+// keeps a landing the pane has already dealt with out of here: a tab handed to
+// the stream has nothing left to be offered, which is what a health report
+// arriving seconds after that hand-off would otherwise find. `reason` is for
+// the log and nowhere else; the bar says the same thing however the page
+// failed.
+function browserHint(tab, reason) {
+  if (!tab || browserTabs.indexOf(tab) < 0) return;
+  if (browserIsFull(tab)) return;
+  // Nothing to offer: the key is hidden on a computer with no browser to stream
+  // from, and a bar pointing at a key that is not there is worse than silence.
+  if (!hasCapStrict("browser_full")) return;
+  // A bar names no tab, so it is only ever about the one being read.
+  if (tab !== browserTab()) return;
+  const host = browserStreamHost(browserUrlIn(tab));
+  if (!host || browserHintShown[host]) return;
+  browserHintShown[host] = true;
+  dbg("browser: hint for", host, reason);
+  browserShowHint(tab, BROWSER_HINT_SAID, 0);
+}
+
+// The first proxy page this device ever opens. Once, remembered on the device
+// rather than in the session: what it teaches is where the key is.
+function browserHintTip(tab) {
+  if (!hasCapStrict("browser_full") || tab !== browserTab()) return;
+  try {
+    if (localStorage.getItem(BROWSER_HINT_SEEN_KEY)) return;
+    localStorage.setItem(BROWSER_HINT_SEEN_KEY, "1");
+  } catch (e) { return; }
+  browserShowHint(tab, BROWSER_HINT_TIP, BROWSER_HINT_TIP_MS);
 }
 
 // What the computer says about a streamed tab: where it is, what it calls
@@ -1718,6 +1820,9 @@ function browserShowTab(i) {
   if (!tab) return;
   browserCancelGrab();
   browserActive = i;
+  // The bar belongs to the tab it was raised for, and that tab is no longer the
+  // one being read.
+  if (browserHintFor && browserHintFor !== tab) browserHideHint();
   for (const t of browserTabs) {
     if (t.frame) t.frame.hidden = t !== tab;
     // A streamed view that is not on screen is hidden and told to stop: the
@@ -2158,6 +2263,12 @@ window.addEventListener("message", (e) => {
     tab.reminted = false;
     tab.guessed = "";
     browserRemember();
+    // What the site answered this document with, where the proxy thought it
+    // worth saying (browse_wall in app.py): a wall is a page a browser with a
+    // profile and an origin of its own is often let past, and this one is not.
+    if (BROWSE_WALL_CODES[d.status]) {
+      browserHint(tab, "status " + d.status + (d.wall ? " " + d.wall : ""));
+    }
     return;
   }
 
@@ -2222,6 +2333,25 @@ window.addEventListener("message", (e) => {
     // page loading out of sight would be about something the user is not
     // looking at.
     if (live) toast(BROWSE_ERRORS[code] || "That page could not be loaded");
+    // And the offer, for the failures the computer's own Chrome might not have
+    // had: a refusal the target made, a status this proxy could not use. The
+    // ones it would fail at too get the toast and nothing more.
+    if (!BROWSE_HINT_SKIP[code]) browserHint(tab, "error " + (code || "?"));
+    return;
+  }
+
+  // What the page says about itself from the inside, which is the only place a
+  // boot that threw or a document that came out empty can be seen from: the
+  // shim counts and measures, and reports once (BROWSE_SHIM in app.py). It
+  // reports seconds after its landing, so the page it is about may be one this
+  // tab has already left — a load in flight is what says so.
+  if (d.type === "pockettui-health") {
+    if (tab.navigating) return;
+    if (d.empty) browserHint(tab, "empty page");
+    else if (typeof d.errors === "number" && d.errors) {
+      browserHint(tab, d.errors + " script errors");
+    }
+    return;
   }
 });
 
@@ -2290,6 +2420,22 @@ q("btn-browser-full").addEventListener("click", () => {
   browserRememberStream(browserUrlIn(tab), true);
   browserSetFull(tab, true);
 });
+// The hint bar's two: the same press the key would have taken, and the cross
+// that takes the bar away. The host is already on the bar's own record by the
+// time it is on screen, so the cross has nothing to write down — it is this
+// site's offer spent, which is what a second page on it must not raise again.
+const browserHintEl = root.querySelector(".browser-hint");
+if (browserHintEl) {
+  browserHintEl.querySelector(".browser-hint-go").addEventListener("click", () => {
+    const tab = browserHintFor || browserTab();
+    browserHideHint();
+    if (!hasCapStrict("browser_full") || browserTabs.indexOf(tab) < 0) return;
+    browserRememberStream(browserUrlIn(tab), true);
+    browserSetFull(tab, true);
+  });
+  browserHintEl.querySelector(".browser-hint-x")
+    .addEventListener("click", () => browserHideHint());
+}
 // This tab, on the computer's own network: the same address in the same frame,
 // fetched this time as a page in its own right. An app written to be the top
 // window then works — top is the page itself, the views it writes are its own
@@ -2591,8 +2737,13 @@ function browserMakeAt(id) {
   clone.querySelector("#browser-tab-row").textContent = "";
   const wrap = clone.querySelector("#browser-wrap");
   const tpl = wrap.querySelector("#browser-frame-tpl");
+  // The hint bar comes over for the same reason the template does: it is markup
+  // rather than state, and every pane has one. Down again, because what it was
+  // saying was about a page in the pane it was copied from.
+  const hint = wrap.querySelector(".browser-hint");
   wrap.textContent = "";
   wrap.appendChild(tpl);
+  if (hint) { hint.hidden = true; wrap.appendChild(hint); }
   const marks = clone.querySelector("#browser-bookmarks");
   marks.textContent = "";
   marks.hidden = true;

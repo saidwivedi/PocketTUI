@@ -861,6 +861,22 @@
        as it did. -->
   <div id="browser-bookmarks" hidden></div>
   <div class="browser-wrap" id="browser-wrap">
+    <!-- The hint bar: a strip across the top of the page, where a browser puts
+         its own permission bars (.fb-ask's place in the streamed view). Shown
+         on a proxy tab whose page plainly did not work — the proxy's own
+         failure page, a wall the site answered with, a boot that threw, a
+         document that came out empty — because the key that fixes it is one
+         press away and nothing on the page says so. The monitor glyph is in
+         the bar so that the key is recognised the next time, on the row.
+         Inside the wrap so it never covers the address row; a class rather
+         than an id because the second pane is a copy of this markup, and
+         browserMakeAt keeps this element when it empties the wrap for it. -->
+    <div class="browser-hint" hidden>
+      <svg class="browser-hint-glyph" aria-hidden="true"><use href="#i-monitor"/></svg>
+      <span class="browser-hint-said">Not working here? Stream this site from the computer's Chrome</span>
+      <button type="button" class="browser-hint-go">Stream</button>
+      <button type="button" class="browser-hint-x" aria-label="Dismiss this hint"><svg><use href="#i-close"/></svg></button>
+    </div>
     <!-- One frame per tab, cut from here as the tab first loads something
          (browserFrame, 42-browser.js) and kept in place while the tab is off
          screen, so coming back to a tab is not a reload. A template rather

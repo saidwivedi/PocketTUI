@@ -12,6 +12,7 @@ The hostnames in comments are 127.0.0.1 or example.net ones on purpose: a real
 tailnet name in this repo fails the deploy's leak scan.
 """
 
+import asyncio
 import gzip
 import html
 import json
@@ -130,6 +131,30 @@ class SiteHandler(BaseHTTPRequestHandler):
             self.send_body(b"ok", "text/plain", extra=(
                 ("Set-Cookie", "tricky=a'b<c&d; Path=/; Max-Age=3600"),
                 ("Set-Cookie", "hidden=nope; Path=/; Max-Age=3600; HttpOnly"),))
+        elif path == "/enablejs":
+            # What Google answers a search with when the address this computer
+            # speaks from is rate-limited: a plain 200 on the page's own
+            # address, which only the body gives away.
+            self.send_body(
+                b"<html><body><p>We're sorry, but your computer or network "
+                b"may be sending automated queries. To protect our users, we "
+                b"can't process your request right now. If you're having "
+                b"trouble accessing Google Search, please "
+                b'<a href="/httpservice/retry/enablejs">try again</a>.'
+                b"</body></html>", "text/html; charset=utf-8")
+        elif path == "/wall":
+            # A bot wall: the status a site answers a visitor it does not trust
+            # with, and a body that says which kind of wall it is. Both ride
+            # into the shim's configuration for the pane to read (browse_wall).
+            self.send_body(
+                b"<html><head><title>Attention Required! | Cloudflare</title>"
+                b'</head><body><div id="challenge-platform">checking</div>'
+                b"</body></html>",
+                "text/html; charset=utf-8", status=403)
+        elif path == "/forbidden":
+            # The same status with nothing to say for itself.
+            self.send_body(b"<html><body>no</body></html>",
+                           "text/html; charset=utf-8", status=403)
         elif path == "/style.css":
             self.send_body(SHEET.format(port=self.port).encode(), "text/css")
         elif path == "/big.bin":
@@ -234,6 +259,12 @@ def opened(client, site, path="/", **kw):
     # TestClient is that origin here, so the path goes straight back.
     return body, client.get(body["url"][len(kw.get("prefix", PREFIX)):],
                             follow_redirects=False)
+
+
+def shim_cfg(page: str) -> dict:
+    """The configuration the shim was served with, read back off the page."""
+    raw = re.search(r"<script data-cfg='([^']*)'", page).group(1)
+    return json.loads(html.unescape(raw))
 
 
 def base_of(token: str, site: int, prefix: str = PREFIX) -> str:
@@ -1655,6 +1686,73 @@ def test_ws_browser_ready_after_auth(client, monkeypatch, no_browser_singleton):
         assert json.loads(ws.receive_text())["code"] == "no_tab"
 
 
+def test_cursor_probes_are_single_flight_and_never_awaited():
+    """One probe in the air at a time, and no op waits behind it.
+
+    Every message on the pane's socket is dispatched in turn, so a probe
+    awaited here stands between the user's click and the mouse event; and a
+    probe still running when the next mousemove arrives is an answer about a
+    point the pointer has already left.
+    """
+    class Probe:
+        def __init__(self):
+            self.gate = asyncio.Event()
+            self.calls = 0
+
+        async def send(self, method, params=None, timeout=15):
+            self.calls += 1
+            await self.gate.wait()
+            return {"result": {"value": {"cursor": "pointer", "title": ""}}}
+
+    class Tab:
+        pane, tab, zoom, cursor_sent, probe_busy = "p1", "t1", 1.0, None, False
+
+    class Fb:
+        def __init__(self):
+            self.msgs = []
+
+        def tab(self, pane, tab):
+            return PT
+
+        def to_pane(self, pane, msg):
+            self.msgs.append(msg)
+
+    async def main():
+        fb = Fb()
+        msg = {"type": "cursor", "tab": "t1", "x": 10, "y": 20}
+        await A.browser_op_cursor(fb, "p1", msg)
+        assert PT.probe_busy is True          # dispatched, not awaited
+        await asyncio.sleep(0)
+        assert PT.session.calls == 1
+        # Twenty more moves while the page has not answered the first: dropped.
+        for _ in range(20):
+            await A.browser_op_cursor(fb, "p1", msg)
+        assert PT.session.calls == 1
+        assert fb.msgs == []
+
+        PT.session.gate.set()
+        for _ in range(50):
+            if not PT.probe_busy:
+                break
+            await asyncio.sleep(0.01)
+        assert PT.probe_busy is False
+        assert fb.msgs == [{"type": "cursor", "tab": "t1", "cursor": "pointer",
+                            "title": ""}]
+
+        # The next move is asked again, and an unchanged answer is not resent.
+        PT.session.gate.set()
+        await A.browser_op_cursor(fb, "p1", msg)
+        for _ in range(50):
+            if not PT.probe_busy:
+                break
+            await asyncio.sleep(0.01)
+        assert PT.session.calls == 2 and len(fb.msgs) == 1
+
+    PT = Tab()
+    PT.session = Probe()
+    asyncio.run(main())
+
+
 def test_ws_browser_refuses_a_proxied_page(client, no_browser_singleton):
     # The same gate require_token puts on the HTTP routes, which a WebSocket
     # handshake skips: a page this server's own proxy served has no business
@@ -1806,3 +1904,208 @@ def test_browser_upload_writes_under_uploads(client, monkeypatch, tmp_path):
     assert client.post("/api/browser/upload", content=b"",
                        headers=HDRS).status_code == 400
     assert client.post("/api/browser/upload", content=b"x").status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Handing a page to the computer's own browser
+# ---------------------------------------------------------------------------
+# The proxy is what a tab uses by default, so the pages it cannot serve have to
+# leave it rather than fail in it: a sign-in run by somebody else's identity
+# provider, and Google refusing the address this computer speaks from. Both
+# come back as one page, which asks the pane to move the tab to the browser
+# running on the computer.
+
+# What a browser sends when the frame is being sent to a page, as opposed to
+# the page fetching something for itself.
+NAV = {"sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe",
+       "accept": "text/html,application/xhtml+xml"}
+
+
+def handoff_of(body: str) -> dict:
+    """The message the handoff page posts, read back out of it."""
+    m = re.search(r"var M = (\{.*?\});", body)
+    assert m, body[:400]
+    return json.loads(m.group(1).replace('type: "', '"type": "')
+                      .replace(", url: ", ', "url": ')
+                      .replace(", reason: ", ', "reason": '))
+
+
+def test_a_sign_in_host_is_handed_to_the_computers_browser(client):
+    # No site fixture and no network: the address alone settles it, so the
+    # answer comes back before anything is fetched.
+    body = mint(client, "https://accounts.google.com/signin/v2/identifier"
+                        "?service=youtube").json()
+    r = client.get(body["url"][len(PREFIX):], headers=NAV,
+                   follow_redirects=False)
+    assert r.status_code == 200
+    assert "This page needs the computer's own browser" in r.text
+    assert handoff_of(r.text) == {
+        "type": "pockettui-stream",
+        "url": "https://accounts.google.com/signin/v2/identifier?service=youtube",
+        "reason": "login"}
+    # Addressed to the shell that minted the token, and served on an origin of
+    # its own like every other page this proxy prints.
+    assert json.dumps(SHELL_ORIGIN) in r.text
+    assert r.headers["content-security-policy"] == A.BROWSE_SANDBOX
+
+
+def test_googles_rate_limit_page_is_handed_off(client):
+    body = mint(client, "https://www.google.com/sorry/index?continue=x").json()
+    r = client.get(body["url"][len(PREFIX):], headers=NAV,
+                   follow_redirects=False)
+    assert r.status_code == 200
+    msg = handoff_of(r.text)
+    assert msg["reason"] == "google_sorry"
+    assert msg["url"] == "https://www.google.com/sorry/index?continue=x"
+
+
+def test_the_scriptless_google_fallback_is_handed_off(client, site,
+                                                      monkeypatch):
+    # The fallback is a 200 on the address that was asked for, so it is the
+    # body that says what it is — read here off a local stand-in, with the
+    # host check answered for it.
+    monkeypatch.setattr(A, "browse_is_google", lambda host: True)
+    body, _ = opened(client, site)
+    r = client.get(f"{base_of(body['token'], site)}/enablejs"[len(PREFIX):],
+                   headers=NAV, follow_redirects=False)
+    msg = handoff_of(r.text)
+    assert msg["reason"] == "google_sorry"
+    assert msg["url"] == f"http://127.0.0.1:{site}/enablejs"
+
+
+def test_an_ordinary_page_on_a_google_host_is_served_as_it_was(client, site,
+                                                               monkeypatch):
+    monkeypatch.setattr(A, "browse_is_google", lambda host: True)
+    body, r = opened(client, site)
+    assert r.status_code == 200 and "pockettui-stream" not in r.text
+    assert "<a id=\"root\"" in r.text
+
+
+def test_only_a_navigation_is_handed_off(client, site, monkeypatch):
+    # A page fetching something for itself gets the thing, not a page telling
+    # the pane to move: a handoff in place of a script would break the page it
+    # belongs to.
+    monkeypatch.setitem(A.BROWSE_HANDOFF_HOSTS, "127.0.0.1", ())
+    body, _ = opened(client, site)
+    r = client.get(f"{base_of(body['token'], site)}/lib.js"[len(PREFIX):],
+                   headers={"sec-fetch-mode": "no-cors",
+                            "sec-fetch-dest": "script"})
+    assert r.status_code == 200 and "pockettui-stream" not in r.text
+    # And the navigation on the same host is handed off, so the difference is
+    # the request and nothing else.
+    nav = client.get(f"{base_of(body['token'], site)}/whoami"[len(PREFIX):],
+                     headers=NAV)
+    assert handoff_of(nav.text)["reason"] == "login"
+
+
+def test_the_tab_flavour_is_never_handed_off(client, site, monkeypatch):
+    # The unsandboxed flavour is already a page in a browser of the device's
+    # own, which is where a handoff would send it.
+    monkeypatch.setitem(A.BROWSE_HANDOFF_HOSTS, "127.0.0.1", ())
+    body = mint_tab(client, f"http://127.0.0.1:{site}/").json()
+    r = client.get(body["url"][len(PREFIX):], headers=NAV,
+                   follow_redirects=False)
+    assert r.status_code == 200 and "pockettui-stream" not in r.text
+
+
+@pytest.mark.parametrize("host,path,handed", [
+    ("accounts.google.com", "/", True),
+    ("login.microsoftonline.com", "/common/oauth2/authorize", True),
+    ("github.com", "/login", True),
+    ("github.com", "/login/oauth/authorize", True),
+    ("github.com", "/sessions/two-factor", True),
+    # A whole site is not a sign-in because two of its paths are.
+    ("github.com", "/anthropics/claude-code", False),
+    ("github.com", "/loginhelp", False),
+    # A dotted entry is the name and everything under it, and nothing else.
+    ("acme.okta.com", "/oauth2/v1/authorize", True),
+    ("okta.com.example.net", "/", False),
+    ("news.example.net", "/login", False),
+])
+def test_which_addresses_are_the_computers_browsers(host, path, handed):
+    assert A.browse_handoff_host(host, path) is handed
+
+
+# ---------------------------------------------------------------------------
+# What the pane's hint bar is drawn from
+# ---------------------------------------------------------------------------
+# A page the proxy served but that plainly did not work is worth naming the key
+# that would fix it (browserHint, 42-browser.js). Two of the four things that
+# raise that bar are read here: the status the document was answered with, and
+# whether the body reads as a wall. Both ride into the shim's configuration and
+# go out with its landing report.
+
+def test_a_wall_reaches_the_shim_as_a_status_and_a_kind(client, site):
+    body, _ = opened(client, site)
+    r = client.get(f"{base_of(body['token'], site)}/wall"[len(PREFIX):],
+                   headers=NAV)
+    assert r.status_code == 403
+    cfg = shim_cfg(r.text)
+    assert cfg["status"] == 403
+    assert cfg["wall"] == "captcha"
+
+
+def test_a_refusal_with_nothing_to_say_is_a_status_and_no_kind(client, site):
+    # The status is the whole of what is known, and the bar reads the same off
+    # it: what the kind adds is a line in the log.
+    body, _ = opened(client, site)
+    r = client.get(f"{base_of(body['token'], site)}/forbidden"[len(PREFIX):],
+                   headers=NAV)
+    assert r.status_code == 403
+    assert shim_cfg(r.text)["status"] == 403
+    assert shim_cfg(r.text)["wall"] is None
+
+
+def test_an_ordinary_page_carries_its_own_status_and_no_wall(client, site):
+    # And is never scanned for one: "enable JavaScript" sits in a <noscript> on
+    # half the web, and a 200 that mentions it is not a wall.
+    body, _ = opened(client, site)
+    r = client.get(f"{base_of(body['token'], site)}/"[len(PREFIX):],
+                   headers=NAV)
+    assert r.status_code == 200
+    cfg = shim_cfg(r.text)
+    assert cfg["status"] == 200
+    assert cfg["wall"] is None
+
+
+def test_a_document_fetched_by_the_page_is_never_scanned(client, site):
+    """A subresource is not what the user is looking at, so it says nothing.
+
+    The same address, asked for the two ways: as the frame's own page, and as
+    something the page fetched for itself.
+    """
+    body, _ = opened(client, site)
+    base = base_of(body["token"], site)
+    nav = client.get(f"{base}/wall"[len(PREFIX):], headers=NAV)
+    sub = client.get(f"{base}/wall"[len(PREFIX):],
+                     headers={"sec-fetch-mode": "cors",
+                              "sec-fetch-dest": "empty"})
+    assert shim_cfg(nav.text)["status"] == 403
+    assert shim_cfg(sub.text)["status"] == 0
+    assert shim_cfg(sub.text)["wall"] is None
+
+
+@pytest.mark.parametrize("status,body,kind", [
+    (403, b"<html>nothing here</html>", None),
+    (403, b'<script src="https://www.google.com/recaptcha/api.js">', "captcha"),
+    (403, b"<html>hcaptcha</html>", "captcha"),
+    (503, b"<html>/cdn-cgi/challenge-platform/h/b/orchestrate</html>", "captcha"),
+    (429, b"<html>cf_chl_opt</html>", "captcha"),
+    (403, b"<html>Turnstile</html>", "captcha"),
+    (403, b"<html>Please enable JavaScript to continue</html>", "js"),
+    (451, b"<html>Access Denied</html>", "js"),
+    # A status that is the site answering the request it was asked: not a wall,
+    # whatever the page happens to say.
+    (200, b"<html>Please enable JavaScript</html>", None),
+    (404, b"<html>recaptcha</html>", None),
+])
+def test_which_bodies_read_as_a_wall(status, body, kind):
+    assert A.browse_wall(status, body) == kind
+
+
+def test_only_the_head_of_a_body_is_read_for_a_wall():
+    # A wall is a small page that says what it is at the top of itself; a long
+    # page that mentions one of the words further down is not one.
+    far = b"x" * (A.BROWSE_WALL_SCAN + 64) + b"turnstile"
+    assert A.browse_wall(403, far) is None
+    assert A.browse_wall(403, b"turnstile" + far) == "captcha"

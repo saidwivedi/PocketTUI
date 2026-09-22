@@ -5447,6 +5447,14 @@ class BrowseCtx:
     # and the shim is told which, because what it may leave to the real browser
     # — storage above all — turns on it.
     sandbox: bool = True
+    # What the target answered this document with, and whether its body reads as
+    # a wall rather than as a page. Set for a document navigation and nothing
+    # else — a subresource is not what the user is looking at — and carried into
+    # the shim's configuration so that the landing report says it. The pane is
+    # what acts on it: a page a real browser might be let past is worth naming
+    # the key that streams it (browserHint, 42-browser.js).
+    status: int = 0
+    wall: str | None = None
 
 
 def _browse_split_authority(netloc: str) -> tuple[str, str]:
@@ -5833,6 +5841,7 @@ def browse_shim_tag(ctx: BrowseCtx, origin: str) -> str:
     cfg = json.dumps({"prefix": ctx.prefix, "tok": ctx.tok, "sch": ctx.sch,
                       "hostport": ctx.hostport, "origin": origin,
                       "sandbox": ctx.sandbox,
+                      "status": ctx.status, "wall": ctx.wall,
                       "cookies": browse_shim_cookies(
                           ctx, client.cookies.jar if client else ())})
     cfg = cfg.replace("&", "&amp;").replace("<", "&lt;").replace("'", "&#39;")
@@ -5871,6 +5880,45 @@ def browse_shim_cookies(ctx: BrowseCtx, jar) -> str:
         out.append(pair)
         size += len(pair) + 2
     return "; ".join(out)
+
+
+# What a site answers a visitor it does not trust with, as opposed to one it
+# cannot serve: a wall. The computer's own Chrome is often let past one — it has
+# a profile, an origin and a fingerprint of its own — so a page that comes back
+# as one of these is worth telling the pane about rather than leaving it looking
+# broken.
+BROWSE_WALL_STATUS = (403, 429, 451, 503)
+
+# What such a page says about itself, in the words the walls print. Two kinds,
+# because they are two different disappointments: one wants a human to click
+# something, the other wants a browser it recognises.
+BROWSE_WALL_MARKERS = (
+    ("captcha", ("recaptcha", "hcaptcha", "cf-challenge", "challenge-platform",
+                 "cf_chl", "turnstile")),
+    ("js", ("please enable javascript", "enable javascript", "access denied",
+            "attention required")),
+)
+
+# How much of the document is read for them. A wall is a small page that says
+# what it is at the top of itself, and this keeps the scan off the whole of a
+# body the rewriter is about to walk anyway.
+BROWSE_WALL_SCAN = 64 * 1024
+
+
+def browse_wall(status: int, body: bytes) -> str | None:
+    """Which kind of wall this document reads as, if it is one at all.
+
+    Only for the statuses above, and for one reason: "enable JavaScript" sits in
+    a <noscript> on half the web, and reading these words off an ordinary 200
+    would name every one of those pages a wall.
+    """
+    if status not in BROWSE_WALL_STATUS:
+        return None
+    text = body[:BROWSE_WALL_SCAN].decode("utf-8", "replace").lower()
+    for kind, marks in BROWSE_WALL_MARKERS:
+        if any(m in text for m in marks):
+            return kind
+    return None
 
 
 # The shim the rewriter puts at the top of every proxied page. It lives here
@@ -5939,7 +5987,7 @@ function report(){P(function(){
  if(window.parent===window)return;
  parent.postMessage({type:"pockettui-nav",
   url:unmap(location.pathname+location.search+location.hash),
-  title:document.title},C.origin||"*");
+  title:document.title,status:C.status||0,wall:C.wall||null},C.origin||"*");
 })}
 // A page that asked for a window of its own. In the pane that is a tab of the
 // pane's, not one of the laptop's browser, so the address goes out unmapped
@@ -6123,6 +6171,59 @@ P(function(){document.addEventListener("click",function(e){
  location.replace(map(h));
 },true)});
 P(function(){
+ // An action written into the parser by innerHTML passed no setter and was
+ // not in the bytes the rewriter saw. Left root-relative it submits to this
+ // server's root, which outside this server's mount is a 404 from whatever
+ // fronts it. An absent action is the page's own address and is left alone.
+ function act(f){P(function(){
+  if(!f||!f.getAttribute)return;
+  var a=f.getAttribute("action");
+  if(!a)return;
+  var m=map(a);
+  if(m!==a)f.setAttribute("action",m);
+ })}
+ document.addEventListener("submit",function(e){act(e.target)},true);
+ ["submit","requestSubmit"].forEach(function(n){
+  var s=HTMLFormElement.prototype[n];if(!s)return;
+  HTMLFormElement.prototype[n]=function(){act(this);return s.apply(this,arguments)};
+ });
+});
+P(function(){
+ // The navigation nothing above can catch: a page writing its own location.
+ // That object is unforgeable, so there is no seam to patch, and what it is
+ // given root-relative resolves against this server's root rather than the
+ // proxied path — outside this server's mount, a bare 404 from whatever
+ // fronts it. The navigate event is the seam, and only where the document has
+ // an origin of its own: an opaque one fires none, so this is the tab
+ // flavour's fix and the pane is left to the handoff. Already-proxied
+ // destinations, other origins and traversals are not ours to touch.
+ var N=window.navigation;if(!N||!N.addEventListener)return;
+ N.addEventListener("navigate",function(e){P(function(){
+  if(!e.cancelable||e.defaultPrevented||e.navigationType==="traverse")return;
+  var d=e.destination&&e.destination.url;if(!d)return;
+  var r;try{r=new URL(d)}catch(x){return}
+  if(r.origin!==O||peel(r.pathname))return;
+  var m=map(d);if(!m||m===d)return;
+  e.preventDefault();
+  // formData is present for a POST alone, and location carries no body: the
+  // entries go again as a form of this document's own.
+  if(e.formData){
+   var f=document.createElement("form");
+   f.method="post";f.style.display="none";
+   f.setAttribute("action",m);
+   e.formData.forEach(function(v,k){
+    if(typeof v!=="string")return;
+    var i=document.createElement("input");
+    i.type="hidden";i.name=k;i.value=v;f.appendChild(i);
+   });
+   document.body.appendChild(f);
+   HTMLFormElement.prototype.submit.call(f);
+   return;
+  }
+  location.replace(m);
+ })});
+});
+P(function(){
  // Only where the document has no storage of its own: sandboxed it sits on
  // an opaque origin and every access throws. A tab keeps its real storage.
  if(!SB)return;
@@ -6213,6 +6314,32 @@ P(function(){
 P(function(){["DOMContentLoaded","load","popstate","hashchange"].forEach(function(n){
  addEventListener(n,report)
 })});
+// How a page that did not work looks from inside it, in the two shapes nothing
+// on the wire gives away: a boot that threw its way out, and a document that
+// ended up with nothing in it. The pane has one answer to both — a key that
+// runs this page in the computer's own Chrome — so it is told once, and only
+// from a frame, since a tab of the device's own browser has nobody to tell.
+// The clocks start at the load, so a page that is merely slow is not read as an
+// empty one; the counting starts at parse, because a boot throws before then.
+P(function(){
+ if(window.parent===window)return;
+ var errs=0,said=false;
+ addEventListener("error",function(){errs++});
+ addEventListener("unhandledrejection",function(){errs++});
+ function tell(m){if(said)return;said=true;
+  P(function(){parent.postMessage(m,C.origin||"*")})}
+ function watch(){
+  setTimeout(function(){P(function(){
+   var b=document.body;
+   if(!b||(b.innerText||"").trim().length>=20||document.images.length)return;
+   if(document.querySelector("canvas,video,iframe,svg"))return;
+   tell({type:"pockettui-health",empty:true});
+  })},3000);
+  setTimeout(function(){if(errs>=5)tell({type:"pockettui-health",errors:errs})},5000);
+ }
+ if(document.readyState==="complete")watch();
+ else addEventListener("load",watch);
+});
 if(!C.sandbox){
  // What this page's top and parent would be if the user had opened it in a
  // window of their own. It is drawn inside the pane's frame, so the real two
@@ -6351,6 +6478,172 @@ def browse_error_page(code: str, detail: str, origin: str | None,
         # "*" only when there is no token to say where the pane lives: an
         # unknown token is exactly the case the pane has to hear about.
         origin=json.dumps(origin or "*"))
+
+
+# ---------------------------------------------------------------------------
+# In-app browser: handing a page to the computer's own browser
+# ---------------------------------------------------------------------------
+# The proxy is what a tab uses by default, and there are pages it cannot serve
+# however well it rewrites them. A sign-in run by somebody else's identity
+# provider is the clearest: it fingerprints the browser, it wants third-party
+# cookies and a real origin, and an opaque one fails it in ways the user reads
+# as "this app is broken". Google's own interstitial is the other: the shared
+# egress address this computer speaks from is rate-limited, so a search answers
+# with /sorry or with the "having trouble accessing Google Search" fallback,
+# neither of which can be got past from inside the frame.
+#
+# Both are answered with one page: the pane is told to move this tab to the
+# browser running on the computer, at the same address, where all of it works.
+# The pane's own switch is what does the moving (pockettui-stream); this side
+# only names the page and the reason.
+
+# Hosts whose pages are the computer's browser's to show, and the paths that
+# make them so. An empty tuple is the whole host; a name starting with a dot
+# matches it and every name under it. One list, because the rule is one
+# sentence: these are the sign-ins the proxy has no business standing in for.
+BROWSE_HANDOFF_HOSTS: dict = {
+    "accounts.google.com": (),
+    "login.microsoftonline.com": (),
+    "login.live.com": (),
+    "github.com": ("/login", "/sessions"),
+    "appleid.apple.com": (),
+    "auth0.com": (),
+    ".auth0.com": (),
+    ".okta.com": (),
+    "login.yahoo.com": (),
+    "id.atlassian.com": (),
+    "auth.openai.com": (),
+    "login.salesforce.com": (),
+}
+
+# What a Google page looks like when the address this computer speaks from has
+# been rate-limited: the interstitial itself, and the scriptless fallback it
+# serves in its place. Matched on the body because the fallback comes back as a
+# plain 200 on the page's own address.
+BROWSE_GOOGLE_SORRY = ("/sorry/", "/sorry")
+BROWSE_GOOGLE_FALLBACK = ("trouble accessing google search",
+                          "/httpservice/retry/enablejs")
+
+BROWSE_HANDOFF_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>This page needs the computer's own browser</title>
+<style>
+{css}
+body {{ min-height: 100vh; display: flex; align-items: center;
+  justify-content: center; }}
+.card {{ max-width: 30em; padding: 2em 1.5em; text-align: center; }}
+h1 {{ font-size: 1.15rem; font-weight: 600; margin: 0 0 .6em; }}
+p {{ margin: 0 0 1.4em; color: var(--dim); word-break: break-word; }}
+button {{ font: inherit; padding: .5em 1.4em; border-radius: 8px;
+  border: 1px solid var(--line); background: transparent; color: inherit;
+  cursor: pointer; }}
+</style></head>
+<body><div class="card">
+<h1>This page needs the computer's own browser</h1>
+<p>{detail}</p>
+<button id="go">Open in the computer's browser</button>
+</div>
+<script>
+var M = {{type: "pockettui-stream", url: {url}, reason: {reason}}};
+function ask() {{ try {{ parent.postMessage(M, {origin}); }} catch (e) {{}} }}
+ask();
+document.getElementById("go").addEventListener("click", ask);
+</script>
+</body></html>
+"""
+
+BROWSE_HANDOFF_DETAIL = {
+    "login": "Signing in is done in the browser on the computer, where this "
+             "page has an address of its own.",
+    "google_sorry": "Google is not answering this computer through the "
+                    "lightweight proxy. The browser on the computer asks for "
+                    "itself.",
+}
+
+
+def browse_handoff_host(host: str, path: str) -> bool:
+    """Whether this address is one the computer's own browser has to open.
+
+    The path is read only where the entry names paths: a whole host is a whole
+    host, and github.com is a site with two sign-in paths on it rather than a
+    sign-in.
+    """
+    name = (host or "").strip("[]").lower()
+    if not name:
+        return False
+    head = path.split("?", 1)[0]
+    for key, paths in BROWSE_HANDOFF_HOSTS.items():
+        if key.startswith("."):
+            if not name.endswith(key):
+                continue
+        elif name != key:
+            continue
+        if not paths or any(head == p or head.startswith(p + "/")
+                            for p in paths):
+            return True
+    return False
+
+
+def browse_is_google(host: str) -> bool:
+    """Whether this host is one of Google's own, for the /sorry check alone."""
+    name = (host or "").strip("[]").lower()
+    return (name == "google.com" or name.endswith(".google.com")
+            or name.startswith("google.") or ".google." in name)
+
+
+def browse_google_sorry(host: str, path: str, body: bytes | None = None) -> bool:
+    """Whether this is Google refusing the address this computer speaks from.
+
+    Two shapes: the interstitial, which is a path, and the scriptless fallback,
+    which is an ordinary 200 on the page's own address and so has to be read
+    out of the body.
+    """
+    if not browse_is_google(host):
+        return False
+    head = path.split("?", 1)[0].lower()
+    if any(head == p.rstrip("/") or head.startswith(p)
+           for p in BROWSE_GOOGLE_SORRY):
+        return True
+    if body is None:
+        return False
+    text = body[:200_000].decode("utf-8", "replace").lower()
+    return any(m in text for m in BROWSE_GOOGLE_FALLBACK)
+
+
+def browse_is_navigation(conn: "Request") -> bool:
+    """Whether this request is the frame asking for a page to show.
+
+    A handoff replaces a document, so it is offered for a navigation and
+    nothing else: a subresource or a fetch answered with it would break the
+    page it belongs to rather than move the tab. Sec-Fetch says it outright
+    where the browser sends it; Accept is the fallback for one that does not.
+    """
+    mode = conn.headers.get("sec-fetch-mode", "").strip().lower()
+    dest = conn.headers.get("sec-fetch-dest", "").strip().lower()
+    if mode or dest:
+        return mode == "navigate" and dest in ("document", "iframe", "frame")
+    return "text/html" in conn.headers.get("accept", "").lower()
+
+
+def browse_handoff_page(url: str, reason: str, origin: "str | None") -> str:
+    """The page that asks the pane to move this tab to the computer's browser."""
+    return BROWSE_HANDOFF_PAGE.format(
+        css=BROWSE_PAGE_CSS,
+        detail=html_escape(BROWSE_HANDOFF_DETAIL.get(reason, "")),
+        url=json.dumps(url),
+        reason=json.dumps(reason),
+        origin=json.dumps(origin or "*"))
+
+
+def browse_handoff_response(url: str, reason: str,
+                            rec: "BrowseToken") -> Response:
+    """That page, served like every other page this proxy prints itself."""
+    log(f"browse: {reason} at {url[:120]}, handed to the computer's browser")
+    return Response(browse_handoff_page(url, reason, rec.origin),
+                    status_code=200,
+                    media_type="text/html; charset=utf-8",
+                    headers=browse_page_headers(rec.sandbox))
 
 
 def browse_page_headers(sandbox: bool = True) -> dict:
@@ -7603,6 +7896,17 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
     url = target_origin + path
     if request.url.query:
         url += "?" + request.url.query
+    # Two pages this proxy has no way to serve, and one answer for both: the
+    # pane is asked to move this tab to the browser on the computer, which has
+    # an origin, a cookie jar and an address of its own. Only for the pane's
+    # own flavour, and only for a navigation — see browse_is_navigation.
+    navigation = rec.sandbox and browse_is_navigation(request)
+    if navigation:
+        reason = ("login" if browse_handoff_host(host, path)
+                  else "google_sorry" if browse_google_sorry(host, path)
+                  else "")
+        if reason:
+            return browse_handoff_response(url, reason, rec)
     # Held for the failure pages below: where the address came out of a guessed
     # scheme, the other one is the whole of the fix, and in a tab there is no
     # pane to make that retry on the user's behalf.
@@ -7663,6 +7967,21 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
         return browse_response(resp.status_code, pairs,
                                stream=browse_body(resp, buffered,
                                                   raw if over_cap else None))
+
+    # The other half of the Google check: the scriptless fallback is a 200 on
+    # the address that was asked for, so only the body says what it is.
+    if (navigation and base in ("text/html", "application/xhtml+xml")
+            and browse_google_sorry(host, path, body)):
+        await resp.aclose()
+        return browse_handoff_response(url, "google_sorry", rec)
+
+    # What this document was answered with, for the shim to report with its
+    # landing. A navigation only — a subresource is not the page the user is
+    # looking at — and one scan of the head of the body, made here where the
+    # body is already buffered for the rewriter.
+    if navigation and base in ("text/html", "application/xhtml+xml"):
+        ctx = dataclasses.replace(ctx, status=resp.status_code,
+                                  wall=browse_wall(resp.status_code, body))
 
     if base == "text/css" or js:
         m = _BROWSE_CHARSET.search(ctype)
@@ -8859,14 +9178,32 @@ async def browser_op_hit(fb, pane: str, msg: dict) -> None:
 async def browser_op_cursor(fb, pane: str, msg: dict) -> None:
     """The pointer's shape and the tooltip under it, as the page decides them.
 
-    Throttled by the client and deduplicated here: a move across a paragraph
-    asks this many times a second and the answer does not change, and a message
-    per ask would be the noisiest thing on the socket.
+    Thrown rather than queued, and never waited for. Every message on this
+    socket is dispatched in turn, so a probe awaited here is a round trip into
+    the page standing between the user's click and `Input.dispatchMouseEvent`;
+    and a probe still running when the next mousemove arrives means the pointer
+    is moving faster than the page can answer, which makes the answer to the
+    point it has already left worth nothing. One at a time, and the rest
+    dropped.
     """
     mod = _chromium_module()
     pt = browser_need(fb, pane, msg)
+    if pt.probe_busy:
+        return
+    pt.probe_busy = True
     x, y = mod.viewport_point(msg, pt.zoom)
-    got = await browser_probe(pt, mod.HIT_CURSOR_JS, x, y) or {}
+    asyncio.ensure_future(browser_cursor_probe(fb, pane, pt, x, y))
+
+
+async def browser_cursor_probe(fb, pane: str, pt, x: float, y: float) -> None:
+    mod = _chromium_module()
+    try:
+        got = await browser_probe(pt, mod.HIT_CURSOR_JS, x, y) or {}
+    except Exception as e:  # noqa: BLE001 — a probe is never worth a message
+        log(f"browser pane {pane}: cursor probe failed: {e!r}")
+        return
+    finally:
+        pt.probe_busy = False
     cursor = str(got.get("cursor") or "default")
     title = str(got.get("title") or "")[:mod.TITLE_MAX]
     if pt.cursor_sent == (cursor, title):

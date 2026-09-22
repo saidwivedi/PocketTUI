@@ -3758,6 +3758,63 @@ html.term-open #dbg-panel { opacity: 0.85; }
    own [hidden] rule, because the rule above gives this element a position and
    a size that read as a display of its own at a glance. */
 .browser-frame[hidden] { display: none; }
+/* The hint bar, over the top of the page the way a browser's own permission
+   bars sit (.fb-ask in the streamed view, whose shape this is): the page is
+   still there under it, and the bar is one press or one cross wide. */
+.browser-hint {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--card);
+  border-bottom: 1px solid var(--hair-strong);
+  box-shadow: 0 2px 8px rgba(20, 16, 10, 0.18);
+}
+.browser-hint[hidden] { display: none; }
+/* The key's own glyph, at the size it is on the row: the bar names the key by
+   showing it, so the next press is on the row and not in here. */
+.browser-hint-glyph {
+  flex: 0 0 auto;
+  width: 18px; height: 18px;
+  color: var(--secondary);
+}
+.browser-hint-said {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.browser-hint-go,
+.browser-hint-x {
+  flex: 0 0 auto;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  border: 1px solid var(--hair-strong);
+  border-radius: 10px;
+  padding: 7px 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+}
+.browser-hint-x {
+  display: flex;
+  padding: 6px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--secondary);
+}
+.browser-hint-x svg { width: 16px; height: 16px; }
+.browser-hint-go:active, .browser-hint-x:active { transform: scale(0.96); }
 #browser-url-wrap { flex: 1; min-width: 0; display: flex; }
 /* Same field as #files-path-input, compacted for the topbar row. */
 #browser-url {
