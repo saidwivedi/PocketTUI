@@ -10,11 +10,14 @@ suite are not the machine running the browser.
 """
 
 import asyncio
+import base64
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -436,3 +439,300 @@ def test_soft_cap_discards_a_hidden_tab_for_real(tmp_path, monkeypatch):
 
     asyncio.run(main())
     C._find_cache = None
+
+
+# ---------------------------------------------------------------------------
+# What a real page asks for
+# ---------------------------------------------------------------------------
+# A popup, a modal dialog, a file input, a download and a password box are the
+# five things a page can do that no amount of pixels answers, and every one of
+# them is a round trip through the pane. They are tested against a real browser
+# because the protocol's own behaviour is the thing in question: which event
+# fires, what it carries, and what the page does once it is answered.
+
+ATTACHMENT = b"the bytes of a downloaded file\n"
+FILE_PAGE = "data:text/html,<body style='margin:0'><input id=f type=file>"
+TITLE_PAGE = "data:text/html,<title>first</title><body style='margin:0'>hello"
+
+
+class LiveHandler(BaseHTTPRequestHandler):
+    """Four pages: an opener, its popup, an attachment and a locked door."""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):  # noqa: A003 — quiet under pytest
+        pass
+
+    def _send(self, status, body, headers=()):
+        self.send_response(status)
+        for key, value in headers:
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler's spelling
+        html = [("Content-Type", "text/html; charset=utf-8")]
+        if self.path == "/popup":
+            self._send(200, b"<title>the popup</title><p>popped", html)
+        elif self.path == "/attach":
+            self._send(200, ATTACHMENT, [
+                ("Content-Type", "application/octet-stream"),
+                ("Content-Disposition", 'attachment; filename="notes.txt"')])
+        elif self.path == "/secret":
+            want = "Basic " + base64.b64encode(b"ada:hunter2").decode()
+            if self.headers.get("Authorization") == want:
+                self._send(200, b"<title>in</title><p id=ok>let in", html)
+            else:
+                self._send(401, b"<p>no", html + [
+                    ("WWW-Authenticate", 'Basic realm="wiki"')])
+        else:
+            self._send(200, b"<title>opener</title><p>the opener", html)
+
+
+@pytest.fixture(scope="module")
+def site():
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), LiveHandler)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    yield srv.server_address[1]
+    srv.shutdown()
+    srv.server_close()
+    thread.join(timeout=3)
+
+
+async def wait_msg(sink, kind, after=0, timeout=10, match=None):
+    """The first `kind` message past `after`, or an assertion."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        for msg in sink.msgs[after:]:
+            if msg.get("type") == kind and (match is None or match(msg)):
+                return msg
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"no {kind} message in {timeout}s; "
+                         f"got {[m.get('type') for m in sink.msgs[after:]]}")
+
+
+async def value(tab, expr, **kw):
+    res = await tab.session.send("Runtime.evaluate",
+                                 {"expression": expr, "returnByValue": True, **kw})
+    return (res.get("result") or {}).get("value")
+
+
+def test_popup_becomes_new_tab(tmp_path, monkeypatch, site):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def body(fb):
+        sink = Sink()
+        fb.attach_pane("p1", sink)
+        tab = await fb.open("p1", "t1", f"http://127.0.0.1:{site}/",
+                            css_w=400, css_h=300, dpr=1, zoom=1)
+        await tab.show()
+        await wait_frame(sink, "cast")
+
+        # A gesture, because a popup without one is blocked — which is the
+        # whole reason this goes through the protocol's own userGesture flag
+        # rather than a plain evaluate.
+        await tab.session.send("Runtime.evaluate", {
+            "expression": f"window.open('http://127.0.0.1:{site}/popup', '_blank')",
+            "userGesture": True})
+
+        msg = await wait_msg(sink, "newtab")
+        assert msg["opener"] == "t1" and msg["tab"].startswith("p")
+        assert msg["url"].endswith("/popup") or msg["url"] == "about:blank"
+        popup = fb.tab("p1", msg["tab"])
+        assert popup is not None and popup.target_id == msg["targetId"]
+        assert not popup.live
+
+        # It is a tab like any other: the pane shows it and pixels come out.
+        seen = len(sink.frames)
+        await popup.show()
+        await wait_frame(sink, "cast", after=seen,
+                         match=lambda h: h["tab"] == msg["tab"])
+        assert not tab.live
+        assert await value(popup, "document.title") == "the popup"
+
+    live(body, tmp_path)
+
+
+def test_alert_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def body(fb):
+        sink = Sink()
+        fb.attach_pane("p1", sink)
+        tab = await fb.open("p1", "t1", TITLE_PAGE, css_w=400, css_h=300,
+                            dpr=1, zoom=1)
+        await tab.show()
+        await wait_frame(sink, "cast")
+
+        # Through a timer, because an alert stops the renderer: an evaluate
+        # that raised it would not return until it was answered.
+        await tab.session.send("Runtime.evaluate", {
+            "expression": "setTimeout(function () { alert('boo'); }, 0)"})
+        msg = await wait_msg(sink, "dialog")
+        assert msg["tab"] == "t1" and msg["kind"] == "alert"
+        assert msg["message"] == "boo" and msg["default"] == ""
+
+        assert await tab.answer_dialog(True) is True
+        # The page runs again, which is the only proof the dialog really went.
+        assert await value(tab, "1 + 1") == 2
+
+    live(body, tmp_path)
+
+
+def test_file_chooser_sets_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    picked = tmp_path / "cv.txt"
+    picked.write_text("a file on the computer, not on the phone")
+
+    async def body(fb):
+        sink = Sink()
+        fb.attach_pane("p1", sink)
+        tab = await fb.open("p1", "t1", FILE_PAGE, css_w=400, css_h=300,
+                            dpr=1, zoom=1)
+        await tab.show()
+        await wait_frame(sink, "cast")
+
+        await tab.session.send("Runtime.evaluate", {
+            "expression": "document.getElementById('f').click()",
+            "userGesture": True})
+        msg = await wait_msg(sink, "filechooser")
+        assert msg == {"type": "filechooser", "tab": "t1", "multiple": False}
+
+        assert await tab.set_files([str(picked)]) is True
+        assert await value(tab, "document.getElementById('f').files.length") == 1
+        assert await value(tab, "document.getElementById('f').files[0].name") == \
+            "cv.txt"
+
+    live(body, tmp_path)
+
+
+def test_download_lands_in_downloads_dir(tmp_path, monkeypatch, site):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def body(fb):
+        sink = Sink()
+        fb.attach_pane("p1", sink)
+        tab = await fb.open("p1", "t1", f"http://127.0.0.1:{site}/",
+                            css_w=400, css_h=300, dpr=1, zoom=1)
+        await tab.show()
+        await wait_frame(sink, "cast")
+
+        await tab.nav(f"http://127.0.0.1:{site}/attach")
+        msg = await wait_msg(sink, "download", timeout=15,
+                             match=lambda m: m["state"] == "completed")
+        assert msg["tab"] == "t1" and msg["name"] == "notes.txt"
+        # Chrome files it under the guid; the name the site suggested is what
+        # the user is told about and what is on the disk.
+        path = Path(msg["path"])
+        assert path.parent == C.downloads_dir()
+        assert path.name == "notes.txt"
+        assert path.read_bytes() == ATTACHMENT
+        assert not (C.downloads_dir() / msg["guid"]).exists()
+
+    live(body, tmp_path)
+
+
+def test_basic_auth_prompt_and_success(tmp_path, monkeypatch, site):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def body(fb):
+        sink = Sink()
+        fb.attach_pane("p1", sink)
+        # Opened straight at the protected page and shown at once, which is
+        # what the pane does with a bookmark: the first navigation is suspended
+        # on the challenge, so there is no page to stream until it is answered
+        # and `show` must not sit on the socket waiting for one.
+        tab = await fb.open("p1", "t1", f"http://127.0.0.1:{site}/secret",
+                            css_w=400, css_h=300, dpr=1, zoom=1)
+        started = time.monotonic()
+        await tab.show()
+        assert time.monotonic() - started < 5
+        assert tab.live
+
+        msg = await wait_msg(sink, "auth", timeout=15)
+        assert msg["tab"] == "t1" and msg["realm"] == "wiki"
+        assert msg["scheme"] == "basic"
+        assert msg["host"] == f"http://127.0.0.1:{site}"
+
+        assert await tab.answer_auth("ada", "hunter2") is True
+        end = time.monotonic() + 10
+        text = ""
+        while time.monotonic() < end:
+            text = str(await value(tab, "document.body.innerText") or "")
+            if "let in" in text:
+                break
+            await asyncio.sleep(0.1)
+        assert "let in" in text, text
+
+        # And the stream that had nothing to show starts on its own once the
+        # page behind the challenge is there.
+        await wait_frame(sink, "cast")
+
+    live(body, tmp_path)
+
+
+def test_script_set_title_reaches_the_tab_message(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def body(fb):
+        sink = Sink()
+        fb.attach_pane("p1", sink)
+        tab = await fb.open("p1", "t1", TITLE_PAGE, css_w=400, css_h=300,
+                            dpr=1, zoom=1)
+        await tab.show()
+        await wait_msg(sink, "tab", match=lambda m: m.get("title") == "first")
+
+        seen = len(sink.msgs)
+        await tab.session.send("Runtime.evaluate", {
+            "expression": "document.title = 'set by a script'"})
+        msg = await wait_msg(sink, "tab", after=seen,
+                             match=lambda m: m.get("title") == "set by a script")
+        assert msg["tab"] == "t1"
+        assert tab.title == "set by a script"
+
+    live(body, tmp_path)
+
+
+def test_crash_reports_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def body(fb):
+        sink = Sink()
+        fb.attach_pane("p1", sink)
+        tab = await fb.open("p1", "t1", HI, css_w=400, css_h=300, dpr=1, zoom=1)
+        await tab.show()
+        await wait_frame(sink, "cast")
+        was = tab.target_id
+
+        # Page.crash never answers: the renderer it was sent to is gone.
+        crashing = asyncio.ensure_future(tab.session.send("Page.crash", timeout=3))
+        msg = await wait_msg(sink, "error",
+                             match=lambda m: m.get("code") == "crashed")
+        assert msg["tab"] == "t1"
+        crashing.cancel()
+        await asyncio.gather(crashing, return_exceptions=True)
+        assert fb.tab("p1", "t1") is None
+
+        # The pane answers a crash by opening the tab again, naming the target
+        # it remembers. That target is still listed as a page — a corpse with a
+        # sad face on it — so opening has to close it rather than adopt it.
+        again = await fb.open("p1", "t1", HI, target_id=was, css_w=400,
+                              css_h=300, dpr=1, zoom=1)
+        assert again.target_id != was
+        ids = set()
+        end = time.monotonic() + 5
+        while time.monotonic() < end:
+            targets = await fb.browser.cdp.send("Target.getTargets")
+            ids = {t["targetId"] for t in targets["targetInfos"]
+                   if t.get("type") == "page"}
+            if was not in ids:
+                break
+            await asyncio.sleep(0.1)
+        assert was not in ids and again.target_id in ids
+        await again.show()
+        await wait_frame(sink, "cast", after=len(sink.frames) - 1,
+                         match=lambda h: h["tab"] == "t1")
+
+    live(body, tmp_path)

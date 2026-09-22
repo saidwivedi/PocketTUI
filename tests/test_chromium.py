@@ -811,12 +811,13 @@ def test_a_popup_is_painted_from_screenshots_until_the_next_click():
     run(main())
 
 
-def test_the_page_helper_is_one_iife_with_only_its_two_bindings():
+def test_the_page_helper_is_one_iife_with_only_its_three_bindings():
     src = C.FULL_PAGE_HELPER
     assert src.strip().startswith("(()") and src.strip().endswith(")();")
     assert src.count("ptuiPopup(") == 1 and src.count("ptuiSel(") == 1
+    assert src.count("ptuiTitle(") == 1
     assert "\nvar " not in src and "\nwindow." not in src
-    assert len(src.splitlines()) < 60
+    assert len(src.splitlines()) < 80
 
 
 def test_tab_state_pushes_only_for_the_main_frame():
@@ -998,6 +999,7 @@ def test_cursor_probe_js_has_no_percent():
     # FULL_PAGE_HELPER is %-formatted, and a probe that grew a percent sign
     # would either break that formatting or be quietly rewritten by it. They
     # are separate strings today; this is what keeps them that way.
+    assert "%" not in C.FAVICON_JS          # already formatted, see the source
     probes = {"LINK_PROBE_JS": C.LINK_PROBE_JS, "HIT_PROBE_JS": C.HIT_PROBE_JS,
               "HIT_CURSOR_JS": C.HIT_CURSOR_JS}
     for name, src in probes.items():
@@ -1014,6 +1016,13 @@ def test_cursor_probe_js_has_no_percent():
     for name, src in probes.items():
         wrapper = f"var v = {C.probe_call(src, 1, 2)};\n"
         proc = subprocess.run(["node", "--check", "-"], input=wrapper,
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, f"{name}: {proc.stderr}"
+
+    # The two strings that are injected whole rather than called on a point.
+    for name, src in (("FAVICON_JS", f"var v = {C.FAVICON_JS};\n"),
+                      ("FULL_PAGE_HELPER", C.FULL_PAGE_HELPER)):
+        proc = subprocess.run(["node", "--check", "-"], input=src,
                               capture_output=True, text=True)
         assert proc.returncode == 0, f"{name}: {proc.stderr}"
 
@@ -1197,7 +1206,12 @@ class FakeTree:
 
 
 def a_browser(monkeypatch, **cfg):
-    """A FullBrowser whose Chromium is two fakes, and the browsers it made."""
+    """A FullBrowser whose Chromium is two fakes, and the browsers it made.
+
+    Every test that uses it takes the `home` fixture: a launch creates the
+    downloads directory and sweeps the staged uploads, and neither belongs in
+    the home directory of whoever is running the suite.
+    """
     found = C.Found(path="/fake/chrome", version="140.0.0.1", major=140,
                     source="path")
     monkeypatch.setattr(C, "find_chromium",
@@ -1230,7 +1244,7 @@ async def three_tabs(fb):
     return sink, tabs
 
 
-def test_soft_cap_discards_oldest_hidden_first_never_live():
+def test_soft_cap_discards_oldest_hidden_first_never_live(home):
     async def main():
         with pytest.MonkeyPatch.context() as mp:
             fb, made = a_browser(mp)
@@ -1281,7 +1295,7 @@ def test_soft_cap_discards_oldest_hidden_first_never_live():
     run(main())
 
 
-def test_hard_cap_relaunches_and_reopens_records():
+def test_hard_cap_relaunches_and_reopens_records(home):
     async def main():
         with pytest.MonkeyPatch.context() as mp:
             fb, made = a_browser(mp)
@@ -1333,7 +1347,7 @@ def test_hard_cap_relaunches_and_reopens_records():
     run(main())
 
 
-def test_show_of_discarded_tab_recreates_target():
+def test_show_of_discarded_tab_recreates_target(home):
     async def main():
         with pytest.MonkeyPatch.context() as mp:
             fb, made = a_browser(mp)
@@ -1374,7 +1388,7 @@ def test_show_of_discarded_tab_recreates_target():
     run(main())
 
 
-def test_idle_exit_after_last_tab():
+def test_idle_exit_after_last_tab(home):
     async def main():
         with pytest.MonkeyPatch.context() as mp:
             fb, made = a_browser(mp, idle_exit_s=0.05)
@@ -1402,7 +1416,7 @@ def test_idle_exit_after_last_tab():
     run(main())
 
 
-def test_watchdog_ticks_on_its_own_and_stops_with_the_browser():
+def test_watchdog_ticks_on_its_own_and_stops_with_the_browser(home):
     async def main():
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(C, "WATCHDOG_TICK_S", 0.02)
@@ -1425,5 +1439,405 @@ def test_watchdog_ticks_on_its_own_and_stops_with_the_browser():
             assert len(tree.calls) == ticks
             assert not [t for t in asyncio.all_tasks()
                         if t is not asyncio.current_task() and not t.done()]
+
+    run(main())
+
+
+# ---------------------------------------------------------------------------
+# What the page asks for: popups, dialogs, credentials, files, downloads
+# ---------------------------------------------------------------------------
+# All of it without a browser, because each one is a rule about *which* call
+# goes out and when — interception that is only enabled after a 401, a dialog
+# that is dismissed rather than left holding the page, a download renamed off
+# the guid Chrome filed it under.
+
+
+def test_popup_target_becomes_pane_tab_and_over_cap_navigates_opener(home):
+    async def main():
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(C, "MAX_TARGETS", 2)
+            fb, made = a_browser(mp)
+            sink = FakeSink()
+            fb.attach_pane("p1", sink)
+            opener = await fb.open("p1", "t1", "https://example.net/one")
+            await opener.show()
+            sink.msgs.clear()
+
+            # A target with one of ours named as its opener is a window.open or
+            # a target=_blank: a tab in any browser, and a window nobody can
+            # see in this one unless the pane is told.
+            fb._on_target_created({"targetInfo": {
+                "targetId": "POP-1", "type": "page", "openerId": opener.target_id,
+                "url": "https://example.net/popup"}})
+            await asyncio.sleep(0.15)
+
+            told = [m for m in sink.msgs if m["type"] == "newtab"]
+            assert told == [{"type": "newtab", "tab": "p1",
+                             "url": "https://example.net/popup",
+                             "opener": "t1", "targetId": "POP-1"}]
+            popup = fb.tab("p1", "p1")
+            assert popup is not None and popup.target_id == "POP-1"
+            # Configured like any other tab, and never navigated: the target is
+            # already going where the page sent it.
+            assert "Page.enable" in popup.session.methods()
+            assert "Page.navigate" not in popup.session.methods()
+            assert [p["name"] for p in popup.session.params("Runtime.addBinding")] == \
+                ["ptuiPopup", "ptuiSel", "ptuiTitle"]
+            assert not popup.live       # the pane decides what to show
+
+            # A target of ours with no opener is not a popup, and neither is a
+            # popup of a target we do not own.
+            before = dict(fb._tabs)
+            fb._on_target_created({"targetInfo": {"targetId": "OTHER",
+                                                  "type": "page", "url": "x"}})
+            fb._on_target_created({"targetInfo": {"targetId": "OTHER2",
+                                                  "type": "page",
+                                                  "openerId": "NOT-OURS"}})
+            await asyncio.sleep(0.05)
+            assert fb._tabs == before
+
+            # At the cap there is no tab to put it in, so the page it was
+            # opening is shown in the tab that asked for it.
+            cdp = made[0].cdp
+            cdp.calls.clear()
+            sink.msgs.clear()
+            fb._on_target_created({"targetInfo": {
+                "targetId": "POP-2", "type": "page", "openerId": opener.target_id,
+                "url": "https://example.net/second"}})
+            await asyncio.sleep(0.15)
+            assert [m for m in sink.msgs if m["type"] == "newtab"] == []
+            assert ("Target.closeTarget", {"targetId": "POP-2"}) in cdp.calls
+            assert opener.url == "https://example.net/second"
+            assert ("Page.navigate", {"url": "https://example.net/second"}) in \
+                opener.session.calls
+
+            # And the browser's news that a tab's target is gone takes the
+            # record with it.
+            fb._on_target_destroyed({"targetId": "POP-1"})
+            assert fb.tab("p1", "p1") is None
+            assert {"type": "gone", "tab": "p1"} in sink.msgs
+
+            await fb.shutdown()
+
+    run(main())
+
+
+def test_dialog_roundtrip_and_timeout_dismiss():
+    async def main():
+        with pytest.MonkeyPatch.context() as mp:
+            sess, sink = FakeSession(), FakeSink()
+            tab = a_tab(sess, sink)
+
+            sess.fire("Page.javascriptDialogOpening",
+                      {"type": "prompt", "message": "your name?",
+                       "defaultPrompt": "ada", "url": "https://example.net/"})
+            assert sink.msgs[-1] == {
+                "type": "dialog", "tab": "t1", "kind": "prompt",
+                "message": "your name?", "default": "ada",
+                "url": "https://example.net/"}
+            # One at a time: a second while the first is up is not stacked.
+            sess.fire("Page.javascriptDialogOpening",
+                      {"type": "alert", "message": "also this"})
+            assert len([m for m in sink.msgs if m["type"] == "dialog"]) == 1
+
+            assert await tab.answer_dialog(True, "grace") is True
+            assert ("Page.handleJavaScriptDialog",
+                    {"accept": True, "promptText": "grace"}) in sess.calls
+
+            # An empty answer to a prompt is an answer: left out, the page gets
+            # the default it suggested rather than the nothing that was typed.
+            sess.calls.clear()
+            sess.fire("Page.javascriptDialogOpening",
+                      {"type": "prompt", "message": "?", "defaultPrompt": "ada"})
+            assert await tab.answer_dialog(True, "") is True
+            assert ("Page.handleJavaScriptDialog",
+                    {"accept": True, "promptText": ""}) in sess.calls
+            # Nothing left to answer, and no call made for the second try.
+            sess.calls.clear()
+            assert await tab.answer_dialog(True, "again") is False
+            assert sess.calls == []
+
+            # A phone in a pocket is what the deadline is for: the page cannot
+            # be left stopped forever. An alert is dismissed by its only
+            # button, which is OK; everything else by Cancel.
+            mp.setattr(C, "DIALOG_TIMEOUT_S", 0.01)
+            for kind, accept in (("alert", True), ("confirm", False),
+                                 ("beforeunload", False)):
+                sess.calls.clear()
+                sess.fire("Page.javascriptDialogOpening",
+                          {"type": kind, "message": "?"})
+                await asyncio.sleep(0.1)
+                assert ("Page.handleJavaScriptDialog", {"accept": accept}) in \
+                    sess.calls, kind
+                assert tab._dialog is None
+
+            # And one the page itself closed leaves nothing behind to dismiss.
+            sess.fire("Page.javascriptDialogOpening", {"type": "alert", "m": ""})
+            sess.fire("Page.javascriptDialogClosed", {"result": False})
+            assert tab._dialog is None
+            tab._teardown()
+
+    run(main())
+
+
+def test_auth_enables_fetch_lazily_and_disables_after_success():
+    async def main():
+        with pytest.MonkeyPatch.context() as mp:
+            sess, sink = FakeSession(), FakeSink()
+            tab = a_tab(sess, sink)
+            tab.frame_id = "MAIN"
+
+            # Interception pauses every request the page makes, so nothing but
+            # a challenge on the document itself is allowed to turn it on.
+            sess.fire("Network.responseReceived", {
+                "type": "Document", "frameId": "MAIN",
+                "response": {"status": 200, "headers": {}}})
+            sess.fire("Network.responseReceived", {
+                "type": "XHR", "frameId": "MAIN",
+                "response": {"status": 401,
+                             "headers": {"WWW-Authenticate": "Basic realm=x"}}})
+            sess.fire("Network.responseReceived", {
+                "type": "Document", "frameId": "MAIN",
+                "response": {"status": 401,
+                             "headers": {"WWW-Authenticate": "Bearer x"}}})
+            await asyncio.sleep(0.05)
+            assert "Fetch.enable" not in sess.methods()
+
+            sess.fire("Network.responseReceived", {
+                "type": "Document", "frameId": "MAIN",
+                "response": {"status": 401,
+                             "headers": {"Www-Authenticate": 'Digest realm="wiki"'}}})
+            await asyncio.sleep(0.05)
+            assert sess.params("Fetch.enable")[0] == {
+                "handleAuthRequests": True,
+                "patterns": [{"urlPattern": "*", "requestStage": "Request"}]}
+            assert "Page.reload" in sess.methods()
+
+            # Every paused request is let straight through; the pause is only
+            # there for the challenge that rides on one of them.
+            sess.fire("Fetch.requestPaused", {"requestId": "R1"})
+            await asyncio.sleep(0.05)
+            assert ("Fetch.continueRequest", {"requestId": "R1"}) in sess.calls
+
+            sess.fire("Fetch.authRequired", {
+                "requestId": "R2",
+                "authChallenge": {"origin": "https://example.net", "realm": "wiki",
+                                  "scheme": "digest", "source": "Server"}})
+            assert sink.msgs[-1] == {"type": "auth", "tab": "t1",
+                                     "host": "https://example.net",
+                                     "realm": "wiki", "scheme": "digest"}
+            # A second challenge under the first is refused rather than queued.
+            sess.fire("Fetch.authRequired", {"requestId": "R3",
+                                             "authChallenge": {"realm": "other"}})
+            await asyncio.sleep(0.05)
+            assert len([m for m in sink.msgs if m["type"] == "auth"]) == 1
+            assert ("Fetch.continueWithAuth",
+                    {"requestId": "R3",
+                     "authChallengeResponse": {"response": "CancelAuth"}}) in sess.calls
+
+            mp.setattr(C, "FETCH_LINGER_S", 0.01)
+            assert await tab.answer_auth("ada", "hunter2") is True
+            assert ("Fetch.continueWithAuth", {
+                "requestId": "R2",
+                "authChallengeResponse": {"response": "ProvideCredentials",
+                                          "username": "ada",
+                                          "password": "hunter2"}}) in sess.calls
+
+            # Chrome has the credentials for the realm now, so the pause on
+            # every request is given back.
+            await asyncio.sleep(0.1)
+            assert "Fetch.disable" in sess.methods()
+            assert tab._fetch_on is False
+
+            # A cancel gives the pause back on the same clock: the page is not
+            # getting in, and every request of its is paused for nothing.
+            sess.calls.clear()
+            sess.fire("Network.responseReceived", {
+                "type": "Document", "frameId": "MAIN",
+                "response": {"status": 401,
+                             "headers": {"www-authenticate": "Basic realm=z"}}})
+            await asyncio.sleep(0.05)
+            sess.fire("Fetch.authRequired", {"requestId": "R4",
+                                             "authChallenge": {"realm": "z"}})
+            assert await tab.cancel_auth() is True
+            assert ("Fetch.continueWithAuth",
+                    {"requestId": "R4",
+                     "authChallengeResponse": {"response": "CancelAuth"}}) in sess.calls
+            await asyncio.sleep(0.1)
+            assert tab._fetch_on is False
+
+            # And a 401 from somewhere else later turns it on again.
+            sess.calls.clear()
+            sess.fire("Network.responseReceived", {
+                "type": "Document", "frameId": "MAIN",
+                "response": {"status": 401,
+                             "headers": {"www-authenticate": "Basic realm=z"}}})
+            await asyncio.sleep(0.05)
+            assert "Fetch.enable" in sess.methods()
+            tab._teardown()
+
+    run(main())
+
+
+def test_title_binding_updates_tab():
+    async def main():
+        sess = FakeSession({"Page.getNavigationHistory": {
+            "currentIndex": 0,
+            "entries": [{"id": 1, "url": "https://example.net/app", "title": ""}]}})
+        sink = FakeSink()
+        tab = a_tab(sess, sink)
+
+        # targetInfoChanged does not fire for a title a script sets, and an app
+        # that sets every title it will ever have that way would otherwise keep
+        # the first one forever.
+        sess.fire("Runtime.bindingCalled",
+                  {"name": "ptuiTitle", "payload": "Inbox (3)"})
+        assert tab.title == "Inbox (3)"
+        await asyncio.sleep(0.1)
+        msg = [m for m in sink.msgs if m["type"] == "tab"][-1]
+        assert msg["title"] == "Inbox (3)"
+        assert "favicon" not in msg          # nothing read one yet
+
+        # The same title again is not news.
+        before = len(sink.msgs)
+        sess.fire("Runtime.bindingCalled",
+                  {"name": "ptuiTitle", "payload": "Inbox (3)"})
+        await asyncio.sleep(0.1)
+        assert len(sink.msgs) == before
+
+        # The icon is read by the page once it has loaded, and rides the push
+        # that follows.
+        icon = "data:image/x-icon;base64,QUJD"
+        sess.replies["Runtime.evaluate"] = {"result": {"value": icon}}
+        sess.fire("Page.loadEventFired", {})
+        await asyncio.sleep(0.15)
+        assert tab.favicon == icon
+        assert sink.msgs[-1]["favicon"] == icon
+        evaluated = sess.params("Runtime.evaluate")[0]
+        assert evaluated["awaitPromise"] is True
+        assert evaluated["expression"] == C.FAVICON_JS
+
+        # A page with no icon leaves the one that was there; a different host
+        # takes it away, because another site's icon is worse than none.
+        sess.replies["Runtime.evaluate"] = {"result": {"value": ""}}
+        sess.fire("Page.loadEventFired", {})
+        await asyncio.sleep(0.1)
+        assert tab.favicon == icon
+        tab._on_navigated({"frame": {"id": "MAIN", "url": "https://other.example.net/"}})
+        assert tab.favicon == ""
+        tab._teardown()
+
+    run(main())
+
+
+def test_download_events_throttled_and_renamed(home):
+    async def main():
+        with pytest.MonkeyPatch.context() as mp:
+            # A staged upload from yesterday, which the launch sweeps away, and
+            # one from just now, which it leaves.
+            staged = C.uploads_dir()
+            (staged / "old").mkdir(parents=True)
+            (staged / "old" / "cv.pdf").write_bytes(b"old")
+            os.utime(staged / "old", (0, 0))
+            (staged / "new").mkdir(parents=True)
+
+            fb, made = a_browser(mp)
+            sink = FakeSink()
+            fb.attach_pane("p1", sink)
+            tab = await fb.open("p1", "t1", "https://example.net/")
+            await tab.show()
+            tab.frame_id = "F-MAIN"
+
+            assert not (staged / "old").exists() and (staged / "new").is_dir()
+            folder = C.downloads_dir()
+            assert oct(os.stat(folder).st_mode)[-3:] == "700"
+            assert made[0].cdp.params("Browser.setDownloadBehavior")[0] == {
+                "behavior": "allow", "downloadPath": str(folder),
+                "eventsEnabled": True}
+
+            sink.msgs.clear()
+            fb._on_download_begin({"frameId": "F-MAIN", "guid": "GUID1",
+                                   "url": "https://example.net/q?id=1",
+                                   "suggestedFilename": "report.pdf"})
+            assert sink.msgs[-1] == {
+                "type": "download", "tab": "t1", "guid": "GUID1",
+                "name": "report.pdf", "url": "https://example.net/q?id=1",
+                "state": "inProgress", "received": 0, "total": 0, "path": ""}
+
+            # A progress event per chunk read is not a message per chunk read.
+            for got in (10, 20, 30, 40):
+                fb._on_download_progress({"guid": "GUID1", "state": "inProgress",
+                                          "receivedBytes": got, "totalBytes": 100})
+            assert len([m for m in sink.msgs if m["type"] == "download"]) == 1
+
+            # Chrome files the download under its guid, so the name the site
+            # suggested has to be put back — beside the one already there.
+            (folder / "report.pdf").write_bytes(b"an older one")
+            (folder / "GUID1").write_bytes(b"%PDF-1.4")
+            fb._on_download_progress({"guid": "GUID1", "state": "completed",
+                                      "receivedBytes": 100, "totalBytes": 100})
+            await asyncio.sleep(0.2)
+            done = [m for m in sink.msgs if m["type"] == "download"][-1]
+            assert done["state"] == "completed" and done["received"] == 100
+            assert done["path"] == str(folder / "report (2).pdf")
+            assert (folder / "report (2).pdf").read_bytes() == b"%PDF-1.4"
+            assert (folder / "report.pdf").read_bytes() == b"an older one"
+            assert not (folder / "GUID1").exists()
+
+            # A download from an iframe names a frame that is nobody's main
+            # one, so it goes to the tab the user was last touching. A name
+            # with a path in it is not a name.
+            sink.msgs.clear()
+            tab.note_input("mousePressed")
+            fb._on_download_begin({"frameId": "F-IFRAME", "guid": "GUID2",
+                                   "url": "https://example.net/x",
+                                   "suggestedFilename": "../../etc/passwd"})
+            began = [m for m in sink.msgs if m["type"] == "download"][-1]
+            assert began["tab"] == "t1" and began["name"] == "passwd"
+
+            # A cancelled one is said once and forgotten.
+            fb._on_download_progress({"guid": "GUID2", "state": "canceled",
+                                      "receivedBytes": 4, "totalBytes": 0})
+            assert [m for m in sink.msgs if m["type"] == "download"][-1]["state"] \
+                == "canceled"
+            assert fb._downloads == {}
+
+            await fb.shutdown()
+
+    run(main())
+
+
+def test_a_stream_the_page_was_not_ready_for_starts_when_it_loads():
+    async def main():
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(C, "CAST_START_S", 0.05)
+
+            async def never(params):
+                # What `Session.send` raises for a call the browser does not
+                # answer inside its timeout.
+                await asyncio.sleep(0.01)
+                raise asyncio.TimeoutError
+
+            sess = FakeSession({"Page.startScreencast": never})
+            sink = FakeSink()
+            tab = a_tab(sess, sink)
+            tab.frame_id = "MAIN"
+
+            # A first navigation that has not committed — a page behind an auth
+            # challenge is the case this exists for — has no surface to cast,
+            # and the call never answers. Holding the pane's socket here would
+            # stop the user answering the challenge that is holding the page.
+            started = time.monotonic()
+            await tab.show()
+            assert time.monotonic() - started < 1
+            assert tab.live and tab._cast_pending
+
+            sess.replies["Page.startScreencast"] = {}
+            sess.calls.clear()
+            tab._on_stopped({"frameId": "MAIN"})
+            await asyncio.sleep(0.05)
+            assert "Page.startScreencast" in sess.methods()
+            assert not tab._cast_pending
+            tab._teardown()
 
     run(main())
