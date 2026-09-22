@@ -8,7 +8,10 @@ updated to match, which proves nothing.
 """
 
 import importlib.util
+import json
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -189,6 +192,126 @@ def test_the_topbar_toggles_a_tab_onto_the_computers_own_network(doc):
     # re-entering would wipe what the page itself has since put there.
     assert '"/enter?to=" + encodeURIComponent(' in doc
     assert "target = tab.primed ? proxied : browserEnterUrl(proxied, rec);" in doc
+
+
+def test_the_address_field_carries_the_way_out_of_the_pane(doc):
+    """The founder's arrow, inside the address field: this page in the browser
+    the device runs, rather than in the pane. A tester had asked where the
+    address a webapp printed went — before the pane it opened on their own
+    machine, and since the pane it opens in the pane. The key is the way back
+    to that, and an address the device cannot reach on its own goes out as the
+    computer's own copy of the page (the tab flavour, the one the network key
+    already mints), which is what the relay did for a tapped localhost link."""
+    assert 'id="btn-browser-out" hidden' in doc
+    said = "Open this page in your browser"
+    assert f'aria-label="{said}"' in doc and f'title="{said}"' in doc
+    # An arrow leaving its box, drawn once in the sheet every other key uses.
+    assert 'id="i-external"' in doc and 'href="#i-external"' in doc
+    # In the field, not after it: inside the wrap, and over the padding the
+    # field keeps clear for it so no address ever runs under the glyph.
+    at = {name: doc.index(f'id="{name}"')
+          for name in ("browser-url-wrap", "browser-url", "btn-browser-out")}
+    assert at["browser-url-wrap"] < at["browser-url"] < at["btn-browser-out"]
+    assert "#browser-url-wrap { flex: 1; min-width: 0; display: flex; position: relative; }" in doc
+    assert "padding: 8px 34px 8px 10px;" in doc
+    assert "#btn-browser-out[hidden] { display: none; }" in doc
+    # Nothing to hand over is the one state it is not in: a tab with no address
+    # yet, which is what a new tab is until it lands somewhere.
+    assert 'out.hidden = !browserUrlIn(tab);' in doc
+    # The press opens a tab of the device's own browser and leaves this one
+    # alone — an anchor click, because Safari's window.open returns null on the
+    # noopener path (08-links.js's openUrl, for the same reason).
+    assert "function browserOpenOutside(" in doc
+    assert 'a.target = "_blank";' in doc
+    assert "function browserOutPress(" in doc
+    assert 'q("btn-browser-out").addEventListener("click"' in doc
+    # A private address goes out as the computer's copy of the page, through
+    # the same mint and the same Clear-Site-Data hop the network key uses.
+    assert "browserEnterUrl(browserProxied(url, rec), rec)" in doc
+    assert ("toast(\"This address is only reachable from the computer;\"\n"
+            "            + \" update it to open such pages here\");") in doc
+    # And a streamed tab has it in its own menu, where the page's other
+    # commands are (43-full-browser.js).
+    assert 'item("Open in your browser", () => cb.openExternal());' in doc
+    assert "openExternal: () => browserOutPress(tab)," in doc
+
+
+# The addresses the key hands to the computer rather than to this device's
+# browser, run as the shell runs them. A table rather than a reading of the
+# source: the rule is four lists in a trench coat, and only the answers matter.
+ADDRESS_CASES = [
+    ("localhost", True),
+    ("LocalHost", True),
+    ("127.0.0.1", True),
+    ("127.1.2.3", True),
+    ("0.0.0.0", True),
+    ("10.1.2.3", True),
+    ("172.20.0.1", True),
+    ("172.16.0.1", True),
+    ("172.31.255.1", True),
+    ("192.168.1.5", True),
+    ("169.254.10.1", True),
+    ("[::1]", True),
+    ("dev.local", True),
+    ("printer.lan", True),
+    ("wiki.internal", True),
+    ("gpu.localnet", True),        # the suffix an institute hands out
+    ("mybox", True),               # a name with no dot in it is a LAN name
+    ("mybox.", True),              # a root dot is not part of the name
+    # Public, every one of them: the device reaches these on its own, and the
+    # computer has nothing to add.
+    ("172.32.0.1", False),         # just outside 172.16/12
+    ("172.15.0.1", False),
+    ("11.0.0.1", False),
+    ("example.net", False),
+    ("box.example.net", False),
+    ("8.8.8.8", False),
+    ("", False),
+    # This computer's own name, which is private-looking and the one address
+    # every paired device does reach: the app itself is served from it.
+    ("computer.example.net", False),
+]
+
+
+def test_the_way_out_tells_a_private_address_from_a_public_one(doc, tmp_path):
+    """Which of the two ways a press takes, run rather than read. The shell
+    answers it with 08-links.js's list — the terminal's own, so a link tapped
+    there and a page in the pane cannot disagree — plus the institute suffix and
+    minus the backend's own name, and those two corrections are what this pins.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    src = "\n".join(_js_chunk(doc, name) for name in (
+        "const PRIVATE_HOST_SUFFIXES", "function backendHost",
+        "function isPrivateHost", "function browserAddressIsPrivate"))
+    harness = f"""
+const cfg = {{}};
+globalThis.location = {{ href: "https://pockettui.com/" }};
+function apiURL(p) {{ return "https://computer.example.net/" + p; }}
+{src}
+const cases = {json.dumps(ADDRESS_CASES)};
+console.log(JSON.stringify(cases.map(([h]) => browserAddressIsPrivate(h))));
+"""
+    f = tmp_path / "addr.mjs"
+    f.write_text(harness, encoding="utf-8")
+    out = subprocess.run([node, str(f)], check=True, capture_output=True)
+    got = json.loads(out.stdout.decode())
+    assert got == [want for _, want in ADDRESS_CASES], list(
+        zip([h for h, _ in ADDRESS_CASES], got))
+
+
+def _js_chunk(doc, head):
+    """One top-level declaration out of the assembled shell, brace to brace.
+
+    The fragments are concatenated verbatim, so a declaration starts at column
+    zero and ends at the first line that is a lone closing brace — or, for a
+    const, at its own semicolon."""
+    at = doc.index("\n" + head) + 1
+    if head.startswith("const"):
+        return doc[at:doc.index(";\n", at) + 1]
+    end = doc.index("\n}\n", at) + 3
+    return doc[at:end]
 
 
 def test_the_toggles_order_in_the_address_row(doc):

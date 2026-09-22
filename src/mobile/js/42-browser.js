@@ -401,6 +401,53 @@ function browserRenderMarks() {
 }
 
 // ------------------------------------------------------------
+// This page, in the browser this device runs
+// ------------------------------------------------------------
+
+// Whether an address is one this device reaches only through the computer. The
+// key in the address field asks it of every page it is pressed on: a dev server
+// on the computer's loopback, a box on its LAN or an intranet name mean nothing
+// to the browser this app is being read in, and the page has to go out as the
+// computer's own copy of it — which is what the relay did for a tapped
+// http://localhost:3000 before the pane existed (08-links.js's requestRelay).
+//
+// isPrivateHost is that list already — loopback and the unspecified address, the
+// three private v4 ranges and link-local, their v6 halves, a name with no dot in
+// it, .local/.internal/.lan/.home.arpa — so it is asked rather than restated,
+// with two corrections. .localnet goes on, because an institute hands those out
+// and nothing outside it answers to one. This computer's own name comes off: it
+// is the one private-looking address every paired device does reach, since the
+// app itself is served from it.
+//
+// The host and not the port: whether an address is on this device's network is
+// not something a port number can change.
+function browserAddressIsPrivate(host) {
+  const h = (host || "").toLowerCase().replace(/\.$/, "");
+  if (!h) return false;
+  if (h.endsWith(".localnet")) return true;
+  return h !== backendHost() && isPrivateHost(h);
+}
+
+// Out of the app and into this device's own browser, in a tab of its own. An
+// anchor click rather than window.open for 08-links.js's reason: Safari's
+// noopener path opens a blank window and hands back null. openUrl itself is not
+// what this calls, because its two extras are answers to the same question this
+// key has already answered — the host it rewrites and the port it asks the
+// computer to bind are the phone's way to a loopback address, and the way taken
+// here is the computer's own copy of the page.
+function browserOpenOutside(url) {
+  if (!url) return;
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// ------------------------------------------------------------
 // One pane
 // ------------------------------------------------------------
 
@@ -736,14 +783,29 @@ async function browserEnsureToken(url) {
   return browserToken;
 }
 
+// Whether this computer has the other flavour to give at all. Its own function
+// because the key that opens a page outside asks the same thing one step earlier,
+// to say so in a toast rather than do nothing (browserOutPress).
+function browserTabAllowed() {
+  return !browserTabBlocked && hasCapStrict("browse_tab");
+}
+
+// The flavour's token in hand, where it is still worth using. Read by the mint
+// below, whose fast path it is, and by the key that opens a page outside, which
+// has to know without awaiting whether it has to wait at all.
+function browserTabTokenFresh() {
+  const now = Math.round(Date.now() / 1000);
+  return browserTabToken && browserTabToken.expires - now > 60 ? browserTabToken : null;
+}
+
 // The other flavour's, kept until it is close to its own expiry rather than
 // asked for per press: a token that has expired heals to the pane's, which is
 // the sandboxed one, and a sandboxed page is the one thing a tab in this mode
 // must not end up being served.
 async function browserEnsureTabToken() {
-  if (browserTabBlocked || !hasCapStrict("browse_tab")) return null;
-  const now = Math.round(Date.now() / 1000);
-  if (browserTabToken && browserTabToken.expires - now > 60) return browserTabToken;
+  if (!browserTabAllowed()) return null;
+  const fresh = browserTabTokenFresh();
+  if (fresh) return fresh;
   let rec;
   try {
     rec = await browserMint(browserCurrentUrl() || BROWSER_HOME, "tab");
@@ -870,6 +932,9 @@ function browserFullView(tab) {
     // proxied page's window.open.
     openTab: (href) => browserOpenFrom(tab, href),
     retry: () => { const u = browserUrlIn(tab); if (u) browserNavigateIn(tab, u, false); },
+    // Out of the pane altogether: this page in this device's own browser, which
+    // is the shell's to open and not the computer's (the key in the field).
+    openExternal: () => browserOutPress(tab),
     onError: (msg) => browserFullFailed(tab, msg),
     onTab: (msg) => browserFullTab(tab, msg),
     // The page has put a question up, or had one answered: the chip is where a
@@ -934,6 +999,17 @@ function syncBrowserNav() {
   if (back) back.disabled = full ? !tab.canBack : tab.idx <= 0;
   if (fwd) fwd.disabled = full ? !tab.canFwd
                                : (tab.idx < 0 || tab.idx >= tab.stack.length - 1);
+  // The way out of the pane, in the field. Drawn from the same thing the arrows
+  // are — the address the tab on screen is on — which is the whole of what it
+  // needs: a tab with nothing in it yet has no page to hand anywhere, and a page
+  // in either mode is a page this device's browser can be sent to. The token for
+  // the addresses that need the computer is asked for here rather than at the
+  // press, so the press has nothing to wait for (browserOutPress).
+  const out = q("btn-browser-out");
+  if (out) {
+    out.hidden = !browserUrlIn(tab);
+    if (!out.hidden && browserOutThrough(tab)) browserEnsureTabToken();
+  }
 }
 
 // A landing becomes that tab's newest entry, and everything that was forward of
@@ -1187,6 +1263,72 @@ function browserSetLan(tab, on) {
   // In place rather than as a new entry: this is the page the tab is already
   // on, fetched with other powers.
   if (url) browserNavigateIn(tab, url, false);
+}
+
+// ---- the page, in this device's own browser --------------------------------
+
+// Whether this tab's page has to leave as the computer's own copy rather than as
+// its own address. Either the address is one this device cannot reach, or the tab
+// is already being fetched by the computer because its page asked to be
+// (browserSetLan) — a streamed tab never carries that permission, since
+// browserNavigateIn drops it for one.
+function browserOutThrough(tab) {
+  const url = browserUrlIn(tab);
+  if (!url) return false;
+  if (tab.lan) return true;
+  try { return browserAddressIsPrivate(new URL(url).hostname); }
+  catch (e) { return false; }
+}
+
+// What this device's browser is handed: the address itself, or the computer's
+// copy of the page — the tab flavour, served without the sandbox as a page in its
+// own right, through the hop that clears this computer's origin of whatever a
+// shell it once served left there. Both are browserPointFrame's, unchanged: the
+// only difference is that the page lands in a tab of this device's browser rather
+// than in a frame in the pane.
+function browserOutTarget(tab, rec) {
+  const url = browserUrlIn(tab);
+  if (!url || !rec || !browserOutThrough(tab)) return url;
+  return browserEnterUrl(browserProxied(url, rec), rec) || url;
+}
+
+// The press, from the key in the field or from the streamed tab's own menu. The
+// tab is left exactly as it is either way — the page it is on keeps loading, or
+// keeps streaming; what this opens is a second copy of it somewhere else.
+//
+// Synchronous wherever it can be, because a window opened after an await is a
+// window a popup blocker is entitled to swallow — which is why the flavour's
+// token is warmed at the pane's open and again whenever a tab lands on an address
+// that will need it (syncBrowserNav). The await is the last resort, and still
+// better than a key that does nothing.
+async function browserOutPress(tab = browserTab()) {
+  const url = browserUrlIn(tab);
+  if (!url) return;
+  if (!browserOutThrough(tab)) { browserOpenOutside(url); return; }
+  if (!browserTabAllowed()) {
+    // Nothing to fetch the page with, so the address goes out as it stands. On a
+    // server too old for the flavour that is most likely nothing at all from
+    // here, and the line says what would fix it. Where the flavour was refused
+    // because this shell came off the computer itself (browserTabBlocked), the
+    // address does reach what it names — this device is that computer — and
+    // there is nothing to say.
+    browserOpenOutside(url);
+    if (!browserTabBlocked) {
+      toast("This address is only reachable from the computer;"
+            + " update it to open such pages here");
+    }
+    return;
+  }
+  const fresh = browserTabTokenFresh();
+  if (fresh) { browserOpenOutside(browserOutTarget(tab, fresh)); return; }
+  const rec = await browserEnsureTabToken();
+  // The mint is a round trip, and the strip may have closed this tab inside it.
+  if (browserTabs.indexOf(tab) < 0) return;
+  if (!rec) {
+    if (!browserTabBlocked) toast("Couldn't reach the computer");
+    return;
+  }
+  browserOpenOutside(browserOutTarget(tab, rec));
 }
 
 // ---- which browser this tab is ---------------------------------------------
@@ -2457,6 +2599,10 @@ q("btn-browser-tab").addEventListener("click", async () => {
   if (tab !== browserTab()) return;
   browserSetLan(tab, true);
 });
+// This page, in the browser this device runs: the arrow in the address field.
+// Inside the click and not after it wherever the address can go out as it
+// stands, which is what a popup blocker asks of it.
+q("btn-browser-out").addEventListener("click", () => { browserOutPress(); });
 // Another tab in the pane, at the end of the strip where a browser keeps it.
 q("btn-browser-newtab").addEventListener("click", () => browserAddTab());
 q("btn-browser-expand").addEventListener("click", () => {
