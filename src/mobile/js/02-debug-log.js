@@ -668,6 +668,15 @@ const cfg = {
       localStorage.setItem("pockettui_browser_stream_hosts", JSON.stringify(rec));
     } else localStorage.removeItem("pockettui_browser_stream_hosts");
   },
+  // Which one-time clean-ups the record above has had (browserMigrateStreamHosts,
+  // 42-browser.js): 0 for a record written before there were any.
+  get browserStreamHostsVer() {
+    const n = parseInt(localStorage.getItem("pockettui_browser_stream_hosts_ver"), 10);
+    return n > 0 ? n : 0;
+  },
+  set browserStreamHostsVer(v) {
+    localStorage.setItem("pockettui_browser_stream_hosts_ver", String(v | 0));
+  },
   // How big the browser pane draws a host's pages, as a factor per host: a dev
   // server read at 125% is still at 125% the next time it is opened, which is
   // what a desktop browser's per-site zoom does. Every host the user zoomed is
