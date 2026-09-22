@@ -11,10 +11,12 @@ The fake browsers are shell scripts that print a version string, which is all
 """
 
 import asyncio
+import base64
 import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -400,3 +402,476 @@ def test_scope_prefix_caps_memory_and_names_the_unit():
     assert unit.startswith(f"pockettui-browser-{os.getpid()}-")
     assert "MemoryHigh=800M" in cmd and "MemoryMax=960M" in cmd
     assert cmd[-1] == "--"
+
+
+def test_launch_env_hides_session_bus_and_flags_basic_password_store():
+    # Chrome asks the session bus to move itself into a scope of its own a
+    # second after it starts, which empties the one it was launched in; with no
+    # bus address in its environment there is nobody to ask.
+    env = C.launch_env({"PATH": "/bin", "XDG_RUNTIME_DIR": "/run/user/1000",
+                        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"})
+    assert "DBUS_SESSION_BUS_ADDRESS" not in env
+    # systemd-run reaches the user manager through this instead, so the scope
+    # is still made.
+    assert env["XDG_RUNTIME_DIR"] == "/run/user/1000"
+    assert env["PATH"] == "/bin"
+    assert "DBUS_SESSION_BUS_ADDRESS" not in C.launch_env()
+
+    found = C.Found(path="/usr/bin/google-chrome", version="153.0.8010.52",
+                    major=153, source="path")
+    flags = C.launch_flags(found, C.BROWSER_CONFIG_DEFAULTS, "/tmp/profile",
+                           1280, 800, C.user_agent_for(found.version))
+    # No keyring on a headless box: without this the profile's cookies are
+    # either unencryptable or lost between runs, and every login goes with them.
+    assert "--password-store=basic" in flags
+
+
+# ---------------------------------------------------------------------------
+# Frames on the wire
+# ---------------------------------------------------------------------------
+
+def test_frame_header_pack_unpack():
+    body = bytes(range(256)) * 4
+    header = {"tab": "t1", "seq": 7, "kind": "cast", "w": 800, "h": 600,
+              "cssW": 400, "cssH": 300, "zoom": 1.5, "fmt": "jpeg"}
+    wire = C.pack_frame(header, body)
+
+    # The client reads the header length first, so it has to be exactly where
+    # it says it is: four little-endian bytes, then that many bytes of JSON.
+    n = int.from_bytes(wire[:4], "little")
+    assert json.loads(wire[4:4 + n].decode()) == header
+    assert wire[4 + n:] == body
+
+    got_header, got_body = C.unpack_frame(wire)
+    assert got_header == header
+    assert got_body == body
+
+    for broken in (b"", b"\x01\x00\x00", wire[:len(wire) - 1 - len(body)]):
+        with pytest.raises(ValueError):
+            C.unpack_frame(broken)
+
+
+def test_writer_drops_stale_cast_frames_but_never_stills():
+    q = C.SendQueue()
+    for seq in range(5):
+        q.put_frame({"tab": "t1", "seq": seq, "kind": "cast"}, b"cast")
+    q.put_frame({"tab": "t2", "seq": 9, "kind": "cast"}, b"other pane's tab")
+    q.put_frame({"tab": "t1", "seq": 10, "kind": "still"}, b"settled")
+    q.put_json({"type": "tab", "tab": "t1", "url": "https://example.net/"})
+    q.put_frame({"tab": "t1", "seq": 11, "kind": "popup"}, b"menu")
+
+    out = [item if isinstance(item, dict) else C.unpack_frame(item)[0]
+           for item in q.drain()]
+    kinds = [(o.get("kind") or o.get("type"), o.get("tab"), o.get("seq"))
+             for o in out]
+    # Only the last two of one tab's cast backlog survive, in order; the other
+    # tab's is its own; and nothing that is not a cast frame is ever dropped.
+    assert kinds == [("cast", "t1", 3), ("cast", "t1", 4), ("cast", "t2", 9),
+                     ("still", "t1", 10), ("tab", "t1", None),
+                     ("popup", "t1", 11)]
+    assert q.drain() == []
+
+
+def test_the_queue_hands_items_out_in_order_and_closes():
+    async def main():
+        q = C.SendQueue()
+        q.put_json({"type": "ready"})
+        q.put_frame({"tab": "t1", "seq": 1, "kind": "still"}, b"pixels")
+        assert await q.get() == {"type": "ready"}
+        assert C.unpack_frame(await q.get())[1] == b"pixels"
+        pending = asyncio.ensure_future(q.get())
+        await settle()
+        assert not pending.done()
+        q.close()
+        assert await pending is None
+
+    run(main())
+
+
+def a_jpeg(w, h):
+    return (b"\xff\xd8" + b"\xff\xe0\x00\x04ab" + b"\xff\xc0" +
+            (11).to_bytes(2, "big") + b"\x08" + h.to_bytes(2, "big") +
+            w.to_bytes(2, "big") + b"\x01\x11\x00" + b"\xff\xda\x00\x02")
+
+
+def a_png(w, h):
+    return (b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR" +
+            w.to_bytes(4, "big") + h.to_bytes(4, "big"))
+
+
+def a_webp(w, h, flavour):
+    head = b"RIFF" + (0).to_bytes(4, "little") + b"WEBP"
+    if flavour == "VP8X":
+        return (head + b"VP8X" + (10).to_bytes(4, "little") + b"\x00\x00\x00\x00" +
+                (w - 1).to_bytes(3, "little") + (h - 1).to_bytes(3, "little"))
+    if flavour == "VP8L":
+        bits = (w - 1) | ((h - 1) << 14)
+        return (head + b"VP8L" + (5).to_bytes(4, "little") + b"\x2f" +
+                bits.to_bytes(4, "little"))
+    return (head + b"VP8 " + (20).to_bytes(4, "little") + b"\x00\x00\x00" +
+            b"\x9d\x01\x2a" + w.to_bytes(2, "little") + h.to_bytes(2, "little"))
+
+
+def test_image_size_reads_the_bytes():
+    # The frame header carries the true size of the image in it, because the
+    # browser does not say: a screencast frame's metadata describes the page,
+    # and Chrome may have scaled the frame down to the maximum it was given.
+    assert C.image_size(a_jpeg(1280, 800)) == (1280, 800)
+    assert C.image_size(a_png(640, 400)) == (640, 400)
+    for flavour in ("VP8X", "VP8L", "VP8 "):
+        assert C.image_size(a_webp(390, 844, flavour)) == (390, 844), flavour
+    # Anything unreadable falls back to the size that was asked for.
+    assert C.image_size(b"nothing like an image") is None
+    assert C.image_size(b"") is None
+    assert C.image_size(b"\xff\xd8\xff") is None
+
+
+
+# ---------------------------------------------------------------------------
+# One tab's stream
+# ---------------------------------------------------------------------------
+
+class FakeSession:
+    """A Session's shape, recording every call and answering from a table.
+
+    The point of testing the stream against this rather than a browser is that
+    the order of the protocol calls *is* the behaviour: metrics before the
+    screencast, a frozen tab woken before it is streamed again, and a
+    screenshot that is thrown away when a newer frame overtook it.
+    """
+
+    def __init__(self, replies: "dict | None" = None) -> None:
+        self.calls: list = []
+        self.replies = replies or {}
+        self.handlers: dict = {}
+        self.alive = True
+        self.target_id = "TARGET-1"
+        self.cdp = None
+
+    async def send(self, method, params=None, timeout=15):
+        self.calls.append((method, params or {}))
+        reply = self.replies.get(method)
+        if callable(reply):
+            return await reply(params or {})
+        return reply if reply is not None else {}
+
+    def on(self, event, callback):
+        self.handlers.setdefault(event, []).append(callback)
+
+    def off(self, event, callback):
+        self.handlers.get(event, []).remove(callback)
+
+    def fire(self, event, params):
+        for cb in list(self.handlers.get(event, ())):
+            cb(params)
+
+    def methods(self):
+        return [m for m, _ in self.calls]
+
+    def params(self, method):
+        return [p for m, p in self.calls if m == method]
+
+
+class FakeSink:
+    def __init__(self) -> None:
+        self.frames: list = []
+        self.msgs: list = []
+
+    def put_json(self, msg):
+        self.msgs.append(msg)
+
+    def put_frame(self, header, body):
+        self.frames.append((header, body))
+
+
+def a_tab(session, sink, **kw):
+    cfg = dict(C.BROWSER_CONFIG_DEFAULTS, memory_mb=512, freeze_after_s=0.01,
+               jpeg_quality=55, dpr_max=2)
+    cfg.update(kw.pop("config", {}))
+    tab = C.PaneTab("p1", "t1", session, "TARGET-1", sink, cfg,
+                    **{"css_w": 800, "css_h": 600, **kw})
+    tab._wire()          # what start() does once the domains are enabled
+    return tab
+
+
+def cast_frame(payload=b"\x01\x02\x03", sid=1):
+    return {"sessionId": sid, "data": base64.b64encode(payload).decode(),
+            "metadata": {"deviceWidth": 800, "deviceHeight": 600}}
+
+
+def test_stream_state_machine_show_hide_freeze():
+    async def main():
+        sess, sink = FakeSession(), FakeSink()
+        tab = a_tab(sess, sink)
+
+        await tab.show()
+        seen = sess.methods()
+        assert seen.index("Emulation.setDeviceMetricsOverride") < \
+            seen.index("Page.startScreencast")
+        cast = sess.params("Page.startScreencast")[0]
+        assert cast["format"] == "jpeg" and cast["quality"] == 55
+        assert (cast["maxWidth"], cast["maxHeight"]) == (800, 600)
+        assert cast["everyNthFrame"] == 1
+        assert tab.live and not tab.frozen
+
+        sess.calls.clear()
+        await tab.hide()
+        assert "Page.stopScreencast" in sess.methods()
+        assert not tab.live and not tab.frozen
+        # The freeze is on a timer, so a tab the user flicks away from and back
+        # to is never frozen at all.
+        await asyncio.sleep(0.1)
+        assert ("Page.setWebLifecycleState", {"state": "frozen"}) in sess.calls
+        assert tab.frozen
+
+        sess.calls.clear()
+        await tab.show()
+        seen = sess.methods()
+        assert ("Page.setWebLifecycleState", {"state": "active"}) in sess.calls
+        assert seen.index("Page.setWebLifecycleState") < \
+            seen.index("Page.startScreencast")
+        assert tab.live and not tab.frozen
+
+        # And a screencast frame goes out as a `cast` frame, acknowledged back
+        # to the browser so the next one is produced.
+        sess.fire("Page.screencastFrame", cast_frame(b"\xff\xd8jpeg"))
+        await settle()
+        header, body = sink.frames[-1]
+        assert header["kind"] == "cast" and header["fmt"] == "jpeg"
+        assert (header["w"], header["h"]) == (800, 600)
+        assert header["seq"] == 1 and body == b"\xff\xd8jpeg"
+        tab.ack(header["seq"])
+        await settle()
+        assert ("Page.screencastFrameAck", {"sessionId": 1}) in sess.calls
+
+        tab._teardown()
+
+    run(main())
+
+
+def test_settle_frame_dropped_when_newer_cast_frame_arrived():
+    async def main():
+        gate = asyncio.Event()
+        taken = []
+
+        async def screenshot(params):
+            taken.append(params)
+            await gate.wait()
+            return {"data": base64.b64encode(b"RIFFwebp").decode()}
+
+        sess = FakeSession({"Page.captureScreenshot": screenshot})
+        sink = FakeSink()
+        tab = a_tab(sess, sink)
+        await tab.show()
+
+        # Two screencast frames while the picture is being taken: the page is
+        # painting on its own, and its frames are newer than the picture. It
+        # is dropped and they go instead.
+        tab.note_input("mouseMoved")
+        await asyncio.sleep(C.SETTLE_DELAY_S + 0.05)
+        assert taken and taken[0]["fromSurface"] is True
+        assert taken[0]["format"] == "webp"
+        sess.fire("Page.screencastFrame", cast_frame(b"newer"))
+        sess.fire("Page.screencastFrame", cast_frame(b"newer still"))
+        gate.set()
+        await asyncio.sleep(0.05)
+        assert [h["kind"] for h, _ in sink.frames] == ["cast", "cast"]
+        assert [b for _h, b in sink.frames] == [b"newer", b"newer still"]
+
+        # One frame is the capture's own echo — a screenshot forces a surface
+        # commit and the screencast answers with a frame of the same picture —
+        # so the settled frame supersedes it and goes out alone. Without it
+        # the last state of a drag would never arrive at all: the screencast
+        # skips frames it made while the previous one was unacknowledged and
+        # never goes back for them.
+        sink.frames.clear()
+        gate.clear()
+        tab.note_input("mouseReleased")
+        await asyncio.sleep(C.SETTLE_DELAY_S + 0.05)
+        sess.fire("Page.screencastFrame", cast_frame(b"echo of the capture"))
+        gate.set()
+        await asyncio.sleep(0.05)
+        assert [h["kind"] for h, _ in sink.frames] == ["still"]
+        assert sink.frames[-1][0]["fmt"] == "webp"
+
+        tab._teardown()
+
+    run(main())
+
+
+def test_zoom_metrics_override_math():
+    sess, sink = FakeSession(), FakeSink()
+    tab = a_tab(sess, sink, css_w=1000, css_h=700, dpr=2, zoom=1.5)
+
+    # The viewport shrinks by the zoom and the scale grows by it, so the same
+    # number of device pixels comes back with everything on it half again as
+    # big — and the page never learns it is zoomed.
+    assert tab._metrics() == {"width": 667, "height": 467,
+                              "deviceScaleFactor": 3, "mobile": False}
+    assert tab._surface() == (2001, 1401)
+
+    # dpr_max is a ceiling on the phone's own ratio, not on the zoom.
+    tab.dpr = 3
+    assert tab._metrics()["deviceScaleFactor"] == 3
+
+    tab.zoom = 1.0
+    assert tab._metrics() == {"width": 1000, "height": 700,
+                              "deviceScaleFactor": 2, "mobile": False}
+    assert tab._surface() == (2000, 1400)
+
+    # A client that cannot keep up is streamed at 1x whatever it asked for.
+    tab._dpr_forced = True
+    assert tab._metrics()["deviceScaleFactor"] == 1
+
+
+def test_resize_and_zoom_restart_a_live_stream():
+    async def main():
+        sess, sink = FakeSession(), FakeSink()
+        tab = a_tab(sess, sink)
+        await tab.resize(400, 300, 1)
+        # Hidden: the override is re-sent and nothing is streamed.
+        assert "Page.startScreencast" not in sess.methods()
+        assert sess.params("Emulation.setDeviceMetricsOverride")[-1]["width"] == 400
+
+        await tab.show()
+        sess.calls.clear()
+        await tab.set_zoom(2.0)
+        assert sess.methods().count("Page.startScreencast") == 1
+        assert "Page.stopScreencast" in sess.methods()
+        assert sess.params("Page.startScreencast")[-1]["maxWidth"] == 400
+        assert sess.params("Emulation.setDeviceMetricsOverride")[-1] == {
+            "width": 200, "height": 150, "deviceScaleFactor": 2.0, "mobile": False}
+        tab._teardown()
+
+    run(main())
+
+
+def test_slow_acks_drop_to_one_pixel_per_pixel():
+    async def main():
+        sess, sink = FakeSession(), FakeSink()
+        tab = a_tab(sess, sink, dpr=2)
+        await tab.show()
+        assert sess.params("Page.startScreencast")[0]["maxWidth"] == 1600
+
+        for _ in range(C.SLOW_ACK_STREAK):
+            sess.fire("Page.screencastFrame", cast_frame())
+            await settle()
+            seq = sink.frames[-1][0]["seq"]
+            # Pretend the frame left a second ago: the link is the limit here,
+            # not the browser.
+            sid, _sent, timer = tab._unacked[seq]
+            tab._unacked[seq] = (sid, time.monotonic() - 1.0, timer)
+            tab.ack(seq)
+        await asyncio.sleep(0.05)
+        assert tab._dpr_forced
+        assert sess.params("Page.startScreencast")[-1]["maxWidth"] == 800
+        tab._teardown()
+
+    run(main())
+
+
+def test_a_popup_is_painted_from_screenshots_until_the_next_click():
+    async def main():
+        shots = []
+
+        async def screenshot(params):
+            shots.append(params)
+            return {"data": base64.b64encode(b"menu").decode()}
+
+        sess = FakeSession({"Page.captureScreenshot": screenshot})
+        sink = FakeSink()
+        tab = a_tab(sess, sink)
+        await tab.show()
+
+        # The page says a <select> is open. Screencast frames do not contain a
+        # native popup at all, so the tab is painted from screenshots instead.
+        sess.fire("Runtime.bindingCalled",
+                  {"name": "ptuiPopup", "payload": json.dumps({"open": True})})
+        await asyncio.sleep(1.0 / C.POPUP_FPS + 0.05)
+        assert [h["kind"] for h, _ in sink.frames].count("popup") >= 1
+        assert shots[0]["optimizeForSpeed"] is True
+
+        # The click that picks an option ends it.
+        tab.note_input("mousePressed")
+        await asyncio.sleep(1.0 / C.POPUP_FPS + 0.05)
+        seen = len(sink.frames)
+        await asyncio.sleep(1.0 / C.POPUP_FPS + 0.05)
+        assert not tab._popup_open
+        assert "popup" not in [h["kind"] for h, _ in sink.frames[seen:]]
+
+        # And the page's selection arrives on the other binding.
+        sess.fire("Runtime.bindingCalled", {"name": "ptuiSel", "payload": "picked"})
+        assert tab.selection == "picked"
+        tab._teardown()
+
+    run(main())
+
+
+def test_the_page_helper_is_one_iife_with_only_its_two_bindings():
+    src = C.FULL_PAGE_HELPER
+    assert src.strip().startswith("(()") and src.strip().endswith(")();")
+    assert src.count("ptuiPopup(") == 1 and src.count("ptuiSel(") == 1
+    assert "\nvar " not in src and "\nwindow." not in src
+    assert len(src.splitlines()) < 60
+
+
+def test_tab_state_pushes_only_for_the_main_frame():
+    async def main():
+        sess = FakeSession({"Page.getNavigationHistory": {
+            "currentIndex": 1,
+            "entries": [{"id": 1, "url": "https://example.net/one", "title": "one"},
+                        {"id": 2, "url": "https://example.net/two", "title": "two"}]}})
+        sink = FakeSink()
+        tab = a_tab(sess, sink)
+        tab.frame_id = "MAIN"
+
+        sess.fire("Page.frameNavigated",
+                  {"frame": {"id": "SUB", "parentId": "MAIN", "url": "https://ads"}})
+        sess.fire("Page.frameStartedLoading", {"frameId": "SUB"})
+        await asyncio.sleep(0.1)
+        assert sink.msgs == []
+
+        sess.fire("Page.frameNavigated",
+                  {"frame": {"id": "MAIN", "url": "https://example.net/two"}})
+        await asyncio.sleep(0.1)
+        assert sink.msgs[-1] == {"type": "tab", "tab": "t1",
+                                "url": "https://example.net/two", "title": "two",
+                                "loading": False, "canBack": True, "canFwd": False,
+                                "targetId": "TARGET-1"}
+        tab._teardown()
+
+    run(main())
+
+
+def test_a_fresh_input_under_the_capture_does_not_strand_held_frames():
+    async def main():
+        gate = asyncio.Event()
+
+        async def screenshot(params):
+            await gate.wait()
+            return {"data": base64.b64encode(b"RIFFwebp").decode()}
+
+        sess = FakeSession({"Page.captureScreenshot": screenshot})
+        sink = FakeSink()
+        tab = a_tab(sess, sink)
+        await tab.show()
+
+        tab.note_input("mouseMoved")
+        await asyncio.sleep(C.SETTLE_DELAY_S + 0.05)
+        sess.fire("Page.screencastFrame", cast_frame(b"held"))
+        assert tab._capturing
+        # A second input re-arms the timer, which cancels the capture in flight.
+        # The frame it was holding has to go out and the flag has to come down,
+        # or every frame after this one is held and none of them is ever sent.
+        tab.note_input("mouseMoved")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not tab._capturing
+        assert [(h["kind"], b) for h, b in sink.frames] == [("cast", b"held")]
+
+        gate.set()
+        await asyncio.sleep(C.SETTLE_DELAY_S + 0.1)
+        assert [h["kind"] for h, _ in sink.frames] == ["cast", "still"]
+        tab._teardown()
+
+    run(main())

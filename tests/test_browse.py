@@ -35,6 +35,7 @@ from starlette.websockets import WebSocketDisconnect  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import app as A  # noqa: E402
+import chromium as CH  # noqa: E402
 
 TOKEN = "ABCDEFGHIJ"
 HDRS = {A.TOKEN_HEADER: TOKEN}
@@ -1590,3 +1591,105 @@ def test_a_restored_jar_is_sent_to_the_target(client, site, tmp_path,
     got = client.get(
         (base_of(r.json()["token"], site) + "/whoami")[len(PREFIX):])
     assert "sid=restored" in got.text
+
+
+# ---------------------------------------------------------------------------
+# Full browser: the pane's socket
+# ---------------------------------------------------------------------------
+
+A_BROWSER = CH.Found(path="/usr/bin/chromium", version="151.0.7000.1", major=151,
+                     source="path")
+
+
+@pytest.fixture
+def no_browser_singleton(monkeypatch):
+    """No FullBrowser outlives its test, and none of them starts a Chromium."""
+    monkeypatch.setattr(CH.FullBrowser, "_instance", None)
+    monkeypatch.setattr(A, "_CHROMIUM", CH)
+
+    async def refuse(self):
+        raise AssertionError("no test here may start a browser")
+
+    monkeypatch.setattr(CH.FullBrowser, "ensure", refuse)
+    yield
+    CH.FullBrowser._instance = None
+
+
+def browser_socket(client, pane="p1"):
+    return client.websocket_connect(f"/ws/browser/{pane}")
+
+
+def test_ws_browser_refuses_bad_token(client, no_browser_singleton):
+    # CORS does not apply to WebSockets, so this handshake is the only thing
+    # between the open port and a browser holding the user's logins.
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with browser_socket(client) as ws:
+            ws.send_text(json.dumps({"token": "WRONGCODE9", "dev": "phone"}))
+            ws.receive_text()
+    assert exc.value.code == 4401
+
+
+def test_ws_browser_ready_after_auth(client, monkeypatch, no_browser_singleton):
+    monkeypatch.setattr(CH, "find_chromium", lambda *a, **kw: A_BROWSER)
+    with browser_socket(client) as ws:
+        ws.send_text(json.dumps({"token": TOKEN, "dev": "phone"}))
+        ready = json.loads(ws.receive_text())
+        # A connect starts nothing: the browser is launched by the first tab
+        # that is opened, not by a pane that happens to be on screen.
+        assert ready["type"] == "ready"
+        assert ready["version"] == "151.0.7000.1"
+        assert ready["capMb"] >= 128
+
+        # A message about a tab that is not open is an `error` reply, not a
+        # closed socket: the pane has to stay up to show what went wrong.
+        ws.send_text(json.dumps({"type": "show", "tab": "t1", "cssW": 400,
+                                 "cssH": 300, "dpr": 1, "zoom": 1}))
+        err = json.loads(ws.receive_text())
+        assert err == {"type": "error", "tab": "t1", "code": "no_tab",
+                       "message": "that tab is not open"}
+
+        # And an unknown type is ignored rather than answered, so a newer
+        # shell talking to an older server is not cut off mid-session.
+        ws.send_text(json.dumps({"type": "somethingNew", "tab": "t1"}))
+        ws.send_text(json.dumps({"type": "hide", "tab": "t1"}))
+        assert json.loads(ws.receive_text())["code"] == "no_tab"
+
+
+def test_ws_browser_refuses_a_proxied_page(client, no_browser_singleton):
+    # The same gate require_token puts on the HTTP routes, which a WebSocket
+    # handshake skips: a page this server's own proxy served has no business
+    # driving the browser whatever credential it managed to put on the call.
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(
+                "/ws/browser/p1",
+                headers={"Referer": "https://shell.example.net/b/tok/s/"}) as ws:
+            ws.send_text(json.dumps({"token": TOKEN}))
+            ws.receive_text()
+    assert exc.value.code == 4403
+
+
+def test_capabilities_browser_full_follows_find(monkeypatch, no_browser_singleton):
+    monkeypatch.setattr(CH, "find_chromium", lambda *a, **kw: None)
+    assert A.server_capabilities()["browser_full"] is False
+
+    monkeypatch.setattr(CH, "find_chromium", lambda *a, **kw: A_BROWSER)
+    assert A.server_capabilities()["browser_full"] is True
+
+    def blows_up(*a, **kw):
+        raise OSError("the probe fell over")
+
+    # A probe that throws is a browser this machine does not have, not a
+    # capability map that cannot be built.
+    monkeypatch.setattr(CH, "find_chromium", blows_up)
+    assert A.server_capabilities()["browser_full"] is False
+
+
+def test_browser_status_reports_the_browser_it_would_use(client, monkeypatch,
+                                                         no_browser_singleton):
+    monkeypatch.setattr(CH, "find_chromium", lambda *a, **kw: A_BROWSER)
+    body = client.get("/api/browser/status", headers=HDRS).json()
+    assert body["running"] is False and body["pid"] is None
+    assert body["tabs"] == [] and body["memMb"] is None
+    assert body["found"] == {"path": "/usr/bin/chromium", "version": "151.0.7000.1"}
+    assert body["capMb"] >= 128
+    assert client.get("/api/browser/status").status_code == 401
