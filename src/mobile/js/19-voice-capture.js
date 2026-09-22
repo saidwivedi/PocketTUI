@@ -1878,10 +1878,11 @@ function buildKeybar() {
       if (swiped) { swiped = false; return; }   // the swipe already sent its alternate
       if (k.compose) { toggleCompose(); return; }
       if (k.files) { openFilesAtCwd(); return; }
-      // 42-browser.js defines openBrowser(); guarded the same way
+      // 42-browser.js defines toggleBrowserPane(); guarded the same way
       // btn-browser's own click handler is, so this key does nothing until
-      // it lands.
-      if (k.browser) { if (typeof openBrowser === "function") openBrowser(); return; }
+      // it lands. A toggle rather than an open, the folder key's way: beside a
+      // terminal the key that put the pane up is the key that puts it away.
+      if (k.browser) { if (typeof toggleBrowserPane === "function") toggleBrowserPane(); return; }
       if (k.report) { openReport(); return; }
       if (k.arrows) { setArrows(true); return; }
       if (k.collapse) { setArrows(false); return; }

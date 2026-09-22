@@ -509,6 +509,11 @@
        without disturbing it — the column simply ends earlier
        (#screen-term.side-open moves its right edge in). -->
   <div id="side-gutter"></div>
+  <!-- And the seam between the column's two rows, when two of the three are
+       open at once: the same drag read the other way (26-side-pane.js). Fixed
+       to the window like the one above, and on view only while there are two
+       rows to divide. -->
+  <div id="side-hsplit"></div>
   <div id="diff-pane">
     <div id="diff-head">
       <span id="diff-root"></span>
@@ -530,6 +535,13 @@
       <!-- Lit while a poll is in flight. Decoration to a screen reader: the
            list and the diff underneath already announce their own changes. -->
       <span id="diff-busy" aria-hidden="true"></span>
+      <!-- Which row of the column this pane is in, and the way to trade places
+           with the other one. On view only while two panes are stacked
+           (26-side-pane.js), which is why it is not one of the .dock-only pair
+           below: those are shown by being docked at all. The glyph points the
+           way this pane would move, and sideLayout turns it over. -->
+      <button type="button" class="icon-btn dock-swap"
+              aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
       <button type="button" class="icon-btn" id="btn-diff-close"
               aria-label="Close the diff pane"><svg><use href="#i-close"/></svg></button>
     </div>
@@ -640,6 +652,8 @@
          because the cross is the one that ends the pane and the outermost
          control is where a window's close always sits. Expand swaps its face
          for #i-collapse while the pane is filling the main area. -->
+    <button class="icon-btn dock-swap" type="button"
+            aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
     <button class="icon-btn dock-only dock-expand" id="btn-files-expand"
             aria-label="Expand the file pane"><svg><use href="#i-expand"/></svg></button>
     <button class="icon-btn dock-only dock-close" id="btn-files-close"
@@ -723,6 +737,8 @@
       </div>
       <!-- The docked pane's own two controls, shown only while the browser is
            beside the terminal rather than over it — files-expand/close's pair. -->
+      <button class="icon-btn dock-swap" type="button"
+              aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
       <button class="icon-btn dock-only" id="btn-browser-expand"
               aria-label="Expand the browser pane"><svg><use href="#i-expand"/></svg></button>
       <button class="icon-btn dock-only" id="btn-browser-close"
@@ -821,6 +837,8 @@
          (28-file-explorer.js), and the size it is read at and the way out
          belong to the pane wherever it is. Hidden in every other shape, and
          wired by class rather than by id since three bars now carry them. -->
+    <button class="icon-btn dock-swap" type="button"
+            aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
     <button class="icon-btn dock-only dock-expand" type="button"
             aria-label="Expand the file pane"><svg><use href="#i-expand"/></svg></button>
     <button class="icon-btn dock-only dock-close" type="button"
@@ -845,6 +863,8 @@
             aria-label="Download this file"><svg><use href="#i-download"/></svg></button>
     <button type="button" id="btn-reader-edit">Edit</button>
     <!-- The editor bar's pair, for the same reason. -->
+    <button class="icon-btn dock-swap" type="button"
+            aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
     <button class="icon-btn dock-only dock-expand" type="button"
             aria-label="Expand the file pane"><svg><use href="#i-expand"/></svg></button>
     <button class="icon-btn dock-only dock-close" type="button"
@@ -1403,6 +1423,8 @@
     <button class="icon-btn viewer-btn dock-only" type="button" id="btn-viewer-back"
             aria-label="Back to the folder"><svg><use href="#i-back"/></svg></button>
     <button class="icon-btn viewer-btn" type="button" id="btn-viewer-download" aria-label="Download this file"><svg><use href="#i-download"/></svg></button>
+    <button class="icon-btn viewer-btn dock-swap" type="button"
+            aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
     <button class="icon-btn viewer-btn dock-only dock-expand" type="button"
             aria-label="Expand the file pane"><svg><use href="#i-expand"/></svg></button>
     <button class="icon-btn viewer-btn dock-only dock-close" type="button"

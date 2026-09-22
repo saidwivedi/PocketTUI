@@ -3409,6 +3409,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
    (26-side-pane.js). The dock's own controls are markup the phone also ships,
    so they are hidden rather than absent. */
 .dock-only { display: none; }
+/* And the key that trades the two rows of the column for each other, which is
+   hidden a class further: it is worth pressing only while there are two
+   (26-side-pane.js). */
+.dock-swap { display: none; }
 
 @media (min-width: 768px) and (min-height: 500px) {
   #screen-files.docked .dock-only,
@@ -3539,6 +3543,45 @@ html.term-open #dbg-panel { opacity: 0.85; }
      The pane is position:fixed, so absolute already means "this pane". */
   #screen-files.docked #files-suggest-scrim,
   #screen-files.docked #files-view-scrim { position: absolute; }
+
+  /* ---- two rows in the column ---------------------------------------------
+     A second pane stacks under the first rather than taking the slot off it
+     (26-side-pane.js), and only the rows' top and bottom edges move: the width,
+     the paper, the padding and the stacking are the full-height rules above,
+     which these override by carrying one class more than they do. The fraction
+     is the window's own height rather than the column's — these are fixed
+     boxes, so a percentage resolves against the viewport, and the seam between
+     them is drawn on the same number. A bottom row runs to the window's edge
+     and absorbs the safe-bottom inset, the way a single row does. */
+  #screen-term.active ~ #screen-files.docked.active.side-top,
+  #screen-term.active ~ #screen-browser.docked.active.side-top,
+  #screen-term.active ~ #screen-editor.docked.active.side-top,
+  #screen-term.active ~ #screen-reader.docked.active.side-top,
+  #screen-term.active ~ #viewer.docked.show.side-top {
+    bottom: calc(100% - var(--side-split) + var(--side-gutter) / 2);
+  }
+  #screen-term.active ~ #screen-files.docked.active.side-bot,
+  #screen-term.active ~ #screen-browser.docked.active.side-bot,
+  #screen-term.active ~ #screen-editor.docked.active.side-bot,
+  #screen-term.active ~ #screen-reader.docked.active.side-bot,
+  #screen-term.active ~ #viewer.docked.show.side-bot {
+    top: calc(var(--side-split) + var(--side-gutter) / 2);
+  }
+  /* Expanded, the other row is not a shorter row but none at all: the pane
+     filling the main area covers the column, and there is nothing of the one
+     under it left to see. */
+  #screen-term.active ~ #screen-files.docked.active.side-hidden,
+  #screen-term.active ~ #screen-browser.docked.active.side-hidden,
+  #screen-term.active ~ #screen-editor.docked.active.side-hidden,
+  #screen-term.active ~ #screen-reader.docked.active.side-hidden,
+  #screen-term.active ~ #viewer.docked.show.side-hidden { display: none; }
+
+  /* The key that trades the rows, in every bar a row can wear one in. Two rows
+     and neither of them expanded is the whole of when it has anything to do. */
+  #screen-term.side-two:not(.side-full) > #diff-pane .dock-swap,
+  #screen-term.side-two:not(.side-full).active ~ .docked .dock-swap {
+    display: inline-flex;
+  }
 }
 
 /* Stacked full-width choices — the action sheets are menus, not forms. */
@@ -4482,13 +4525,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
    The seam and the width are shared with the docked file explorer, which wants
    the same slot (26-side-pane.js): .side-open is the terminal narrowing for
    whichever of the two is in it, .diff-open only says which. */
-#diff-pane, #side-gutter { display: none; }
+#diff-pane, #side-gutter, #side-hsplit { display: none; }
 
 @media (min-width: 768px) and (min-height: 500px) {
   /* The slot's width, dragged and remembered (26-side-pane.js), and the seam
      between it and the terminal — the rail's gutter by another name and the
      same 7px, because it is the same seam read from the other side. */
-  :root { --side-w: 460px; --side-gutter: 7px; }
+  :root { --side-w: 460px; --side-gutter: 7px; --side-split: 50%; }
 
   /* The split is the terminal screen's right edge moving in. Nothing inside
      the flex column has to know: #term-host, the compose strip and the key bar
@@ -4514,6 +4557,17 @@ html.term-open #dbg-panel { opacity: 0.85; }
     background-size: 200px 200px;
     z-index: 55;
   }
+
+  /* Its row of the column, when it is sharing one with another pane — the
+     docked explorer's rules said again for a pane that lives inside
+     #screen-term rather than beside it, and off the same two numbers. */
+  #screen-term.diff-open > #diff-pane.side-top {
+    bottom: calc(100% - var(--side-split) + var(--side-gutter) / 2);
+  }
+  #screen-term.diff-open > #diff-pane.side-bot {
+    top: calc(var(--side-split) + var(--side-gutter) / 2);
+  }
+  #screen-term.diff-open > #diff-pane.side-hidden { display: none; }
 
   /* The rail's gutter recipe verbatim (see #rail-resize), mirrored: it is the
      same recessed seam, and the two edges of the terminal should not read as
@@ -4553,6 +4607,50 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   #side-gutter:hover, #side-gutter.dragging { background: var(--umber-soft); }
   #side-gutter:hover::after, #side-gutter.dragging::after { background: var(--umber); }
+
+  /* The same seam turned on its side, between the column's two rows: same
+     recess, same grip, same 7px, because the three edges a split terminal has
+     should not read as three kinds of edge. Its position is the top row's share
+     of the window rather than of the column — the rows are fixed boxes, so the
+     percentage they are laid out on is the viewport's, and this is drawn on the
+     same one (26-side-pane.js). Only while there are two rows to divide and
+     neither is filling the main area. */
+  #screen-term.side-two:not(.side-full) > #side-hsplit {
+    display: block;
+    position: fixed;
+    right: 0;
+    width: var(--side-w);
+    top: calc(var(--side-split) - var(--side-gutter) / 2);
+    height: var(--side-gutter);
+    cursor: row-resize;
+    touch-action: none;
+    z-index: 60;
+    -webkit-user-select: none; user-select: none;
+    background: var(--paper-rec);
+    border-top: 1px solid var(--hair);
+    border-bottom: 1px solid var(--hair);
+    box-shadow: inset 0 1px 2px rgba(20, 16, 10, 0.05),
+                inset 0 -1px 2px rgba(20, 16, 10, 0.05);
+    transition: background 0.18s var(--ease-out);
+  }
+  #side-hsplit::before {
+    content: "";
+    position: absolute;
+    left: 0; right: 0;
+    top: -5px; bottom: -5px;
+  }
+  #side-hsplit::after {
+    content: "";
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 36px; height: 3px;
+    margin: -1.5px 0 0 -18px;
+    border-radius: 2px;
+    background: var(--hair-strong);
+    transition: background 0.18s var(--ease-out);
+  }
+  #side-hsplit:hover, #side-hsplit.dragging { background: var(--umber-soft); }
+  #side-hsplit:hover::after, #side-hsplit.dragging::after { background: var(--umber); }
 
   /* Header: the repo's name, the poll's dot, the way out. The rail's eyebrow
      scale, since the pane is the rail's opposite number. */

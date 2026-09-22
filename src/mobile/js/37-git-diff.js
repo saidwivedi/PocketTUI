@@ -88,7 +88,14 @@ function diffSetOpen(open) {
   diffOpen = open;
   $("screen-term").classList.toggle("diff-open", open);
   if (!open) { sideDrop("diff"); return; }
-  sideClaim("diff");
+  // The column can refuse the row: the one it would have taken is a docked
+  // editor with unsaved work whose owner said stay (sideClaim, 26-side-pane.js),
+  // and a split that never opened must not leave the class behind it.
+  if (!sideClaim("diff")) {
+    diffOpen = false;
+    $("screen-term").classList.remove("diff-open");
+    return;
+  }
   // The list's height is restored the same way the width is, but only once one
   // has been dragged: with nothing stored the list stays sized by the files in
   // it, which is what the pane has always opened as.
