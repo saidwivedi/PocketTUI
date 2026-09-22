@@ -15,61 +15,18 @@
 // editor and reader over the top. What the docked shape drops is the browser
 // history: it pushes nothing, and its own back arrow walks filesStack, so a
 // back press stays the terminal's to answer.
-
-let filesPath = "";        // the directory currently listed
-let filesHome = "";        // $HOME as the backend reports it, for ~ crumbs
-let filesOrigin = null;    // the screen to restore on close
-// The folders listed since the explorer opened, entry folder first — the app's
-// own record of where back lands, and what back at [0] closes. It has to be
-// ours rather than the state objects stored with the history entries: iOS
-// clobbers those (seen after the download flow points the top frame at an
-// attachment URL — downloadViaLink's anchor click — which iOS aborts into its
-// download UI, nulling history.state on the way), after which every pop arrives
-// stateless and a state-reading handler reads each one as the pop past the
-// entry and closes the whole view from any depth.
-let filesStack = [];
-let filesSelected = null;  // the entry the action sheet is about
-// The entries currently drawn, so switching list/grid redraws them in place
-// rather than re-listing the folder.
-let filesEntries = [];
-// Whether the explorer is the terminal's right-hand pane rather than a screen
-// over it, and whether that pane is filling the main area. Wide layouts only —
-// nothing narrower has room for the slot.
-let filesDocked = false;
-let filesExpanded = cfg.filesExpanded;
-// The folder the terminal's own cwd last put the docked pane at — what "the
-// pane is still where the terminal left it" is measured against, and "" while
-// nothing has ever synced it. Only the docked shape has a terminal to follow.
-let filesSyncedCwd = "";
-// Set while btn-files-term's multi-entry history.go is in flight, so the one
-// popstate it lands as closes the view instead of climbing one folder.
-let filesClosing = false;
-// A finished long-press ends in a click the browser synthesizes on the same
-// row; stamping the moment lets that click be ignored (the viewer's
-// viewerOpenedAt idea).
-let filesPressedAt = 0;
-
-// ---- reading at a git ref ---------------------------------------------------
-// The listing can come from a branch instead of from the disk: `ref` and `root`
-// on /api/fs/list and /api/fs/read answer out of `git ls-tree` and `git show`
-// at that ref. It is a reading mode and nothing else — every write the explorer
-// offers goes away while it is on, the editor opens read-only, and the working
-// tree the terminal beside it is sitting in never moves, which is the point of
-// looking at a branch this way rather than checking it out.
 //
-// Deliberately not remembered across loads, unlike the layout and sort above:
-// those are how this user reads every folder, and this is a place they went to
-// look at something. A reload lands back on the disk.
+// Two of these can be open at once, side by side in the column (26-side-pane.js)
+// — a second place to look while the first stays where it is. So the listing
+// below is a factory and each pane is one call of it, and what is shared is what
+// is genuinely shared: the tables and helpers here that only read their
+// arguments, the cache of folders already listed, the sheets, and the three file
+// views, which are one each however many listings there are and belong to
+// whichever listing opened them.
 
-let filesRef = "";        // the branch being read, "" for the working tree
-let filesRefRoot = "";    // the repo top level filesRef's paths are relative to
-// The /api/git/branches answer about the folder on screen — {root, current,
-// branches}, root null outside a repo — or null before it has been asked.
-let filesRepo = null;
-// Which folder that answer was about. Inside a known root the answer cannot
-// have changed, and outside one there is no root to test the next folder
-// against, so this is what says whether the question needs asking again.
-let filesRepoAsked = "";
+// ------------------------------------------------------------
+// Shared, whichever pane is asking
+// ------------------------------------------------------------
 
 // Mirrors app.py's MEDIA_TYPES allowlist: these open in the existing viewer
 // over /api/file rather than in the editor.
@@ -157,6 +114,430 @@ function fmtSize(n) {
   return Math.round(v / 1024) + " TB";
 }
 
+// Keyed by the server's own normalized path (what data.path comes back as,
+// not necessarily what was requested — ~ resolves, PATH_REWRITES can retarget
+// a mount). The address field's suggestions read this before fetching, so
+// retyping or backspacing within a directory already listed costs nothing.
+const filesListCache = new Map();
+
+// Above this a blob held whole in the page's memory is what makes iOS kill the
+// PWA, so anything bigger goes the long way round.
+const DOWNLOAD_BLOB_MAX = 30 * 1024 * 1024;
+
+// Two ways down, because neither is good at the other's size. Below the cap the
+// page fetches the bytes itself and hands the save sheet a blob — one tap, no
+// browser chrome, which is what nearly every download here is. Above it, or
+// when the size is unknown, the browser has to do the downloading instead.
+function downloadFile(path, name, size) {
+  if (typeof size === "number" && size <= DOWNLOAD_BLOB_MAX) {
+    return downloadAsBlob(path, name, size);
+  }
+  return downloadViaLink(path, name);
+}
+
+// Through fetch rather than a plain link: /api/* only answers to the token
+// header, which a navigation cannot carry. The bytes are read off the stream
+// rather than taken whole from .blob(), because on a slow link the line this
+// counts into is the only thing on screen for the length of the transfer.
+async function downloadAsBlob(path, name, size) {
+  const label = name || baseName(path);
+  holdToast("Downloading " + label + "…");
+  try {
+    const r = await fetch(apiURL("api/fs/download?path=" + encodeURIComponent(path)),
+                          { headers: authHeaders() });
+    // rejectToken() says its own piece, so nothing is toasted over it — but the
+    // held line has no clock of its own and has to come down by hand.
+    if (r.status === 401) { hideToast(); rejectToken(); return; }
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const url = URL.createObjectURL(await readWithProgress(r, label, size));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name || baseName(path);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Not straight away: Safari needs the URL alive until its save sheet is done.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    toast("Downloaded " + label);
+  } catch (e) {
+    toast("Couldn't download");
+  }
+}
+
+// Repainting the line per chunk would spend a fast transfer in layout, so it is
+// rewritten at most this often.
+const DOWNLOAD_TICK_MS = 100;
+
+// The body chunk by chunk, with the held line saying how far it has got.
+async function readWithProgress(r, label, size) {
+  // The listing's size where the caller had one, the header's where it did not,
+  // and no total at all when neither says — a response can arrive unmeasured.
+  const total = typeof size === "number" && size > 0
+    ? size : Number(r.headers.get("Content-Length")) || 0;
+  // No readable stream (an old browser, a synthesized response) still
+  // downloads; it just cannot be counted.
+  if (!r.body || !r.body.getReader) return r.blob();
+  const reader = r.body.getReader();
+  const chunks = [];
+  let got = 0, painted = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    got += value.length;
+    if (Date.now() - painted < DOWNLOAD_TICK_MS) continue;
+    painted = Date.now();
+    // A percentage where the size is known, and how much has landed where it is
+    // not. 100% is kept back for the save itself — the last chunk read is not
+    // the same moment as a file the browser has taken.
+    holdToast("Downloading " + label + "… " + (total
+      ? Math.min(99, Math.floor(got * 100 / total)) + "%"
+      : fmtSize(got)));
+  }
+  return new Blob(chunks, { type: r.headers.get("Content-Type") || "" });
+}
+
+// The browser does the downloading, not us. So the token header only buys a
+// short-lived signed link (a navigation cannot carry the header, hence the
+// signature) and the browser streams the file itself. No "Downloading…" toast:
+// the browser puts its own download UI on screen, and ours would only sit on
+// top of it and outlive it. Silence unless something goes wrong.
+async function downloadViaLink(path, name) {
+  let url;
+  try {
+    const r = await fetch(apiURL("api/fs/download_link?path=" + encodeURIComponent(path)),
+                          { cache: "no-store", headers: authHeaders() });
+    if (r.status === 401) { rejectToken(); return; }
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    url = apiURL((await r.json()).url);
+  } catch (e) {
+    toast("Couldn't download");
+    return;
+  }
+  // A synchronous anchor click, for openUrl()'s reason: window.open lands on a
+  // blank tab in Safari. No target — the browser keeps the page and saves the
+  // file, here or in the tab it hands the cross-origin backend.
+  const a = document.createElement("a");
+  a.href = url;
+  // Honoured same-origin only; against the public deploy's cross-origin backend
+  // it is ignored and the server's Content-Disposition is what saves the file.
+  a.download = name || baseName(path);
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// ---- drag and drop (pointer devices only) ----------------------------------
+// Two drags, told apart by what the dataTransfer carries. One from the OS
+// carries "Files" and drops onto the listing as an upload into the folder on
+// screen — the same uploadFiles() the Upload row picks for. One that started on
+// a row carries FILES_DRAG_TYPE and drops onto a folder row, a folder tile or
+// an ancestor crumb as a move, which is the rename the action sheet already
+// posts with a folder in dst instead of a new name.
+//
+// None of it is wired on a touch device: a phone has no second pointer to drag
+// with, and draggable=true can take a long press away from the row on some
+// Android builds. touchOnly() is asked per render and per event rather than
+// latched, for the tablet that picks up a trackpad mid-session.
+
+// Ours, not the OS's — the one thing that says the drag started in this app.
+const FILES_DRAG_TYPE = "application/x-pockettui-entry";
+
+// What a row drag is carrying: the entry, the folder it was picked up in, and
+// which listing that was. Held here because dataTransfer.getData() is unreadable
+// until the drop, and every dragover before it has to know what is in flight to
+// answer at all. One for the column rather than one per pane: an entry dragged
+// out of one listing and dropped on a folder in the other is a move like any
+// other, and the two panes have to be reading the same drag for it.
+let filesDragEntry = null;
+
+function hasDragType(dt, type) {
+  return !!dt && Array.from(dt.types || []).includes(type);
+}
+
+// A folder dragged in from the OS has no bytes behind it — the drop hands over
+// an entry that either fails to read or uploads as zero bytes — so it is left
+// out rather than written as rubbish. webkitGetAsEntry is what tells the two
+// apart; where it is missing, or answers null for a file the page itself made,
+// the item counts as a file.
+function droppedFiles(dt) {
+  const items = Array.from(dt.items || []).filter((it) => it.kind === "file");
+  if (items.length && items[0].webkitGetAsEntry) {
+    return items
+      .filter((it) => { const e = it.webkitGetAsEntry(); return !e || e.isFile; })
+      .map((it) => it.getAsFile())
+      .filter(Boolean);
+  }
+  return Array.from(dt.files || []);
+}
+
+// The terminal's left-edge back gesture (20-edge-swipe.js), re-armed for the
+// screens this feature adds. A copy rather than a share: the terminal's
+// binding also feeds the global edgeSwipe flag its scroll code reads, and
+// entangling that is a worse trade than repeating two dozen lines.
+// The preventDefault in touchmove is load-bearing, not cosmetic: iOS 18+ home
+// screen web apps run their own system edge-swipe-back that pops history, so a
+// passive listener leaves the swipe firing both that and onBack() — one gesture,
+// two backs. Cancelling the move once the drag is armed and horizontal-rightward
+// suppresses the system gesture and leaves onBack() the only navigation.
+function attachEdgeSwipe(scr, onBack) {
+  let sx = 0, sy = 0, armed = false, committed = false;
+  scr.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) { armed = false; return; }
+    const t = e.touches[0];
+    armed = t.clientX <= EDGE_ZONE;
+    sx = t.clientX; sy = t.clientY;
+    committed = false;
+  }, { passive: true, capture: true });
+  scr.addEventListener("touchmove", (e) => {
+    if (!armed || e.touches.length !== 1) return;
+    const dx = e.touches[0].clientX - sx, dy = e.touches[0].clientY - sy;
+    if (dx < 0 || Math.abs(dy) > Math.abs(dx)) {
+      if (Math.abs(dy) > 12) armed = false;
+      return;
+    }
+    e.preventDefault();
+    committed = dx >= EDGE_TRIGGER;
+  }, { passive: false, capture: true });
+  const finish = () => {
+    const go = armed && committed;
+    armed = false; committed = false;
+    if (go) onBack();
+  };
+  scr.addEventListener("touchend", finish, { passive: true });
+  scr.addEventListener("touchcancel", finish, { passive: true });
+}
+
+// ------------------------------------------------------------
+// Every pane of this kind
+// ------------------------------------------------------------
+
+// The listings the column has, by the id it knows each of them by ("files" for
+// the one the markup ships, "files#2" for the copy made beside it). Everything
+// below that the rest of the app calls is a dispatcher over this.
+const filesPanes = {};
+
+// Which listing the editor, the reader or the media viewer over it was opened
+// from, or null while none of them is seated in a pane. There is one of each for
+// the two rows, so this is what says which row they are drawn in, whose keys act
+// on them, and whose Escape puts them away.
+let filesViewOwner = null;
+
+// Which listing the action sheet and the + sheet are about. Both are the app's
+// own sheets rather than a pane's — they cover the window — so they are wired
+// once and act on the listing that opened them.
+let filesSheetOwner = "files";
+
+// The pane a call that names none is about: the one holding the file view if
+// there is one, then the one last pressed in (sideFocusedOf, 26-side-pane.js),
+// then the markup's own. The press that opened a file is what set that focus, so
+// a read or a download asked for by the editor lands on the listing the file
+// came from.
+function filesActive() {
+  return filesPanes[filesViewOwner] || filesPanes[sideFocusedOf("files")]
+      || filesPanes.files;
+}
+
+function filesSheetPane() { return filesPanes[filesSheetOwner] || filesActive(); }
+
+// The action sheet raised over an entry. The sheet's markup is reached from here
+// rather than from inside a pane, for the same reason its rows are wired here:
+// there is one of it, over the window, whichever listing raised it.
+function filesShowActions(entry) {
+  $("file-actions-title").textContent = entry.name;
+  $("btn-file-download").style.display = entry.type === "dir" ? "none" : "";
+  // Only where the tap itself no longer reaches the editor. Every other text
+  // file already opens there, so an Edit row would say nothing.
+  $("btn-file-edit").style.display =
+    entry.type === "file" && FILES_HTML_RE.test(entry.name) ? "" : "none";
+  showSheet(true, "sheet-file-actions");
+}
+
+function filesAnyDocked() {
+  return Object.values(filesPanes).some((p) => p.isDocked());
+}
+
+// Either shape, either pane — what "the explorer is up at all" means now.
+function filesAnyOpen() {
+  return Object.values(filesPanes).some((p) => p.isOpen());
+}
+
+// The explorer over the whole window, which is the markup's own pane and no
+// other: a copy exists only as a row of the column beside a terminal.
+function filesFullScreen() {
+  return filesPanes.files.isOpen() && !filesPanes.files.isDocked();
+}
+
+function filesActivePath() {
+  const p = filesActive();
+  return p ? p.path() : "";
+}
+
+// A write lands on one listing and is a fact about a folder: any other pane
+// showing that same folder is now out of date and re-reads it. `path` is passed
+// where the folder written to is not the writing pane's own — a move empties the
+// folder the entry came from as well as filling the one it went to.
+function filesRefreshPeers(from, path) {
+  const at = path || (filesPanes[from] ? filesPanes[from].path() : "");
+  if (!at) return;
+  for (const key of Object.keys(filesPanes)) {
+    if (key !== from) filesPanes[key].reloadAt(at);
+  }
+}
+
+// ---- a file opened in a pane -----------------------------------------------
+// The editor, the reader and the media viewer open inside the docked pane
+// rather than over the whole window: same slot, same width, and the listing
+// left active underneath them, so the slot stays claimed and closing the pane
+// still closes one thing. The class is the whole of it — the geometry is the
+// stylesheet's — and a phone, which has no pane, never gets it. The answer is
+// handed back because the two shapes differ in more than geometry: the
+// full-screen one owns a history entry and the docked one owns none.
+//
+// There is one of each for two listings, so a view also has an owner: the pane
+// it was opened from. That is the row it is drawn in — the registry's els()
+// under the factory reaches for these three while their owner is its own — so
+// the column is laid out again whenever the owner changes.
+function dockFileView(el, pane) {
+  const owner = pane || filesActive();
+  if (owner && owner.isDocked()) {
+    el.classList.add("docked");
+    filesSetViewOwner(owner);
+    return true;
+  }
+  el.classList.remove("docked");
+  filesSetViewOwner(null);
+  // Full screen the view covers the explorer rather than sitting in it, and
+  // an active screen under another one would be two screens at once. Only the
+  // markup's own pane is ever the whole window.
+  filesPanes.files.setActive(false);
+  return false;
+}
+
+// Which row the three of them are in, said in one place: the id, and the layout
+// that reads it.
+function filesSetViewOwner(pane) {
+  filesViewOwner = pane ? pane.id : null;
+  sideLayout();
+}
+
+// The mirror, asked of the screen itself rather than of the owner: a view opened
+// in one shape has to be put away in the one it was opened in.
+function undockFileView(el) {
+  if (el.classList.contains("docked")) {
+    el.classList.remove("docked");
+    filesSetViewOwner(null);
+    return true;
+  }
+  filesPanes.files.setActive(true);
+  return false;
+}
+
+// Which of the three the pane is showing over its listing, or null for none.
+function dockedFileView() {
+  for (const id of ["screen-editor", "screen-reader", "viewer"]) {
+    if ($(id).classList.contains("docked")) return $(id);
+  }
+  return null;
+}
+
+// Put that view away. False is the editor asking about unsaved work and being
+// told to stay: the press that got here is spent on the question, and whatever
+// was going to close the pane has to stand down with it.
+function closeDockedFileView() {
+  const el = dockedFileView();
+  if (!el) return true;
+  if (el.id === "screen-editor") return editorCloseDocked();
+  if (el.id === "screen-reader") closeReader();
+  else hideImage();
+  return true;
+}
+
+// ------------------------------------------------------------
+// One pane
+// ------------------------------------------------------------
+
+// One call of this is one pane. The body below is the module this file used to
+// be, wrapped rather than rewritten — it is not indented into the function,
+// because every line of it would then have moved and the change would read as a
+// rewrite of an explorer that has not changed. What the wrapper buys is that
+// each `let` is now that pane's own, and a listing landing from a fetch started
+// before the user touched the other pane still draws into the pane it was asked
+// for, which no swapped "current pane" pointer can promise across an await.
+// `root` is that pane's own screen and `q` is how every id inside it is reached,
+// since the copy carries the same ids as the original; `id` is what the column
+// calls it, and it is what the body branches on wherever a thing belongs to the
+// markup's own pane alone — the whole window, the history entries that shape
+// owns, the terminal's cwd, and the size the app remembers being read at.
+// What the rest of the app calls is the dispatchers under the factory.
+function makeFilesPane(id, root) {
+
+const q = (name) => root.querySelector("#" + name);
+
+// This pane as the rest of the app holds it. Filled in at the end of this body,
+// and read only from a listener or a call that happens well after.
+const self = () => filesPanes[id];
+
+let filesPath = "";        // the directory currently listed
+let filesHome = "";        // $HOME as the backend reports it, for ~ crumbs
+let filesOrigin = null;    // the screen to restore on close
+// The folders listed since the explorer opened, entry folder first — the app's
+// own record of where back lands, and what back at [0] closes. It has to be
+// ours rather than the state objects stored with the history entries: iOS
+// clobbers those (seen after the download flow points the top frame at an
+// attachment URL — downloadViaLink's anchor click — which iOS aborts into its
+// download UI, nulling history.state on the way), after which every pop arrives
+// stateless and a state-reading handler reads each one as the pop past the
+// entry and closes the whole view from any depth.
+let filesStack = [];
+let filesSelected = null;  // the entry the action sheet is about
+// The entries currently drawn, so switching list/grid redraws them in place
+// rather than re-listing the folder.
+let filesEntries = [];
+// Whether the explorer is the terminal's right-hand pane rather than a screen
+// over it, and whether that pane is filling the main area. Wide layouts only —
+// nothing narrower has room for the slot.
+let filesDocked = false;
+// Only the markup's own pane keeps the size it is read at as the app's
+// preference: two panes writing one setting would each be undoing the other, so
+// a copy opens at its own height and keeps its expand in memory
+// (filesSetExpanded below).
+let filesExpanded = id === "files" ? cfg.filesExpanded : false;
+// The folder the terminal's own cwd last put the docked pane at — what "the
+// pane is still where the terminal left it" is measured against, and "" while
+// nothing has ever synced it. Only the docked shape has a terminal to follow.
+let filesSyncedCwd = "";
+// Set while btn-files-term's multi-entry history.go is in flight, so the one
+// popstate it lands as closes the view instead of climbing one folder.
+let filesClosing = false;
+// A finished long-press ends in a click the browser synthesizes on the same
+// row; stamping the moment lets that click be ignored (the viewer's
+// viewerOpenedAt idea).
+let filesPressedAt = 0;
+
+// ---- reading at a git ref ---------------------------------------------------
+// The listing can come from a branch instead of from the disk: `ref` and `root`
+// on /api/fs/list and /api/fs/read answer out of `git ls-tree` and `git show`
+// at that ref. It is a reading mode and nothing else — every write the explorer
+// offers goes away while it is on, the editor opens read-only, and the working
+// tree the terminal beside it is sitting in never moves, which is the point of
+// looking at a branch this way rather than checking it out.
+//
+// Deliberately not remembered across loads, unlike the layout and sort above:
+// those are how this user reads every folder, and this is a place they went to
+// look at something. A reload lands back on the disk.
+
+let filesRef = "";        // the branch being read, "" for the working tree
+let filesRefRoot = "";    // the repo top level filesRef's paths are relative to
+// The /api/git/branches answer about the folder on screen — {root, current,
+// branches}, root null outside a repo — or null before it has been asked.
+let filesRepo = null;
+// Which folder that answer was about. Inside a known root the answer cannot
+// have changed, and outside one there is no root to test the next folder
+// against, so this is what says whether the question needs asking again.
+let filesRepoAsked = "";
+
 function openExplorer(path, opts) {
   // Nothing to browse yet — prompt instead of failing against the static host.
   if (needsSetup()) { openSettings(true); return; }
@@ -168,7 +549,11 @@ function openExplorer(path, opts) {
   if (isWideLayout() && $("screen-term").classList.contains("active")) {
     return openDockedFiles(path, opts);
   }
-  if (!$("screen-files").classList.contains("active")) {
+  // The whole window is the markup's own pane and no other: a copy is a second
+  // row of the column, which only a wide layout beside a terminal has, and it
+  // owns none of the history entries this shape unwinds.
+  if (id !== "files") return Promise.resolve(false);
+  if (!root.classList.contains("active")) {
     filesOrigin = $("screen-term").classList.contains("active")
       ? "screen-term" : "screen-list";
     $(filesOrigin).classList.remove("active");
@@ -176,8 +561,8 @@ function openExplorer(path, opts) {
     // terminal. Set here and nowhere else: filesOrigin outlives a trip through
     // the editor, which returns to this screen without coming back through
     // openExplorer.
-    $("btn-files-term").style.display = filesOrigin === "screen-term" ? "" : "none";
-    $("screen-files").classList.add("active");
+    q("btn-files-term").style.display = filesOrigin === "screen-term" ? "" : "none";
+    root.classList.add("active");
     syncChrome();
     filesStack = [];         // seeded once loadDir below resolves the real path
     history.pushState({ files: true }, "", location.href);
@@ -206,12 +591,12 @@ function closeExplorer() {
   // just the field, same as Escape — same pushState-back trick editorPopped()
   // uses for a dirty buffer, since the pop has already happened by the time
   // either gets a say.
-  if ($("files-path-wrap").classList.contains("editing")) {
+  if (q("files-path-wrap").classList.contains("editing")) {
     closePathEdit();
     history.pushState(filesEntryState(), "", location.href);
     return;
   }
-  $("screen-files").classList.remove("active");
+  root.classList.remove("active");
   const back = filesOrigin || "screen-list";
   filesOrigin = null;
   filesStack = [];
@@ -230,16 +615,20 @@ function closeExplorer() {
 // used to read "the explorer is up" off that class has to say which of the two
 // shapes it means; the flag is what says it.
 
+
 // Expanded is the pane's own state, but the class lives on #screen-term: the
-// seam it hides and the width it overrides are both read from there.
+// seam it hides and the width it overrides are both read from there, and only
+// one row of the column may be expanded at a time (sideSetFull).
 function syncFilesExpand() {
   const on = filesDocked && filesExpanded;
-  sideSetFull("files", on);
-  // Every bar the pane can wear one in: the listing's own, and the editor's,
-  // the reader's and the viewer's while a file is open in it.
-  for (const btn of document.querySelectorAll(".dock-expand")) {
-    btn.querySelector("use").setAttribute("href", on ? "#i-collapse" : "#i-expand");
-    btn.setAttribute("aria-label", on ? "Shrink the file pane" : "Expand the file pane");
+  sideSetFull(id, on);
+  // Every bar this pane can wear one in: the listing's own, and the editor's,
+  // the reader's and the viewer's while a file of its own is open in one.
+  for (const box of filesEls()) {
+    for (const btn of box.querySelectorAll(".dock-expand")) {
+      btn.querySelector("use").setAttribute("href", on ? "#i-collapse" : "#i-expand");
+      btn.setAttribute("aria-label", on ? "Shrink the file pane" : "Expand the file pane");
+    }
   }
 }
 
@@ -250,7 +639,7 @@ function syncFilesExpand() {
 // three lines at the caller.
 function filesSetExpanded(v) {
   filesExpanded = v;
-  cfg.filesExpanded = v;
+  if (id === "files") cfg.filesExpanded = v;
   syncFilesExpand();
 }
 
@@ -261,92 +650,47 @@ function openDockedFiles(path, opts) {
   // The column's answer comes first, and a no is final: the row this would take
   // may be a docked editor with unsaved work whose owner was asked and said
   // stay (sideClaim, 26-side-pane.js), and nothing here may have moved by then.
-  if (!sideClaim("files", opts)) return Promise.resolve(false);
+  if (!sideClaim(id, opts)) return Promise.resolve(false);
   const already = filesDocked;
   filesDocked = true;
   filesOrigin = "screen-term";
   // Redundant beside a live terminal — it is right there — and the pane has
   // its own cross for leaving.
-  $("btn-files-term").style.display = "none";
-  $("screen-files").classList.add("docked");
-  $("screen-files").classList.add("active");
+  q("btn-files-term").style.display = "none";
+  root.classList.add("docked");
+  root.classList.add("active");
   syncFilesExpand();
   if (already) return navigateDir(path);
   filesStack = [];           // seeded once loadDir below resolves the real path
   return loadDir(path);
 }
 
-// `id` is which of the column's rows this is about, and this build has one
-// explorer whose id is "files": anything else names a row this module has no
-// pane for (26-side-pane.js) and there is nothing here to close for it.
-function closeDockedFiles(id) {
-  if (id && id !== "files") return;
+// This pane's way out: its own cross, the folder key toggling it away, and the
+// column taking its row for another (the registry below).
+function closeDockedFiles() {
   if (!filesDocked) return;
-  // A file opened in the pane goes with the pane, and the editor gets the same
-  // say about unsaved work that its own back gives it.
-  if (!closeDockedFileView()) return;
+  // A file opened in this pane goes with it, and the editor gets the same say
+  // about unsaved work that its own back gives it. Only a file of this pane's:
+  // one seated over the other listing is that pane's to ask about, and a row
+  // evicted from under a listing that owns nothing asks nothing.
+  if (filesViewOwner === id && !closeDockedFileView()) return;
   closeFilesMenus();
   closePathEdit();
   filesDocked = false;
   filesOrigin = null;
   filesStack = [];
   clearRefState();
-  $("screen-files").classList.remove("docked");
-  $("screen-files").classList.remove("active");
+  root.classList.remove("docked");
+  root.classList.remove("active");
   syncFilesExpand();         // takes .side-full off the terminal with it
-  sideDrop("files");
-}
-
-// ---- a file opened in the pane ---------------------------------------------
-// The editor, the reader and the media viewer open inside the docked pane
-// rather than over the whole window: same slot, same width, and the listing
-// left active underneath them, so the slot stays claimed and closing the pane
-// still closes one thing. The class is the whole of it — the geometry is the
-// stylesheet's — and a phone, which has no pane, never gets it. The answer is
-// handed back because the two shapes differ in more than geometry: the
-// full-screen one owns a history entry and the docked one owns none.
-function dockFileView(el) {
-  if (filesDocked) { el.classList.add("docked"); return true; }
-  el.classList.remove("docked");
-  // Full screen the view covers the explorer rather than sitting in it, and
-  // an active screen under another one would be two screens at once.
-  $("screen-files").classList.remove("active");
-  return false;
-}
-
-// The mirror, asked of the screen itself rather than of filesDocked: a view
-// opened in one shape has to be put away in the one it was opened in.
-function undockFileView(el) {
-  if (el.classList.contains("docked")) { el.classList.remove("docked"); return true; }
-  $("screen-files").classList.add("active");
-  return false;
-}
-
-// Which of the three the pane is showing over its listing, or null for none.
-function dockedFileView() {
-  for (const id of ["screen-editor", "screen-reader", "viewer"]) {
-    if ($(id).classList.contains("docked")) return $(id);
-  }
-  return null;
-}
-
-// Put that view away. False is the editor asking about unsaved work and being
-// told to stay: the press that got here is spent on the question, and whatever
-// was going to close the pane has to stand down with it.
-function closeDockedFileView() {
-  const el = dockedFileView();
-  if (!el) return true;
-  if (el.id === "screen-editor") return editorCloseDocked();
-  if (el.id === "screen-reader") closeReader();
-  else hideImage();
-  return true;
+  sideDrop(id);
 }
 
 // The docked pane owns no history entries, so its back arrow has to do what a
 // pop does for the full-screen explorer: climb filesStack, and close at [0].
 function filesBack() {
   if (!filesDocked) { history.back(); return; }
-  if ($("files-path-wrap").classList.contains("editing")) { closePathEdit(); return; }
+  if (q("files-path-wrap").classList.contains("editing")) { closePathEdit(); return; }
   if (filesStack.length > 1) {
     filesStack.pop();
     const path = filesStack[filesStack.length - 1];
@@ -358,26 +702,34 @@ function filesBack() {
   closeDockedFiles();
 }
 
-// Wired by class rather than by id: the pane's two controls appear in four
-// bars now — the listing's, and one per file view seated over it — and they do
-// the same thing in all of them.
-for (const btn of document.querySelectorAll(".dock-expand")) {
+// Wired under this pane's own screen rather than over the document: the pane's
+// two controls appear in its bar, and a second explorer brings a bar of its own.
+// The same pair in the three file views is wired once under the factory — there
+// is one editor, one reader and one viewer for both rows — and acts on whichever
+// listing owns them.
+for (const btn of root.querySelectorAll(".dock-expand")) {
   btn.addEventListener("click", () => {
     filesSetExpanded(!filesExpanded);
     refit(0);
   });
 }
-for (const btn of document.querySelectorAll(".dock-close")) {
+for (const btn of root.querySelectorAll(".dock-close")) {
   btn.addEventListener("click", () => closeDockedFiles());
 }
 
-// This pane as a row of the column. Four elements, because a file opened from the
-// docked pane opens inside the pane: the editor, the reader and the viewer seat
-// themselves over the listing and belong to whichever row the listing is in.
-sideRegister("files", {
+// This pane as a row of the column: its own screen, plus the three file views
+// while this is the listing they were opened from — a file opened here is seated
+// over this listing and belongs to whichever row it is in, and the other
+// explorer's row must not take them with it.
+function filesEls() {
+  return filesViewOwner === id
+    ? [root, $("screen-editor"), $("screen-reader"), $("viewer")]
+    : [root];
+}
+sideRegister(id, {
   type: "files",
-  els: () => [$("screen-files"), $("screen-editor"), $("screen-reader"), $("viewer")],
-  close: () => closeDockedFiles("files"),
+  els: filesEls,
+  close: () => closeDockedFiles(),
   setExpanded: (on) => filesSetExpanded(on),
 });
 
@@ -388,14 +740,13 @@ sideRegister("files", {
 // caller is restoreFileView's reload path; a rail switch always has a folder.
 // The demo has no files to open at all, so it gives the slot back instead of
 // leaving the terminal narrowed against an empty pane.
-function filesFollowSession(id) {
-  if (id && id !== "files") return;
+function followSession() {
   if (!isWideLayout() || filesDocked) return;
-  if (demoMode) { sideDrop("files"); return; }
+  if (demoMode) { sideDrop(id); return; }
   // Handed back because the claim it makes is a round trip away: the cwd has to
   // answer before the row is in the column, and the restore that called this
   // has an order to put the rows in once it is (sideOrder, 26-side-pane.js).
-  return filesOpenAtCwd("files");
+  return filesOpenAtCwd();
 }
 
 // ---- putting the whole view away (see fileViews in 09-image-viewer.js) ------
@@ -423,7 +774,7 @@ function filesStash() {
 // screen at once, so closeExplorer's return-to-origin (and its refit, which
 // would fit a terminal that is about to change session) is not what it wants.
 function filesTeardown() {
-  $("screen-files").classList.remove("active");
+  root.classList.remove("active");
   filesOrigin = null;
   filesStack = [];
   clearRefState();
@@ -434,15 +785,14 @@ function filesTeardown() {
   // one had put away claims it again (restoreFileView), and a session that had
   // nothing gets the whole width. Same tail as closeDockedFiles, which is the
   // other way the pane ends.
-  if (wasDocked) { syncFilesExpand(); sideDrop("files"); }
+  if (wasDocked) { syncFilesExpand(); sideDrop(id); }
 }
 
-// Everything the explorer is holding about the computer being left, for a
-// switch to another one (switchProfile, 40-profiles.js): whatever shape the
-// view is in goes away, since a folder on that machine is not a folder on this
-// one, and the listings it cached go with it. The caller puts the session list
-// back on screen, so nothing is restored here.
-function filesResetForProfile() {
+// Everything this pane is holding about the computer being left, for a switch to
+// another one (filesResetForProfile, under the factory): whatever shape the view
+// is in goes away, since a folder on that machine is not a folder on this one.
+// The caller puts the session list back on screen, so nothing is restored here.
+function filesReset() {
   closeFilesMenus();
   closePathEdit();
   if (filesDocked) closeDockedFiles();
@@ -452,7 +802,6 @@ function filesResetForProfile() {
   filesSyncedCwd = "";
   filesEntries = [];
   filesSelected = null;
-  filesListCache.clear();
 }
 
 // The mirror of openExplorer's screen work, minus the history push — the
@@ -471,14 +820,14 @@ function filesRestore(s) {
   filesRepoAsked = s.repoAsked || "";
   syncRefBar();
   syncRefActions();
-  $("btn-files-term").style.display =
+  q("btn-files-term").style.display =
     !filesDocked && filesOrigin === "screen-term" ? "" : "none";
-  $("screen-files").classList.toggle("docked", filesDocked);
+  root.classList.toggle("docked", filesDocked);
   // Docked, the terminal underneath is the pane's neighbour rather than the
   // screen it covers, and it stays on view.
   if (!filesDocked) $(filesOrigin || "screen-list").classList.remove("active");
-  $("screen-files").classList.add("active");
-  if (filesDocked) { sideClaim("files"); syncFilesExpand(); }
+  root.classList.add("active");
+  if (filesDocked) { sideClaim(id); syncFilesExpand(); }
   syncChrome();
   // The rows on screen are whichever folder the session we were away in left
   // there; the cache spares a round trip for a folder already listed.
@@ -505,25 +854,19 @@ async function fetchPaneCwd() {
   return "";
 }
 
-// The folder key's own way in and out. Docked, it is a toggle: the pane it opened
-// is the pane it puts away, and which pane that is is the column's answer rather
-// than this module's — with two explorer rows it is the one last pressed in
-// (sideFocusedOf, 26-side-pane.js). Full screen there is nothing to toggle —
-// back is how that one leaves — so the opener below stays the way in for
-// everything else, including the split menu, which never toggles.
-function openFilesAtCwd() {
-  const id = sideFocusedOf("files");
-  if (id) { closeDockedFiles(id); return; }
-  return filesOpenAtCwd("files");
-}
-
 // The terminal entry point. The pane's cwd is asked for at tap time — it moves
-// with every cd — and $HOME quietly stands in when tmux cannot say. `id` is the
-// row it opens as and `opts` the column's (sideClaim's `keep`); this build has
-// one explorer, and an id naming another row has no pane here to open.
-async function filesOpenAtCwd(id, opts) {
-  if (id && id !== "files") return;
+// with every cd — and $HOME quietly stands in when tmux cannot say. `opts` is
+// the column's (sideClaim's `keep`).
+async function filesOpenAtCwd(opts) {
   if (demoMode) { toast("No files in the demo"); return; }
+  // A copy is the user asking for a second look at where they already are, so it
+  // opens on the folder the first listing is showing. With no listing up there
+  // is no "here" to look at twice, and it falls to the session's own cwd, which
+  // is where the folder key opens.
+  if (id !== "files") {
+    const here = filesPanes.files ? filesPanes.files.path() : "";
+    if (here) return openExplorer(here, opts);
+  }
   const from = currentSession;
   const cwd = await fetchPaneCwd();
   if (cwd === null) return;
@@ -534,8 +877,10 @@ async function filesOpenAtCwd(id, opts) {
   const ok = await openExplorer(cwd, opts);
   // The folder that actually resolved, not the string asked for: a cwd tmux
   // could not give lands at $HOME, and that is where the pane is. Docked only —
-  // full screen there is no terminal beside it to keep up with.
-  if (ok && filesDocked) filesSyncedCwd = filesPath;
+  // full screen there is no terminal beside it to keep up with — and the
+  // markup's own pane only: a copy is a second place to look and never follows
+  // a cd (filesFollowsCwd below).
+  if (ok && filesDocked && id === "files") filesSyncedCwd = filesPath;
 }
 
 // Docked, the pane keeps up with the terminal it sits beside: cd in the shell
@@ -553,7 +898,7 @@ function filesFollowsCwd() {
       && filesStack.length <= 1 && filesPath === filesSyncedCwd
       && !$("screen-editor").classList.contains("active")
       && !$("screen-reader").classList.contains("active")
-      && !$("files-path-wrap").classList.contains("editing");
+      && !q("files-path-wrap").classList.contains("editing");
 }
 
 // One question in flight at a time, and every condition read again on the way
@@ -623,7 +968,7 @@ function scheduleCwdAfterTitle() {
 // own, so the parent has to be on screen and on the history stack before the
 // file's view goes up. Awaiting the listing is what makes that ordering real:
 // back from the file then lands on the parent, and back again on the terminal.
-async function openPathInExplorer(path) {
+async function openPath(path) {
   if (demoMode) { toast("No files in the demo"); return; }
   let hit;
   try {
@@ -636,12 +981,6 @@ async function openPathInExplorer(path) {
   if (hit.kind === "dir") { openExplorer(hit.path); return; }
   if (await openExplorer(hit.dir)) openEntry(hit.entry, hit.dir);
 }
-
-// Keyed by the server's own normalized path (what data.path comes back as,
-// not necessarily what was requested — ~ resolves, PATH_REWRITES can retarget
-// a mount). The address field's suggestions read this before fetching, so
-// retyping or backspacing within a directory already listed costs nothing.
-const filesListCache = new Map();
 
 // Is `path` inside `root`? The one place ~ is expanded client-side, because
 // the address bar is the one thing that can type it — everything else already
@@ -683,8 +1022,8 @@ async function fsList(path) {
   const ref = refFor(path);
   const parts = path ? ["path=" + encodeURIComponent(path)] : [];
   parts.push(...refParams(ref));
-  const q = parts.length ? "?" + parts.join("&") : "";
-  const r = await fetch(apiURL("api/fs/list" + q),
+  const qs = parts.length ? "?" + parts.join("&") : "";
+  const r = await fetch(apiURL("api/fs/list" + qs),
                         { cache: "no-store", headers: authHeaders() });
   if (r.status === 401) { rejectToken(); throw new Error("unauthorized"); }
   const data = await r.json().catch(() => null);
@@ -731,8 +1070,8 @@ async function resolveFsPath(path) {
 async function fsReadText(path) {
   let r, data;
   try {
-    const q = ["path=" + encodeURIComponent(path), ...refParams(refFor(path))];
-    r = await fetch(apiURL("api/fs/read?" + q.join("&")),
+    const qs = ["path=" + encodeURIComponent(path), ...refParams(refFor(path))];
+    r = await fetch(apiURL("api/fs/read?" + qs.join("&")),
                     { cache: "no-store", headers: authHeaders() });
     data = await r.json().catch(() => null);
   } catch (e) { toast("Couldn't read the file"); return null; }
@@ -780,16 +1119,16 @@ function applyListing(data) {
   if (filesStack.length === 0) filesStack.push(data.path);
   renderCrumbs(data.path);
   renderEntries(data.entries || []);
-  $("files-error").style.display = "none";
+  q("files-error").style.display = "none";
   // After filesPath, which is the folder the question is about.
   syncRefBar();
   syncRepo();
 }
 function showListError(e) {
   dbg("fs list failed:", e);
-  $("files-list").innerHTML = "";
-  $("files-empty").style.display = "none";
-  $("files-error").style.display = "block";
+  q("files-list").innerHTML = "";
+  q("files-empty").style.display = "none";
+  q("files-error").style.display = "block";
 }
 
 async function loadDir(path) {
@@ -838,7 +1177,7 @@ function crumbBtn(label, target, current) {
 }
 
 function renderCrumbs(path) {
-  const wrap = $("files-crumbs");
+  const wrap = q("files-crumbs");
   wrap.innerHTML = "";
   let parts, prefix, rootLabel;
   if (filesHome && (path === filesHome || path.startsWith(filesHome + "/"))) {
@@ -886,9 +1225,9 @@ function openPathEdit() {
   // with it — so close them here, or the scrim would be left dimming the
   // screen with nothing to tap it away.
   closeFilesMenus();
-  $("files-path-wrap").classList.add("editing");
-  $("files-suggest-scrim").classList.add("show");
-  const input = $("files-path-input");
+  q("files-path-wrap").classList.add("editing");
+  q("files-suggest-scrim").classList.add("show");
+  const input = q("files-path-input");
   input.value = filesPath;
   input.focus();
   // setSelectionRange after focus, not before — iOS otherwise ignores it on a
@@ -899,9 +1238,9 @@ function openPathEdit() {
 }
 
 function closePathEdit() {
-  $("files-path-wrap").classList.remove("editing");
-  $("files-suggest-scrim").classList.remove("show");
-  $("files-path-input").blur();
+  q("files-path-wrap").classList.remove("editing");
+  q("files-suggest-scrim").classList.remove("show");
+  q("files-path-input").blur();
   hideSuggestions();
   clearTimeout(suggestTimer);
   suggestTimer = null;
@@ -909,8 +1248,8 @@ function closePathEdit() {
 }
 
 function hideSuggestions() {
-  $("files-suggest").classList.remove("show");
-  $("files-suggest").innerHTML = "";
+  q("files-suggest").classList.remove("show");
+  q("files-suggest").innerHTML = "";
 }
 
 // Deliberately unlike fileRow() in the list below: same icon, same colors,
@@ -932,7 +1271,7 @@ function suggestRow(entry, segPart) {
 }
 
 function renderSuggestions(dirPart, segPart, entries) {
-  const box = $("files-suggest");
+  const box = q("files-suggest");
   box.innerHTML = "";
   const matches = entries.filter(e => e.name.startsWith(segPart));
   if (!matches.length) {
@@ -952,7 +1291,7 @@ function renderSuggestions(dirPart, segPart, entries) {
 // list the next (as yet empty) segment underneath it — the auto-roll. File:
 // navigate there like a tap in the list would, and close the field.
 function pickSuggestion(dirPart, entry) {
-  const input = $("files-path-input");
+  const input = q("files-path-input");
   const full = joinPath(dirPart, entry.name);
   if (entry.type === "dir") {
     input.value = full + "/";
@@ -977,7 +1316,7 @@ async function loadSuggestions(dirPart, segPart) {
     renderSuggestions(dirPart, segPart, data.entries || []);
   } catch (e) {
     if (gen !== suggestGen) return;
-    const box = $("files-suggest");
+    const box = q("files-suggest");
     box.innerHTML = "";
     // Same wording the explorer's own error state uses for not_readable;
     // not_found and bad_path are both just "nothing to suggest yet" here —
@@ -1001,7 +1340,7 @@ function fetchSuggestions(typed) {
 // directory is opened like a crumb tap, a file like a list tap; neither
 // existing surfaces the explorer's own error state rather than a dead end.
 async function submitPathEdit() {
-  const typed = $("files-path-input").value.trim();
+  const typed = q("files-path-input").value.trim();
   if (!typed) { closePathEdit(); return; }
   clearTimeout(suggestTimer);
   suggestGen++;
@@ -1025,15 +1364,15 @@ async function submitPathEdit() {
   filesStack.push(filesPath);
 }
 
-$("btn-files-edit-path").addEventListener("click", () => {
-  if ($("files-path-wrap").classList.contains("editing")) closePathEdit();
+q("btn-files-edit-path").addEventListener("click", () => {
+  if (q("files-path-wrap").classList.contains("editing")) closePathEdit();
   else openPathEdit();
 });
 // Same as Escape: close without navigating, whether the tap landed on the
 // dimmed file list or on empty space below a short one.
-$("files-suggest-scrim").addEventListener("click", () => closePathEdit());
-$("files-path-input").addEventListener("input", (e) => fetchSuggestions(e.target.value));
-$("files-path-input").addEventListener("keydown", (e) => {
+q("files-suggest-scrim").addEventListener("click", () => closePathEdit());
+q("files-path-input").addEventListener("input", (e) => fetchSuggestions(e.target.value));
+q("files-path-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); submitPathEdit(); }
   else if (e.key === "Escape") { e.preventDefault(); closePathEdit(); }
 });
@@ -1043,10 +1382,10 @@ $("files-path-input").addEventListener("keydown", (e) => {
 // (blur fires before the click that caused it), but longer than its tick-0:
 // a touch's click can lag its own blur by more than one turn on mobile, and
 // firing early here would drop the suggestion tap on the floor.
-$("files-path-input").addEventListener("blur", () => {
+q("files-path-input").addEventListener("blur", () => {
   setTimeout(() => {
-    if (document.activeElement !== $("files-path-input")
-        && !$("files-suggest").contains(document.activeElement)) {
+    if (document.activeElement !== q("files-path-input")
+        && !q("files-suggest").contains(document.activeElement)) {
       closePathEdit();
     }
   }, 150);
@@ -1058,14 +1397,14 @@ $("files-path-input").addEventListener("blur", () => {
 // tap, long press and everything they open behave identically either way.
 
 function renderEntries(entries) {
-  const list = $("files-list");
+  const list = q("files-list");
   const grid = cfg.filesView === "grid";
   filesEntries = entries;
   stopThumbs();
   thumbsDrawn = grid && thumbsOn();
   list.classList.toggle("files-grid", grid);
   list.innerHTML = "";
-  $("files-empty").style.display = entries.length ? "none" : "block";
+  q("files-empty").style.display = entries.length ? "none" : "block";
   for (const e of sortedEntries()) list.appendChild(grid ? fileTile(e) : fileRow(e));
 }
 
@@ -1191,7 +1530,7 @@ function thumbWatch(slot) {
   if (!thumbRun) {
     // Docked, the pane is what scrolls; full screen, the page is. Asked of the
     // live style rather than of the layout, since the same markup is both.
-    const wrap = $("files-list").closest(".files-wrap");
+    const wrap = q("files-list").closest(".files-wrap");
     const root = wrap && getComputedStyle(wrap).overflowY !== "visible" ? wrap : null;
     const run = { obs: null, ctrl: new AbortController(), queue: [], active: 0 };
     // A screen's worth of lead time, so a tile is usually painted by the time
@@ -1268,7 +1607,7 @@ async function loadThumb(slot, run) {
 function syncThumbsCap() {
   if (cfg.filesView !== "grid" || !filesEntries.length) return;
   if (thumbsDrawn === thumbsOn()) return;
-  if ($("files-error").style.display === "block") return;
+  if (q("files-error").style.display === "block") return;
   renderEntries(filesEntries);
 }
 
@@ -1277,19 +1616,19 @@ function syncThumbsCap() {
 // along, so tapping anywhere off the menu closes it and nothing underneath
 // takes that tap as a row press.
 function showViewMenu(on) {
-  $("files-view-wrap").classList.toggle("open", on);
-  $("files-view-scrim").classList.toggle("show", on);
-  $("btn-files-view").setAttribute("aria-expanded", on ? "true" : "false");
+  q("files-view-wrap").classList.toggle("open", on);
+  q("files-view-scrim").classList.toggle("show", on);
+  q("btn-files-view").setAttribute("aria-expanded", on ? "true" : "false");
 }
 
 // Only ever one open, and the scrim above belongs to whichever it is.
-$("btn-files-view").addEventListener("click", () => showRefMenu(false));
+q("btn-files-view").addEventListener("click", () => showRefMenu(false));
 
 // Both groups tick from cfg — so this is also what a fresh load calls to catch
 // up with what was remembered.
 function syncViewMenu() {
   const v = cfg.filesView, s = cfg.filesSort;
-  for (const row of $("files-view-menu").querySelectorAll(".view-row")) {
+  for (const row of q("files-view-menu").querySelectorAll(".view-row")) {
     const on = row.dataset.view ? row.dataset.view === v : row.dataset.sort === s;
     row.classList.toggle("on", on);
     row.setAttribute("aria-checked", on ? "true" : "false");
@@ -1297,11 +1636,11 @@ function syncViewMenu() {
 }
 syncViewMenu();
 
-$("btn-files-view").addEventListener("click", () => {
-  showViewMenu(!$("files-view-wrap").classList.contains("open"));
+q("btn-files-view").addEventListener("click", () => {
+  showViewMenu(!q("files-view-wrap").classList.contains("open"));
 });
-$("files-view-scrim").addEventListener("click", closeFilesMenus);
-for (const row of $("files-view-menu").querySelectorAll(".view-row")) {
+q("files-view-scrim").addEventListener("click", closeFilesMenus);
+for (const row of q("files-view-menu").querySelectorAll(".view-row")) {
   // Either choice is global, so nothing is re-listed: the entries already on
   // screen are simply drawn the other way, and every later listing — including
   // the ones a rail switch restores from the cache — follows cfg.
@@ -1312,7 +1651,7 @@ for (const row of $("files-view-menu").querySelectorAll(".view-row")) {
     syncViewMenu();
     // An unreadable folder is showing its error, not a listing; leave it alone
     // rather than repainting the entries it replaced.
-    if ($("files-error").style.display !== "block") renderEntries(filesEntries);
+    if (q("files-error").style.display !== "block") renderEntries(filesEntries);
   });
 }
 
@@ -1325,9 +1664,9 @@ for (const row of $("files-view-menu").querySelectorAll(".view-row")) {
 
 function showRefMenu(on) {
   if (on) showViewMenu(false);
-  $("files-ref-wrap").classList.toggle("open", on);
-  $("files-view-scrim").classList.toggle("show", on);
-  $("btn-files-ref").setAttribute("aria-expanded", on ? "true" : "false");
+  q("files-ref-wrap").classList.toggle("open", on);
+  q("files-view-scrim").classList.toggle("show", on);
+  q("btn-files-ref").setAttribute("aria-expanded", on ? "true" : "false");
 }
 
 function closeFilesMenus() { showViewMenu(false); showRefMenu(false); }
@@ -1363,11 +1702,11 @@ async function syncRepo() {
 // ref is being read, and whether the bar is saying read-only.
 function syncRefBar() {
   const repo = filesRepo && filesRepo.root ? filesRepo : null;
-  $("files-ref-wrap").hidden = !repo;
-  $("files-ref-ro").hidden = !filesRef;
+  q("files-ref-wrap").hidden = !repo;
+  q("files-ref-ro").hidden = !filesRef;
   if (!repo) { showRefMenu(false); return; }
   const live = repo.current || "HEAD";
-  const btn = $("btn-files-ref");
+  const btn = q("btn-files-ref");
   btn.textContent = filesRef || live;
   btn.classList.toggle("on", !!filesRef);
   btn.setAttribute("aria-label", filesRef
@@ -1380,7 +1719,7 @@ function syncRefBar() {
 // that ends the mode is the one row always present, so it is the one that never
 // moves; the rest are the server's order, locals before remotes.
 function syncRefMenu(repo, live) {
-  const menu = $("files-ref-menu");
+  const menu = q("files-ref-menu");
   menu.innerHTML = "";
   for (const name of [live, ...(repo.branches || []).filter(b => b !== live)]) {
     const on = name === (filesRef || live);
@@ -1415,7 +1754,7 @@ function pickRef(ref) {
 // working tree would be offering to change a different file than the one shown.
 // The action sheet's rows are the same story, refused in openFileActions.
 function syncRefActions() {
-  $("btn-files-add").style.display = filesRef ? "none" : "";
+  q("btn-files-add").style.display = filesRef ? "none" : "";
 }
 
 // Leaving the explorer leaves the branch behind, the way it leaves the folder
@@ -1440,8 +1779,8 @@ function syncRefCap() {
   else syncRefBar();
 }
 
-$("btn-files-ref").addEventListener("click", () => {
-  showRefMenu(!$("files-ref-wrap").classList.contains("open"));
+q("btn-files-ref").addEventListener("click", () => {
+  showRefMenu(!q("files-ref-wrap").classList.contains("open"));
 });
 
 // Tap opens; a long press (or a desktop right-click) opens the action sheet.
@@ -1483,6 +1822,10 @@ function wireRow(row, entry) {
 }
 
 function openEntry(e, dir=filesPath) {
+  // There is one editor, one reader and one viewer for the two listings, so a
+  // file already open over the other one is put away first — with the same say
+  // about unsaved work its own back gives it, and a stay stops this open here.
+  if (!filesTakeView()) return;
   const full = joinPath(dir, e.name);
   if (e.type === "dir") { navigateDir(full); return; }
   // A broken link or a special file: nothing to enter or edit, so the sheet
@@ -1493,7 +1836,7 @@ function openEntry(e, dir=filesPath) {
   // page opens as the source it is, in the editor that already opens read-only.
   if (FILES_MEDIA_RE.test(e.name)) {
     if (filesRef) toast("Can't preview images from " + filesRef);
-    else showImage(full);
+    else showImage(full, self());
     return;
   }
   if (FILES_PDF_RE.test(e.name)) {
@@ -1501,9 +1844,16 @@ function openEntry(e, dir=filesPath) {
     else openPdf(full);
     return;
   }
-  if (FILES_MD_RE.test(e.name)) { openReader(full); return; }
+  if (FILES_MD_RE.test(e.name)) { openReader(full, self()); return; }
   if (FILES_HTML_RE.test(e.name) && !filesRef) { openRendered(full); return; }
-  openEditor(full);
+  openEditor(full, { pane: self() });
+}
+
+// Whether this pane may take the three views over. A stay is the editor's, and
+// it stops whatever was about to open a file here.
+function filesTakeView() {
+  if (!filesViewOwner || filesViewOwner === id) return true;
+  return closeDockedFileView();
 }
 
 // A page renders in a tab of the browser's, not in ours: it is served
@@ -1549,7 +1899,7 @@ async function openRendered(path) {
 // reason. Nothing is capped on the way: the file is streamed, by Range, from
 // whichever of the two is showing it.
 async function openPdf(path) {
-  if (isWideLayout()) { showImage(path); return; }
+  if (isWideLayout()) { showImage(path, self()); return; }
   let url;
   try {
     const r = await fetch(apiURL("api/file_link?path=" + encodeURIComponent(path)),
@@ -1575,14 +1925,11 @@ function openFileActions(entry) {
   // Every row in this sheet either writes the working tree or downloads it off
   // the disk, and at a ref the listing on screen is neither.
   if (filesRef) { toast("Read-only on " + filesRef); return; }
+  // The sheet is the app's own rather than this pane's, so this is what says
+  // which listing the rows it is about belong to.
+  filesSheetOwner = id;
   filesSelected = entry;
-  $("file-actions-title").textContent = entry.name;
-  $("btn-file-download").style.display = entry.type === "dir" ? "none" : "";
-  // Only where the tap itself no longer reaches the editor. Every other text
-  // file already opens there, so an Edit row would say nothing.
-  $("btn-file-edit").style.display =
-    entry.type === "file" && FILES_HTML_RE.test(entry.name) ? "" : "none";
-  showSheet(true, "sheet-file-actions");
+  filesShowActions(entry);
 }
 
 // ---- the action sheet ------------------------------------------------------
@@ -1598,14 +1945,19 @@ async function fsPost(route, body) {
   return { ok: r.ok, status: r.status, data };
 }
 
-$("btn-file-edit").addEventListener("click", () => {
+// The sheet's four rows, and the + sheet's two that write. The rows themselves
+// are wired once under the factory — one sheet over the window, whichever
+// listing raised it — and each of them lands here, in the pane that did.
+
+function sheetEdit() {
   const e = filesSelected;
   if (!e) return;
   showSheet(false);
-  openEditor(joinPath(filesPath, e.name));
-});
+  if (!filesTakeView()) return;
+  openEditor(joinPath(filesPath, e.name), { pane: self() });
+}
 
-$("btn-file-rename").addEventListener("click", async () => {
+async function sheetRename() {
   const e = filesSelected;
   if (!e) return;
   showSheet(false);
@@ -1624,16 +1976,17 @@ $("btn-file-rename").addEventListener("click", async () => {
     return;
   }
   loadDir(filesPath);
-});
+  filesRefreshPeers(id);
+}
 
-$("btn-file-download").addEventListener("click", () => {
+function sheetDownload() {
   const e = filesSelected;
   if (!e) return;
   showSheet(false);
   downloadFile(joinPath(filesPath, e.name), e.name, e.size);
-});
+}
 
-$("btn-file-delete").addEventListener("click", async () => {
+async function sheetDelete() {
   const e = filesSelected;
   if (!e) return;
   showSheet(false);
@@ -1650,83 +2003,7 @@ $("btn-file-delete").addEventListener("click", async () => {
   }
   toast("Deleted");
   loadDir(filesPath);
-});
-
-// Above this a blob held whole in the page's memory is what makes iOS kill the
-// PWA, so anything bigger goes the long way round.
-const DOWNLOAD_BLOB_MAX = 30 * 1024 * 1024;
-
-// Two ways down, because neither is good at the other's size. Below the cap the
-// page fetches the bytes itself and hands the save sheet a blob — one tap, no
-// browser chrome, which is what nearly every download here is. Above it, or
-// when the size is unknown, the browser has to do the downloading instead.
-function downloadFile(path, name, size) {
-  if (typeof size === "number" && size <= DOWNLOAD_BLOB_MAX) {
-    return downloadAsBlob(path, name, size);
-  }
-  return downloadViaLink(path, name);
-}
-
-// Through fetch rather than a plain link: /api/* only answers to the token
-// header, which a navigation cannot carry. The bytes are read off the stream
-// rather than taken whole from .blob(), because on a slow link the line this
-// counts into is the only thing on screen for the length of the transfer.
-async function downloadAsBlob(path, name, size) {
-  const label = name || baseName(path);
-  holdToast("Downloading " + label + "…");
-  try {
-    const r = await fetch(apiURL("api/fs/download?path=" + encodeURIComponent(path)),
-                          { headers: authHeaders() });
-    // rejectToken() says its own piece, so nothing is toasted over it — but the
-    // held line has no clock of its own and has to come down by hand.
-    if (r.status === 401) { hideToast(); rejectToken(); return; }
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const url = URL.createObjectURL(await readWithProgress(r, label, size));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name || baseName(path);
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    // Not straight away: Safari needs the URL alive until its save sheet is done.
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-    toast("Downloaded " + label);
-  } catch (e) {
-    toast("Couldn't download");
-  }
-}
-
-// Repainting the line per chunk would spend a fast transfer in layout, so it is
-// rewritten at most this often.
-const DOWNLOAD_TICK_MS = 100;
-
-// The body chunk by chunk, with the held line saying how far it has got.
-async function readWithProgress(r, label, size) {
-  // The listing's size where the caller had one, the header's where it did not,
-  // and no total at all when neither says — a response can arrive unmeasured.
-  const total = typeof size === "number" && size > 0
-    ? size : Number(r.headers.get("Content-Length")) || 0;
-  // No readable stream (an old browser, a synthesized response) still
-  // downloads; it just cannot be counted.
-  if (!r.body || !r.body.getReader) return r.blob();
-  const reader = r.body.getReader();
-  const chunks = [];
-  let got = 0, painted = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    got += value.length;
-    if (Date.now() - painted < DOWNLOAD_TICK_MS) continue;
-    painted = Date.now();
-    // A percentage where the size is known, and how much has landed where it is
-    // not. 100% is kept back for the save itself — the last chunk read is not
-    // the same moment as a file the browser has taken.
-    holdToast("Downloading " + label + "… " + (total
-      ? Math.min(99, Math.floor(got * 100 / total)) + "%"
-      : fmtSize(got)));
-  }
-  return new Blob(chunks, { type: r.headers.get("Content-Type") || "" });
+  filesRefreshPeers(id);
 }
 
 // Whether the header download in a file view has anything to offer — the action
@@ -1734,52 +2011,25 @@ async function readWithProgress(r, label, size) {
 // tree, and a file being read at a ref is not what is on the disk.
 function canDownload(path) { return !refFor(path); }
 
-// The browser does the downloading, not us. So the token header only buys a
-// short-lived signed link (a navigation cannot carry the header, hence the
-// signature) and the browser streams the file itself. No "Downloading…" toast:
-// the browser puts its own download UI on screen, and ours would only sit on
-// top of it and outlive it. Silence unless something goes wrong.
-async function downloadViaLink(path, name) {
-  let url;
-  try {
-    const r = await fetch(apiURL("api/fs/download_link?path=" + encodeURIComponent(path)),
-                          { cache: "no-store", headers: authHeaders() });
-    if (r.status === 401) { rejectToken(); return; }
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    url = apiURL((await r.json()).url);
-  } catch (e) {
-    toast("Couldn't download");
-    return;
-  }
-  // A synchronous anchor click, for openUrl()'s reason: window.open lands on a
-  // blank tab in Safari. No target — the browser keeps the page and saves the
-  // file, here or in the tab it hands the cross-origin backend.
-  const a = document.createElement("a");
-  a.href = url;
-  // Honoured same-origin only; against the public deploy's cross-origin backend
-  // it is ignored and the server's Content-Disposition is what saves the file.
-  a.download = name || baseName(path);
-  a.style.display = "none";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
 // ---- the + sheet -----------------------------------------------------------
 
-$("btn-files-add").addEventListener("click", () => showSheet(true, "sheet-files-add"));
+q("btn-files-add").addEventListener("click", () => {
+  filesSheetOwner = id;
+  showSheet(true, "sheet-files-add");
+});
 
-$("btn-files-newfile").addEventListener("click", async () => {
+async function addNewFile() {
   showSheet(false);
   const name = await appPrompt("New file name", { confirmLabel: "Create" });
   if (name === null || !name.trim()) return;
   if (name.includes("/")) { toast("Names can't contain /"); return; }
+  if (!filesTakeView()) return;
   // Nothing is written yet: the editor opens empty and the first Save (hash "")
   // is what creates the file, so an abandoned name leaves no husk behind.
-  openEditor(joinPath(filesPath, name.trim()), { create: true });
-});
+  openEditor(joinPath(filesPath, name.trim()), { create: true, pane: self() });
+}
 
-$("btn-files-newfolder").addEventListener("click", async () => {
+async function addNewFolder() {
   showSheet(false);
   const name = await appPrompt("New folder name", { confirmLabel: "Create" });
   if (name === null || !name.trim()) return;
@@ -1792,20 +2042,8 @@ $("btn-files-newfolder").addEventListener("click", async () => {
     return;
   }
   loadDir(filesPath);
-});
-
-$("btn-files-upload").addEventListener("click", () => {
-  showSheet(false);
-  $("files-upload-input").click();
-});
-
-$("files-upload-input").addEventListener("change", (ev) => {
-  // The FileList is live and empties with the input, so copy it out before the
-  // reset that lets the same pick fire change again.
-  const files = Array.from(ev.target.files || []);
-  ev.target.value = "";
-  if (files.length) uploadFiles(files);
-});
+  filesRefreshPeers(id);
+}
 
 // One file at a time, never in parallel: a 409 asks its own Replace? question,
 // and a pile of confirms racing each other is unanswerable.
@@ -1822,7 +2060,7 @@ async function uploadFiles(files) {
   else if (done) toast("Uploaded " + done + (done === 1 ? " file" : " files")
                        + (failed ? ", " + failed + " failed" : ""));
   else if (failed) toast("Couldn't upload " + failed + " files");
-  if (done) loadDir(filesPath);
+  if (done) { loadDir(filesPath); filesRefreshPeers(id); }
 }
 
 // Returns null when the file landed, "" when nothing more should be said, and
@@ -1831,10 +2069,10 @@ async function uploadFiles(files) {
 async function uploadFile(f, overwrite) {
   const target = joinPath(filesPath, f.name);
   try {
-    const q = "?path=" + encodeURIComponent(target) + (overwrite ? "&overwrite=1" : "");
+    const qs = "?path=" + encodeURIComponent(target) + (overwrite ? "&overwrite=1" : "");
     // The body is the file itself — the raw-body shape /api/fs/upload shares
     // with /api/transcribe.
-    const r = await fetch(apiURL("api/fs/upload" + q),
+    const r = await fetch(apiURL("api/fs/upload" + qs),
                           { method: "POST", headers: authHeaders(), body: f });
     if (r.status === 401) { rejectToken(); return ""; }
     if (r.status === 409 && !overwrite) {
@@ -1849,33 +2087,9 @@ async function uploadFile(f, overwrite) {
   }
 }
 
-// ---- drag and drop (pointer devices only) ----------------------------------
-// Two drags, told apart by what the dataTransfer carries. One from the OS
-// carries "Files" and drops onto the listing as an upload into the folder on
-// screen — the same uploadFiles() the Upload row picks for. One that started on
-// a row carries FILES_DRAG_TYPE and drops onto a folder row, a folder tile or
-// an ancestor crumb as a move, which is the rename the action sheet already
-// posts with a folder in dst instead of a new name.
-//
-// None of it is wired on a touch device: a phone has no second pointer to drag
-// with, and draggable=true can take a long press away from the row on some
-// Android builds. touchOnly() is asked per render and per event rather than
-// latched, for the tablet that picks up a trackpad mid-session.
-
-// Ours, not the OS's — the one thing that says the drag started in this app.
-const FILES_DRAG_TYPE = "application/x-pockettui-entry";
-
-// What a row drag is carrying: the entry, and the folder it was picked up in.
-// Held here because dataTransfer.getData() is unreadable until the drop, and
-// every dragover before it has to know what is in flight to answer at all.
-let filesDragEntry = null;
 // dragenter/dragleave fire once per element crossed, children included, so the
 // listing's highlight rides a depth count rather than the last event seen.
 let filesDropDepth = 0;
-
-function hasDragType(dt, type) {
-  return !!dt && Array.from(dt.types || []).includes(type);
-}
 
 // Clears both highlights at once — what dragend and every drop end on, so a
 // drag that ends anywhere at all leaves nothing lit behind it.
@@ -1892,7 +2106,8 @@ function wireEntryDrag(node, entry) {
     // A listing read at a ref is a commit, not the disk. Nothing in it moves,
     // so the drag never starts.
     if (refFor(filesPath)) { ev.preventDefault(); return; }
-    filesDragEntry = { name: entry.name, type: entry.type, dir: filesPath };
+    filesDragEntry = { name: entry.name, type: entry.type, dir: filesPath,
+                       from: id };
     ev.dataTransfer.effectAllowed = "move";
     ev.dataTransfer.setData(FILES_DRAG_TYPE, entry.name);
     ev.dataTransfer.setData("text/plain", joinPath(filesPath, entry.name));
@@ -1913,13 +2128,17 @@ function wireEntryDrag(node, entry) {
 function canMoveInto(dir, dt) {
   const d = filesDragEntry;
   if (!d || !dir || !hasDragType(dt, FILES_DRAG_TYPE)) return false;
-  // Read-only at a ref; and a listing that navigated under the drag is no
-  // longer the folder the entry was picked up in.
-  if (refFor(filesPath) || d.dir !== filesPath) return false;
-  const src = joinPath(d.dir, d.name);
+  // Read-only at a ref — this listing is where the entry would land.
+  if (refFor(filesPath)) return false;
+  // And the listing it was picked up in has to still be that folder, whichever
+  // of the two panes it is: a drag crossing to the other listing is a move like
+  // any other, and one whose own listing navigated under it is not.
+  const src = filesPanes[d.from];
+  if (!src || src.path() !== d.dir) return false;
+  const from = joinPath(d.dir, d.name);
   // Where it already is (the current folder's crumb), itself, or its own
   // subtree — a folder cannot be moved inside itself.
-  return dir !== d.dir && dir !== src && !dir.startsWith(src + "/");
+  return dir !== d.dir && dir !== from && !dir.startsWith(from + "/");
 }
 
 // The destination half: a folder row, a folder tile, an ancestor crumb.
@@ -1956,28 +2175,16 @@ async function moveEntry(d, dir) {
   }
   toast("Moved " + d.name + " to " + baseName(dir));
   loadDir(filesPath);
-}
-
-// A folder dragged in from the OS has no bytes behind it — the drop hands over
-// an entry that either fails to read or uploads as zero bytes — so it is left
-// out rather than written as rubbish. webkitGetAsEntry is what tells the two
-// apart; where it is missing, or answers null for a file the page itself made,
-// the item counts as a file.
-function droppedFiles(dt) {
-  const items = Array.from(dt.items || []).filter((it) => it.kind === "file");
-  if (items.length && items[0].webkitGetAsEntry) {
-    return items
-      .filter((it) => { const e = it.webkitGetAsEntry(); return !e || e.isFile; })
-      .map((it) => it.getAsFile())
-      .filter(Boolean);
-  }
-  return Array.from(dt.files || []);
+  filesRefreshPeers(id);
+  // Dropped from the other listing, the folder it came from is a folder short an
+  // entry, wherever it is on screen.
+  if (d.dir !== filesPath) filesRefreshPeers(id, d.dir);
 }
 
 // The whole scroll area rather than the rows, so an empty folder takes a drop
 // on its "Empty folder" line as readily as a full one takes it on a row. One
 // element for both shapes: the docked pane renders into this same listing.
-const filesDropZone = document.querySelector("#screen-files .files-wrap");
+const filesDropZone = root.querySelector(".files-wrap");
 
 // An upload drag, as opposed to a row's own drag passing over the listing on
 // its way to a folder, or a ref browse where there is nothing to write to.
@@ -2014,21 +2221,9 @@ filesDropZone.addEventListener("drop", (ev) => {
   else toast("Folders can't be dropped");
 });
 
-// A file dropped anywhere but the listing would otherwise navigate the window
-// to it, throwing the session away. While the explorer is up that default is
-// swallowed document-wide — and only that: nothing is read off the drop,
-// nothing lights up, and no other handler is stopped.
-for (const type of ["dragover", "drop"]) {
-  document.addEventListener(type, (ev) => {
-    if (!$("screen-files").classList.contains("active")) return;
-    if (hasDragType(ev.dataTransfer, "Files")) ev.preventDefault();
-  });
-}
-
 // ---- navigation chrome -----------------------------------------------------
 
-$("btn-files").addEventListener("click", () => openExplorer(""));
-$("btn-files-back").addEventListener("click", filesBack);
+q("btn-files-back").addEventListener("click", filesBack);
 
 // Straight back to the terminal, however deep the browsing went. Not
 // closeExplorer() directly: the explorer's history entries would stay on the
@@ -2038,14 +2233,14 @@ $("btn-files-back").addEventListener("click", filesBack);
 function jumpToTerminal() {
   // The field's own back is spent on closing it; take it out of the way first
   // so the pops below all count as folders.
-  if ($("files-path-wrap").classList.contains("editing")) closePathEdit();
+  if (q("files-path-wrap").classList.contains("editing")) closePathEdit();
   // Every entry the explorer owns: openExplorer's push plus one per level
   // navigated into, which is filesStack.length — one at the entry folder, and
   // still one if the entry folder never resolved and the stack stayed empty.
   filesClosing = true;
   history.go(-(filesStack.length || 1));
 }
-$("btn-files-term").addEventListener("click", jumpToTerminal);
+q("btn-files-term").addEventListener("click", jumpToTerminal);
 
 // A hardware keyboard's Escape does what the button does. No media query and no
 // pointer-type gate: a phone keyboard never sends Escape at all, while an iPad
@@ -2059,7 +2254,7 @@ $("btn-files-term").addEventListener("click", jumpToTerminal);
 // one press would both close the field and jump to the terminal.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (!$("screen-files").classList.contains("active")) return;
+  if (!root.classList.contains("active")) return;
   // A file open in the pane is the top thing to dismiss, and it goes back to
   // the listing rather than closing the pane — the in-pane back arrow's job.
   // Scoped to a press aimed inside it for the reason below. The viewer answers
@@ -2067,6 +2262,9 @@ document.addEventListener("keydown", (e) => {
   // reaches it only where that handler stood aside.
   const view = dockedFileView();
   if (view) {
+    // One of the three, and it belongs to one listing: only that listing's copy
+    // of this handler may put it away, or two of them would answer one press.
+    if (filesViewOwner !== id) return;
     if (!view.contains(e.target)) return;
     // Not out of the buffer: inside CodeMirror the key is the document's own —
     // vim's way out of insert mode, and the only way out there is.
@@ -2077,17 +2275,17 @@ document.addEventListener("keydown", (e) => {
   }
   // Docked, the terminal beside the pane is live and Escape is one of its
   // keys — so only a press aimed inside the pane is the pane's to answer.
-  if (filesDocked && !$("screen-files").contains(e.target)) return;
+  if (filesDocked && !root.contains(e.target)) return;
   // Ahead of the origin check: an open dropdown is the top thing to dismiss,
   // and it is there to dismiss whether or not a terminal is behind.
-  if ($("files-view-wrap").classList.contains("open")
-      || $("files-ref-wrap").classList.contains("open")) {
+  if (q("files-view-wrap").classList.contains("open")
+      || q("files-ref-wrap").classList.contains("open")) {
     e.preventDefault();
     closeFilesMenus();
     return;
   }
   if (filesOrigin !== "screen-term") return;          // nothing to jump back to
-  if ($("files-path-wrap").classList.contains("editing")) return;
+  if (q("files-path-wrap").classList.contains("editing")) return;
   if ($("sheet-scrim").classList.contains("show")) return;
   if ($("viewer").classList.contains("show")) return;
   e.preventDefault();
@@ -2099,6 +2297,10 @@ document.addEventListener("keydown", (e) => {
 // back unwinds them one screen at a time. The terminal's own popstate handler
 // ignores these pops — #screen-term is not active while either screen is up.
 window.addEventListener("popstate", () => {
+  // Only the markup's own pane is ever the whole window, and only that shape
+  // pushes anything: a copy is a row of the column, which owns no entry, so no
+  // pop is ever a copy's to answer.
+  if (id !== "files") return;
   // Docked, these two pushed nothing either (dockFileView above), so a pop is
   // never theirs: it is the terminal's, and the terminal's own handler takes
   // it — the pane and the file in it go down together with the session.
@@ -2109,7 +2311,7 @@ window.addEventListener("popstate", () => {
   // The docked pane pushed nothing, so no pop is ever its own: this one is the
   // terminal's, and closeTerminal() above has already spent it.
   if (filesDocked) return;
-  if (!$("screen-files").classList.contains("active")) return;
+  if (!root.classList.contains("active")) return;
   // A go(-n) past several entries arrives as one popstate, not n of them, so
   // the per-level unwind below would land on the folder one up while history
   // already sits behind the whole view. The flag is the button saying this pop
@@ -2119,7 +2321,7 @@ window.addEventListener("popstate", () => {
   if (filesClosing) { filesClosing = false; closeExplorer(); return; }
   // An open address field takes the back first — closeExplorer turns that one
   // into closing just the field, and re-pushes the entry the pop consumed.
-  if ($("files-path-wrap").classList.contains("editing")) { closeExplorer(); return; }
+  if (q("files-path-wrap").classList.contains("editing")) { closeExplorer(); return; }
   // The popped entry's own state is deliberately not consulted: iOS wipes the
   // stored state objects out from under us (see filesStack above), and a
   // handler that trusted them read every later pop as the pop past the entry
@@ -2138,50 +2340,12 @@ window.addEventListener("popstate", () => {
   closeExplorer();
 });
 
-// The terminal's left-edge back gesture (20-edge-swipe.js), re-armed for the
-// screens this feature adds. A copy rather than a share: the terminal's
-// binding also feeds the global edgeSwipe flag its scroll code reads, and
-// entangling that is a worse trade than repeating two dozen lines.
-// The preventDefault in touchmove is load-bearing, not cosmetic: iOS 18+ home
-// screen web apps run their own system edge-swipe-back that pops history, so a
-// passive listener leaves the swipe firing both that and onBack() — one gesture,
-// two backs. Cancelling the move once the drag is armed and horizontal-rightward
-// suppresses the system gesture and leaves onBack() the only navigation.
-function attachEdgeSwipe(scr, onBack) {
-  let sx = 0, sy = 0, armed = false, committed = false;
-  scr.addEventListener("touchstart", (e) => {
-    if (e.touches.length !== 1) { armed = false; return; }
-    const t = e.touches[0];
-    armed = t.clientX <= EDGE_ZONE;
-    sx = t.clientX; sy = t.clientY;
-    committed = false;
-  }, { passive: true, capture: true });
-  scr.addEventListener("touchmove", (e) => {
-    if (!armed || e.touches.length !== 1) return;
-    const dx = e.touches[0].clientX - sx, dy = e.touches[0].clientY - sy;
-    if (dx < 0 || Math.abs(dy) > Math.abs(dx)) {
-      if (Math.abs(dy) > 12) armed = false;
-      return;
-    }
-    e.preventDefault();
-    committed = dx >= EDGE_TRIGGER;
-  }, { passive: false, capture: true });
-  const finish = () => {
-    const go = armed && committed;
-    armed = false; committed = false;
-    if (go) onBack();
-  };
-  scr.addEventListener("touchend", finish, { passive: true });
-  scr.addEventListener("touchcancel", finish, { passive: true });
-}
-attachEdgeSwipe($("screen-files"), filesBack);
-attachEdgeSwipe($("screen-editor"), () => history.back());
-attachEdgeSwipe($("screen-reader"), () => history.back());
+attachEdgeSwipe(root, filesBack);
 
 // Pull-down to refresh — the session list's own pattern.
 (function() {
   let startY = null;
-  const scr = $("screen-files");
+  const scr = root;
   scr.addEventListener("touchstart", (e) => {
     startY = window.scrollY <= 0 ? e.touches[0].clientY : null;
   }, { passive: true });
@@ -2192,3 +2356,284 @@ attachEdgeSwipe($("screen-reader"), () => history.back());
     startY = null;
   }, { passive: true });
 })();
+
+// What the column and the rest of the app can ask of this pane. Everything else
+// in the body above is the pane's own and stays in the closure.
+const api = {
+  id: id,
+  isDocked: () => filesDocked,
+  isOpen: () => root.classList.contains("active"),
+  path: () => filesPath,
+  origin: () => filesOrigin,
+  setActive: (on) => root.classList.toggle("active", on),
+  open: openExplorer,
+  openPath: openPath,
+  openAtCwd: filesOpenAtCwd,
+  followSession: followSession,
+  followCwd: followPaneCwd,
+  afterEnter: scheduleCwdAfterEnter,
+  afterTitle: scheduleCwdAfterTitle,
+  closeDocked: closeDockedFiles,
+  closeFull: closeExplorer,
+  closePathEdit: closePathEdit,
+  entryCount: filesEntryCount,
+  reloadAt: (path) => { if (filesPath && filesPath === path) loadDir(filesPath); },
+  load: loadDir,
+  readText: fsReadText,
+  canDownload: canDownload,
+  toggleExpanded: () => filesSetExpanded(!filesExpanded),
+  stash: filesStash,
+  restore: filesRestore,
+  teardown: filesTeardown,
+  reset: filesReset,
+  syncRefCap: syncRefCap,
+  syncThumbsCap: syncThumbsCap,
+  sheet: { edit: sheetEdit, rename: sheetRename,
+           download: sheetDownload, remove: sheetDelete },
+  add: { file: addNewFile, folder: addNewFolder },
+  uploadPicked: uploadFiles,
+};
+filesPanes[id] = api;
+return api;
+
+}
+
+// ------------------------------------------------------------
+// The panes, and the app's way in to them
+// ------------------------------------------------------------
+
+// The listing the markup ships, which is the one every existing way in opens and
+// the only one that is ever the whole window.
+makeFilesPane("files", $("screen-files"));
+
+// The second one, made out of the first: the copy is the whole shape — the bar,
+// the crumbs, both dropdowns and their scrim, and the list — with the ids inside
+// it duplicated, which is why the factory reaches them through its own root
+// rather than through the document. What does not come over is what belonged to
+// the pane it was copied from: the folder it had listed, the crumbs over it, its
+// suggestions and the classes the column had given it. It goes in right after
+// the original, so it is a following sibling of #screen-term exactly as the
+// original is, which is what the stylesheet's rules are written against.
+function filesMakeAt(id) {
+  if (id !== "files#2" || filesPanes[id]) return null;
+  const src = $("screen-files");
+  const clone = src.cloneNode(true);
+  clone.id = "screen-files-2";
+  clone.classList.remove("active", "docked",
+                         "side-top", "side-bot", "side-hidden");
+  for (const name of ["files-list", "files-crumbs", "files-suggest"]) {
+    clone.querySelector("#" + name).innerHTML = "";
+  }
+  clone.querySelector("#files-list").classList.remove("files-grid");
+  clone.querySelector("#files-path-wrap").classList.remove("editing");
+  clone.querySelector("#files-suggest").classList.remove("show");
+  clone.querySelector("#files-suggest-scrim").classList.remove("show");
+  clone.querySelector("#files-view-scrim").classList.remove("show");
+  clone.querySelector("#files-view-wrap").classList.remove("open");
+  clone.querySelector("#files-ref-wrap").classList.remove("open");
+  clone.querySelector("#files-ref-wrap").hidden = true;
+  clone.querySelector("#files-ref-ro").hidden = true;
+  clone.querySelector("#btn-files-term").style.display = "none";
+  clone.querySelector("#files-empty").style.display = "none";
+  clone.querySelector("#files-error").style.display = "none";
+  const wrap = clone.querySelector(".dock-split-wrap");
+  wrap.classList.remove("open");
+  wrap.querySelector(".dock-split").setAttribute("aria-expanded", "false");
+  wrap.querySelector(".dock-split-menu").textContent = "";
+  src.after(clone);
+  sideWireBar(clone);
+  return makeFilesPane(id, clone);
+}
+
+// The pane a row id names, made the first time that row is asked for and kept
+// from then on — a copy that has been closed is a copy that can be opened again,
+// and making a fresh one would throw away the folder it was reading.
+function filesPaneAt(id) {
+  return filesPanes[id] || filesMakeAt(id);
+}
+
+// How the column opens a second one when the split menu asks for it.
+sideMakers.files = (id) => !!filesPaneAt(id);
+
+// ---- the ways in -----------------------------------------------------------
+
+// A folder asked for by name, in the listing a press last named: the folder
+// button on the session list, a path tapped in the terminal, the editor's parent
+// folder. With nothing pressed in it is the markup's own pane.
+function openExplorer(path, opts) {
+  const pane = filesPanes[sideFocusedOf("files")] || filesPanes.files;
+  return pane.open(path, opts);
+}
+
+function openPathInExplorer(path) {
+  const pane = filesPanes[sideFocusedOf("files")] || filesPanes.files;
+  return pane.openPath(path);
+}
+
+// The folder key's own way in and out. Docked, it is a toggle: the pane it
+// opened is the pane it puts away, and which pane that is is the column's answer
+// rather than this module's — with two explorer rows it is the one last pressed
+// in (sideFocusedOf, 26-side-pane.js). Full screen there is nothing to toggle —
+// back is how that one leaves — so the opener below stays the way in for
+// everything else, including the split menu, which never toggles.
+function openFilesAtCwd() {
+  const id = sideFocusedOf("files");
+  if (id) { closeDockedFiles(id); return; }
+  return filesOpenAtCwd("files");
+}
+
+// Which of the column's explorer rows a call is about. The id names a slot
+// rather than a pane that must already exist: the split menu asks for the second
+// one, and opening it is what makes it.
+function filesOpenAtCwd(id, opts) {
+  const pane = filesPaneAt(id || "files");
+  return pane ? pane.openAtCwd(opts) : undefined;
+}
+
+// A row a remembered column names with no folder to put in it, made if the id
+// names the copy: the explorer's half of that record is a claim on the slot
+// rather than a folder, and the pane opens at the session's own cwd
+// (followSession, in the factory).
+function filesFollowSession(id) {
+  const pane = filesPaneAt(id || "files");
+  return pane ? pane.followSession() : undefined;
+}
+
+// One row of the column, or every one of them: the narrow-layout fallback and
+// the profile switch mean all, the registry and the split menu's eviction mean
+// one. A close for a pane that was never made is nothing to do.
+function closeDockedFiles(id) {
+  if (id) {
+    const pane = filesPanes[id];
+    if (pane) pane.closeDocked();
+    return;
+  }
+  for (const pane of Object.values(filesPanes)) pane.closeDocked();
+}
+
+// The shapes and the state only the markup's own pane can be in: the whole
+// window, and the history entries that shape owns.
+function closeExplorer() { filesPanes.files.closeFull(); }
+function filesEntryCount() { return filesPanes.files.entryCount(); }
+function filesFullOrigin() { return filesPanes.files.origin(); }
+
+// Both of them: an address field open in either listing is one the switch away
+// from this session closes.
+function closePathEdit() {
+  for (const pane of Object.values(filesPanes)) pane.closePathEdit();
+}
+
+// The terminal's cwd is one terminal's, and one pane follows it: the markup's
+// own, which is the one the folder key, the boot restore and a tapped path open.
+// A copy is the user's second place to look, and two listings jumping on every
+// cd is the thing that would make the split not worth having.
+function followPaneCwd() { return filesPanes.files.followCwd(); }
+function scheduleCwdAfterEnter() { filesPanes.files.afterEnter(); }
+function scheduleCwdAfterTitle() { filesPanes.files.afterTitle(); }
+
+// The server's answers, which are about the computer rather than about a pane,
+// so every listing hears them.
+function syncRefCap() {
+  for (const pane of Object.values(filesPanes)) pane.syncRefCap();
+}
+function syncThumbsCap() {
+  for (const pane of Object.values(filesPanes)) pane.syncThumbsCap();
+}
+
+// A switch to another computer: every listing goes, and the folders they cached
+// go with them — a folder on that machine is not a folder on this one.
+function filesResetForProfile() {
+  for (const pane of Object.values(filesPanes)) pane.reset();
+  filesListCache.clear();
+}
+
+// ---- reading and writing, in the listing the caller came from ---------------
+// The editor, the reader and the viewer ask these of "the explorer" and mean the
+// listing their file was opened from, which is what filesActive() answers: the
+// press that opened the file is what set the focus these read.
+
+function fsReadText(path) { return filesActive().readText(path); }
+function canDownload(path) { return filesActive().canDownload(path); }
+function loadDir(path) { return filesActive().load(path); }
+
+// ---- the rail's stash (see fileViews in 09-image-viewer.js) -----------------
+// Both listings go into the record, each under its own name, and the owner of
+// whatever file view was over them goes in with them: two rows and one editor,
+// so a restore that did not know whose it was would put it back in the wrong one.
+
+function filesStash(id) {
+  const pane = filesPanes[id];
+  return pane && pane.isOpen() ? pane.stash() : null;
+}
+
+function filesRestore(a, b, owner) {
+  if (a) filesPanes.files.restore(a);
+  if (b) {
+    const pane = filesPaneAt("files#2");
+    if (pane) pane.restore(b);
+  }
+  filesSetViewOwner(filesPanes[owner]);
+}
+
+function filesTeardown() {
+  for (const pane of Object.values(filesPanes)) pane.teardown();
+  filesSetViewOwner(null);
+}
+
+// ---- the keys and sheets that are the app's rather than a pane's ------------
+
+// The session list's folder button, which opens at $HOME.
+$("btn-files").addEventListener("click", () => openExplorer(""));
+
+// The two sheets: one set of rows over the window however many listings there
+// are, so each row acts on the listing that raised the sheet (filesSheetOwner).
+$("btn-file-edit").addEventListener("click", () => filesSheetPane().sheet.edit());
+$("btn-file-rename").addEventListener("click", () => filesSheetPane().sheet.rename());
+$("btn-file-download").addEventListener("click", () => filesSheetPane().sheet.download());
+$("btn-file-delete").addEventListener("click", () => filesSheetPane().sheet.remove());
+$("btn-files-newfile").addEventListener("click", () => filesSheetPane().add.file());
+$("btn-files-newfolder").addEventListener("click", () => filesSheetPane().add.folder());
+$("btn-files-upload").addEventListener("click", () => {
+  showSheet(false);
+  $("files-upload-input").click();
+});
+$("files-upload-input").addEventListener("change", (ev) => {
+  // The FileList is live and empties with the input, so copy it out before the
+  // reset that lets the same pick fire change again.
+  const files = Array.from(ev.target.files || []);
+  ev.target.value = "";
+  if (files.length) filesSheetPane().uploadPicked(files);
+});
+
+// The pane's two controls in the bar of each file view. One editor, one reader
+// and one viewer for the two rows, so these are wired once and act on the
+// listing the file in them was opened from.
+for (const name of ["screen-editor", "screen-reader", "viewer"]) {
+  for (const btn of $(name).querySelectorAll(".dock-expand")) {
+    btn.addEventListener("click", () => {
+      const pane = filesPanes[filesViewOwner];
+      if (!pane) return;
+      pane.toggleExpanded();
+      refit(0);
+    });
+  }
+  for (const btn of $(name).querySelectorAll(".dock-close")) {
+    btn.addEventListener("click", () => closeDockedFiles(filesViewOwner));
+  }
+}
+
+// A file dropped anywhere but a listing would otherwise navigate the window to
+// it, throwing the session away. While an explorer is up that default is
+// swallowed document-wide — and only that: nothing is read off the drop, nothing
+// lights up, and no other handler is stopped.
+for (const type of ["dragover", "drop"]) {
+  document.addEventListener(type, (ev) => {
+    if (!filesAnyOpen()) return;
+    if (hasDragType(ev.dataTransfer, "Files")) ev.preventDefault();
+  });
+}
+
+// The two full-screen file views' own edge swipe. Theirs rather than a pane's:
+// seated in a pane they push no entry and there is nothing for a swipe to unwind.
+attachEdgeSwipe($("screen-editor"), () => history.back());
+attachEdgeSwipe($("screen-reader"), () => history.back());

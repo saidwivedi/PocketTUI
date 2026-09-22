@@ -535,7 +535,7 @@ async function mdTypeset(root) {
 
 // ---- the reader screen -----------------------------------------------------
 
-async function openReader(path) {
+async function openReader(path, pane) {
   const data = await fsReadText(path);
   if (!data) return;
   readerPath = path;
@@ -551,7 +551,7 @@ async function openReader(path) {
   // In the pane if that is where the file was tapped, over the whole window
   // otherwise, and docked it pushes no entry — the editor's rule, for the same
   // reason (dockFileView, 28-file-explorer.js).
-  const docked = dockFileView($("screen-reader"));
+  const docked = dockFileView($("screen-reader"), pane);
   $("screen-reader").classList.add("active");
   if (!docked) history.pushState({ reader: true }, "", location.href);
   if (data.lossy) toast("Not valid UTF-8 — some characters are missing");

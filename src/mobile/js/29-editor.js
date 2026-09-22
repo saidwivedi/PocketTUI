@@ -273,7 +273,7 @@ async function openEditor(path, opts) {
   // otherwise (dockFileView, 28-file-explorer.js). Docked it pushes no entry:
   // every other interaction in the pane pushes none either, and back beside a
   // live terminal is the terminal's.
-  const docked = dockFileView($("screen-editor"));
+  const docked = dockFileView($("screen-editor"), opts && opts.pane);
   $("screen-editor").classList.add("active");
   if (!docked && !(opts && opts.noHistory)) {
     history.pushState({ editor: true }, "", location.href);
@@ -452,8 +452,10 @@ function closeEditor() {
   if (edView) { edView.destroy(); edView = null; }
   edSetDirty(false);
   edPath = "";
-  // A save may have changed what the list shows — sizes, a file born on save.
-  if (filesPath) loadDir(filesPath);
+  // A save may have changed what the list shows — sizes, a file born on save —
+  // in the listing this file was opened from (filesActive, 28-file-explorer.js).
+  const dir = filesActivePath();
+  if (dir) loadDir(dir);
 }
 
 // Docked, the view pushed no entry, so there is no pop to answer: the question
