@@ -10,7 +10,7 @@
 //
 // Full mode answers that by moving the browser rather than the page. A headless
 // Chromium runs on the computer with the user's own profile in it, and what
-// travels is pixels: JPEG screencast frames and WebP settle captures over
+// travels is pixels: JPEG screencast frames and JPEG settle captures over
 // ws/browser/<pane> (chromium.py, app.py's BROWSER_OPS), painted onto a canvas
 // here. The page executes in a genuine browser at a genuine origin, and this
 // file's whole job is to make looking at a picture of it feel like looking at
@@ -210,6 +210,16 @@ function fullBrowserLink(paneId) {
     try { msg = JSON.parse(text); } catch (e) { return; }
     if (!msg || typeof msg !== "object") return;
     if (msg.type === "ready" || msg.type === "status") {
+      // The snapshot is the whole browser's, so a tab id in it belongs to this
+      // pane only when the line says so: two panes name their first tab the
+      // same thing (chromium.py keys its tabs by the pair).
+      if (msg.type === "status" && Array.isArray(msg.tabs)) {
+        for (const t of msg.tabs) {
+          if (!t || (t.pane && t.pane !== paneId)) continue;
+          const view = views[t.tab];
+          if (view && view.status) view.status(t);
+        }
+      }
       if (linkApi.onstate) linkApi.onstate(msg);
       return;
     }
@@ -335,11 +345,26 @@ function fullBrowserMake(pane, tabId, link, cbs) {
   const authEl = wrap.querySelector(".fb-auth");
   const askEl = wrap.querySelector(".fb-ask");
 
-  // The last picture, kept so a resize of this element can repaint rather than
-  // wait for the computer's next frame.
+  // The last picture painted and the CSS box the computer drew it for, kept so
+  // a resize of this element can repaint rather than wait for the next frame.
   let bmp = null;
-  let bmpW = 0, bmpH = 0, bmpCssW = 0, bmpCssH = 0;
-  let drawn = 0;                 // the newest decode, so a slow one never wins
+  let bmpCssW = 0, bmpCssH = 0;
+  // The newest frame decoded but not painted yet. Frames arrive at the level's
+  // rate and in bursts after an input, and the screen shows none of the ones
+  // between two refreshes, so only the last of them is drawn and the rest are
+  // closed.
+  let nextBmp = null, nextHdr = null, drawRaf = 0;
+  // The highest seq taken for painting. Decodes finish out of order — the
+  // settled picture is four times the pixels of the cast that follows it — and
+  // a frame older than what is on screen would only put the page back.
+  let seenSeq = 0;
+  // What the backing store is sized for, so it is sized on a resize and never
+  // on a frame: a cast and a settled picture of the same page differ in pixel
+  // size (Chrome's screencast ignores the device pixel ratio, the capture does
+  // not) and a canvas that followed them would jump between the two.
+  let storeW = 0, storeH = 0;
+  // The last line the pane's `status` carried about this tab.
+  let streamStats = null;
   // What the computer has been told, so a resize that changes nothing is not
   // sent at all — a device-metrics override restarts the screencast.
   let sentW = 0, sentH = 0, sentDpr = 0;
@@ -407,16 +432,37 @@ function fullBrowserMake(pane, tabId, link, cbs) {
 
   const ro = new ResizeObserver(() => {
     clearTimeout(roTimer);
-    roTimer = setTimeout(() => measure(false), FB_RESIZE_MS);
+    roTimer = setTimeout(() => {
+      measure(false);
+      // The device pixel ratio moves with the browser's own zoom, and the store
+      // is the only thing that knows it: the picture in hand is redrawn at the
+      // new density rather than left soft until the computer sends another.
+      if (bmp) schedule();
+    }, FB_RESIZE_MS);
   });
   ro.observe(wrap);
 
   // ---- painting ------------------------------------------------------------
+  // The store is this device's pixels for the box the computer drew, whatever
+  // size the frame itself came at, and every frame is scaled into it. The
+  // stream's own sizes are not one size: a cast of a 1200x800 pane arrives at
+  // 1200x800 on a 2x phone and at 840x560 on the bottom rung of the ladder,
+  // while the settled picture after an input is the full 2400x1600. Sizing the
+  // canvas to the frame would resize the element under the reader several times
+  // a second; sizing it to the pane once means the sharp frames are drawn 1:1
+  // and the cheap ones are stretched over the same picture.
   function paint() {
     if (!bmp) return;
-    if (canvas.width !== bmpW || canvas.height !== bmpH) {
-      canvas.width = bmpW;
-      canvas.height = bmpH;
+    const dpr = Math.min(window.devicePixelRatio || 1, FB_DPR_MAX);
+    const w = Math.max(1, Math.round(bmpCssW * dpr));
+    const h = Math.max(1, Math.round(bmpCssH * dpr));
+    if (storeW !== w || storeH !== h) {
+      canvas.width = storeW = w;
+      canvas.height = storeH = h;
+      // Sizing the store puts the context back to its defaults, and what is
+      // being drawn is mostly a picture smaller than the store.
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
     }
     // The size the computer was rendering for, not this element's size: a drag
     // of the seam is a round trip ahead of the frames, and stretching the old
@@ -424,36 +470,68 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     // moment behind.
     canvas.style.width = bmpCssW + "px";
     canvas.style.height = bmpCssH + "px";
-    ctx.drawImage(bmp, 0, 0);
+    ctx.drawImage(bmp, 0, 0, w, h);
+  }
+
+  // Every frame is answered, painted or not. Nothing waits for it — Chrome was
+  // acknowledged on the computer as the frame joined the send queue — but it is
+  // the backend's one measurement of how long a frame takes to get here, and a
+  // frame thrown away at this end is part of that story, so it says so
+  // (chromium.py's ack and _judge).
+  function ackFrame(seq, dropped) {
+    if (!seq) return;
+    const msg = { type: "ack", tab: tabId, seq: seq };
+    if (dropped) msg.dropped = true;
+    send(msg);
+  }
+
+  function shed(b) { if (b && b.close) b.close(); }
+
+  function schedule() {
+    if (!drawRaf) drawRaf = requestAnimationFrame(drawNext);
+  }
+
+  // One paint per animation frame, of whatever the newest decoded frame is by
+  // the time it comes round.
+  function drawNext() {
+    drawRaf = 0;
+    if (destroyed) return;
+    if (!nextBmp) {
+      if (bmp) paint();          // a resize, with no new frame behind it
+      return;
+    }
+    const hdr = nextHdr;
+    shed(bmp);
+    bmp = nextBmp;
+    nextBmp = null;
+    nextHdr = null;
+    bmpCssW = hdr.cssW || hdr.w || bmp.width;
+    bmpCssH = hdr.cssH || hdr.h || bmp.height;
+    paint();
+    ackFrame(hdr.seq, false);
   }
 
   async function frame(header, bytes) {
     if (destroyed) return;
-    const gen = ++drawn;
+    const seq = Number(header && header.seq) || 0;
     const type = header.fmt === "webp" ? "image/webp" : "image/jpeg";
     let next = null;
     try {
       next = await createImageBitmap(new Blob([bytes], { type: type }));
     } catch (e) {
-      // Acknowledged even so: Chrome sends no further screencast frame until
-      // the last one is answered, and a frame this browser could not decode
-      // would otherwise stop the stream dead.
-      send({ type: "ack", tab: tabId, seq: header.seq });
+      ackFrame(seq, true);
       return;
     }
-    if (destroyed || gen !== drawn) {
-      if (next.close) next.close();
-      send({ type: "ack", tab: tabId, seq: header.seq });
-      return;
-    }
-    if (bmp && bmp.close) bmp.close();
-    bmp = next;
-    bmpW = header.w || next.width;
-    bmpH = header.h || next.height;
-    bmpCssW = header.cssW || bmpW;
-    bmpCssH = header.cssH || bmpH;
-    paint();
-    send({ type: "ack", tab: tabId, seq: header.seq });
+    if (destroyed) { shed(next); return; }
+    // A decode that finished after a newer frame's. The settled picture is the
+    // slow one, so this is what keeps a cast from being painted over it.
+    if (seq && seq <= seenSeq) { shed(next); ackFrame(seq, true); return; }
+    if (seq) seenSeq = seq;
+    // The one before it never reached the screen.
+    if (nextBmp) { shed(nextBmp); ackFrame(nextHdr && nextHdr.seq, true); }
+    nextBmp = next;
+    nextHdr = header;
+    schedule();
   }
 
   // ---- the stream's state --------------------------------------------------
@@ -515,6 +593,14 @@ function fullBrowserMake(pane, tabId, link, cbs) {
   function setZoom(z) {
     zoom = Number(z) || 1;
     send({ type: "zoom", tab: tabId, z: zoom });
+  }
+
+  // One tab's line out of the pane's `status`, kept as the last word on what
+  // the stream is costing: level, dpr, quality, fps, kbps, rttMs (chromium.py's
+  // PageTab.info). Nothing here draws it — the line in Settings is the pane's —
+  // so this view only holds it for whoever asks.
+  function status(rec) {
+    streamStats = rec || null;
   }
 
   function reconnected() {
@@ -1174,9 +1260,14 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     clearTimeout(roTimer);
     clearTimeout(tipTimer);
     if (moveRaf) cancelAnimationFrame(moveRaf);
+    if (drawRaf) cancelAnimationFrame(drawRaf);
+    drawRaf = 0;
     closeMenu();
-    if (bmp && bmp.close) bmp.close();
+    shed(bmp);
+    shed(nextBmp);
     bmp = null;
+    nextBmp = null;
+    nextHdr = null;
     if (link && link.detach) link.detach(tabId);
     const i = fbViews.indexOf(rec);
     if (i >= 0) fbViews.splice(i, 1);
@@ -1206,11 +1297,14 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     hasFocus: () => document.activeElement === focusEl,
     info: () => info,
     selection: () => selection,
+    // What the stream is doing for this tab, as the backend last reported it.
+    stats: () => streamStats,
     // Whether the page is stopped waiting on the reader, for the mark its chip
     // wears while it is not the tab on screen.
     asking: asking,
     // What the transport routes into this view.
     frame: frame,
+    status: status,
     tab: onTab,
     sel: sel,
     cursor: cursor,
@@ -1223,6 +1317,10 @@ function fullBrowserMake(pane, tabId, link, cbs) {
     gone: gone,
     reconnected: reconnected,
   };
+  // The rec is also how a view is found from outside the pane that made it,
+  // which is the only way anybody can ask what its stream is costing
+  // (api.stats): the pane keeps its tabs in its own closure.
+  rec.view = api;
   if (link && link.attach) link.attach(tabId, api);
   return api;
 }
