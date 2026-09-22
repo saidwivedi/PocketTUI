@@ -211,6 +211,33 @@ function browserRememberStream(url, on) {
   browserSyncStreamHosts();
 }
 
+// Sites whose pages play sound and video, which the proxy carries and the stream
+// does not. The landing watchdog used to put a host on the record by
+// itself whenever one of its pages left the proxy, and YouTube does that on its
+// own navigations — so a record from then can name these sites without the user
+// ever having pressed the key. Nothing in the record says which entries were
+// the watchdog's, so these are taken off once, by name.
+const BROWSER_MEDIA_SITES = ["youtube.com", "youtu.be", "vimeo.com", "twitch.tv",
+                             "netflix.com", "spotify.com", "soundcloud.com",
+                             "dailymotion.com"];
+
+function browserMigrateStreamHosts() {
+  if (cfg.browserStreamHostsVer >= 1) return;
+  const rec = cfg.browserStreamHosts;
+  let dropped = 0;
+  for (const host of Object.keys(rec)) {
+    const name = host.toLowerCase().replace(/:\d+$/, "");
+    if (BROWSER_MEDIA_SITES.some((m) => name === m || name.endsWith("." + m))) {
+      delete rec[host];
+      dropped += 1;
+    }
+  }
+  if (dropped) cfg.browserStreamHosts = rec;
+  cfg.browserStreamHostsVer = 1;
+  if (dropped) toast("YouTube and other media sites now open in the proxy again", 6000);
+}
+browserMigrateStreamHosts();
+
 // What a tab sent to this address would be. Strictly checked, like every other
 // capability the shell sends *to* the computer: a server too old for the route
 // has no socket to open, and a tab waiting on one would be a tab with nothing in
@@ -577,6 +604,11 @@ function browserNewTab() {
     // (browserWatchLanding).
     landGen: 0,
     heardAt: 0,
+    // How many landings in a row the proxy did not serve, and the address and
+    // time of the last: the first is put back in the proxy, a second one soon
+    // after is a page that leaves on every load (browserWatchLanding).
+    escapes: 0,
+    escapedAt: null,
   };
 }
 
@@ -1248,24 +1280,25 @@ function browserNavigate(raw, push = true) {
 function syncBrowserLan() {
   const btn = q("btn-browser-tab");
   if (!btn) return;
-  // Not for a streamed tab: its page is fetched by a browser running on the
-  // computer, so it is already on the computer's network and there is nothing
-  // this key could add. Nor for a tab showing a PDF: that document is fetched
-  // with the other flavour whatever the key says, and the answer the key holds
-  // is the one the tab goes back to when it moves on (browserPdfShow). Hidden
-  // here rather than in browserSyncCap, because it now depends on the tab on
-  // screen as well as on the computer's answers.
-  btn.hidden = !hasCapStrict("browse_tab") || browserTabBlocked
-               || browserIsFull(browserTab())
-               || !!(browserTab() && browserTab().pdf);
-  const on = !!(browserTab() && browserTab().lan);
+  // Shown wherever the computer has the flavour to give, on a streamed tab as
+  // well: there a press is the way from the stream to a proxy tab that is on
+  // the computer's network, which is what most pages that were streamed for
+  // want. Not for a tab showing a PDF: that document is fetched with the other
+  // flavour whatever the key says, and the answer the key holds is the one the
+  // tab goes back to when it moves on (browserPdfShow). Hidden here rather than
+  // in browserSyncCap, because it depends on the tab on screen as well as on
+  // the computer's answers.
+  btn.hidden = !browserTabAllowed() || !!(browserTab() && browserTab().pdf);
+  const full = browserIsFull(browserTab());
+  const on = !full && !!(browserTab() && browserTab().lan);
   btn.classList.toggle("on", on);
   btn.setAttribute("aria-pressed", on ? "true" : "false");
   // A glyph nobody has met before says nothing on its own, so the key says what
   // pressing it would do — and, once it is pressed, what it did. The tooltip
   // and the label are the same words: a reader who hovers and a reader who
   // listens are being told the same thing.
-  const said = on ? "This tab uses the computer's network"
+  const said = full ? "Use the local-network proxy for this tab"
+             : on ? "This tab uses the computer's network"
                   : "Use the computer's network for this tab";
   btn.setAttribute("aria-label", said);
   btn.setAttribute("title", said);
@@ -1452,6 +1485,9 @@ function browserFullFailed(tab, msg) {
 // landing counts for the whole of the window anyway.
 const BROWSER_LAND_WAIT = 1200;
 const BROWSER_LAND_GRACE = 150;
+// How soon after one unserved landing a second one counts as the same page
+// leaving again rather than a new escape.
+const BROWSER_ESCAPE_AGAIN = 10000;
 
 // A document landed in a proxy tab's frame. Everything the proxy serves reports
 // itself here shortly afterwards — the shim's `pockettui-nav`, or the error
@@ -1461,11 +1497,14 @@ const BROWSER_LAND_GRACE = 150;
 // is outside the app's mount and what lands is the front's bare "404 page not
 // found", inside the frame, with the address bar still showing the site.
 //
-// There is nothing to fetch it with here, so the tab goes to the browser that
-// can: the computer's own Chrome, on the address this pane last knew the tab to
-// be at — which for an app that moves itself with pushState is where the user
-// actually is. The host is remembered as if the key had been pressed, since the
-// next visit will leave the proxy in the same place.
+// The address this pane last knew the tab to be at — which for an app that moves
+// itself with pushState is where the user actually is — is loaded again in the
+// proxy, in the same tab and without a word: YouTube leaves this way on some of
+// its own navigations and plays fine in the proxy once it is back. Only a page
+// that leaves again on the load that put it back (a second unserved landing
+// within BROWSER_ESCAPE_AGAIN) is streamed from the computer's Chrome, and for
+// this tab only: nothing goes on the host record, which is the key's and the
+// proxy's own hand-off's to write (browserHandOff).
 function browserWatchLanding(tab) {
   const gen = ++tab.landGen;
   const paneGen = browserGen;
@@ -1474,7 +1513,12 @@ function browserWatchLanding(tab) {
     // A newer landing in the same frame is the one being waited on now, and this
     // one is nobody's business any more.
     if (tab.landGen !== gen || !browserAlive(tab, paneGen)) return;
-    if (tab.heardAt >= at - BROWSER_LAND_GRACE) return;   // the proxy's own page
+    if (tab.heardAt >= at - BROWSER_LAND_GRACE) {         // the proxy's own page
+      // Held for the whole window with nothing newer landing, so whatever left
+      // before is not leaving on every load.
+      tab.escapes = 0;
+      return;
+    }
     if (browserIsFull(tab)) return;
     // A PDF says nothing either: what is in the frame is a plugin drawing a
     // document, not a page this proxy rewrote and put a shim in. The tab is
@@ -1486,11 +1530,20 @@ function browserWatchLanding(tab) {
     // until then there is nothing to say the frame has gone anywhere.
     if (tab.navigating) return;
     const url = browserUrlIn(tab);
-    // Nowhere to hand it to: the page in the frame is wrong and saying so would
-    // not make it right, and the frame is still showing whatever it landed on.
-    if (!url || !hasCapStrict("browser_full")) return;
-    browserRememberStream(url, true);
-    toast("This site left the proxy; streaming it from the computer");
+    if (!url) return;
+    const now = Date.now();
+    const again = tab.escapes > 0 && !!tab.escapedAt
+                  && now - tab.escapedAt.at < BROWSER_ESCAPE_AGAIN;
+    tab.escapes = (again ? tab.escapes : 0) + 1;
+    tab.escapedAt = { url: url, at: now };
+    if (tab.escapes < 2) {
+      browserNavigateIn(tab, url, false);
+      return;
+    }
+    // Nowhere to hand it to: loading it again would only leave again, and the
+    // frame is still showing whatever it landed on.
+    if (!hasCapStrict("browser_full")) return;
+    toast("This page left the proxy twice; streaming it from the computer");
     browserSwapMode(tab, true);
     browserNavigateIn(tab, url, false);
   }, BROWSER_LAND_WAIT);
@@ -2713,6 +2766,19 @@ q("btn-browser-tab").addEventListener("click", async () => {
   }
   // The ask is a round trip, and the strip may have moved on inside it.
   if (tab !== browserTab()) return;
+  if (browserIsFull(tab)) {
+    // Off the stream and onto the flavour in one load: the mode and the flavour
+    // are both flipped before the one navigation that fetches the page. The
+    // host comes off the record first, as the monitor key's step down does, or
+    // the navigation would read it back and put the tab straight up again.
+    const url = browserUrlIn(tab);
+    browserRememberStream(url, false);
+    browserSwapMode(tab, false);
+    browserFlipLan(tab, true);
+    if (url) browserNavigateIn(tab, url, false);
+    else syncBrowserNav();
+    return;
+  }
   browserSetLan(tab, true);
 });
 // This page, in the browser this device runs: the arrow in the address field.
@@ -2934,8 +3000,8 @@ function browserSyncCap() {
   //
   // Both of the mode keys are set from the tab on screen as well as from the
   // computer's answers, so both go through their own sync rather than being
-  // written here: this key is hidden for a streamed tab, and the one beside it
-  // is hidden on a computer with no browser to stream from.
+  // written here: this key is hidden for a PDF, and the one beside it is
+  // hidden on a computer with no browser to stream from.
   q("btn-browser-full").hidden = !hasCapStrict("browser_full");
   syncBrowserFull();
   syncBrowserLan();
