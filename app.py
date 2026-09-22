@@ -7461,6 +7461,95 @@ def api_browser_status() -> Response:
     return no_store(JSONResponse(body))
 
 
+@app.post("/api/browser/reset")
+async def api_browser_reset() -> Response:
+    """Throw the browsing session away: stop the browser, delete the profile.
+
+    Every cookie, login and byte of site data the mode ever collected is in
+    that one directory, so this is the whole of "sign me out of everything".
+    Refused while a tab is open rather than closing them: the tabs are somebody
+    else's screen, and a reset that pulled the page out from under them would
+    be indistinguishable from a crash.
+
+    The downloads directory is not touched. Those are the user's files.
+    """
+    mod = _chromium_module()
+    if mod is None:
+        return no_store(JSONResponse(
+            {"error": "this install has no browser support"}, status_code=501))
+    fb = mod.FullBrowser.get()
+    if fb.has_tabs():
+        return no_store(JSONResponse({"error": "browser tabs are open"},
+                                     status_code=409))
+    try:
+        await fb.reset()
+    except Exception as e:  # noqa: BLE001 — a profile that will not go is news
+        log(f"browser reset failed: {e!r}")
+        return no_store(JSONResponse({"error": str(e) or "reset failed"},
+                                     status_code=500))
+    return no_store(JSONResponse({"ok": True}))
+
+
+# Where a file the phone picked waits for the page's file input to take it.
+# Under the uploads tree the composer's "+" already uses, in a subdirectory of
+# its own: these are swept by age at the next browser launch (chromium.py's
+# sweep_uploads) and the composer's are kept by count, and neither rule should
+# be reaching the other's files.
+BROWSER_UPLOAD_DIR = Path.home() / ".pockettui" / "uploads" / "browser"
+
+
+def browser_upload_name(name: str) -> str:
+    """`name` as one path component, and otherwise unchanged.
+
+    Unlike upload_name, which rewrites a name into something safe to type at a
+    prompt, this one is kept as the user sees it: the page's file input shows
+    it, and a form that checks the extension has to see the real one. A
+    directory of its own is what makes it unique, so nothing else has to.
+    """
+    base = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    base = "".join(ch for ch in base if ch >= " " and ch != "\x7f").strip()
+    if base in ("", ".", ".."):
+        return "file"
+    return base[:128]
+
+
+def store_browser_upload(raw: bytes, name: str) -> Response:
+    """Stage one file for a page's file input, off the event loop."""
+    if not raw:
+        return JSONResponse({"error": "empty"}, status_code=400)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        return JSONResponse({"error": "too_large"}, status_code=413)
+    safe = browser_upload_name(name)
+    folder = BROWSER_UPLOAD_DIR / secrets.token_hex(16)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        os.chmod(BROWSER_UPLOAD_DIR, 0o700)
+        atomic_write(folder / safe, raw, None)
+    except OSError:
+        return JSONResponse({"error": "not_writable"}, status_code=500)
+    log(f"browser upload bytes={len(raw)} name={safe!r}")
+    return no_store(JSONResponse({"path": str(folder / safe), "name": safe,
+                                  "bytes": len(raw)}))
+
+
+@app.post("/api/browser/upload")
+async def api_browser_upload(request: Request) -> Response:
+    """Put a file from the phone where a page's file input can be given it.
+
+    The body is the file itself rather than a multipart form, the shape
+    /api/upload and /api/fs/upload already take, and the answer is the path on
+    *this* computer that the pane sends back in a `files` op. Its own directory
+    rather than the composer's, because the page sees the filename and these
+    are swept by age (see BROWSER_UPLOAD_DIR).
+    """
+    refusal = throttled("file", RATE_FILE, request)
+    if refusal is not None:
+        return refusal
+    raw = await request.body()
+    name = str(request.query_params.get("name", ""))
+    return await run_in_threadpool(store_browser_upload, raw, name)
+
+
 @app.api_route("/b/{tok}/{sch}/{hostport}/{rest:path}", methods=BROWSE_METHODS)
 async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
                            rest: str = "") -> Response:
@@ -8559,6 +8648,10 @@ async def reap_lingering() -> None:
 # for the status line, and every tab change already arrives as its own message.
 BROWSER_STATUS_S = 10.0
 
+# How many files one `files` op may hand a page's input. A multiple-file input
+# takes as many as the user picked; this is only a ceiling on the message.
+BROWSER_FILES_MAX = 32
+
 
 def browser_failure(exc: Exception) -> tuple[str, str]:
     """One exception, as a code the pane can act on and a line it can show."""
@@ -8783,6 +8876,47 @@ async def browser_op_cursor(fb, pane: str, msg: dict) -> None:
                       "title": title})
 
 
+# ---- what the page asked for ----------------------------------------------
+# Three ops that are answers rather than commands: the page is stopped until
+# one arrives, and the pane is what stands where the browser's own dialog would.
+
+
+async def browser_op_dialog(fb, pane: str, msg: dict) -> None:
+    """alert/confirm/prompt/beforeunload: OK or Cancel, and a prompt's text."""
+    mod = _chromium_module()
+    pt = browser_need(fb, pane, msg)
+    text = str(msg.get("text") or "")[:mod.DIALOG_MESSAGE_MAX]
+    await pt.answer_dialog(bool(msg.get("accept")), text)
+
+
+async def browser_op_auth(fb, pane: str, msg: dict) -> None:
+    """The credentials for a Basic or Digest challenge, or a cancel.
+
+    The password is never stored here and never logged: it goes straight to the
+    browser, which is the thing that will remember it for the realm.
+    """
+    pt = browser_need(fb, pane, msg)
+    if msg.get("cancel"):
+        await pt.cancel_auth()
+        return
+    await pt.answer_auth(str(msg.get("user") or ""), str(msg.get("password") or ""))
+
+
+async def browser_op_files(fb, pane: str, msg: dict) -> None:
+    """Paths *on this computer* for a file input the page opened.
+
+    Whatever the pane names, which is the point: a file the phone staged
+    through /api/browser/upload, and equally a file the user picked out of the
+    explorer. Neither is new authority — the pane can already read this tree.
+    An empty list is the cancel.
+    """
+    pt = browser_need(fb, pane, msg)
+    paths = msg.get("paths")
+    if not isinstance(paths, list):
+        raise ValueError("paths must be a list")
+    await pt.set_files([str(p) for p in paths[:BROWSER_FILES_MAX] if p])
+
+
 async def browser_op_ack(fb, pane: str, msg: dict) -> None:
     pt = fb.tab(pane, browser_tab_id(msg))
     if pt is not None:                      # an ack for a closed tab is not news
@@ -8815,6 +8949,9 @@ BROWSER_OPS = {
     "link": browser_op_link,
     "hit": browser_op_hit,
     "cursor": browser_op_cursor,
+    "dialog": browser_op_dialog,
+    "auth": browser_op_auth,
+    "files": browser_op_files,
 }
 
 

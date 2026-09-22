@@ -1062,6 +1062,10 @@ POPUP_MAX_S = 15.0
 # honest one — it means the picture is on screen — and this is the backstop.
 ACK_TIMEOUT_S = 1.0
 
+# How long `Page.startScreencast` is given to answer before the tab is taken
+# for one with no page committed yet (see `_start_cast`).
+CAST_START_S = 2.0
+
 # What counts as a client that cannot keep up, and how long it has to be quiet
 # before the full pixel ratio is given back.
 SLOW_ACK_MS = 300
@@ -1070,13 +1074,43 @@ DPR_RECOVER_S = 10.0
 
 SELECTION_MAX = 1 << 20
 
+# A modal dialog and an HTTP auth prompt both stop the page dead until someone
+# answers, and the someone is a phone that may have gone into a pocket. The
+# page is let go after this long rather than left waiting for a tab nobody is
+# looking at any more.
+DIALOG_TIMEOUT_S = 120.0
+AUTH_TIMEOUT_S = 120.0
+DIALOG_MESSAGE_MAX = 4096
+
+# Request interception pauses *every* request the page makes, so it is turned
+# on only for a page that answered 401 and turned off again this long after the
+# credentials went in: by then Chrome has cached them for the realm and the
+# pause buys nothing.
+FETCH_LINGER_S = 60.0
+
+# The favicon travels as a data URL inside a `tab` message, so it is small or
+# it is not sent at all.
+FAVICON_MAX = 32 << 10
+FAVICON_TIMEOUT_S = 5.0
+
+# Download progress arrives per chunk read; this is how often any of it
+# reaches the pane.
+DOWNLOAD_EVERY_S = 0.25
+
+# Files the pane staged for a page's file input are swept at the next launch:
+# they were picked for one upload, and that directory is not a place to keep
+# anything.
+UPLOAD_MAX_AGE_S = 86400.0
+
 
 # Injected into every document the tab loads, before the page's own scripts.
-# It answers two questions the protocol cannot: whether a native popup is open
-# (see POPUP_FPS above), and what the page thinks is selected, which is what
-# the pane's copy button copies. Both go out through Runtime bindings, which
-# are real functions in the page rather than anything the page could be
-# confused by; nothing else is added to the page's globals.
+# It answers three questions the protocol cannot: whether a native popup is
+# open (see POPUP_FPS above), what the page thinks is selected, which is what
+# the pane's copy button copies, and what the title is — `Target.targetInfoChanged`
+# does not fire for a title a script sets, so the page has to say so itself.
+# All three go out through Runtime bindings, which are real functions in the
+# page rather than anything the page could be confused by; nothing else is
+# added to the page's globals.
 FULL_PAGE_HELPER = r"""
 (() => {
   const PICKERS = ['date', 'time', 'datetime-local', 'month', 'week', 'color'];
@@ -1119,6 +1153,28 @@ FULL_PAGE_HELPER = r"""
   };
   document.addEventListener('selectionchange',
     () => { if (!timer) timer = setTimeout(report, 50); }, true);
+
+  let ttimer = 0, tlast = null, watched = null;
+  const title = () => {
+    ttimer = 0;
+    const now = document.title || '';
+    if (now === tlast) return;
+    tlast = now;
+    try { ptuiTitle(now); } catch (e) {}
+  };
+  const bump = () => { if (!ttimer) ttimer = setTimeout(title, 100); };
+  const watch = () => {
+    const head = document.head;
+    if (!head || head === watched) return;
+    watched = head;
+    try {
+      new MutationObserver(bump).observe(head,
+        { childList: true, subtree: true, characterData: true });
+    } catch (e) {}
+  };
+  watch();
+  addEventListener('DOMContentLoaded', () => { watch(); bump(); }, true);
+  addEventListener('load', () => { watch(); bump(); }, true);
 })();
 """ % {"selmax": SELECTION_MAX}
 
@@ -1363,6 +1419,43 @@ def probe_call(js: str, *args) -> str:
     return "(" + js + ")(" + ",".join(json.dumps(a) for a in args) + ")"
 
 
+# The tab's icon, fetched by the page rather than by this process, because the
+# icon of a page behind a login is behind that login too: the page's own fetch
+# carries its cookies and its origin, and this process has neither. It comes
+# back as a data URL or as nothing at all — an icon is decoration, and no
+# failure here is worth a word to anybody. `%`-free, like the probes above:
+# FULL_PAGE_HELPER is %-formatted and these strings live beside it.
+FAVICON_JS = """(async () => {
+  var cap = %(cap)d;
+  try {
+    var href = '';
+    var links = document.querySelectorAll('link[rel~="icon"]');
+    for (var i = 0; i < links.length; i++) {
+      if (links[i].href) { href = links[i].href; break; }
+    }
+    if (!href) href = new URL('/favicon.ico', location.href).href;
+    var res = await fetch(href, { credentials: 'include' });
+    if (!res.ok) return '';
+    var blob = await res.blob();
+    if (!blob.size || blob.size > cap) return '';
+    var type = blob.type || 'image/x-icon';
+    if (type.indexOf('image/') !== 0) return '';
+    var bytes = new Uint8Array(await blob.arrayBuffer());
+    var s = '';
+    for (var j = 0; j < bytes.length; j++) s += String.fromCharCode(bytes[j]);
+    var out = 'data:' + type + ';base64,' + btoa(s);
+    return out.length > cap ? '' : out;
+  } catch (e) { return ''; }
+})()""" % {"cap": FAVICON_MAX}
+
+
+def _host_of(url: str) -> str:
+    """The `scheme://host` of a URL, by hand: only equality is ever asked."""
+    head, slashes, rest = url.partition("//")
+    if not slashes:
+        return ""
+    return (head + "//" + rest.split("/", 1)[0]).lower()
+
 
 class PaneTab:
     """One tab: a target, the session on it, and the stream out of it.
@@ -1403,6 +1496,7 @@ class PaneTab:
         self.shown_at = 0.0
         self.url = ""
         self.title = ""
+        self.favicon = ""
         self.loading = False
         self.frame_id = ""
         self.selection = ""
@@ -1415,6 +1509,23 @@ class PaneTab:
         # move over a paragraph asks twenty times a second and the answer is the
         # same every time; only a change is worth a message.
         self.cursor_sent: "tuple[str, str] | None" = None
+        # When something was last sent to this page. `_input_at` cannot answer
+        # it: the settle timer clears that one, and this is asked long after —
+        # it is how a download with no tab of its own finds the tab that most
+        # likely started it.
+        self.last_input = 0.0
+
+        # One dialog and one auth challenge at a time, because that is how many
+        # the page can have: both stop it until they are answered.
+        self._dialog: "str | None" = None          # the kind, while one is up
+        self._dialog_task: "asyncio.Task | None" = None
+        self._auth: "str | None" = None            # the paused requestId
+        self._auth_task: "asyncio.Task | None" = None
+        self._fetch_on = False
+        self._fetch_task: "asyncio.Task | None" = None   # the enable and reload
+        self._linger_task: "asyncio.Task | None" = None  # the disable after it
+        self._chooser: "int | None" = None         # backendNodeId of the input
+        self._icon_task: "asyncio.Task | None" = None
 
         self._seq = 0
         self._casts = 0                 # frames emitted, for the settle race
@@ -1430,6 +1541,7 @@ class PaneTab:
         self._popup_open = False
         self._popup_task: "asyncio.Task | None" = None
         self._capturing = False
+        self._cast_pending = False      # a stream the page was not ready for
         self._held: list = []           # frames a settle capture provoked
 
     # -- geometry ----------------------------------------------------------
@@ -1478,8 +1590,22 @@ class PaneTab:
             await s.send("Emulation.setUserAgentOverride", {"userAgent": user_agent})
         await s.send("Runtime.addBinding", {"name": "ptuiPopup"})
         await s.send("Runtime.addBinding", {"name": "ptuiSel"})
+        await s.send("Runtime.addBinding", {"name": "ptuiTitle"})
         await s.send("Page.addScriptToEvaluateOnNewDocument",
                      {"source": FULL_PAGE_HELPER})
+        # Network, for the one response that matters: a 401 with a challenge on
+        # it, which is the only warning before the page comes back empty. The
+        # interception that answers the challenge is not enabled here — it
+        # pauses every request the page makes, so it waits until there is a
+        # challenge to answer (see `_on_response`).
+        await s.send("Network.enable")
+        # A file input the user tapped opens the computer's file dialog, which
+        # is on the wrong computer. Intercepted, so the pane can ask the phone
+        # instead and hand back paths.
+        try:
+            await s.send("Page.setInterceptFileChooserDialog", {"enabled": True})
+        except (CDPError, CDPClosed, asyncio.TimeoutError) as e:
+            log(f"tab {self.tab}: file chooser not intercepted: {e!r}")
         try:
             tree = await s.send("Page.getFrameTree")
             self.frame_id = ((tree.get("frameTree") or {}).get("frame") or {}).get("id", "")
@@ -1499,6 +1625,13 @@ class PaneTab:
         s.on("Page.navigatedWithinDocument", self._on_in_document)
         s.on("Page.frameStartedLoading", self._on_started)
         s.on("Page.frameStoppedLoading", self._on_stopped)
+        s.on("Page.loadEventFired", self._on_load)
+        s.on("Page.javascriptDialogOpening", self._on_dialog)
+        s.on("Page.javascriptDialogClosed", self._on_dialog_closed)
+        s.on("Page.fileChooserOpened", self._on_file_chooser)
+        s.on("Network.responseReceived", self._on_response)
+        s.on("Fetch.requestPaused", self._on_paused)
+        s.on("Fetch.authRequired", self._on_auth_required)
 
     # -- outbound ----------------------------------------------------------
     def _emit(self, kind: str, body: bytes, fmt: str) -> "int | None":
@@ -1546,10 +1679,16 @@ class PaneTab:
                 self.title = entries[i].get("title") or self.title
         except (CDPError, CDPClosed, asyncio.TimeoutError):
             pass
-        self._say({"type": "tab", "tab": self.tab, "url": self.url,
-                   "title": self.title, "loading": self.loading,
-                   "canBack": can_back, "canFwd": can_fwd,
-                   "targetId": self.target_id})
+        msg = {"type": "tab", "tab": self.tab, "url": self.url,
+               "title": self.title, "loading": self.loading,
+               "canBack": can_back, "canFwd": can_fwd,
+               "targetId": self.target_id}
+        # Only when there is one: an absent key is the pane keeping the icon it
+        # already has, and every push would otherwise carry the same kilobytes
+        # of data URL again.
+        if self.favicon:
+            msg["favicon"] = self.favicon
+        self._say(msg)
 
     def _is_main(self, frame_id: str) -> bool:
         return not self.frame_id or frame_id == self.frame_id
@@ -1559,7 +1698,13 @@ class PaneTab:
         if frame.get("parentId"):
             return
         self.frame_id = frame.get("id") or self.frame_id
+        was = self.url
         self.url = frame.get("url") or self.url
+        # Another site's icon is worse than none: kept across a navigation
+        # within one origin (where it is still right, and the probe may find
+        # nothing to replace it with) and dropped when the host changes.
+        if _host_of(self.url) != _host_of(was):
+            self.favicon = ""
         self._schedule_state()
 
     def _on_in_document(self, params: dict) -> None:
@@ -1577,6 +1722,10 @@ class PaneTab:
         if self._is_main(params.get("frameId", "")):
             self.loading = False
             self._schedule_state()
+            if self.live and self._cast_pending and not self.dead:
+                # There is a page to stream now. See `_start_cast`.
+                self._cast_pending = False
+                asyncio.ensure_future(self._start_cast())
 
     def on_info(self, info: dict) -> None:
         """Target.targetInfoChanged for this tab: the title arrives here."""
@@ -1658,14 +1807,29 @@ class PaneTab:
         delay = 0.05
         for _ in range(5):
             try:
-                await self.session.send("Page.startScreencast", params)
+                await self.session.send("Page.startScreencast", params,
+                                        timeout=CAST_START_S)
+                self._cast_pending = False
                 return
             except CDPError as e:
                 if "active page" not in (e.message or ""):
                     raise
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 0.4)
+            except asyncio.TimeoutError:
+                # A navigation that has not committed yet — a first page behind
+                # an auth challenge, a server that has not answered — has no
+                # surface to cast, and the call does not come back at all
+                # rather than failing. The tab is live either way: the stream
+                # is started again when the page finally stops loading, and
+                # holding the pane's whole socket here (every op on it is
+                # awaited in turn) would stop the user answering the very
+                # challenge that is holding the page.
+                log(f"tab {self.tab}: nothing to stream yet; waiting for the page")
+                self._cast_pending = True
+                return
         await self.session.send("Page.startScreencast", params)
+        self._cast_pending = False
 
     async def _stop_cast(self) -> None:
         for seq in list(self._unacked):
@@ -1778,7 +1942,7 @@ class PaneTab:
         native popup — the click that picks an option, or the key that
         dismisses the menu, is the last thing the screenshots are needed for.
         """
-        self._input_at = time.monotonic()
+        self._input_at = self.last_input = time.monotonic()
         self._arm_settle()
         if self._popup_open and (kind == "mousePressed" or
                                  (kind == "keyUp" and key in ("Escape", "Enter", "Tab"))):
@@ -1860,6 +2024,15 @@ class PaneTab:
             if self.on_selection is not None:
                 self.on_selection(self, text)
             return
+        if name == "ptuiTitle":
+            # Chrome 153 sends no targetInfoChanged for a title a script sets,
+            # and a single-page app sets every title it will ever have that
+            # way; without this the tab strip keeps the first one forever.
+            title = payload[:TITLE_MAX]
+            if title and title != self.title:
+                self.title = title
+                self._schedule_state()
+            return
         if name != "ptuiPopup":
             return
         try:
@@ -1895,6 +2068,272 @@ class PaneTab:
             pass
         finally:
             self._popup_open = False
+
+    # -- the page asking something -----------------------------------------
+    # Four things a page can do that a picture of a page cannot answer: put up
+    # a modal dialog, demand HTTP credentials, open a file dialog, and change
+    # its icon. Each one is a message to the pane and, for the first three, an
+    # answer that has to come back before the page goes on — so each one also
+    # has a deadline, because the pane is a phone and phones go into pockets.
+
+    def _on_dialog(self, params: dict) -> None:
+        kind = str(params.get("type") or "alert")
+        if self._dialog is not None:
+            # A page can only have one up at a time; a second means the first
+            # was answered by something other than us. Let the pane keep the
+            # one it is showing rather than stack them.
+            log(f"tab {self.tab}: a second {kind} while one is open")
+            return
+        self._dialog = kind
+        self._say({"type": "dialog", "tab": self.tab, "kind": kind,
+                   "message": str(params.get("message") or "")[:DIALOG_MESSAGE_MAX],
+                   "default": str(params.get("defaultPrompt") or "")[:DIALOG_MESSAGE_MAX],
+                   "url": str(params.get("url") or "")})
+        self._dialog_task = asyncio.ensure_future(self._dialog_deadline(kind))
+
+    def _on_dialog_closed(self, params: dict) -> None:
+        """Answered by something that was not us — a navigation, mostly."""
+        self._dialog = None
+        self._cancel(self._dialog_task)
+        self._dialog_task = None
+
+    async def _dialog_deadline(self, kind: str) -> None:
+        try:
+            await asyncio.sleep(DIALOG_TIMEOUT_S)
+        except asyncio.CancelledError:
+            return
+        if self._dialog is None or self.dead:
+            return
+        # Dismissed, which for an alert *is* its OK button: an alert has no
+        # other answer, and leaving it up leaves the page stopped forever.
+        log(f"tab {self.tab}: no answer to the {kind}; dismissing it")
+        try:
+            await self.answer_dialog(kind == "alert")
+        except (CDPError, CDPClosed, asyncio.TimeoutError):
+            pass
+
+    async def answer_dialog(self, accept: bool, text: str = "") -> bool:
+        """The pane's answer. False when there was nothing left to answer."""
+        kind, self._dialog = self._dialog, None
+        if kind is None:
+            return False
+        self._cancel(self._dialog_task)
+        self._dialog_task = None
+        params: dict = {"accept": bool(accept)}
+        # An empty answer to a prompt is an answer: left out, the page gets the
+        # default value it suggested rather than the nothing the user typed.
+        if text or kind == "prompt":
+            params["promptText"] = text
+        await self.session.send("Page.handleJavaScriptDialog", params)
+        return True
+
+    def _on_response(self, params: dict) -> None:
+        """A 401 on the document, which is the only warning of a login box."""
+        if str(params.get("type") or "") != "Document" or self._fetch_on:
+            return
+        frame = params.get("frameId") or ""
+        if frame and not self._is_main(frame):
+            return
+        resp = params.get("response") or {}
+        try:
+            status = int(resp.get("status") or 0)
+        except (TypeError, ValueError):
+            return
+        if status != 401:
+            return
+        challenge = ""
+        for key, value in (resp.get("headers") or {}).items():
+            if str(key).lower() == "www-authenticate":
+                challenge = str(value or "").lstrip().lower()
+                break
+        if not challenge.startswith(("basic", "digest")):
+            return
+        self._fetch_task = asyncio.ensure_future(self._intercept_and_reload())
+
+    async def _intercept_and_reload(self) -> None:
+        """Turn interception on for this tab and ask for the page again.
+
+        Lazily, because `Fetch.enable` pauses every request the page makes and
+        hands each one back to this process to release: a page of a hundred
+        images would be a hundred round trips through a phone's socket for
+        nothing. The 401 already happened, so the cost is one reload.
+        """
+        if self._fetch_on or self.dead:
+            return
+        self._fetch_on = True
+        try:
+            await self.session.send(
+                "Fetch.enable",
+                {"handleAuthRequests": True,
+                 "patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+            # The 401 *is* the navigation's answer, so at this moment the page
+            # it belongs to is not the active one yet and Chrome refuses to
+            # reload it. Waited out, the way `_start_cast` waits out the same
+            # window, rather than reported as a page that cannot be asked for.
+            delay = 0.05
+            for attempt in range(6):
+                try:
+                    await self.session.send("Page.reload")
+                    return
+                except CDPError as e:
+                    if "active page" not in (e.message or "") or attempt == 5:
+                        raise
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 0.4)
+        except (CDPError, CDPClosed, asyncio.TimeoutError) as e:
+            log(f"tab {self.tab}: could not ask for credentials: {e!r}")
+            self._fetch_on = False
+            # Interception that bought nothing is a round trip through the
+            # phone's socket per request from here on, so it goes back.
+            try:
+                await self.session.send("Fetch.disable")
+            except (CDPError, CDPClosed, asyncio.TimeoutError):
+                pass
+
+    def _on_paused(self, params: dict) -> None:
+        """Every intercepted request, let straight through."""
+        rid = params.get("requestId")
+        if rid:
+            asyncio.ensure_future(self._continue(str(rid)))
+
+    async def _continue(self, rid: str) -> None:
+        try:
+            await self.session.send("Fetch.continueRequest", {"requestId": rid},
+                                    timeout=10)
+        except (CDPError, CDPClosed, asyncio.TimeoutError):
+            pass
+
+    def _on_auth_required(self, params: dict) -> None:
+        rid = str(params.get("requestId") or "")
+        if not rid:
+            return
+        challenge = params.get("authChallenge") or {}
+        if self._auth is not None:
+            # One prompt at a time. A second challenge while the user is typing
+            # into the first is refused rather than queued: two password boxes
+            # for one page is not something the pane can show.
+            asyncio.ensure_future(self._auth_reply(rid, None, ""))
+            return
+        self._auth = rid
+        self._say({"type": "auth", "tab": self.tab,
+                   "host": str(challenge.get("origin") or ""),
+                   "realm": str(challenge.get("realm") or "")[:TITLE_MAX],
+                   "scheme": str(challenge.get("scheme") or "")})
+        self._auth_task = asyncio.ensure_future(self._auth_deadline(rid))
+
+    async def _auth_deadline(self, rid: str) -> None:
+        try:
+            await asyncio.sleep(AUTH_TIMEOUT_S)
+        except asyncio.CancelledError:
+            return
+        if self._auth != rid or self.dead:
+            return
+        log(f"tab {self.tab}: no credentials came back; cancelling")
+        await self.cancel_auth()
+
+    async def answer_auth(self, user: str, password: str) -> bool:
+        rid, self._auth = self._auth, None
+        self._cancel(self._auth_task)
+        self._auth_task = None
+        if rid is None:
+            return False
+        await self._auth_reply(rid, user, password)
+        # Chrome remembers the credentials for the realm, so the interception
+        # has done its job; it is left on a little longer only because the very
+        # next request is the one being retried with them.
+        self._cancel(self._linger_task)
+        self._linger_task = asyncio.ensure_future(self._drop_interception())
+        return True
+
+    async def cancel_auth(self) -> bool:
+        rid, self._auth = self._auth, None
+        self._cancel(self._auth_task)
+        self._auth_task = None
+        if rid is None:
+            return False
+        await self._auth_reply(rid, None, "")
+        # Interception is given back on the same clock as a success: the page
+        # is not getting in, and leaving every one of its requests paused for
+        # nothing is the cost this was made lazy to avoid.
+        self._cancel(self._linger_task)
+        self._linger_task = asyncio.ensure_future(self._drop_interception())
+        return True
+
+    async def _auth_reply(self, rid: str, user: "str | None",
+                          password: str) -> None:
+        answer = ({"response": "CancelAuth"} if user is None else
+                  {"response": "ProvideCredentials", "username": user,
+                   "password": password})
+        try:
+            await self.session.send("Fetch.continueWithAuth",
+                                    {"requestId": rid,
+                                     "authChallengeResponse": answer}, timeout=10)
+        except (CDPError, CDPClosed, asyncio.TimeoutError) as e:
+            log(f"tab {self.tab}: the challenge could not be answered: {e!r}")
+
+    async def _drop_interception(self) -> None:
+        try:
+            await asyncio.sleep(FETCH_LINGER_S)
+        except asyncio.CancelledError:
+            return
+        if self.dead or not self._fetch_on:
+            return
+        try:
+            await self.session.send("Fetch.disable")
+        except (CDPError, CDPClosed, asyncio.TimeoutError):
+            pass
+        # Cleared either way: a disable that did not land leaves a tab whose
+        # every request is paused, and the next 401 has to be free to enable it
+        # again rather than believe it is already on.
+        self._fetch_on = False
+
+    def _on_file_chooser(self, params: dict) -> None:
+        node = params.get("backendNodeId")
+        if not node:
+            return
+        self._chooser = int(node)
+        self._say({"type": "filechooser", "tab": self.tab,
+                   "multiple": str(params.get("mode") or "") == "selectMultiple"})
+
+    async def set_files(self, paths: "list[str]") -> bool:
+        """Answer the file dialog with paths *on this computer*.
+
+        An empty list is how the pane cancels: the protocol has no other way to
+        say so, and an input left with no files is what a cancelled dialog
+        leaves behind anyway.
+        """
+        node, self._chooser = self._chooser, None
+        if node is None:
+            return False
+        files = [str(p) for p in paths]
+        try:
+            await self.session.send("DOM.enable")
+        except (CDPError, CDPClosed, asyncio.TimeoutError):
+            pass
+        await self.session.send("DOM.setFileInputFiles",
+                                {"files": files, "backendNodeId": node})
+        return True
+
+    def _on_load(self, params: dict) -> None:
+        if self.dead or (self._icon_task is not None and not self._icon_task.done()):
+            return
+        self._icon_task = asyncio.ensure_future(self._read_favicon())
+
+    async def _read_favicon(self) -> None:
+        try:
+            res = await self.session.send(
+                "Runtime.evaluate",
+                {"expression": FAVICON_JS, "returnByValue": True,
+                 "awaitPromise": True}, timeout=FAVICON_TIMEOUT_S)
+        except (CDPError, CDPClosed, asyncio.TimeoutError):
+            return
+        if res.get("exceptionDetails"):
+            return
+        icon = str((res.get("result") or {}).get("value") or "")
+        if not icon or len(icon) > FAVICON_MAX or icon == self.favicon:
+            return
+        self.favicon = icon
+        self._schedule_state()
 
     # -- navigation --------------------------------------------------------
     async def nav(self, url: str) -> None:
@@ -1998,6 +2437,7 @@ class PaneTab:
         self._unacked.clear()
         self._held = []
         self._capturing = False
+        self._cast_pending = False
         self._input_at = 0.0
         self._popup_open = False
         # The cancelled tasks of the tab's last life. Dropped rather than left
@@ -2009,6 +2449,11 @@ class PaneTab:
         self._popup_task = None
         self._dpr_task = None
         self._state_task = None
+        self._dialog_task = None
+        self._auth_task = None
+        self._fetch_task = None
+        self._linger_task = None
+        self._icon_task = None
 
     @staticmethod
     def _cancel(task) -> None:
@@ -2019,8 +2464,17 @@ class PaneTab:
         """Stop the timers and the stream, without ending the tab."""
         self.live = False
         self._popup_open = False
+        # Nothing is waiting on an answer any more: the target these were
+        # about is gone, so a dialog to dismiss and a challenge to cancel are
+        # both calls into nothing.
+        self._dialog = None
+        self._auth = None
+        self._chooser = None
+        self._fetch_on = False
         for task in (self._settle_task, self._freeze_task, self._popup_task,
-                     self._dpr_task, self._state_task):
+                     self._dpr_task, self._state_task, self._dialog_task,
+                     self._auth_task, self._fetch_task, self._linger_task,
+                     self._icon_task):
             self._cancel(task)
         for _seq, (_sid, _sent, timer) in list(self._unacked.items()):
             self._cancel(timer)
@@ -2032,6 +2486,103 @@ class PaneTab:
             return
         self.dead = True
         self._stop_tasks()
+
+
+# ---------------------------------------------------------------------------
+# Files: what the browser puts on this computer, and what the phone hands it
+# ---------------------------------------------------------------------------
+# Both directories are the user's alone (0700) and both are under
+# `~/.pockettui` rather than the real Downloads folder: a page the phone opened
+# writing into the folder the user's own browser watches is a surprise nobody
+# asked for, and this way one directory holds everything the mode produced.
+
+def downloads_dir() -> Path:
+    path = config_dir() / "downloads"
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+    return path
+
+
+def uploads_dir() -> Path:
+    """Where the pane stages a phone's file before a page's input takes it."""
+    return config_dir() / "uploads" / "browser"
+
+
+def sweep_uploads(max_age: float = UPLOAD_MAX_AGE_S) -> int:
+    """Drop yesterday's staged files. Called once per browser launch.
+
+    Each one was picked for a single upload that has long since happened, and
+    the alternative is a directory that only grows, holding whatever the user
+    last sent to a website.
+    """
+    root = uploads_dir()
+    cutoff = time.time() - max_age
+    dropped = 0
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if entry.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry.path, ignore_errors=True)
+        else:
+            try:
+                os.unlink(entry.path)
+            except OSError:
+                continue
+        dropped += 1
+    if dropped:
+        log(f"swept {dropped} staged upload(s) from {root}")
+    return dropped
+
+
+def download_name(suggested: str, guid: str) -> str:
+    """The site's suggested filename, as something safe to create.
+
+    The site chooses this string, so it is a single path component or it is the
+    guid: a name with a separator in it would put the file wherever the page
+    liked.
+    """
+    name = str(suggested or "").replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(ch for ch in name if ch >= " " and ch != "\x7f").strip()
+    if not name or name in (".", ".."):
+        return guid
+    return name[:128]
+
+
+def unique_path(folder: Path, name: str) -> Path:
+    """`name` in `folder`, with ` (2)` before the extension if it is taken."""
+    stem, ext = os.path.splitext(name)
+    path = folder / name
+    n = 2
+    while path.exists() and n < 1000:
+        path = folder / f"{stem} ({n}){ext}"
+        n += 1
+    return path
+
+
+def _rmtree_twice(path: Path) -> bool:
+    """Remove a directory, with one retry.
+
+    A browser on its way out goes on writing its profile for a moment after the
+    pipe closes, and a directory that grows while it is being removed is how
+    this raises `Directory not empty`.
+    """
+    for delay in (0.0, 1.0):
+        if delay:
+            time.sleep(delay)
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -2070,6 +2621,10 @@ class FullBrowser:
         self.discards = 0          # tabs given up since this browser started
         self.restarts = 0          # browsers replaced for going over the cap
         self._restarting = False
+        self._downloads: dict = {}   # guid -> what the pane is being told
+        self._popup_seq = 0          # names the tabs popups become
+        self._adopting: set = set()  # popup targets already being attached
+        self._crashed: dict = {}     # (pane, tab) -> the target that crashed
 
     @classmethod
     def get(cls) -> "FullBrowser":
@@ -2144,8 +2699,20 @@ class FullBrowser:
             except (CDPError, CDPClosed, asyncio.TimeoutError):
                 pass
             browser.cdp.on("Target.targetInfoChanged", self._on_target_info)
+            browser.cdp.on("Target.targetCreated", self._on_target_created)
             browser.cdp.on("Target.targetDestroyed", self._on_target_destroyed)
             browser.cdp.on("Target.targetCrashed", self._on_target_crashed)
+            browser.cdp.on("Browser.downloadWillBegin", self._on_download_begin)
+            browser.cdp.on("Browser.downloadProgress", self._on_download_progress)
+            self._downloads.clear()
+            self._crashed.clear()
+            sweep_uploads()
+            try:
+                await browser.cdp.send("Browser.setDownloadBehavior", {
+                    "behavior": "allow", "downloadPath": str(downloads_dir()),
+                    "eventsEnabled": True})
+            except (CDPError, CDPClosed, asyncio.TimeoutError, OSError) as e:
+                log(f"downloads will go wherever Chrome puts them: {e!r}")
             soft, cap = caps_mb(self.config)
             log(f"browser up: {found.path} {found.version} pid={browser.pid} "
                 f"cap={int(cap)}MB soft={int(soft)}MB")
@@ -2162,6 +2729,8 @@ class FullBrowser:
             pt._teardown()
         self._tabs.clear()
         self._by_target.clear()
+        self._crashed.clear()
+        self._downloads.clear()
         self.browser = None
         self.watchdog.stop()
         self.mem = None
@@ -2179,6 +2748,8 @@ class FullBrowser:
         tabs = list(self._tabs.values())
         self._tabs.clear()
         self._by_target.clear()
+        self._crashed.clear()
+        self._downloads.clear()
         browser, self.browser = self.browser, None
         for pt in tabs:
             pt._teardown()
@@ -2208,6 +2779,32 @@ class FullBrowser:
         except asyncio.TimeoutError:
             log("the browser did not stop in time; killing it")
             browser._signal_group(signal.SIGKILL)
+
+    def has_tabs(self) -> bool:
+        """Whether any pane still has a tab — live, hidden or discarded.
+
+        A discarded one counts: it has no target, but it is in somebody's tab
+        strip with a title on it and one tap from its page.
+        """
+        return any(not pt.dead for pt in self._tabs.values())
+
+    async def reset(self) -> None:
+        """Stop the browser and throw the profile away.
+
+        Everything the mode ever stored — cookies, logins, history, the site
+        data of every page the phone opened — is in that one directory, so
+        this is the whole of "sign me out of everything and start again". The
+        caller is the one that refuses while tabs are open; here the profile is
+        a directory the browser must not be holding.
+        """
+        await self.shutdown()
+        profile = config_dir() / "chromium-profile"
+        if not profile.exists():
+            return
+        loop = asyncio.get_running_loop()
+        if not await loop.run_in_executor(None, _rmtree_twice, profile):
+            raise OSError(f"the browser profile is still there: {profile}")
+        log(f"browser profile removed: {profile}")
 
     # -- idle --------------------------------------------------------------
     def _cancel_idle(self) -> None:
@@ -2282,6 +2879,15 @@ class FullBrowser:
             # nothing about the page it is looking at.
             existing._schedule_state()
             return existing
+        # A tab whose renderer crashed leaves its target behind, sad face and
+        # all, and `Target.getTargets` still lists it as a page — so a pane
+        # re-opening after a crash would adopt the corpse. It is closed here,
+        # at the one moment something is about to take its place.
+        corpse = self._crashed.pop((pane, tab), None)
+        if corpse is not None:
+            if target_id == corpse:
+                target_id = None
+            await self._close_target(corpse)
         adopt = bool(target_id) and await self._target_alive(target_id)
         if not adopt:
             if len(self._tabs) >= MAX_TARGETS:
@@ -2327,6 +2933,188 @@ class FullBrowser:
     def _forget(self, pt: PaneTab) -> None:
         self._tabs.pop((pt.pane, pt.tab), None)
         self._by_target.pop(pt.target_id, None)
+
+    async def _close_target(self, target_id: str) -> None:
+        if self.browser is None:
+            return
+        try:
+            await self.browser.cdp.send("Target.closeTarget",
+                                        {"targetId": target_id}, timeout=5)
+        except (CDPError, CDPClosed, asyncio.TimeoutError):
+            pass
+
+    # -- popups ------------------------------------------------------------
+    # A page that calls window.open, or a link with target=_blank, makes a
+    # second target with the first one named as its opener. In a browser that
+    # is a new tab; here the pane has no idea it exists, so it would be a
+    # window nobody can see and a click that appeared to do nothing.
+
+    def _on_target_created(self, params: dict) -> None:
+        info = params.get("targetInfo") or {}
+        target_id = str(info.get("targetId") or "")
+        opener = str(info.get("openerId") or "")
+        if info.get("type") != "page" or not target_id or not opener:
+            return
+        if target_id in self._by_target or target_id in self._adopting:
+            return
+        parent = self._by_target.get(opener)
+        if parent is None or parent.dead:
+            return
+        self._adopting.add(target_id)
+        asyncio.ensure_future(self._adopt_popup(parent, target_id,
+                                                str(info.get("url") or "")))
+
+    def _tab_id_for_popup(self, pane: str) -> str:
+        """A tab id this pane is not using. The pane's own are its to choose."""
+        while True:
+            self._popup_seq += 1
+            tab = f"p{self._popup_seq}"
+            if (pane, tab) not in self._tabs:
+                return tab
+
+    async def _adopt_popup(self, parent: PaneTab, target_id: str,
+                           url: str) -> None:
+        try:
+            if self.browser is None or parent.dead:
+                return
+            if self._targets() >= MAX_TARGETS:
+                # No room for a tab to put it in. The page it was opening is
+                # still what the user asked for, so it is shown in the tab that
+                # asked — which is what a browser with no tab strip left can do.
+                await self._close_target(target_id)
+                if url and url != "about:blank":
+                    try:
+                        await parent.nav(url)
+                    except (CDPError, CDPClosed, asyncio.TimeoutError) as e:
+                        log(f"popup into tab {parent.tab} failed: {e!r}")
+                return
+            tab = self._tab_id_for_popup(parent.pane)
+            sess = await self.browser.cdp.attach(target_id)
+            pt = PaneTab(parent.pane, tab, sess, target_id,
+                         self._sink(parent.pane), self.config,
+                         css_w=parent.css_w, css_h=parent.css_h, dpr=parent.dpr,
+                         zoom=parent.zoom, owner=self)
+            pt.on_selection = self._selection_changed
+            pt.url = url if url and url != "about:blank" else ""
+            self._tabs[(parent.pane, tab)] = pt
+            self._by_target[target_id] = pt
+            self._cancel_idle()
+            try:
+                # Never with a URL: the target is already going where the page
+                # sent it, and navigating would take it somewhere else.
+                await pt.start(None, self.browser.user_agent
+                               if self._ua_needed else None)
+            except (CDPError, CDPClosed, asyncio.TimeoutError):
+                self._forget(pt)
+                await pt.close()
+                raise
+            # Nothing is shown yet: the pane decides whether this becomes the
+            # tab on screen or is closed unseen, and says so with `show` or
+            # `close` like any other tab of its own.
+            self.to_pane(parent.pane, {"type": "newtab", "tab": tab,
+                                       "url": pt.url or url,
+                                       "opener": parent.tab,
+                                       "targetId": target_id})
+        except (CDPError, CDPClosed, asyncio.TimeoutError) as e:
+            log(f"a popup of tab {parent.tab} could not be adopted: {e!r}")
+        finally:
+            self._adopting.discard(target_id)
+
+    # -- downloads ---------------------------------------------------------
+    # Chrome saves the file under its guid, not under the name the site
+    # suggested (that is what `eventsEnabled` costs), so the rename at the end
+    # is not a nicety: without it the user is left with a directory of hex.
+
+    def _download_tab(self, frame_id: str) -> "PaneTab | None":
+        """Whose download this is.
+
+        By frame where the frame is a tab's main frame; a download started from
+        an iframe carries that iframe's id and matches nothing, so it falls
+        back to the tab the user was last typing or clicking in, which is the
+        only tab that can have started it.
+        """
+        for pt in self._tabs.values():
+            if frame_id and pt.frame_id == frame_id and not pt.dead:
+                return pt
+        live = [pt for pt in self._tabs.values()
+                if pt.live and not pt.dead and self._sinks.get(pt.pane)]
+        if not live:
+            return None
+        return max(live, key=lambda p: max(p.last_input, p.shown_at))
+
+    def _on_download_begin(self, params: dict) -> None:
+        guid = str(params.get("guid") or "")
+        if not guid:
+            return
+        pt = self._download_tab(str(params.get("frameId") or ""))
+        rec = {"pane": pt.pane if pt is not None else "",
+               "tab": pt.tab if pt is not None else None,
+               "name": download_name(params.get("suggestedFilename") or "", guid),
+               "url": str(params.get("url") or ""),
+               "state": "inProgress", "received": 0, "total": 0,
+               "path": "", "said": 0.0}
+        self._downloads[guid] = rec
+        self._say_download(guid, rec, force=True)
+
+    def _on_download_progress(self, params: dict) -> None:
+        guid = str(params.get("guid") or "")
+        rec = self._downloads.get(guid)
+        if rec is None:
+            return
+        rec["state"] = str(params.get("state") or "inProgress")
+        for key, field in (("receivedBytes", "received"), ("totalBytes", "total")):
+            try:
+                rec[field] = int(params.get(key) or 0)
+            except (TypeError, ValueError):
+                pass
+        if rec["state"] == "completed":
+            asyncio.ensure_future(self._finish_download(guid))
+            return
+        if rec["state"] == "canceled":
+            self._downloads.pop(guid, None)
+            self._say_download(guid, rec, force=True)
+            return
+        self._say_download(guid, rec)
+
+    def _say_download(self, guid: str, rec: dict, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - rec["said"] < DOWNLOAD_EVERY_S:
+            return
+        rec["said"] = now
+        if not rec["pane"]:
+            return
+        self.to_pane(rec["pane"], {
+            "type": "download", "tab": rec["tab"], "guid": guid,
+            "name": rec["name"], "url": rec["url"], "state": rec["state"],
+            "received": rec["received"], "total": rec["total"],
+            "path": rec["path"]})
+
+    async def _finish_download(self, guid: str) -> None:
+        rec = self._downloads.pop(guid, None)
+        if rec is None:
+            return
+        loop = asyncio.get_running_loop()
+        try:
+            rec["path"] = await loop.run_in_executor(
+                None, self._rename_download, guid, rec["name"])
+        except OSError as e:
+            log(f"download {rec['name']!r} could not be renamed: {e!r}")
+            rec["path"] = str(downloads_dir() / guid)
+        log(f"downloaded {rec['path']}")
+        self._say_download(guid, rec, force=True)
+
+    @staticmethod
+    def _rename_download(guid: str, name: str) -> str:
+        folder = downloads_dir()
+        raw = folder / guid
+        if not raw.exists():
+            # Some builds name it what the site asked for; then there is
+            # nothing to do but say where it is.
+            done = folder / name
+            return str(done if done.exists() else raw)
+        target = unique_path(folder, name)
+        os.replace(raw, target)
+        return str(target)
 
     # -- memory ------------------------------------------------------------
     async def revive(self, pt: PaneTab) -> None:
@@ -2451,6 +3239,11 @@ class FullBrowser:
             return
         self._forget(pt)
         pt._teardown()
+        # The target outlives the renderer that crashed in it, showing a sad
+        # face nobody can see. Remembered rather than closed now: the pane
+        # answers a crash by opening the tab again, and that is where the dead
+        # one is cleared away (see `open`).
+        self._crashed[(pt.pane, pt.tab)] = pt.target_id
         self.to_pane(pt.pane, {"type": "error", "tab": pt.tab, "code": "crashed",
                                "message": "the page crashed"})
         self._arm_idle()
