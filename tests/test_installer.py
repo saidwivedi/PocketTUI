@@ -1310,18 +1310,29 @@ case "${1:-}" in
         if [[ "${FAKE_CHECK_RC:-0}" == "0" ]]; then
             echo "ok ${FAKE_CHECK_VER:-153.0.1}"
         else
-            echo "missing: libnss3.so libgbm.so.1"
-            echo "apt install libnss3 libgbm1"
+            printf '%s\n' "${FAKE_CHECK_OUT}"
             exit 1
         fi
         ;;
     --install)
         echo "fetching Chrome for Testing"
-        if [[ "${FAKE_INSTALL_RC:-2}" == "0" ]]; then : > "${FAKE_INSTALLED}"; fi
+        if [[ "${FAKE_INSTALL_RC:-2}" == "0" ]]; then
+            : > "${FAKE_INSTALLED}"
+        else
+            printf '%s\n' "${FAKE_INSTALL_OUT}" >&2
+        fi
         exit "${FAKE_INSTALL_RC:-2}"
         ;;
 esac
 """
+
+# What chromium.py prints when ldd finds holes, and when the box refuses to give
+# Chrome a sandbox — the two shapes the summary line has to read a cause out of.
+MISSING_LIBS = "missing: libnss3.so libgbm.so.1\napt install libnss3 libgbm1"
+NO_SANDBOX = ("No usable sandbox! Update your kernel\n"
+              "hint: enable unprivileged user namespaces "
+              "(sysctl kernel.unprivileged_userns_clone=1) or install chrome's "
+              "sandbox helper")
 
 
 def browser_run(tmp_path, env, no_browser="0"):
@@ -1338,7 +1349,8 @@ def browser_run(tmp_path, env, no_browser="0"):
         + 'printf "RC=%s\\n" "$rc"\n'
     )
     full = {"FAKE_FIND": "", "FAKE_FIND_AFTER": "", "FAKE_INSTALLED": "",
-            "FAKE_CHECK_RC": "0", "FAKE_INSTALL_RC": "2",
+            "FAKE_CHECK_RC": "0", "FAKE_CHECK_OUT": MISSING_LIBS,
+            "FAKE_INSTALL_RC": "2", "FAKE_INSTALL_OUT": "could not reach the download host",
             "FAKE_LOG": str(tmp_path / "chromium-args.txt")}
     full.update(env)
     r = run_bash(tmp_path, body, env=full, name="browser_setup.sh")
@@ -1354,14 +1366,16 @@ def summary_of(out):
     return lines[0]
 
 
-LATER = "Browser: not available, run `pockettui browser install` on this computer later"
+RETRY = "; run `pockettui browser install` on this computer"
+PROXY = "Until then the browser pane runs in its lightweight proxy mode."
 
 
 def test_browser_setup_summary_lines(tmp_path):
     # A browser that is here and starts: named from its own path, with the
-    # version --find reported.
+    # version --find reported. Nothing is downloaded.
     out = browser_run(tmp_path, {"FAKE_FIND": "/usr/bin/google-chrome\t153.0.1"})
     assert summary_of(out) == "Browser: Google Chrome 153.0.1 (system)"
+    assert "fetching" not in out
 
     out = browser_run(tmp_path, {"FAKE_FIND": "/snap/bin/chromium\t140.0.2"})
     assert summary_of(out) == "Browser: Chromium 140.0.2 (system)"
@@ -1377,24 +1391,67 @@ def test_browser_setup_summary_lines(tmp_path):
     assert summary_of(out) == "Browser: Chrome for Testing 131.0.1 (downloaded)"
 
     # Here but unable to start: the check output is indented under a warning,
-    # because the package line in it is the one thing only the user can run.
+    # because the package line in it is the one thing only the user can run —
+    # and then the download runs anyway, because the build it fetches brings
+    # the libraries the box is missing. An install that works ends the step
+    # with a browser, whatever the machine's own Chrome cannot do.
     out = browser_run(tmp_path, {"FAKE_FIND": "/usr/bin/google-chrome\t153.0.1",
-                                 "FAKE_CHECK_RC": "1"})
+                                 "FAKE_CHECK_RC": "1",
+                                 "FAKE_INSTALL_RC": "0",
+                                 "FAKE_INSTALLED": str(tmp_path / "fallthrough.mark"),
+                                 "FAKE_FIND_AFTER": f"{prev}\t131.0.1"})
     assert "  Google Chrome is installed here but will not start:" in out
     assert "      missing: libnss3.so libgbm.so.1" in out
     assert "      apt install libnss3 libgbm1" in out
-    assert summary_of(out) == LATER
+    assert "fetching Chrome for Testing" in out
+    assert summary_of(out) == \
+        "Browser: Chrome for Testing 131.0.1 downloaded to ~/.pockettui/chromium"
+    assert PROXY not in out
 
-    # Nothing found, and this build cannot download one yet.
-    out = browser_run(tmp_path, {"FAKE_INSTALL_RC": "2"})
-    assert "Downloading a browser is not available in this version yet." in out
-    assert summary_of(out) == LATER
+    # Here, unable to start, and the download fails too: the summary names the
+    # reason the browser on this machine is no use, since that is the one the
+    # user can do something about, and what to run once they have.
+    out = browser_run(tmp_path, {"FAKE_FIND": "/usr/bin/google-chrome\t153.0.1",
+                                 "FAKE_CHECK_RC": "1", "FAKE_INSTALL_RC": "1"})
+    assert summary_of(out) == (
+        "Browser: not installed (Google Chrome cannot start here: "
+        "libnss3.so is missing)" + RETRY)
+    assert PROXY in out
 
-    # Nothing found, and the download failed.
+    # The same, with a box that will not give Chrome a sandbox: no library is
+    # missing, so the cause is the hint chromium.py printed.
+    out = browser_run(tmp_path, {"FAKE_FIND": "/usr/bin/chromium\t140.0.2",
+                                 "FAKE_CHECK_RC": "1", "FAKE_CHECK_OUT": NO_SANDBOX,
+                                 "FAKE_INSTALL_RC": "1"})
+    assert summary_of(out) == (
+        "Browser: not installed (Chromium cannot start here: enable unprivileged "
+        "user namespaces (sysctl kernel.unprivileged_userns_clone=1) or install "
+        "chrome's sandbox helper)" + RETRY)
+
+    # And with neither: whatever the check said last.
+    out = browser_run(tmp_path, {"FAKE_FIND": "/usr/bin/chromium\t140.0.2",
+                                 "FAKE_CHECK_RC": "1",
+                                 "FAKE_CHECK_OUT": "timed out after 15s starting the browser",
+                                 "FAKE_INSTALL_RC": "1"})
+    assert summary_of(out) == (
+        "Browser: not installed (Chromium cannot start here: timed out after 15s "
+        "starting the browser)" + RETRY)
+
+    # Nothing found and the download failed: the cause is the last thing the
+    # download said, wherever it said it.
     out = browser_run(tmp_path, {"FAKE_INSTALL_RC": "1"})
-    assert "Could not download a browser." in out
-    assert "      pockettui browser install" in out
-    assert summary_of(out) == LATER
+    assert summary_of(out) == (
+        "Browser: not installed (download failed: could not reach the download "
+        "host)" + RETRY)
+    assert PROXY in out
+
+    # Nothing found and this build cannot download one yet: still a failure,
+    # worded as one.
+    out = browser_run(tmp_path, {"FAKE_INSTALL_RC": "2"})
+    assert summary_of(out) == (
+        "Browser: not installed (download failed: this build cannot download a "
+        "browser yet)" + RETRY)
+    assert PROXY in out
 
     # Nothing found, and the download worked: the version comes from asking
     # again, which is the only thing that knows what landed.
@@ -1418,7 +1475,9 @@ def test_wrapper_browser_subcommands(tmp_path):
     py = str(fake_python(tmp_path))
     log = tmp_path / "chromium-args.txt"
     base = {"FAKE_FIND": "", "FAKE_FIND_AFTER": "", "FAKE_INSTALLED": "",
-            "FAKE_CHECK_RC": "0", "FAKE_INSTALL_RC": "2", "FAKE_LOG": str(log)}
+            "FAKE_CHECK_RC": "0", "FAKE_CHECK_OUT": MISSING_LIBS,
+            "FAKE_INSTALL_RC": "2", "FAKE_INSTALL_OUT": "could not reach the download host",
+            "FAKE_LOG": str(log)}
     found = dict(base, FAKE_FIND="/usr/bin/google-chrome\t153.0.1")
 
     def run(args, env):
