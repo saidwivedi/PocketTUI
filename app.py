@@ -53,6 +53,7 @@ import time
 import urllib.parse
 import urllib.request
 import wave
+import zipfile
 import zlib
 from contextlib import asynccontextmanager
 from html import escape as html_escape
@@ -1443,6 +1444,11 @@ def server_capabilities() -> dict:
         # of httpx: a server with no proxy still stores them, and the shell
         # hides the star rather than the pane on a server too old for the route.
         "bookmarks": True,
+        # A folder at /api/fs/download and /api/fs/download_link, answered as
+        # a streamed zip of the tree. Its own flag because an older server
+        # 404s a folder, and the sheet must not offer a row that can only
+        # fail — the shell hides Download on a folder where this is absent.
+        "zip_dir": True,
         # /api/fs/thumb — the explorer grid's tiles. False on an install with
         # no ffmpeg to render them with, where the grid keeps its icons.
         "thumbs": ffmpeg_exe() is not None,
@@ -3910,16 +3916,157 @@ def fs_store_upload(raw: bytes, path: str, overwrite: bool) -> Response:
     return no_store(JSONResponse({"path": str(p), "size": len(raw)}))
 
 
+# A folder comes down as a zip of itself, built while it is being sent.
+# Nothing is held whole and nothing is written to a temp file first: a tree can
+# be bigger than this machine's memory, and the phone is waiting on the first
+# byte from the moment it taps. zipfile can write into a stream it cannot seek
+# in — it puts each member's real size in a data descriptor after the bytes
+# rather than seeking back to patch the header — so the "file" it writes into
+# is a small buffer, emptied after every chunk and handed to the response.
+ZIP_CHUNK_BYTES = 256 * 1024
+
+
+class ZipSink:
+    """The archive's write end: a buffer drained as fast as it fills.
+
+    Deliberately without tell() or seek(). That absence is how zipfile decides
+    the stream is not seekable, which is what makes it write data descriptors
+    instead of going back over what it has already handed out.
+    """
+
+    def __init__(self) -> None:
+        self.buf = bytearray()
+
+    def write(self, data: bytes) -> int:
+        self.buf += data
+        return len(data)
+
+    def flush(self) -> None:
+        pass
+
+    def drain(self) -> bytes:
+        out = bytes(self.buf)
+        del self.buf[:]
+        return out
+
+
+def zip_entry(path: Path, arcname: str) -> zipfile.ZipInfo | None:
+    """The archive's record of `path` under `arcname`, or None to leave it out.
+
+    Out goes anything that is a name rather than contents: a symlink (a linked
+    directory could point back up the tree, and a walk that followed it would
+    never end), a fifo, a socket, a device. Out too goes whatever has stopped
+    being readable since the walk listed it — a tree read without a lock on it
+    changes underneath, and one vanished file must not cost the download.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+        return None
+    try:
+        info = zipfile.ZipInfo.from_file(path, arcname, strict_timestamps=False)
+    except OSError:
+        return None
+    # from_file leaves the default, which is stored; the compressor is chosen
+    # per member when the member carries its own ZipInfo.
+    info.compress_type = zipfile.ZIP_DEFLATED
+    return info
+
+
+def zip_dir_chunks(root: Path):
+    """`root` as a zip, chunk by chunk, named relative to root's parent.
+
+    Relative to the parent so the archive unpacks into one folder of its own
+    name instead of scattering into the download directory. What goes in is
+    what is on disk: no skipping of dotfiles, .git or node_modules, because
+    this is a copy of a folder and deciding what a folder contains is not this
+    route's call.
+
+    Every directory is recorded as an entry of its own, which is what keeps an
+    empty one alive through an extraction that otherwise only ever creates the
+    parents of the files it writes.
+
+    Once the first byte is out the only thing left to do about a failure is
+    stop, so everything that can be refused is refused before then: a path
+    that is not a directory never reaches here.
+    """
+    sink = ZipSink()
+    base = root.parent
+    with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            here = Path(dirpath)
+            # followlinks=False keeps the walk out of a linked directory but
+            # still lists it here; dropping it now keeps it out of the archive
+            # too, the way zip_entry keeps linked files out.
+            dirnames[:] = sorted(d for d in dirnames
+                                 if not (here / d).is_symlink())
+            rel = here.relative_to(base)
+            info = zip_entry(here, rel.as_posix() + "/")
+            if info is not None:
+                zf.writestr(info, b"")
+                out = sink.drain()
+                if out:
+                    yield out
+            for name in sorted(filenames):
+                src = here / name
+                info = zip_entry(src, (rel / name).as_posix())
+                if info is None:
+                    continue
+                try:
+                    handle = open(src, "rb")
+                except OSError:
+                    continue
+                with handle, zf.open(info, "w") as member:
+                    while True:
+                        chunk = handle.read(ZIP_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        member.write(chunk)
+                        out = sink.drain()
+                        if out:
+                            yield out
+                out = sink.drain()
+                if out:
+                    yield out
+    # The central directory, written by the close above.
+    out = sink.drain()
+    if out:
+        yield out
+
+
+def zip_dir_response(root: Path) -> Response:
+    """`root` streamed as an attachment named after the folder.
+
+    Starlette runs a sync generator in a threadpool, so the walk and the reads
+    happen off the event loop the way every other blocking /api/fs/* step does.
+    """
+    name = root.name + ".zip"
+    quoted = urllib.parse.quote(name)
+    # A name a header can carry as it stands, or the encoded form for one it
+    # cannot — the same two shapes FileResponse picks between.
+    dispo = (f'attachment; filename="{name}"' if quoted == name
+             else f"attachment; filename*=utf-8''{quoted}")
+    return no_store(StreamingResponse(
+        zip_dir_chunks(root), media_type="application/zip",
+        headers={"Content-Disposition": dispo}))
+
+
 @app.get("/api/fs/download")
 def api_fs_download(path: str = "") -> Response:
-    """Any file, as an attachment.
+    """Any file, as an attachment — and any folder, as a zip of itself.
 
     Distinct from /api/file, which stays a media-only inline route for the
     terminal's tap-to-view: this one is the explorer's get-it-onto-the-phone
     path, and it types nothing — the phone's own viewer decides.
     """
     p = fs_path(path)
-    if p is None or not p.is_file():
+    if p is None:
+        return fs_error("not_found", 404)
+    if p.is_dir():
+        return zip_dir_response(p)
+    if not p.is_file():
         return fs_error("not_found", 404)
     return no_store(FileResponse(p, media_type="application/octet-stream",
                                  filename=p.name))
@@ -3960,16 +4107,20 @@ def api_fs_download_link(path: str = "") -> Response:
     What is signed is the path *after* fs_path() — expanded and rewritten — so
     the signed route resolves the same file this one checked, not a spelling of
     it that could land somewhere else.
+
+    A folder is a download too, and the name minted for it is the archive's:
+    the browser saves what the signed route sends, which is <folder>.zip.
     """
     p = fs_path(path)
-    if p is None or not p.is_file():
+    if p is None or not (p.is_file() or p.is_dir()):
         return fs_error("not_found", 404)
     target = str(p)
     expires = int(time.time()) + DOWNLOAD_TTL
     query = urllib.parse.urlencode({"path": target, "exp": expires,
                                     "sig": download_sig(target, expires)})
+    name = p.name + ".zip" if p.is_dir() else p.name
     return no_store(JSONResponse({"url": f"api/fs/signed_download?{query}",
-                                  "name": p.name, "expires_in": DOWNLOAD_TTL}))
+                                  "name": name, "expires_in": DOWNLOAD_TTL}))
 
 
 @app.get("/api/fs/signed_download")
@@ -3994,7 +4145,11 @@ def api_fs_signed_download(request: Request, path: str = "", exp: str = "",
     if time.time() > expires:
         return fs_error("expired", 403)
     p = fs_path(path)
-    if p is None or not p.is_file():
+    if p is None:
+        return fs_error("not_found", 404)
+    if p.is_dir():
+        return zip_dir_response(p)
+    if not p.is_file():
         return fs_error("not_found", 404)
     return no_store(FileResponse(p, media_type="application/octet-stream",
                                  filename=p.name))
