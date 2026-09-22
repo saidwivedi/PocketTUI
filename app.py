@@ -7447,7 +7447,8 @@ def api_browser_status() -> Response:
         return no_store(JSONResponse({
             "running": False, "pid": None, "version": "", "tabs": [],
             "launch_error": "this install has no browser support",
-            "memMb": None, "capMb": None, "found": None}))
+            "memMb": None, "memApprox": False, "procs": 0, "softMb": None,
+            "capMb": None, "discards": 0, "restarts": 0, "found": None}))
     fb = mod.FullBrowser.get()
     try:
         found = mod.find_chromium(fb.config)
