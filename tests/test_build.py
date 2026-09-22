@@ -421,31 +421,52 @@ def test_a_tab_is_a_proxy_tab_unless_its_host_is_remembered(doc):
     assert "function browserSyncStreamHosts(" in doc
 
 
-def test_a_landing_the_proxy_did_not_serve_hands_its_tab_over(doc):
+def test_a_landing_the_proxy_did_not_serve_is_put_back_then_streamed(doc):
     """A proxied page that sets location.href to a root-relative path leaves the
     proxy's mount: the frame is sandboxed, so there is no hook to catch it, and
     what lands under `tailscale serve` is the front's bare 404 with the pane's
     address bar still showing the site. Everything the proxy does serve reports
     itself with a pockettui-* message, so a landing that says nothing inside the
-    watchdog's window is that escape — and the tab goes to the browser that can
-    fetch it, on the address the pane last knew it to be at."""
+    watchdog's window is that escape. The first one is loaded again in the proxy,
+    on the address the pane last knew; only a second one soon after streams the
+    tab, for that tab alone — YouTube escapes this way and plays in the proxy,
+    and remembering its host put it on the stream for good."""
     assert 'tab.frame.addEventListener("load", () => browserWatchLanding(tab));' in doc
     assert "function browserWatchLanding(" in doc
     assert "const BROWSER_LAND_WAIT = 1200;" in doc
+    assert "const BROWSER_ESCAPE_AGAIN = 10000;" in doc
     # Every message from the frame counts as the document speaking, whatever it
     # had to say.
     assert ('if (typeof d.type === "string" && d.type.indexOf("pockettui-") === 0) {\n'
             "    tab.heardAt = Date.now();") in doc
     # Not for a tab that is already streamed, not for a load the pane started and
-    # has had no report of yet, and not where there is nothing to hand over to.
+    # has had no report of yet.
     assert "    if (browserIsFull(tab)) return;" in doc
     assert "    if (tab.navigating) return;" in doc
-    assert '    if (!url || !hasCapStrict("browser_full")) return;' in doc
-    assert '"This site left the proxy; streaming it from the computer"' in doc
-    # The network key has nothing to offer a streamed tab, so it goes while one
-    # is on screen.
-    assert ("btn.hidden = !hasCapStrict(\"browse_tab\") || browserTabBlocked\n"
-            "               || browserIsFull(browserTab())") in doc
+    # A landing that held clears the count.
+    assert ("    if (tab.heardAt >= at - BROWSER_LAND_GRACE) {         // the proxy's own page\n"
+            "      // Held for the whole window with nothing newer landing, so whatever left\n"
+            "      // before is not leaving on every load.\n"
+            "      tab.escapes = 0;") in doc
+    body = doc[doc.index("function browserWatchLanding("):]
+    body = body[:body.index("\n}\n")]
+    # First escape: back into the proxy, silently; second: the stream, this tab
+    # only, with nothing remembered.
+    assert "tab.escapes = (again ? tab.escapes : 0) + 1;" in body
+    assert "tab.escapedAt = { url: url, at: now };" in body
+    assert ("    if (tab.escapes < 2) {\n"
+            "      browserNavigateIn(tab, url, false);\n"
+            "      return;\n"
+            "    }") in body
+    assert '    if (!hasCapStrict("browser_full")) return;' in body
+    assert '"This page left the proxy twice; streaming it from the computer"' in body
+    assert "browserSwapMode(tab, true);" in body
+    assert "browserRememberStream" not in body
+    assert "This site left the proxy" not in doc
+    # The proxy's own hand-off still remembers the host.
+    hand = doc[doc.index("function browserHandOff("):]
+    hand = hand[:hand.index("\n}\n")]
+    assert "browserRememberStream(url, true);" in hand
     # A streamed tab is zoomed on the computer — there is no element here to
     # scale, only a picture of one — and its history is the real browser's.
     assert "tab.full.setZoom(factor);" in doc
@@ -454,6 +475,48 @@ def test_a_landing_the_proxy_did_not_serve_hands_its_tab_over(doc):
     # for the reason a frame keeps its document.
     assert 'browserFullSend(tab, "close");' in doc
     assert "function browserHideFulls(" in doc
+
+
+def test_media_sites_the_old_watchdog_streamed_are_taken_off_once(doc):
+    """The old watchdog remembered a host whenever a page left the proxy, which
+    put YouTube on the stream for good. Nothing in the record says which hosts
+    were its, so the media sites are taken off by registrable name, once, under a
+    version number, and a toast says so only if something went."""
+    assert "get browserStreamHostsVer() {" in doc
+    assert '"pockettui_browser_stream_hosts_ver"' in doc
+    assert ('const BROWSER_MEDIA_SITES = ["youtube.com", "youtu.be", "vimeo.com", "twitch.tv",\n'
+            '                             "netflix.com", "spotify.com", "soundcloud.com",\n'
+            '                             "dailymotion.com"];') in doc
+    mig = doc[doc.index("function browserMigrateStreamHosts("):]
+    mig = mig[:mig.index("\n}\n")]
+    assert "if (cfg.browserStreamHostsVer >= 1) return;" in mig
+    assert 'name === m || name.endsWith("." + m)' in mig
+    assert "cfg.browserStreamHostsVer = 1;" in mig
+    assert ('if (dropped) toast("YouTube and other media sites now open in the proxy'
+            ' again", 6000);') in mig
+    # Run once, at load.
+    assert "\nbrowserMigrateStreamHosts();\n" in doc
+
+
+def test_the_network_key_shows_wherever_the_flavour_is_available(doc):
+    """The LOCAL NETWORK key is shown on proxy and streamed tabs alike wherever
+    the computer can give the unsandboxed flavour, and hidden only while a PDF
+    holds it. On a streamed tab it reads un-pressed and steps the tab down to a
+    proxy tab with the flavour on, in one navigation, forgetting the host."""
+    sync = doc[doc.index("function syncBrowserLan("):]
+    sync = sync[:sync.index("\n}\n")]
+    assert ("btn.hidden = !browserTabAllowed() || !!(browserTab() && browserTab().pdf);"
+            in sync)
+    assert "browserIsFull(browserTab())\n" not in sync.split("btn.hidden")[1].split(";")[0]
+    assert "const on = !full && !!(browserTab() && browserTab().lan);" in sync
+    assert '"Use the local-network proxy for this tab"' in sync
+    press = doc[doc.index('q("btn-browser-tab").addEventListener("click"'):]
+    press = press[:press.index("\n});\n")]
+    assert ("    browserRememberStream(url, false);\n"
+            "    browserSwapMode(tab, false);\n"
+            "    browserFlipLan(tab, true);\n"
+            "    if (url) browserNavigateIn(tab, url, false);") in press
+    assert press.count("browserNavigateIn(") == 1
 
 
 def test_a_window_a_streamed_page_opens_becomes_a_tab_of_the_pane(doc):
