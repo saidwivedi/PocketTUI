@@ -193,13 +193,52 @@ def test_the_topbar_toggles_a_tab_onto_the_computers_own_network(doc):
 
 def test_the_toggles_order_in_the_address_row(doc):
     """Left of reload, where a browser keeps the keys that act on the page
-    rather than on the address — and both of them before the field, which now
-    has the whole rest of the row to itself."""
+    rather than on the address — and all of them before the field, which now
+    has the whole rest of the row to itself. Which browser the tab is comes
+    before which network it is on: it is the larger of the two choices, and it
+    is the one that decides whether the other is offered at all."""
     at = {name: doc.index(f'id="{name}"')
-          for name in ("btn-browser-back", "btn-browser-fwd", "btn-browser-tab",
-                       "btn-browser-reload", "browser-url-wrap", "browser-url")}
-    assert (at["btn-browser-back"] < at["btn-browser-fwd"] < at["btn-browser-tab"]
-            < at["btn-browser-reload"] < at["browser-url-wrap"] < at["browser-url"])
+          for name in ("btn-browser-back", "btn-browser-fwd", "btn-browser-full",
+                       "btn-browser-tab", "btn-browser-reload",
+                       "browser-url-wrap", "browser-url")}
+    assert (at["btn-browser-back"] < at["btn-browser-fwd"] < at["btn-browser-full"]
+            < at["btn-browser-tab"] < at["btn-browser-reload"]
+            < at["browser-url-wrap"] < at["browser-url"])
+
+
+def test_a_tab_is_the_computers_own_browser_by_default(doc):
+    """Full mode is what a tab is: wherever the computer has a browser to stream
+    from, a new tab runs in it and the proxy is the fallback — no browser found,
+    the preference in Settings, or a tab stepped down by the key on its row. The
+    key is a toggle per tab like the network key beside it, and it hides that one
+    while it is pressed: a page fetched by a browser running on the computer is
+    on the computer's network already."""
+    assert 'id="btn-browser-full" hidden' in doc
+    off = "Run this tab in the computer's Chrome"
+    on = ("This tab runs in the computer's Chrome; press to use the lightweight"
+          " proxy instead")
+    assert f'aria-label="{off}"' in doc and f'title="{off}"' in doc
+    assert f'"{on}"' in doc
+    assert "function syncBrowserFull(" in doc and "function browserSetFull(" in doc
+    # The default, and the one way out of it: the capability strictly checked,
+    # and the preference that asks for the proxy anyway.
+    assert ('return hasCapStrict("browser_full") && !cfg.browserPreferProxy;'
+            in doc)
+    assert "pockettui_browser_prefer_proxy" in doc
+    assert 'id="browser-proxy-toggle"' in doc
+    assert ">Prefer the lightweight proxy<" in doc
+    # The network key has nothing to offer a streamed tab, so it goes while one
+    # is on screen.
+    assert ("btn.hidden = !hasCapStrict(\"browse_tab\") || browserTabBlocked\n"
+            "               || browserIsFull(browserTab());") in doc
+    # A streamed tab is zoomed on the computer — there is no element here to
+    # scale, only a picture of one — and its history is the real browser's.
+    assert "tab.full.setZoom(factor);" in doc
+    assert 'browserFullSend(tab, delta < 0 ? "back" : "fwd");' in doc
+    # Closing a tab closes the page on the computer; closing the pane does not,
+    # for the reason a frame keeps its document.
+    assert 'browserFullSend(tab, "close");' in doc
+    assert "function browserHideFulls(" in doc
 
 
 def test_the_window_controls_sit_in_the_tab_row(doc):
@@ -280,9 +319,12 @@ def test_the_pane_has_tabs_of_its_own(doc):
     # The laptop start page is gone with the button that opened it: the "+"
     # opens a tab in here now.
     assert "/start" not in doc and "browserStartUrl" not in doc
-    # A tab remembers whether it was left on the computer's own network, so a
-    # reload brings it back in the mode it was in.
-    assert "tab.lan = !!(e && e.lan);" in doc
+    # A tab remembers which of the modes it was left in, so a reload brings it
+    # back the way it was: on the computer's own network, or running in the
+    # computer's own browser (browserSeedMode).
+    assert "function browserSeedMode(" in doc
+    assert "tab.lan = !!(rec && rec.lan);" in doc
+    assert "tab.fullMode = full || tab.lan ? false : null;" in doc
 
 
 def test_every_pane_tab_carries_the_proxys_own_sandbox_list(doc):
