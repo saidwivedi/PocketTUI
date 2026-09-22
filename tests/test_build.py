@@ -206,27 +206,70 @@ def test_the_toggles_order_in_the_address_row(doc):
             < at["browser-url-wrap"] < at["browser-url"])
 
 
-def test_a_tab_is_the_computers_own_browser_by_default(doc):
-    """Full mode is what a tab is: wherever the computer has a browser to stream
-    from, a new tab runs in it and the proxy is the fallback — no browser found,
-    the preference in Settings, or a tab stepped down by the key on its row. The
-    key is a toggle per tab like the network key beside it, and it hides that one
-    while it is pressed: a page fetched by a browser running on the computer is
-    on the computer's network already."""
+def test_a_tab_is_a_proxy_tab_unless_its_host_is_remembered(doc):
+    """The proxy is what a tab is — it runs in the browser being read, so it is
+    quick and its sound and video are the device's own — and the stream is where
+    the pages the proxy cannot serve go. Which pages those are is remembered by
+    host: the key on the address row puts a site on the stream and takes it off
+    again, and every tab opened on a remembered host is streamed from its first
+    navigation. The switch in Settings is the other way in, for a machine whose
+    browser is wanted for everything. The key is a toggle per tab like the
+    network key beside it, and it hides that one while it is pressed: a page
+    fetched by a browser running on the computer is on the computer's network
+    already."""
     assert 'id="btn-browser-full" hidden' in doc
-    off = "Run this tab in the computer's Chrome"
-    on = ("This tab runs in the computer's Chrome; press to use the lightweight"
-          " proxy instead")
+    off = "Stream this site from the computer's Chrome"
+    on = ("This site streams from the computer's Chrome; press to use the"
+          " lightweight proxy")
     assert f'aria-label="{off}"' in doc and f'title="{off}"' in doc
     assert f'"{on}"' in doc
+    assert '+ (host ? " (remembered for " + host + ")" : "");' in doc
     assert "function syncBrowserFull(" in doc and "function browserSetFull(" in doc
-    # The default, and the one way out of it: the capability strictly checked,
-    # and the preference that asks for the proxy anyway.
-    assert ('return hasCapStrict("browser_full") && !cfg.browserPreferProxy;'
+    # The default, and the two ways past it: the capability strictly checked,
+    # the switch that streams everything, and the hosts that are remembered.
+    assert ('  if (!hasCapStrict("browser_full")) return false;\n'
+            "  return cfg.browserStreamAll || browserStreamsHost(url);") in doc
+    assert "pockettui_browser_stream_all" in doc
+    assert "pockettui_browser_stream_hosts" in doc
+    assert 'id="browser-stream-toggle"' in doc
+    assert ">Stream every tab from the computer's Chrome<" in doc
+    # The record is written by the key, on the address the tab is on, and read
+    # back by every navigation a proxy tab makes.
+    assert "browserRememberStream(browserUrlIn(tab), true);" in doc
+    assert "browserRememberStream(browserUrlIn(tab), false);" in doc
+    assert ("  } else if (!tab.fullMode && browserStreamsHost(url)) {" in doc)
+    # A page the proxy cannot serve hands itself over, and says why.
+    assert 'if (d.type === "pockettui-stream") {' in doc
+    assert ('"Google wants a real browser here; streaming it from the computer"'
             in doc)
-    assert "pockettui_browser_prefer_proxy" in doc
-    assert 'id="browser-proxy-toggle"' in doc
-    assert ">Prefer the lightweight proxy<" in doc
+    assert '"Sign-in pages stream from the computer\'s Chrome"' in doc
+    assert '"The computer has no browser to stream from"' in doc
+    # And the sites on the record are readable, and forgettable, from Settings.
+    assert 'id="browser-stream-hosts"' in doc
+    assert "function browserSyncStreamHosts(" in doc
+
+
+def test_a_landing_the_proxy_did_not_serve_hands_its_tab_over(doc):
+    """A proxied page that sets location.href to a root-relative path leaves the
+    proxy's mount: the frame is sandboxed, so there is no hook to catch it, and
+    what lands under `tailscale serve` is the front's bare 404 with the pane's
+    address bar still showing the site. Everything the proxy does serve reports
+    itself with a pockettui-* message, so a landing that says nothing inside the
+    watchdog's window is that escape — and the tab goes to the browser that can
+    fetch it, on the address the pane last knew it to be at."""
+    assert 'tab.frame.addEventListener("load", () => browserWatchLanding(tab));' in doc
+    assert "function browserWatchLanding(" in doc
+    assert "const BROWSER_LAND_WAIT = 1200;" in doc
+    # Every message from the frame counts as the document speaking, whatever it
+    # had to say.
+    assert ('if (typeof d.type === "string" && d.type.indexOf("pockettui-") === 0) {\n'
+            "    tab.heardAt = Date.now();") in doc
+    # Not for a tab that is already streamed, not for a load the pane started and
+    # has had no report of yet, and not where there is nothing to hand over to.
+    assert "    if (browserIsFull(tab)) return;" in doc
+    assert "    if (tab.navigating) return;" in doc
+    assert '    if (!url || !hasCapStrict("browser_full")) return;' in doc
+    assert '"This site left the proxy; streaming it from the computer"' in doc
     # The network key has nothing to offer a streamed tab, so it goes while one
     # is on screen.
     assert ("btn.hidden = !hasCapStrict(\"browse_tab\") || browserTabBlocked\n"
