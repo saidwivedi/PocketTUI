@@ -2039,6 +2039,10 @@ class PaneTab:
         if self._hidden_at and time.monotonic() - self._hidden_at > LEVEL_RESET_HIDDEN_S:
             self._reset_level("shown after a long time hidden")
         self._hidden_at = 0.0
+        # The canvas this stream is starting for may be a new one — a pane
+        # that reloaded, a tab shown again — that never got the last still, so
+        # nothing the stream sends first can be that still's echo.
+        self._close_echo()
         await self.session.send("Emulation.setDeviceMetricsOverride", self._metrics())
         if self.frozen:
             await self.session.send("Page.setWebLifecycleState", {"state": "active"})
@@ -2064,6 +2068,7 @@ class PaneTab:
         self.live = False
         self._hidden_at = time.monotonic()
         self._popup_open = False
+        self._close_echo()
         # No stream to come to rest: a timer left running here would take its
         # picture of whatever the tab is showing when it is next streamed.
         self._cancel(self._quiet_task)
@@ -2198,6 +2203,12 @@ class PaneTab:
             return True
         size = image_size(body)
         return size is not None and size[0] >= self._surface()[0]
+
+    def _close_echo(self) -> None:
+        """No frame from here on is the last still's echo: the stream it was
+        taken on is over, and a pane that reconnected never received it."""
+        self._echo_open = False
+        self._echo_bodies = ()
 
     def _hold_paced(self, sid, body: bytes, wait: float) -> None:
         if self._paced is not None:     # the browser owes us only one at a time
