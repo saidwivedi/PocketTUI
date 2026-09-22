@@ -14,6 +14,7 @@ import asyncio
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -875,3 +876,140 @@ def test_a_fresh_input_under_the_capture_does_not_strand_held_frames():
         tab._teardown()
 
     run(main())
+
+
+# ---------------------------------------------------------------------------
+# Input
+# ---------------------------------------------------------------------------
+# The mapping rather than the dispatch: what a client message becomes is a fact
+# about the protocol, and the two things that are easy to get wrong in it —
+# whether a key carries text and what a Mac's Command key means on a Linux box —
+# are worth pinning without a browser or a socket anywhere near them.
+
+def test_key_mapping_text_vs_raw_and_meta_remap():
+    # A printable character arrives with text on it, and that is what makes it
+    # a keyDown: the page types the letter.
+    down = C.key_event_params({"kind": "down", "key": "a", "code": "KeyA",
+                               "keyCode": 65, "text": "a"}, "linux")
+    assert down["type"] == "keyDown"
+    assert down["text"] == "a" and down["unmodifiedText"] == "a"
+    assert down["windowsVirtualKeyCode"] == 65
+    assert down["nativeVirtualKeyCode"] == 65
+
+    # A chord carries none, and a keyDown with no text would type nothing while
+    # hiding the key from the page's own handlers. rawKeyDown is the one that
+    # reaches them.
+    chord = C.key_event_params({"kind": "down", "key": "c", "code": "KeyC",
+                                "keyCode": 67, "text": "", "mods": 2}, "linux")
+    assert chord["type"] == "rawKeyDown" and "text" not in chord
+    assert chord["modifiers"] == C.MOD_CTRL
+
+    assert C.key_event_params({"kind": "up", "key": "a", "text": "a"},
+                              "linux")["type"] == "keyUp"
+
+    # The keys a client may report a keyCode of 0 for, and which Chrome's own
+    # editing commands are driven off.
+    want = {"ArrowUp": 38, "ArrowDown": 40, "ArrowLeft": 37, "ArrowRight": 39,
+            "Enter": 13, "Tab": 9, "Backspace": 8, "Delete": 46, "Escape": 27,
+            "Home": 36, "End": 35, "PageUp": 33, "PageDown": 34}
+    for key, code in want.items():
+        got = C.key_event_params({"kind": "down", "key": key, "keyCode": 0},
+                                 "linux")
+        assert got["windowsVirtualKeyCode"] == code, key
+        assert got["nativeVirtualKeyCode"] == code, key
+    # Enter's character is a carriage return, which is what a real browser puts
+    # in the event — a textarea fed "\n" gets a break with no key behind it.
+    enter = C.key_event_params({"kind": "down", "key": "Enter"}, "linux")
+    assert enter["type"] == "keyDown" and enter["text"] == "\r"
+
+    # Cmd from a Mac client is Ctrl on a Linux host: the page runs there, and
+    # its chords are that browser's. Left as Meta it would arrive as Super,
+    # which no page binds anything to.
+    mac_cmd = {"kind": "down", "key": "c", "code": "KeyC", "mods": C.MOD_META}
+    assert C.key_event_params(mac_cmd, "linux")["modifiers"] == C.MOD_CTRL
+    assert C.key_event_params(mac_cmd, "darwin")["modifiers"] == C.MOD_META
+    # Shift and Alt ride along untouched either way.
+    both = {"kind": "down", "key": "C", "mods": C.MOD_META | C.MOD_SHIFT}
+    assert C.key_event_params(both, "linux")["modifiers"] == \
+        C.MOD_CTRL | C.MOD_SHIFT
+    assert C.key_event_params(both, "darwin")["modifiers"] == \
+        C.MOD_META | C.MOD_SHIFT
+
+    # The numeric keypad, which a page tells apart by location alone.
+    pad = C.key_event_params({"kind": "down", "key": "1", "text": "1",
+                              "location": 3}, "linux")
+    assert pad["isKeypad"] is True and pad["location"] == 3
+    assert C.key_event_params({"kind": "down", "key": "1", "text": "1"},
+                              "linux")["isKeypad"] is False
+    assert C.key_event_params({"kind": "down", "key": "a", "text": "a",
+                              "repeat": True}, "linux")["autoRepeat"] is True
+
+
+def test_wheel_and_mouse_coordinates_divide_by_zoom():
+    # The canvas is the page's surface at the pane's size; the viewport behind
+    # it was made `zoom` times smaller, so the page's own coordinate for a point
+    # on the canvas is that point divided by the zoom. A click that skipped the
+    # division lands somewhere else on a zoomed page.
+    at = C.mouse_event_params({"kind": "down", "x": 200, "y": 100,
+                               "button": "left", "buttons": 1, "clicks": 2},
+                              2.0, "linux")
+    assert at["type"] == "mousePressed"
+    assert (at["x"], at["y"]) == (100.0, 50.0)
+    assert at["button"] == "left" and at["buttons"] == 1
+    assert at["clickCount"] == 2
+
+    one = C.mouse_event_params({"kind": "move", "x": 200, "y": 100}, 1.0, "linux")
+    assert (one["x"], one["y"]) == (200.0, 100.0)
+    assert one["type"] == "mouseMoved" and one["button"] == "none"
+
+    # And so does a wheel notch: a delta that was not divided would scroll a
+    # zoomed page further the more it was zoomed in.
+    wheel = C.mouse_event_params({"kind": "wheel", "x": 40, "y": 60,
+                                 "dx": 0, "dy": 240}, 2.0, "linux")
+    assert wheel["type"] == "mouseWheel"
+    assert (wheel["x"], wheel["y"]) == (20.0, 30.0)
+    assert (wheel["deltaX"], wheel["deltaY"]) == (0.0, 120.0)
+    # Nothing but a wheel carries a delta at all.
+    assert "deltaY" not in one
+
+    # Cmd+click is Ctrl+click on a Linux host, or a Mac user's "open in a new
+    # tab" would open in the tab they were reading.
+    cmd = {"kind": "down", "x": 0, "y": 0, "button": "left",
+           "mods": C.MOD_META}
+    assert C.mouse_event_params(cmd, 1.0, "linux")["modifiers"] == C.MOD_CTRL
+    assert C.mouse_event_params(cmd, 1.0, "darwin")["modifiers"] == C.MOD_META
+
+    # A button this end does not know is no button, and a kind it does not know
+    # is a refusal rather than a guess.
+    assert C.mouse_event_params({"kind": "move", "button": "thumb"},
+                                1.0, "linux")["button"] == "none"
+    with pytest.raises(ValueError):
+        C.mouse_event_params({"kind": "fling"}, 1.0, "linux")
+
+    # A zoom of zero (a client mid-gesture) is a division that must not happen.
+    assert C.mouse_event_params({"kind": "move", "x": 8, "y": 8}, 0,
+                                "linux")["x"] == 8.0
+
+
+def test_cursor_probe_js_has_no_percent():
+    # FULL_PAGE_HELPER is %-formatted, and a probe that grew a percent sign
+    # would either break that formatting or be quietly rewritten by it. They
+    # are separate strings today; this is what keeps them that way.
+    probes = {"LINK_PROBE_JS": C.LINK_PROBE_JS, "HIT_PROBE_JS": C.HIT_PROBE_JS,
+              "HIT_CURSOR_JS": C.HIT_CURSOR_JS}
+    for name, src in probes.items():
+        assert "%" not in src, name
+        assert src.startswith("(function (x, y) {"), name
+        assert src.rstrip().endswith("})"), name
+
+    # Each one has to be a single expression, because that is how it is called:
+    # probe_call wraps it in parentheses and applies it to the point.
+    call = C.probe_call(C.HIT_CURSOR_JS, 12.5, 7)
+    assert call.endswith("(12.5,7)")
+    if shutil.which("node") is None:
+        pytest.skip("no node to parse the probes with")
+    for name, src in probes.items():
+        wrapper = f"var v = {C.probe_call(src, 1, 2)};\n"
+        proc = subprocess.run(["node", "--check", "-"], input=wrapper,
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, f"{name}: {proc.stderr}"

@@ -1541,6 +1541,10 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!root.classList.contains("active")) return;
   if (e.target === q("browser-url")) return;
+  // A tab in full mode has the keyboard, and Escape is one of the keys the page
+  // is owed — a dialog to dismiss, a menu to close, vi in a web terminal. The
+  // pane does not close under somebody who is typing in it (43-full-browser.js).
+  if (fullBrowserHasFocus()) return;
   if (browserDocked && !root.contains(e.target)) return;
   // Ahead of the pane's own Escape: an open panel is the top thing to dismiss,
   // exactly as the file bar's dropdowns are.
@@ -1686,10 +1690,35 @@ syncBrowserLan();
 
 // What the column and the rest of the app can ask of this pane. Everything else
 // in the body above is the pane's own and stays in the closure.
+// ---- full mode, by hand (item 3's harness; item 4 replaces this) -----------
+// One tab put into full mode with no chrome wired to it: the view's element goes
+// in the wrap beside the frames, and the socket is this pane's own. The hrefs a
+// middle click asked for are collected rather than opened, because making them
+// tabs is the integration this stands in for.
+let fullTestLink = null;
+const fullTestOpened = [];
+function browserFullTest(url) {
+  if (!fullTestLink) fullTestLink = fullBrowserLink(id);
+  let view = null;
+  view = fullBrowserMake(id, "ft1", fullTestLink, {
+    focusAddress: () => q("browser-url").focus(),
+    reload: () => fullTestLink.send({ type: "reload", tab: "ft1" }),
+    zoomStep: (delta) => { if (delta) browserStepZoom(delta); },
+    openTab: (href) => fullTestOpened.push(href),
+    retry: () => view.open(url),
+  });
+  q("browser-wrap").appendChild(view.el);
+  view.open(url);
+  return view;
+}
+
 const api = {
   // Null in every build but one being driven by the column's smoke check, which
   // hands a pane its navigations instead of a computer (browserNavigateIn).
   navigateHook: null,
+  // See browserFullTest above: the harness's way in, not a feature.
+  fullTest: browserFullTest,
+  fullTestOpened: fullTestOpened,
   isOpen: () => browserOpen,
   isDocked: () => browserDocked,
   open: openBrowser,

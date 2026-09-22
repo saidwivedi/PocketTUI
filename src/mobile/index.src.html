@@ -850,6 +850,19 @@
             allow="fullscreen" referrerpolicy="no-referrer"></iframe></template>
   </div>
 </div>
+<!-- A tab in "full" mode: not a frame at all but a picture of a real browser
+     running on the computer, painted onto a canvas from the frames that arrive
+     over ws/browser/<pane> (43-full-browser.js). Outside the pane rather than
+     beside the frame template inside it, because the second pane is a clone of
+     the first and a template in there would be a second element with this id;
+     one document, one copy, and the view is cut from here by either pane.
+
+     The textarea is where the keyboard is. A canvas cannot be typed into, and
+     a page's key events have to come from something focused, so every key the
+     streamed page gets is read off this: 1px and transparent, inside the wrap
+     so giving it the focus scrolls nothing, and never carrying a character of
+     its own — what is typed is forwarded and the field is left empty. -->
+<template id="browser-full-tpl"><div class="fb-wrap"><canvas class="fb-canvas"></canvas><textarea class="fb-focus" aria-hidden="true" tabindex="-1" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><div class="fb-menu" hidden></div><div class="fb-tip" hidden></div><div class="fb-err" hidden></div></div></template>
 
 <!-- ============================================================
      EDITOR

@@ -1117,6 +1117,247 @@ FULL_PAGE_HELPER = r"""
 """ % {"selmax": SELECTION_MAX}
 
 
+# ---------------------------------------------------------------------------
+# Input: what the pane's pointer and keyboard come to
+# ---------------------------------------------------------------------------
+
+# The protocol's own modifier bitmask, which is also the one the client sends:
+# there is no translation worth doing between a KeyboardEvent's four booleans
+# and four bits, and inventing a second spelling of them would only be one more
+# place for the two ends to disagree.
+MOD_ALT = 1
+MOD_CTRL = 2
+MOD_META = 4
+MOD_SHIFT = 8
+
+# What a client's mouse `kind` is called in the protocol.
+MOUSE_TYPES = {"move": "mouseMoved", "down": "mousePressed",
+               "up": "mouseReleased", "wheel": "mouseWheel"}
+
+# The buttons the protocol names. Anything else a client reports is no button,
+# which is what a move carries.
+MOUSE_BUTTONS = ("none", "left", "middle", "right", "back", "forward")
+
+# The virtual key codes the page needs and a browser does not always send.
+# `KeyboardEvent.keyCode` is deprecated and some clients report 0 for it, but a
+# page's own handlers still read it — jQuery's `which`, every "was that Enter?"
+# test written before 2017 — and Chrome's editing commands are driven off it
+# too: a rawKeyDown with no windowsVirtualKeyCode moves no caret and deletes no
+# character, whatever `key` says. So these are filled in here rather than
+# trusted to the client, which is also what keeps two clients from disagreeing.
+KEY_CODES = {
+    "Backspace": 8, "Tab": 9, "Enter": 13, "Escape": 27, "Space": 32,
+    "PageUp": 33, "PageDown": 34, "End": 35, "Home": 36,
+    "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40,
+    "Insert": 45, "Delete": 46,
+    "F1": 112, "F2": 113, "F3": 114, "F4": 115, "F5": 116, "F6": 117,
+    "F7": 118, "F8": 119, "F9": 120, "F10": 121, "F11": 122, "F12": 123,
+}
+
+# The most a `[title]` is worth showing in a tooltip, and the most a paste is
+# worth inserting in one call.
+TITLE_MAX = 200
+INSERT_MAX = 1 << 20
+
+
+def host_is_mac(host_platform: str = "") -> bool:
+    return (host_platform or sys.platform).startswith("darwin")
+
+
+def remap_mods(mods: int, host_platform: str = "") -> int:
+    """Meta from a Mac client, as the host's own browser would read it.
+
+    The page runs on this computer, so its chords are this computer's: a
+    Chromium on Linux copies on Ctrl+C and opens a link in a new tab on
+    Ctrl+click, and a phone or a laptop sending Cmd means exactly those. Left
+    as Meta it would reach the page as the Super key, which is a modifier no
+    page binds anything to — the selection would not copy and the link would
+    open in the tab the user was reading. On a macOS host Meta is already the
+    key the page means, and moving it would break the same chords the other way
+    round.
+    """
+    mods = int(mods) & 0xF
+    if not mods & MOD_META or host_is_mac(host_platform):
+        return mods
+    return (mods & ~MOD_META) | MOD_CTRL
+
+
+def viewport_point(msg: dict, zoom: float) -> "tuple[float, float]":
+    """A canvas coordinate as a CSS pixel of the overridden viewport.
+
+    The canvas is the page's surface at the pane's own size; the viewport
+    behind it was made `zoom` times smaller so everything on it comes back
+    bigger (see PaneTab._metrics). So the page's own coordinate for a point on
+    the canvas is that point divided by the zoom, and every hit test, click and
+    scroll below goes through here rather than doing the division itself.
+    """
+    z = float(zoom) or 1.0
+
+    def num(key: str) -> float:
+        try:
+            val = float(msg.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return 0.0 if val != val else val
+
+    return (num("x") / z, num("y") / z)
+
+
+def mouse_event_params(msg: dict, zoom: float,
+                       host_platform: str = "") -> dict:
+    """One client mouse message as Input.dispatchMouseEvent parameters."""
+    kind = str(msg.get("kind") or "move")
+    if kind not in MOUSE_TYPES:
+        raise ValueError(f"{kind!r} is not a mouse event")
+    z = float(zoom) or 1.0
+    x, y = viewport_point(msg, z)
+    button = str(msg.get("button") or "none")
+    if button not in MOUSE_BUTTONS:
+        button = "none"
+    try:
+        buttons = int(msg.get("buttons") or 0)
+    except (TypeError, ValueError):
+        buttons = 0
+    try:
+        clicks = int(msg.get("clicks") or 0)
+    except (TypeError, ValueError):
+        clicks = 0
+    params = {
+        "type": MOUSE_TYPES[kind],
+        "x": x,
+        "y": y,
+        "button": button,
+        "buttons": max(0, min(buttons, 31)),
+        "clickCount": max(0, min(clicks, 3)),
+        "modifiers": remap_mods(msg.get("mods") or 0, host_platform),
+    }
+    if kind == "wheel":
+        # In the viewport's own pixels like the coordinates: a zoomed page is
+        # rendered from a smaller viewport, and a wheel notch that was not
+        # divided too would scroll it further the more it was zoomed in.
+        dx, dy = viewport_point({"x": msg.get("dx"), "y": msg.get("dy")}, z)
+        params["deltaX"] = dx
+        params["deltaY"] = dy
+    return params
+
+
+def key_event_params(msg: dict, host_platform: str = "") -> dict:
+    """One client key message as Input.dispatchKeyEvent parameters.
+
+    The distinction that matters is `keyDown` against `rawKeyDown`: a keyDown
+    carries text and is what types a character, and a rawKeyDown carries none
+    and is what the page's own handlers see for a chord or an arrow. Sending
+    keyDown for everything types the word "ArrowLeft" into a form; sending
+    rawKeyDown for everything types nothing at all.
+    """
+    up = str(msg.get("kind") or "down") == "up"
+    key = str(msg.get("key") or "")
+    text = str(msg.get("text") or "")
+    # Enter's character is a carriage return, not a newline: that is what a
+    # browser puts in a KeyboardEvent's text, and a textarea fed "\n" instead
+    # gets a line break with no key press behind it.
+    if key == "Enter":
+        text = "\r"
+    try:
+        sent_code = int(msg.get("keyCode") or 0)
+    except (TypeError, ValueError):
+        sent_code = 0
+    code_num = KEY_CODES.get(key, sent_code)
+    try:
+        location = int(msg.get("location") or 0)
+    except (TypeError, ValueError):
+        location = 0
+    params = {
+        "type": "keyUp" if up else ("keyDown" if text else "rawKeyDown"),
+        "key": key,
+        "code": str(msg.get("code") or ""),
+        "windowsVirtualKeyCode": code_num,
+        "nativeVirtualKeyCode": code_num,
+        "modifiers": remap_mods(msg.get("mods") or 0, host_platform),
+        "autoRepeat": bool(msg.get("repeat")),
+        "location": location,
+        "isKeypad": location == 3,
+    }
+    if text and not up:
+        params["text"] = text
+        # What the key would have produced with no modifier on it, which is
+        # what Chrome matches its editing commands against. The client sends no
+        # text at all for a chord, so where there is text there was no Ctrl or
+        # Meta and the two are the same string.
+        params["unmodifiedText"] = text
+    return params
+
+
+# The three page probes the pane's pointer needs answered. Function expressions
+# rather than statements so one Runtime.evaluate can call each with the point
+# (probe_call below), and free of `%` on purpose: FULL_PAGE_HELPER above is
+# %-formatted, and a probe that grew a percent sign would either break that
+# formatting or be quietly rewritten by it.
+
+# What a middle click and a Ctrl+click need to know, and nothing else: the
+# address the anchor under the pointer points at.
+LINK_PROBE_JS = """(function (x, y) {
+  var el = document.elementFromPoint(x, y);
+  var a = el && el.closest ? el.closest('a[href]') : null;
+  return a ? a.href : '';
+})"""
+
+# What the context menu needs: whether there is a link to open, and whether
+# there is somewhere for a paste to land. The selection is not asked for here —
+# the page reports that of its own accord (FULL_PAGE_HELPER) and the tab
+# already holds it.
+HIT_PROBE_JS = """(function (x, y) {
+  var el = document.elementFromPoint(x, y);
+  var a = el && el.closest ? el.closest('a[href]') : null;
+  var editable = false;
+  for (var n = el; n; n = n.parentElement) {
+    var tag = n.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') {
+      editable = !n.disabled && !n.readOnly;
+      break;
+    }
+    if (n.isContentEditable) { editable = true; break; }
+  }
+  return { href: a ? a.href : '', editable: editable };
+})"""
+
+# The pointer's own shape, which is the whole of what makes a streamed page feel
+# like a page rather than a picture of one: a hand over a link, a bar over text,
+# a resize arrow over a splitter. Read the way the browser itself decides it —
+# the computed value, and where that is `auto`, whether the point is on text.
+HIT_CURSOR_JS = """(function (x, y) {
+  var el = document.elementFromPoint(x, y);
+  if (!el) return { cursor: 'default', title: '' };
+  var title = '';
+  for (var n = el; n; n = n.parentElement) {
+    if (n.hasAttribute && n.hasAttribute('title')) {
+      var t = n.getAttribute('title') || '';
+      if (t) { title = t.slice(0, 200); break; }
+    }
+  }
+  var css = '';
+  try { css = window.getComputedStyle(el).cursor || ''; } catch (e) { css = ''; }
+  var tag = el.tagName;
+  var cursor = 'default';
+  if (el.closest && el.closest('a[href]')) cursor = 'pointer';
+  else if (css && css !== 'auto') cursor = css;
+  else if (tag === 'INPUT' || tag === 'TEXTAREA') cursor = 'text';
+  else {
+    var range = document.caretRangeFromPoint
+      ? document.caretRangeFromPoint(x, y) : null;
+    var node = range ? range.startContainer : null;
+    if (node && node.nodeType === 3) cursor = 'text';
+  }
+  return { cursor: cursor, title: title };
+})"""
+
+
+def probe_call(js: str, *args) -> str:
+    """One of the probes above, as an expression that calls it on a point."""
+    return "(" + js + ")(" + ",".join(json.dumps(a) for a in args) + ")"
+
+
+
 class PaneTab:
     """One tab: a target, the session on it, and the stream out of it.
 
@@ -1152,6 +1393,15 @@ class PaneTab:
         self.loading = False
         self.frame_id = ""
         self.selection = ""
+        # Told whenever the page's selection changes, so the pane's copy key has
+        # the text before it is pressed rather than a round trip after. Set by
+        # whoever owns the tab (FullBrowser.open) — the page's binding handler
+        # below is in no position to know where the news should go.
+        self.on_selection = None
+        # The last (cursor, title) this tab's pointer probe answered with. A
+        # move over a paragraph asks twenty times a second and the answer is the
+        # same every time; only a change is worth a message.
+        self.cursor_sent: "tuple[str, str] | None" = None
 
         self._seq = 0
         self._casts = 0                 # frames emitted, for the settle race
@@ -1577,7 +1827,16 @@ class PaneTab:
         name = params.get("name")
         payload = params.get("payload") or ""
         if name == "ptuiSel":
-            self.selection = payload[:SELECTION_MAX]
+            text = payload[:SELECTION_MAX]
+            if text == self.selection:
+                return
+            self.selection = text
+            # Pushed rather than polled: the copy key and the context menu's
+            # Copy have to act inside the gesture that pressed them — a
+            # clipboard write a round trip later is one the browser refuses —
+            # so the client is told as the page changes its mind.
+            if self.on_selection is not None:
+                self.on_selection(self, text)
             return
         if name != "ptuiPopup":
             return
@@ -1759,6 +2018,10 @@ class FullBrowser:
     def to_pane(self, pane: str, msg: dict) -> None:
         self._sink(pane).put_json(msg)
 
+    def _selection_changed(self, pt: PaneTab, text: str) -> None:
+        """One tab's selection, on its way to the pane that is showing it."""
+        self.to_pane(pt.pane, {"type": "sel", "tab": pt.tab, "text": text})
+
     def _to_all(self, msg: dict) -> None:
         for sink in list(self._sinks.values()):
             sink.put_json(msg)
@@ -1922,6 +2185,7 @@ class FullBrowser:
             self._ua_needed = await self._probe_headless(sess)
         pt = PaneTab(pane, tab, sess, target_id, self._sink(pane), self.config,
                      css_w=css_w, css_h=css_h, dpr=dpr, zoom=zoom, owner=self)
+        pt.on_selection = self._selection_changed
         self._tabs[(pane, tab)] = pt
         self._by_target[target_id] = pt
         try:
