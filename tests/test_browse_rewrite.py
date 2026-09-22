@@ -572,7 +572,11 @@ def test_shim_is_small_enough_to_sit_on_every_page():
     # the credentials gate are two more the sandbox leaves no other way to
     # have, and handing a targeted link and a scripted open to the pane is one
     # more: a window the laptop's browser opens is out of the pane for good.
-    assert len(A.BROWSE_SHIM.encode("utf-8")) < 14336
+    # The last raise bought three the sandbox leaves no other way to have
+    # either: the reads it answers with a SecurityError made absent, the frames
+    # it will not share read as not loaded, and a request body buffered before
+    # it goes out. Without them the YouTube app did not boot at all.
+    assert len(A.BROWSE_SHIM.encode("utf-8")) < 17408
 
 
 def test_shim_reads_a_proxy_path_without_the_token():
@@ -792,6 +796,86 @@ def test_shim_fakes_a_cookie_jar_only_where_the_real_one_throws():
     assert 'Object.defineProperty(document,"cookie",d)' in A.BROWSE_SHIM
 
 
+def test_shim_makes_what_an_opaque_origin_refuses_read_as_absent(tmp_path):
+    """The three reads a sandboxed Chrome answers with a SecurityError, run for
+    real: window.caches, navigator.serviceWorker and the window of a frame the
+    page made for itself. A bundle that feature-detects by reading one dies on
+    the spot — the YouTube app read caches while its page was still building
+    and never booted, and it took an about:blank frame's history next — so each
+    reads as absent instead. A frame with an address of its own keeps its
+    window: cross-origin is what a page expects there, and postMessage into it
+    still has to work."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    cfg = {"prefix": PREFIX, "tok": TOK, "sch": "h",
+           "hostport": "127.0.0.1:3000", "origin": ORIGIN, "sandbox": True}
+    here = "http://box.example.net:8080" + BASE + "/h/127.0.0.1:3000/page"
+    harness = """
+const out = {};
+globalThis.window = globalThis;
+globalThis.location = {origin: "http://box.example.net:8080",
+  host: "box.example.net:8080", protocol: "http:", href: HERE,
+  pathname: new URL(HERE).pathname, search: "", hash: "", reload() {}};
+globalThis.document = {currentScript: {dataset: {cfg: CFG}}, baseURI: HERE,
+  addEventListener() {}, write() {}, writeln() {}};
+globalThis.addEventListener = function () {};
+globalThis.history = {};
+function refuse(o, n) {
+  Object.defineProperty(o, n, {configurable: true, get() {
+    const e = new Error("sandboxed and lacks the allow-same-origin flag");
+    e.name = "SecurityError";
+    throw e;
+  }});
+}
+refuse(globalThis, "caches");
+// node has a navigator of its own, and it is read-only there
+Object.defineProperty(globalThis, "navigator",
+  {configurable: true, writable: true, value: {}});
+refuse(globalThis.navigator, "serviceWorker");
+// A child frame of a sandboxed document lands on an opaque origin of its own,
+// so reading any property of its window throws however it was made.
+const foreign = {get document() {
+  const e = new Error("Blocked a frame");
+  e.name = "SecurityError";
+  throw e;
+}};
+globalThis.HTMLIFrameElement = function () {};
+Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow",
+  {configurable: true, get() { return foreign; }});
+function frame(attrs) {
+  const f = Object.create(HTMLIFrameElement.prototype);
+  f.getAttribute = (n) => (n in attrs ? attrs[n] : null);
+  f.hasAttribute = (n) => n in attrs;
+  return f;
+}
+function read(f) { try { return f(); } catch (e) { return "THROW " + e.name; } }
+SHIM
+out.caches = read(() => ("caches" in window ? String(window.caches) : "absent"));
+out.serviceWorker = read(() => String(navigator.serviceWorker));
+out.blank = read(() => frame({src: "about:blank"}).contentWindow);
+out.empty = read(() => frame({}).contentWindow);
+out.page = read(() => frame({src: "http://127.0.0.1:3000/x"}).contentWindow === foreign);
+out.srcdoc = read(() => frame({srcdoc: "<p>hi"}).contentWindow === foreign);
+console.log(JSON.stringify(out));
+"""
+    f = tmp_path / "refused.mjs"
+    # the shim goes in last, for the reason the document.write harness gives.
+    f.write_text(harness.replace("CFG", json.dumps(json.dumps(cfg)))
+                 .replace("HERE", json.dumps(here))
+                 .replace("SHIM", A.BROWSE_SHIM), encoding="utf-8")
+    out = subprocess.run([node, str(f)], check=True, capture_output=True)
+    got = json.loads(out.stdout.decode("utf-8"))
+    # Gone where the property is the object's own, undefined where it is
+    # inherited from a prototype the shim cannot take it off; never a throw.
+    assert got["caches"] in ("absent", "undefined")
+    assert got["serviceWorker"] == "undefined"
+    assert got["blank"] is None
+    assert got["empty"] is None
+    assert got["page"] is True
+    assert got["srcdoc"] is True
+
+
 def test_shim_drops_credentials_only_from_a_document_with_no_origin():
     """An opaque origin cannot ask for credentials: every request it makes is
     cross-origin, and Chrome refuses a wildcard Access-Control-Allow-Origin for
@@ -802,6 +886,11 @@ def test_shim_drops_credentials_only_from_a_document_with_no_origin():
         'if(i&&i.credentials==="include")i=new Request(i,{credentials:"same-origin"});',
         'if(o&&o.credentials==="include")o=Object.assign({},o,'
         '{credentials:"same-origin"});',
+        # And a request that asks to stay on its own origin, which from an
+        # opaque one nothing is: YouTube's cookie upgrade asked for it and was
+        # refused before it was sent, and the consent wall stayed up.
+        'if(i&&i.mode==="same-origin")i=new Request(i,{mode:"cors"});',
+        'if(o&&o.mode==="same-origin")o=Object.assign({},o,{mode:"cors"});',
     ):
         assert line in A.BROWSE_SHIM
     assert ("P(function(){if(!SB)return;\n"
@@ -811,9 +900,97 @@ def test_shim_drops_credentials_only_from_a_document_with_no_origin():
             "  configurable:true,get:function(){return false},set:function(){}});"
             ) in A.BROWSE_SHIM
     # Both turn on the same word the storage and cookie polyfills gate on:
-    # three blocks return early on it, and the fetch override branches on it.
-    assert A.BROWSE_SHIM.count("if(!SB)return;") == 3
+    # five blocks return early on it — storage, the cookie jar, the XHR flag,
+    # the reads an opaque origin refuses and the frames it will not share —
+    # and the fetch override branches on it.
+    assert A.BROWSE_SHIM.count("if(!SB)return;") == 5
     assert "if(SB)try{" in A.BROWSE_SHIM
+
+
+def test_shim_sends_a_request_with_its_body_buffered(tmp_path):
+    """A Request rebuilt around another one takes that one's body as a stream,
+    and Chrome will not put a streamed upload on an HTTP/1.1 connection, which
+    is all uvicorn speaks: it fails the call with ERR_ALPN_NEGOTIATION_FAILED
+    before it is sent. Mapping the URL and dropping the credentials are two
+    such rebuilds, so every POST a page made with a Request object died here —
+    the YouTube app makes all of its youtubei calls that way, its consent form
+    among them. The body is read back into one buffer after the last rebuild,
+    and a call with no body still goes out untouched."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    cfg = {"prefix": PREFIX, "tok": TOK, "sch": "h",
+           "hostport": "127.0.0.1:3000", "origin": ORIGIN, "sandbox": True}
+    here = "http://box.example.net:8080" + BASE + "/h/127.0.0.1:3000/page"
+    harness = """
+const sent = [];
+globalThis.window = globalThis;
+globalThis.location = {origin: "http://box.example.net:8080",
+  host: "box.example.net:8080", protocol: "http:", href: HERE,
+  pathname: new URL(HERE).pathname, search: "", hash: "", reload() {}};
+globalThis.document = {currentScript: {dataset: {cfg: CFG}}, baseURI: HERE,
+  addEventListener() {}, write() {}, writeln() {}};
+globalThis.addEventListener = function () {};
+globalThis.history = {};
+Object.defineProperty(globalThis, "navigator",
+  {configurable: true, writable: true, value: {}});
+const enc = (s) => new TextEncoder().encode(s).buffer;
+const dec = (b) => new TextDecoder().decode(new Uint8Array(b));
+// A Request the way a browser builds one. What matters is where the body came
+// from: bytes handed in are bytes on the wire, and anything taken off another
+// Request — which is all a rebuild can do — arrives as a stream.
+class Req {
+  constructor(input, init) {
+    init = init || {};
+    const from = typeof input === "object" ? input : null;
+    const b = "body" in init ? init.body : null;
+    this.url = from ? from.url : String(input);
+    this.method = init.method || (from && from.method) || "GET";
+    this.credentials = init.credentials || (from && from.credentials) || "omit";
+    this.bodyUsed = false;
+    if (b && typeof b.getReader === "function") { this.kind = "stream"; this.payload = b.payload; }
+    else if (b instanceof ArrayBuffer) { this.kind = "buffer"; this.payload = dec(b); }
+    else if (b != null) { this.kind = "bytes"; this.payload = String(b); }
+    else if (from && from.payload != null) { this.kind = "stream"; this.payload = from.payload; }
+    else { this.kind = "none"; this.payload = null; }
+    this.body = this.payload == null ? null
+      : {payload: this.payload, getReader() {}};
+  }
+  clone() { return new Req(this.url, {body: this.payload}); }
+  arrayBuffer() { this.bodyUsed = true; return Promise.resolve(enc(this.payload)); }
+}
+globalThis.Request = Req;
+globalThis.fetch = function (i, o) {
+  sent.push({url: i.url, method: i.method, kind: i.kind, payload: i.payload,
+             credentials: i.credentials});
+  return Promise.resolve("answered");
+};
+SHIM
+const post = new Req("http://127.0.0.1:3000/youtubei/v1/guide",
+  {method: "POST", body: '{"a":1}', credentials: "include"});
+const get = new Req("http://127.0.0.1:3000/feed");
+Promise.all([window.fetch(post), window.fetch(get)]).then((answers) => {
+  console.log(JSON.stringify({sent, answers}));
+});
+"""
+    f = tmp_path / "body.mjs"
+    # the shim goes in last, for the reason the document.write harness gives.
+    f.write_text(harness.replace("CFG", json.dumps(json.dumps(cfg)))
+                 .replace("HERE", json.dumps(here))
+                 .replace("SHIM", A.BROWSE_SHIM), encoding="utf-8")
+    out = subprocess.run([node, str(f)], check=True, capture_output=True)
+    got = json.loads(out.stdout.decode("utf-8"))
+    site = "http://box.example.net:8080" + BASE + "/h/127.0.0.1:3000"
+    assert got["sent"] == [
+        {"url": f"{site}/feed", "method": "GET", "kind": "none",
+         "payload": None, "credentials": "omit"},
+        # the body it was given, spelled as bytes rather than as the stream
+        # every rebuild would have handed the connection
+        {"url": f"{site}/youtubei/v1/guide", "method": "POST", "kind": "buffer",
+         "payload": '{"a":1}', "credentials": "same-origin"},
+    ]
+    # The answer still reaches the caller through the buffering.
+    assert got["answers"] == ["answered", "answered"]
 
 
 def test_shim_cookie_jar_holds_what_a_page_writes(tmp_path):

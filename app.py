@@ -5962,6 +5962,25 @@ P(function(){var f=window.fetch;if(!f)return;
    // and then the call goes as it came.
    if(i&&i.credentials==="include")i=new Request(i,{credentials:"same-origin"});
    if(o&&o.credentials==="include")o=Object.assign({},o,{credentials:"same-origin"});
+   // And the same for a request that asks to stay on its own origin: from an
+   // opaque one nothing is, so the fetch is refused before it is made. cors is
+   // what it becomes, which is what the proxy answers every other request with.
+   if(i&&i.mode==="same-origin")i=new Request(i,{mode:"cors"});
+   if(o&&o.mode==="same-origin")o=Object.assign({},o,{mode:"cors"});
+  }catch(e){}
+  // A Request rebuilt around another one takes that one's body as a stream,
+  // whatever it was made of, and a streamed upload needs HTTP/2: Chrome will
+  // not put one on the HTTP/1.1 connection uvicorn speaks, and fails it with
+  // ERR_ALPN_NEGOTIATION_FAILED before it is sent. Both rebuilds above do that
+  // to a POST, so the body is read back into one buffer after the last of
+  // them — which is how the YouTube app's youtubei calls go out at all, the
+  // consent form it cannot get past without among them.
+  var self=this;
+  try{
+   if(i&&i.body&&!i.bodyUsed&&typeof i.clone==="function")
+    return i.clone().arrayBuffer().then(
+     function(b){return f.call(self,new Request(i,{body:b}),o)},
+     function(){return f.call(self,i,o)});
   }catch(e){}
   return f.call(this,i,o);
  };
@@ -6112,6 +6131,50 @@ P(function(){
  ["localStorage","sessionStorage"].forEach(function(n){
   try{Object.defineProperty(window,n,{configurable:true,value:mk()})}catch(e){}
  });
+});
+P(function(){
+ // Same gate, and the sharper edge of it: an opaque origin has no cache
+ // storage and no service worker registry, and Chrome answers a *read* of
+ // window.caches or navigator.serviceWorker with a SecurityError rather than
+ // undefined. A bundle that feature-detects by reading one dies on the read —
+ // the YouTube app's did, while its page was still building, and never booted
+ // — so both are made absent, which is what a browser without them looks like.
+ if(!SB)return;
+ [[window,"caches"],[navigator,"serviceWorker"]].forEach(function(p){
+  var o=p[0],n=p[1];
+  function bad(){try{void o[n];return false}catch(e){return true}}
+  if(!bad())return;
+  // Deleting is the truer answer where the property is the object's own, so
+  // that an `"caches" in window` test reads false too; the getter is for one
+  // inherited from a prototype this cannot take it off.
+  try{delete o[n]}catch(e){}
+  if(!bad())return;
+  try{Object.defineProperty(o,n,{configurable:true,get:function(){}})}catch(e){}
+ });
+});
+P(function(){
+ // An opaque origin cannot be shared, not even with a frame the page makes
+ // itself: an about:blank child of a sandboxed document lands on an opaque
+ // origin of its own, so reading any property of its window throws where the
+ // page expected its own. Such frames exist in order to be scripted — a hidden
+ // one is how the YouTube app reads a pushState off a document nothing has
+ // patched yet — and nothing here makes one same-origin, so a frame with no
+ // address of its own reads as not loaded yet, which is the state every script
+ // that asks for one already guards against. A frame with a src or a srcdoc
+ // keeps its window: cross-origin is what a page expects there, and
+ // postMessage into it still has to work.
+ if(!SB)return;
+ var d=Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype,"contentWindow");
+ if(!d||!d.get)return;
+ var g=d.get;
+ try{Object.defineProperty(HTMLIFrameElement.prototype,"contentWindow",{
+  configurable:true,enumerable:d.enumerable,get:function(){
+   var w=g.call(this);
+   if(!w||this.hasAttribute("srcdoc"))return w;
+   var s=(this.getAttribute("src")||"").trim();
+   if(s&&!/^about:blank/i.test(s))return w;
+   try{void w.document;return w}catch(e){return null}
+  }})}catch(e){}
 });
 P(function(){
  // Same gate, same reason: on an opaque origin every document.cookie read
