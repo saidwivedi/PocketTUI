@@ -367,6 +367,12 @@ def launch_flags(found: Found, config: dict, profile_dir: str,
         "--no-default-browser-check",
         "--disable-background-networking",
         "--disable-extensions",
+        # An unbranded build — the Chrome for Testing this installer can
+        # download — applies Chromium's field trial *testing* config, a set of
+        # random experiments a branded Chrome never runs. It is what hung the
+        # installer's own --dump-dom probe, and the pane has no more reason than
+        # the probe did to render pages under experiments nobody shipped.
+        "--disable-field-trial-config",
         # /dev/shm is small in a container and Chrome falls over when it fills.
         "--disable-dev-shm-usage",
         f"--window-size={width},{height}",
@@ -1388,6 +1394,13 @@ class PaneTab:
         self.live = False
         self.frozen = False
         self.dead = False
+        # A discarded tab is one the memory watchdog gave the target up for.
+        # The record stays — the URL and the title are what the pane shows, and
+        # what `show()` loads the page again from.
+        self.discarded = False
+        # When this tab was last the pane's live one, which is how the watchdog
+        # decides whose turn it is: a tab that was never shown sorts oldest.
+        self.shown_at = 0.0
         self.url = ""
         self.title = ""
         self.loading = False
@@ -1504,7 +1517,8 @@ class PaneTab:
 
     def info(self) -> dict:
         return {"pane": self.pane, "tab": self.tab, "url": self.url,
-                "title": self.title, "live": self.live, "frozen": self.frozen}
+                "title": self.title, "live": self.live, "frozen": self.frozen,
+                "discarded": self.discarded}
 
     # -- state -------------------------------------------------------------
     def _schedule_state(self) -> None:
@@ -1581,6 +1595,13 @@ class PaneTab:
         """Make this the pane's live tab and start the stream."""
         if self.dead:
             raise CDPClosed(f"tab {self.tab} is gone")
+        if self.discarded:
+            # The watchdog took this tab's target to stay under the cap. Loading
+            # the page again is what showing it means now, and everything below
+            # is the same as for a tab that never went away.
+            if self.owner is None:
+                raise CDPClosed(f"tab {self.tab} was discarded")
+            await self.owner.revive(self)
         if self.owner is not None:
             await self.owner.hide_others(self.pane, self.tab)
         if css_w:
@@ -1599,6 +1620,7 @@ class PaneTab:
             self.frozen = False
         await self._start_cast()
         self.live = True
+        self.shown_at = time.monotonic()
 
     async def hide(self) -> None:
         """Stop the stream, and start the clock on freezing the tab."""
@@ -1877,6 +1899,12 @@ class PaneTab:
     # -- navigation --------------------------------------------------------
     async def nav(self, url: str) -> None:
         await self.session.send("Page.navigate", {"url": url})
+        # Recorded now rather than waited for: the page will report its own URL
+        # a moment later and correct this, and until it does this is the honest
+        # answer to where the tab is — including for a tab the memory watchdog
+        # discards before the first frameNavigated arrives, whose record is the
+        # only thing left to load it again from.
+        self.url = url
         self.loading = True
         self._schedule_state()
 
@@ -1932,16 +1960,63 @@ class PaneTab:
         except (CDPError, CDPClosed, asyncio.TimeoutError):
             pass
 
+    async def discard(self) -> None:
+        """Give the target up and keep the tab, for the memory watchdog.
+
+        The difference from `close` is what the pane is left with: a closed tab
+        is gone, and a discarded one is still in its tab strip with its title on
+        it, one tap from the page it was showing.
+        """
+        if self.dead or self.discarded:
+            return
+        self.mark_discarded()
+        try:
+            await self.session.cdp.send("Target.closeTarget",
+                                        {"targetId": self.target_id}, timeout=5)
+        except (CDPError, CDPClosed, asyncio.TimeoutError):
+            pass
+
+    def mark_discarded(self) -> None:
+        """The record's side of a discard, with no target left to close."""
+        if self.dead or self.discarded:
+            return
+        self.discarded = True
+        self._stop_tasks()
+        self.frozen = False
+
+    def rebind(self, session: Session, target_id: str) -> None:
+        """A discarded tab's new target, before `start` runs on it again."""
+        self.session = session
+        self.target_id = target_id
+        self.discarded = False
+        self.frozen = False
+        self.live = False
+        self.frame_id = ""
+        self.selection = ""
+        self.cursor_sent = None
+        self._casts = 0
+        self._unacked.clear()
+        self._held = []
+        self._capturing = False
+        self._input_at = 0.0
+        self._popup_open = False
+        # The cancelled tasks of the tab's last life. Dropped rather than left
+        # for `done()` to be asked about: a cancel is not done until the loop
+        # has been round, and a state push that saw one of these would take it
+        # for a push already on its way and send nothing.
+        self._settle_task = None
+        self._freeze_task = None
+        self._popup_task = None
+        self._dpr_task = None
+        self._state_task = None
+
     @staticmethod
     def _cancel(task) -> None:
         if task is not None and not task.done():
             task.cancel()
 
-    def _teardown(self) -> None:
-        """Stop everything this tab is running. Idempotent."""
-        if self.dead:
-            return
-        self.dead = True
+    def _stop_tasks(self) -> None:
+        """Stop the timers and the stream, without ending the tab."""
         self.live = False
         self._popup_open = False
         for task in (self._settle_task, self._freeze_task, self._popup_task,
@@ -1950,6 +2025,13 @@ class PaneTab:
         for _seq, (_sid, _sent, timer) in list(self._unacked.items()):
             self._cancel(timer)
         self._unacked.clear()
+
+    def _teardown(self) -> None:
+        """Stop everything this tab is running. Idempotent."""
+        if self.dead:
+            return
+        self.dead = True
+        self._stop_tasks()
 
 
 # ---------------------------------------------------------------------------
@@ -1983,6 +2065,11 @@ class FullBrowser:
         self._lock = asyncio.Lock()
         self._ua_needed: "bool | None" = None
         self._idle_task: "asyncio.Task | None" = None
+        self.watchdog = Watchdog(self)
+        self.mem: "Measurement | None" = None
+        self.discards = 0          # tabs given up since this browser started
+        self.restarts = 0          # browsers replaced for going over the cap
+        self._restarting = False
 
     @classmethod
     def get(cls) -> "FullBrowser":
@@ -1997,8 +2084,10 @@ class FullBrowser:
 
     def attach_pane(self, pane: str, sink) -> None:
         """A socket for `pane` is up: its tabs send through this one now."""
-        self._cancel_idle()
         self._sinks[pane] = sink
+        # Not a reason to keep the browser: a pane with no full tab in it needs
+        # no browser, and the next `open` starts one. See `_arm_idle`.
+        self._arm_idle()
         for pt in self._tabs.values():
             if pt.pane == pane:
                 pt.sink = sink
@@ -2047,6 +2136,8 @@ class FullBrowser:
             self.found = found
             self.browser = browser
             self.launch_error = ""
+            self.mem = None
+            self.discards = 0
             browser.closed.add_done_callback(self._on_browser_gone)
             try:
                 await browser.cdp.send("Target.setDiscoverTargets", {"discover": True})
@@ -2055,7 +2146,10 @@ class FullBrowser:
             browser.cdp.on("Target.targetInfoChanged", self._on_target_info)
             browser.cdp.on("Target.targetDestroyed", self._on_target_destroyed)
             browser.cdp.on("Target.targetCrashed", self._on_target_crashed)
-            log(f"browser up: {found.path} {found.version} pid={browser.pid}")
+            soft, cap = caps_mb(self.config)
+            log(f"browser up: {found.path} {found.version} pid={browser.pid} "
+                f"cap={int(cap)}MB soft={int(soft)}MB")
+            self.watchdog.start()
             return browser
 
     def _on_browser_gone(self, fut: asyncio.Future) -> None:
@@ -2069,6 +2163,8 @@ class FullBrowser:
         self._tabs.clear()
         self._by_target.clear()
         self.browser = None
+        self.watchdog.stop()
+        self.mem = None
         self.launch_error = message
         log(message)
         self._to_all({"type": "error", "tab": None, "code": "exited",
@@ -2078,6 +2174,8 @@ class FullBrowser:
         """Close every tab and stop the browser, for the server going down."""
         end = time.monotonic() + timeout
         self._cancel_idle()
+        self.watchdog.stop()
+        self.mem = None
         tabs = list(self._tabs.values())
         self._tabs.clear()
         self._by_target.clear()
@@ -2117,9 +2215,20 @@ class FullBrowser:
             self._idle_task.cancel()
         self._idle_task = None
 
+    def _targets(self) -> int:
+        """Tabs with a target behind them — the only reason to keep a browser.
+
+        A pane with no full tab in it is not one: it costs the browser nothing
+        and the next `open` starts one again, so idle is counted in targets and
+        not in panes. Discarded records do not count either; they are a URL and
+        a title, and reviving one goes through `ensure` like any other open.
+        """
+        return sum(1 for pt in self._tabs.values()
+                   if not pt.dead and not pt.discarded)
+
     def _arm_idle(self) -> None:
         self._cancel_idle()
-        if self._tabs or self._sinks or self.browser is None:
+        if self.browser is None or self._targets():
             return
         self._idle_task = asyncio.ensure_future(self._idle_exit())
 
@@ -2128,9 +2237,9 @@ class FullBrowser:
             await asyncio.sleep(float(self.config.get("idle_exit_s") or 0))
         except asyncio.CancelledError:
             return
-        if self._tabs or self._sinks or self.browser is None:
+        if self.browser is None or self._targets():
             return
-        log("no tabs and no panes; stopping the browser")
+        log("nothing left open; stopping the browser")
         await self.shutdown()
 
     # -- targets -----------------------------------------------------------
@@ -2219,6 +2328,108 @@ class FullBrowser:
         self._tabs.pop((pt.pane, pt.tab), None)
         self._by_target.pop(pt.target_id, None)
 
+    # -- memory ------------------------------------------------------------
+    async def revive(self, pt: PaneTab) -> None:
+        """Give a discarded tab a target again, at the URL it was showing.
+
+        The same `PaneTab` — the pane knows it by its own id, the history it
+        shows is this object's, and a new one would be a different tab wearing
+        the same name. Only the session and the target id change.
+        """
+        browser = await self.ensure()
+        self._cancel_idle()
+        if self._targets() >= MAX_TARGETS:
+            raise TabLimit(f"{MAX_TARGETS} tabs are already open on this computer")
+        res = await browser.cdp.send("Target.createTarget",
+                                     {"url": "about:blank", "newWindow": True})
+        target_id = res["targetId"]
+        sess = await browser.cdp.attach(target_id)
+        if self._ua_needed is None:
+            # A relaunched browser has not been asked yet, and the tab coming
+            # back is as entitled to a UA without "Headless" in it as a new one.
+            self._ua_needed = await self._probe_headless(sess)
+        pt.rebind(sess, target_id)
+        self._by_target[target_id] = pt
+        try:
+            await pt.start(pt.url or "about:blank",
+                           browser.user_agent if self._ua_needed else None)
+        except (CDPError, CDPClosed, asyncio.TimeoutError):
+            self._by_target.pop(target_id, None)
+            pt.mark_discarded()
+            raise
+
+    async def discard_oldest_hidden(self, mem: "Measurement",
+                                    soft: float) -> bool:
+        """Past the soft cap: the background tab nobody has looked at longest.
+
+        Never the live one. A tab the user is reading is the one thing a memory
+        limit must not take, and the browser has a harder answer for the case
+        where that tab is the one growing (see `restart_over_cap`).
+        """
+        hidden = [pt for pt in self._tabs.values()
+                  if not pt.live and not pt.dead and not pt.discarded]
+        if not hidden:
+            return False
+        pt = min(hidden, key=lambda p: p.shown_at)
+        self._by_target.pop(pt.target_id, None)
+        await pt.discard()
+        self.discards += 1
+        log(f"{mem.mb:.0f} MB over the {soft:.0f} MB soft cap; "
+            f"discarded tab {pt.tab} of pane {pt.pane} ({pt.url[:80]!r})")
+        self.to_pane(pt.pane, {"type": "tab", "tab": pt.tab, "discarded": True,
+                               "url": pt.url, "title": pt.title})
+        self._arm_idle()
+        return True
+
+    async def restart_over_cap(self, mem: "Measurement", cap: float) -> None:
+        """Past the hard cap twice: a new browser, and every tab a record.
+
+        The tabs are not closed, they are unplugged: each record keeps its URL
+        and its title, and the one tab each pane was showing is loaded again at
+        once so the user is looking at their page and not at an empty canvas.
+        """
+        if self._restarting:
+            return
+        self._restarting = True
+        try:
+            records = dict(self._tabs)
+            showing = {pt.pane: pt.tab for pt in records.values() if pt.live}
+            for pt in records.values():
+                pt.mark_discarded()
+            # Out of the way of `shutdown`, which tears down what it finds.
+            self._tabs.clear()
+            self._by_target.clear()
+            self.restarts += 1
+            log(f"{mem.mb:.0f} MB over the {cap:.0f} MB cap twice; restarting the "
+                f"browser ({len(records)} tabs kept as records)")
+            await self.shutdown()
+            self._tabs.update(records)
+            message = f"Browser restarted: memory cap {int(cap)} MB"
+            for pane in list(self._sinks):
+                self.to_pane(pane, {"type": "error", "tab": None,
+                                    "code": "restarted", "message": message})
+            for pane, tab in showing.items():
+                if pane not in self._sinks:
+                    continue
+                pt = self._tabs.get((pane, tab))
+                if pt is None or pt.dead:
+                    continue
+                try:
+                    await pt.show()
+                except (CDPError, CDPClosed, asyncio.TimeoutError, TabLimit,
+                        BrowserUnavailable) as e:
+                    log(f"tab {tab} of pane {pane} did not come back: {e!r}")
+            # The records that were not revived are still discarded, and the
+            # pane has to hear it from somewhere to draw them as such.
+            for pt in self._tabs.values():
+                if pt.discarded:
+                    self.to_pane(pt.pane, {"type": "tab", "tab": pt.tab,
+                                           "discarded": True, "url": pt.url,
+                                           "title": pt.title})
+            self._arm_idle()
+        finally:
+            self._restarting = False
+
     def _on_target_info(self, params: dict) -> None:
         info = params.get("targetInfo") or {}
         pt = self._by_target.get(info.get("targetId"))
@@ -2247,16 +2458,349 @@ class FullBrowser:
     # -- for the status route ---------------------------------------------
     def snapshot(self) -> dict:
         running = self.browser is not None and not self.browser.closed.done()
+        soft, cap = caps_mb(self.config)
+        mem = self.mem
         return {
             "running": running,
             "pid": self.browser.pid if running else None,
             "version": self.found.version if self.found else "",
             "tabs": [pt.info() for pt in self._tabs.values()],
             "launch_error": self.launch_error,
-            # Filled in by the memory watchdog; the cap is already knowable.
-            "memMb": None,
+            # What the watchdog last measured. `memApprox` is what the number
+            # is worth: PSS on Linux is real, the macOS estimate is not.
+            "memMb": round(mem.mb) if mem is not None else None,
+            "memApprox": bool(mem.approx) if mem is not None else False,
+            "procs": mem.procs if mem is not None else 0,
+            "softMb": round(soft) if soft else None,
             "capMb": self.config.get("memory_mb"),
+            "discards": self.discards,
+            "restarts": self.restarts,
         }
+
+
+# ---------------------------------------------------------------------------
+# What the browser costs, and what to do about it
+# ---------------------------------------------------------------------------
+
+# How often the tree is measured. Five seconds is short enough that a page
+# allocating hard is caught before the machine feels it, and long enough that
+# the measurement — one pass over /proc, a few dozen small reads — is free.
+WATCHDOG_TICK_S = 5.0
+
+# The soft cap, as a fraction of the configured one. Past it a background tab
+# is given up, which is the cheap answer: the tab comes back from its URL and
+# nothing the user is looking at is touched.
+SOFT_FRACTION = 0.8
+
+# How many ticks over the hard cap before the browser is restarted. One is a
+# spike — a page loading images, a garbage collection that has not run yet —
+# and restarting on it would take the user's tabs for nothing.
+HARD_STRIKES = 2
+
+
+def caps_mb(config: dict) -> "tuple[float, float]":
+    """The (soft, hard) cap in MB, or (0, 0) when there is none to enforce."""
+    try:
+        cap = float(config.get("memory_mb") or 0)
+    except (TypeError, ValueError):
+        cap = 0.0
+    if cap <= 0:
+        return (0.0, 0.0)
+    return (cap * SOFT_FRACTION, cap)
+
+
+@dataclasses.dataclass(frozen=True)
+class Measurement:
+    mb: float
+    approx: bool
+    procs: int
+
+
+class ProcReader:
+    """Where ProcessTree's numbers come from: this machine.
+
+    An object rather than a handful of module functions so the watchdog can be
+    measured against a process tree that does not exist: every number comes
+    through one of these methods, and none of them is allowed to raise. A pid
+    that vanished between being listed and being read is the normal case, not
+    an error — Chrome starts and ends processes while the page runs.
+    """
+
+    def __init__(self, platform: str = "") -> None:
+        self.platform = platform or sys.platform
+
+    def pids(self) -> "list[int]":
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return []
+        return [int(e) for e in entries if e.isdigit()]
+
+    def ppid(self, pid: int) -> "int | None":
+        # The comm field is parenthesised and may contain spaces and parens of
+        # its own, so the fields are counted from the last ')' rather than by
+        # splitting the line: state is first after it, ppid second.
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as f:
+                raw = f.read()
+        except OSError:
+            return None
+        try:
+            return int(raw[raw.rindex(b")") + 1:].split()[1])
+        except (ValueError, IndexError):
+            return None
+
+    def pss_kb(self, pid: int) -> "int | None":
+        return self._field(f"/proc/{pid}/smaps_rollup", "Pss:")
+
+    def rss_kb(self, pid: int) -> "int | None":
+        return self._field(f"/proc/{pid}/status", "VmRSS:")
+
+    @staticmethod
+    def _field(path: str, prefix: str) -> "int | None":
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.startswith(prefix):
+                        return int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
+
+    def cgroup(self, pid: int) -> str:
+        try:
+            with open(f"/proc/{pid}/cgroup", "r", encoding="utf-8",
+                      errors="replace") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    def ps_text(self) -> str:
+        """`ps -axo pid,ppid,rss`, for the platforms with no PSS to read."""
+        try:
+            out = subprocess.run(["ps", "-axo", "pid,ppid,rss"],
+                                 capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return out.stdout or ""
+
+
+class ProcessTree:
+    """The processes a browser is, and what they really cost.
+
+    RSS is the wrong number here, and not by a little: one tab of Chrome is a
+    dozen processes sharing one copy of a large binary, and every one of them
+    reports the whole shared mapping as resident. Measured on the machine this
+    was written on, a one-tab browser of 18 processes summed to 1748 MB of RSS
+    and 410 MB of PSS — RSS overcounts by four, so a cap enforced on it would
+    keep restarting a browser costing a quarter of what the number claims. PSS
+    divides each shared page by the number of processes mapping it, which is
+    the only per-process figure that adds up to the truth.
+
+    macOS has no PSS. `ps` gives RSS per process, and the bulk of what they
+    share is the one framework every one of them maps, so the smallest RSS in
+    the tree is taken as that baseline and counted once instead of n times. It
+    is an approximation and says so (`approx`), which is the honest reason the
+    cap is a comfort setting rather than an accounting one.
+
+    Under a systemd scope the tree is not the whole story either: a renderer
+    whose parent went away is re-parented to init and walks out of the tree,
+    so every process whose cgroup is our scope is counted too.
+    """
+
+    @staticmethod
+    def measure(root_pid: int, unit: "str | None" = None,
+                reader: "ProcReader | None" = None) -> Measurement:
+        reader = reader if reader is not None else ProcReader()
+        platform = str(getattr(reader, "platform", sys.platform) or "")
+        if platform.startswith("darwin"):
+            return ProcessTree._measure_ps(root_pid, reader)
+        return ProcessTree._measure_proc(root_pid, unit, reader)
+
+    # -- Linux -------------------------------------------------------------
+    @staticmethod
+    def _measure_proc(root_pid: int, unit: "str | None", reader) -> Measurement:
+        total = 0
+        procs = 0
+        approx = False
+        for pid in ProcessTree.pids(root_pid, unit, reader):
+            kb = reader.pss_kb(pid)
+            if kb is None:
+                # No smaps_rollup: a kernel without it, or — far more often —
+                # a process that exited while this pass was reading. RSS is
+                # the answer that is left, and it is marked as one.
+                kb = reader.rss_kb(pid)
+                if kb is None:
+                    continue
+                approx = True
+            total += kb
+            procs += 1
+        return Measurement(mb=total / 1024.0, approx=approx, procs=procs)
+
+    @staticmethod
+    def pids(root_pid: int, unit: "str | None" = None,
+             reader: "ProcReader | None" = None) -> "list[int]":
+        """Every pid of the tree under `root_pid`, plus the scope's strays."""
+        reader = reader if reader is not None else ProcReader()
+        kids: dict = {}
+        listed = reader.pids()
+        for pid in listed:
+            parent = reader.ppid(pid)
+            if parent is not None:
+                kids.setdefault(parent, []).append(pid)
+        out: list = []
+        seen: set = set()
+        queue = [int(root_pid)]
+        while queue:
+            pid = queue.pop(0)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            out.append(pid)
+            queue.extend(kids.get(pid, ()))
+        if unit:
+            for pid in listed:
+                if pid not in seen and unit in reader.cgroup(pid):
+                    seen.add(pid)
+                    out.append(pid)
+        return out
+
+    # -- macOS -------------------------------------------------------------
+    @staticmethod
+    def parse_ps(text: str) -> dict:
+        """`pid ppid rss` rows as {pid: (ppid, rss_kb)}, header and all."""
+        rows: dict = {}
+        for line in (text or "").splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                rows[int(parts[0])] = (int(parts[1]), int(parts[2]))
+            except ValueError:
+                continue   # the header, and anything else that is not numbers
+        return rows
+
+    @staticmethod
+    def _measure_ps(root_pid: int, reader) -> Measurement:
+        rows = ProcessTree.parse_ps(reader.ps_text())
+        kids: dict = {}
+        for pid, (parent, _rss) in rows.items():
+            kids.setdefault(parent, []).append(pid)
+        seen: set = set()
+        queue = [int(root_pid)]
+        sizes: list = []
+        while queue:
+            pid = queue.pop(0)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            if pid in rows:
+                sizes.append(rows[pid][1])
+            queue.extend(kids.get(pid, ()))
+        if not sizes:
+            return Measurement(mb=0.0, approx=True, procs=0)
+        total = sum(sizes) - (len(sizes) - 1) * min(sizes)
+        return Measurement(mb=max(0, total) / 1024.0, approx=True,
+                           procs=len(sizes))
+
+
+class Watchdog:
+    """Keeps the browser inside the cap the config asked for.
+
+    The cap has to be enforced here because the obvious place does not work:
+    the transient scope carries MemoryHigh and MemoryMax, and on a user manager
+    with no memory controller delegated — which is the machine this was written
+    on — `systemd-run -p MemoryMax=1M` succeeds and limits nothing. The scope
+    is worth having for its name and for the kill that goes with it; the number
+    is ours to keep.
+
+    Two answers, in order of how much they cost the user. Past the soft cap the
+    oldest background tab is given up: its target is closed and the record
+    keeps the URL and the title, so tapping it loads the page again. Past the
+    hard cap twice in a row the browser is restarted, which is the only answer
+    left when the tab the user is *looking at* is the one growing.
+    """
+
+    def __init__(self, fb: "FullBrowser", tree=None) -> None:
+        self.fb = fb
+        self.tree = tree if tree is not None else ProcessTree
+        self.last: "Measurement | None" = None
+        self.over = 0
+        self._task: "asyncio.Task | None" = None
+        self._epoch = 0
+
+    def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        self._epoch += 1
+        self.over = 0
+        self._task = asyncio.ensure_future(self._loop(self._epoch))
+
+    def stop(self) -> None:
+        """Stop ticking. Callable from inside a tick — the restart path is.
+
+        A cancel would land on the task that is running the restart, halfway
+        through, so the loop is retired by epoch instead and cancelled only
+        when the caller is somebody else.
+        """
+        task, self._task = self._task, None
+        self._epoch += 1
+        self.last = None
+        self.over = 0
+        if task is None or task.done():
+            return
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        if task is not current:
+            task.cancel()
+
+    async def _loop(self, epoch: int) -> None:
+        try:
+            while epoch == self._epoch:
+                await asyncio.sleep(WATCHDOG_TICK_S)
+                if epoch != self._epoch:
+                    return
+                try:
+                    await self.tick()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001 — never stop watching
+                    log(f"watchdog tick failed: {e!r}")
+        except asyncio.CancelledError:
+            return
+
+    async def tick(self) -> "Measurement | None":
+        """One measurement, and whatever it calls for. Also the test's handle."""
+        fb = self.fb
+        browser = fb.browser
+        if browser is None or browser.closed.done():
+            self.last = None
+            self.over = 0
+            fb.mem = None
+            return None
+        pid, unit = browser.pid, browser.unit
+        # Off the loop: a pass over /proc is a few dozen small reads, and on a
+        # busy machine they are not instant.
+        measured = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: self.tree.measure(pid, unit))
+        self.last = measured
+        fb.mem = measured
+        soft, cap = caps_mb(fb.config)
+        if cap <= 0:
+            return measured
+        if measured.mb > cap:
+            self.over += 1
+            if self.over >= HARD_STRIKES:
+                self.over = 0
+                await fb.restart_over_cap(measured, cap)
+                return measured
+        else:
+            self.over = 0
+        if measured.mb > soft:
+            await fb.discard_oldest_hidden(measured, soft)
+        return measured
 
 
 # ---------------------------------------------------------------------------

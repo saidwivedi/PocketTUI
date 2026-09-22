@@ -11,6 +11,7 @@ suite are not the machine running the browser.
 
 import asyncio
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -291,3 +292,147 @@ def test_shutdown_kills_browser_within_6s(tmp_path, monkeypatch):
         os.kill(seen["pid"], 0)
     if seen["unit"]:
         assert not unit_alive(seen["unit"])
+
+
+# ---------------------------------------------------------------------------
+# What it costs, measured on the real thing
+# ---------------------------------------------------------------------------
+
+def rss_sum_mb(pid: int, unit: str = "") -> float:
+    """The number the watchdog does *not* use, for the comparison below."""
+    total = 0
+    for p in C.ProcessTree.pids(pid, unit or None):
+        kb = C.ProcReader().rss_kb(p)
+        if kb:
+            total += kb
+    return total / 1024.0
+
+
+def test_measure_real_tree_reports_pss_not_rss(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(C, "WATCHDOG_TICK_S", 3600)
+
+    async def body(fb):
+        sink = Sink()
+        fb.attach_pane("p1", sink)
+        tab = await fb.open("p1", "t1", HI, css_w=400, css_h=300, dpr=1, zoom=1)
+        await tab.show()
+        await wait_frame(sink, "cast")
+
+        m = C.ProcessTree.measure(fb.browser.pid, fb.browser.unit)
+        rss = rss_sum_mb(fb.browser.pid, fb.browser.unit)
+        print(f"\none tab: {m.procs} procs, PSS {m.mb:.0f} MB, RSS sum {rss:.0f} MB")
+        # A browser with a page in it is hundreds of megabytes and not gigabytes:
+        # summed RSS counts every shared mapping once per process and lands
+        # several times higher, which is the whole reason PSS is what the cap is
+        # enforced on.
+        assert 50 < m.mb < 1200, f"{m.mb} MB for one tab"
+        assert m.procs >= 3
+        assert m.approx is False
+        assert rss > m.mb
+
+        # And the same numbers arrive through the watchdog, into the snapshot
+        # the pane reads.
+        measured = await fb.watchdog.tick()
+        assert measured.mb == pytest.approx(m.mb, rel=0.5)
+        snap = fb.snapshot()
+        assert snap["memMb"] == round(measured.mb)
+        assert snap["memApprox"] is False and snap["procs"] >= 3
+        assert snap["softMb"] == round(C.caps_mb(fb.config)[0])
+        assert snap["discards"] == 0 and snap["restarts"] == 0
+
+    live(body, tmp_path)
+
+
+@pytest.mark.skipif(shutil.which("systemd-run") is None,
+                    reason="no systemd-run on this machine")
+def test_scope_launch_when_systemd_run_available(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if not C.systemd_scope_available():
+        pytest.skip("no user manager to put a scope in")
+
+    async def main():
+        browser = await C.launch(FOUND, C.load_browser_config())
+        unit = browser.unit
+        try:
+            assert unit and unit.startswith("pockettui-browser-")
+            listed = subprocess.run(
+                ["systemctl", "--user", "list-units", "--no-legend", "--plain",
+                 "pockettui-browser-*"], capture_output=True, text=True)
+            assert unit in listed.stdout, listed.stdout
+            # The browser is in the scope, which is what makes the scope worth
+            # having: the kill that comes with it reaches every renderer.
+            assert unit in C.ProcReader().cgroup(browser.pid)
+        finally:
+            await browser.close()
+        gone = subprocess.run(
+            ["systemctl", "--user", "list-units", "--no-legend", "--plain",
+             "pockettui-browser-*"], capture_output=True, text=True)
+        assert unit not in gone.stdout, gone.stdout
+
+    asyncio.run(main())
+
+
+def test_soft_cap_discards_a_hidden_tab_for_real(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # The ticking loop is parked: this test drives the watchdog itself, and a
+    # cap of 1 MB is over the hard cap too — two automatic ticks would restart
+    # the browser in the middle of it.
+    monkeypatch.setattr(C, "WATCHDOG_TICK_S", 3600)
+    C._find_cache = None
+
+    async def main():
+        config = C.load_browser_config()
+        config["memory_mb"] = 1        # no browser is ever under this
+        fb = C.FullBrowser(config)
+        try:
+            sink = Sink()
+            fb.attach_pane("p1", sink)
+            one = await fb.open("p1", "t1", HI, css_w=320, css_h=240, dpr=1, zoom=1)
+            await one.show()
+            await wait_frame(sink, "cast")
+            two = await fb.open("p1", "t2", PICKER, css_w=320, css_h=240,
+                                dpr=1, zoom=1)
+            await two.show()
+            assert two.live and not one.live
+            was = one.target_id
+            sink.msgs.clear()
+
+            measured = await fb.watchdog.tick()
+            assert measured.mb > 1
+            assert one.discarded and not two.discarded and two.live
+            assert fb.discards == 1
+            assert {"type": "tab", "tab": "t1", "discarded": True,
+                    "url": one.url, "title": one.title} in sink.msgs
+
+            # The target is really gone from the browser, and the live one is
+            # really still there. Polled: closeTarget answers before the
+            # browser has finished taking the page down.
+            ids = set()
+            end = time.monotonic() + 5
+            while time.monotonic() < end:
+                targets = await fb.browser.cdp.send("Target.getTargets")
+                ids = {t["targetId"] for t in targets["targetInfos"]
+                       if t.get("type") == "page"}
+                if was not in ids:
+                    break
+                await asyncio.sleep(0.1)
+            assert was not in ids
+            assert two.target_id in ids
+
+            # With room again, showing the discarded tab loads its page on a
+            # new target and streams it like any other.
+            config["memory_mb"] = 100000
+            seen = len(sink.frames)
+            await one.show()
+            assert one.target_id != was
+            assert one.live and not one.discarded
+            header, _ = await wait_frame(sink, "cast", after=seen,
+                                         match=lambda h: h["tab"] == "t1")
+            assert header["cssW"] == 320
+            assert not two.live
+        finally:
+            await fb.shutdown()
+
+    asyncio.run(main())
+    C._find_cache = None
