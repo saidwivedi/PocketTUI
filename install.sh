@@ -20,6 +20,7 @@
 #   POCKETTUI_UPDATE   1 to update an existing install (same as --update)
 #   POCKETTUI_FORCE    1 to overwrite an existing install
 #   POCKETTUI_VERBOSE  1 for the full per-step detail (same as --verbose)
+#   POCKETTUI_NO_BROWSER  1 to skip the browser step (same as --no-browser)
 #   POCKETTUI_SERVICE_NAME  systemd unit / launchd label  (default: pockettui)
 #   POCKETTUI_BASE_URL where install.sh, the tarball and version.txt live
 #   POCKETTUI_BIN      directory for the `pockettui` command (default: ~/.local/bin)
@@ -74,10 +75,16 @@ UPDATE="${POCKETTUI_UPDATE:-0}"
 # rolled-back update as the failure it is rather than as an install.
 PREV_SAVED=0
 ROLLED_BACK=0
+# Skip the browser pane's local Chromium entirely: no search, no check, no
+# download. Both spellings exist for the same reason the two above do — the
+# flag survives `curl … | bash -s -- --no-browser` and is passed straight
+# through by `pockettui update --no-browser`, the variable is for automation.
+NO_BROWSER="${POCKETTUI_NO_BROWSER:-0}"
 for arg in ${@+"$@"}; do
     case "$arg" in
         -v|--verbose) VERBOSE=1 ;;
         --update)     UPDATE=1 ;;
+        --no-browser) NO_BROWSER=1 ;;
     esac
 done
 
@@ -521,7 +528,7 @@ elif [[ -e "$INSTALL_DIR" ]]; then
     if [[ "$UPDATE" == "1" ]]; then
         step_quiet "Updating the install at $INSTALL_DIR (from version $OLD_VERSION)"
         vsay "  The new copy replaces the program files:"
-        for f in app.py resolver.py mobile_app.html sw.js pockettui.service \
+        for f in app.py resolver.py chromium.py mobile_app.html sw.js pockettui.service \
                  install.sh setup_voice.sh requirements.txt qrcodegen.py \
                  icon-192.png icon-512.png vendor; do
             [[ -e "$INSTALL_DIR/$f" ]] && vsay "    $f"
@@ -539,7 +546,7 @@ elif [[ -e "$INSTALL_DIR" ]]; then
         # there is always exactly one install and never a merge of two.
         PREV_DIR="$INSTALL_DIR/.prev"
         if rm -rf "${PREV_DIR:?}" 2>/dev/null && mkdir -p "$PREV_DIR" 2>/dev/null; then
-            for f in app.py resolver.py mobile_app.html sw.js pockettui.service \
+            for f in app.py resolver.py chromium.py mobile_app.html sw.js pockettui.service \
                      install.sh setup_voice.sh requirements.txt qrcodegen.py \
                      icon-192.png icon-512.png vendor VERSION; do
                 [[ -e "$INSTALL_DIR/$f" ]] && cp -R "$INSTALL_DIR/$f" "$PREV_DIR/"
@@ -562,7 +569,7 @@ elif [[ -e "$INSTALL_DIR" ]]; then
         step_quiet "Replacing existing install at $INSTALL_DIR (POCKETTUI_FORCE=1)"
         ROTATE_TOKEN=1
         vsay "  These are overwritten by the new copy:"
-        for f in app.py mobile_app.html sw.js pockettui.service install.sh \
+        for f in app.py chromium.py mobile_app.html sw.js pockettui.service install.sh \
                  qrcodegen.py icon-192.png icon-512.png vendor; do
             [[ -e "$INSTALL_DIR/$f" ]] && vsay "    $f"
         done
@@ -593,7 +600,7 @@ if [[ "$LOCAL_CHECKOUT" == "1" ]]; then
     # mobile_app.html, sw.js and the icons are built into $INSTALL_DIR further
     # down, once there is a Python to run build_mobile.py with. app.py was
     # already checked.
-    for f in app.py resolver.py requirements.txt vendor qrcodegen.py \
+    for f in app.py resolver.py chromium.py requirements.txt vendor qrcodegen.py \
              pockettui.service install.sh run.sh setup_voice.sh; do
         [[ -e "$SRC_DIR/$f" ]] || continue
         # Installing from inside the install dir would be cp-onto-itself.
@@ -894,6 +901,7 @@ BASE_URL="$BASE_URL"
 SERVICE_NAME="$SERVICE_NAME"
 WRAPPER_BIN="$USER_BIN"
 PORT="$PORT"
+VENV_PY="$VENV_PY"
 EOF
 cat <<'EOF'
 
@@ -972,6 +980,14 @@ remote_version() {
     esac
 }
 
+# The browser the pane would stream from, as chromium.py reports it: one line
+# of path and version separated by a tab, or nothing at all. Every browser
+# answer this wrapper gives comes out of that one module, which is the only
+# thing that knows how a browser is found, judged and downloaded.
+browser_find() {
+    "$VENV_PY" "$INSTALL_DIR/chromium.py" --find 2>/dev/null | head -1 || true
+}
+
 # Which install.sh to hand the job to, printed for the caller. The fresh copy
 # from the site is preferred over the one in the install dir: that one shipped
 # with the version being replaced, so an updater bug in it would be permanent —
@@ -1044,6 +1060,34 @@ case "${1:-}" in
         fi
         exit "$rc"
         ;;
+    (browser)
+        shift
+        case "${1:-}" in
+            (install)
+                "$VENV_PY" "$INSTALL_DIR/chromium.py" --install
+                ;;
+            (check)
+                found="$(browser_find)"
+                if [[ -z "$found" ]]; then
+                    echo "no browser found" >&2
+                    exit 1
+                fi
+                "$VENV_PY" "$INSTALL_DIR/chromium.py" --check "$(printf '%s\n' "$found" | cut -f1)"
+                ;;
+            (status)
+                found="$(browser_find)"
+                if [[ -z "$found" ]]; then
+                    echo "no browser found"
+                else
+                    printf '%s\n' "$found"
+                fi
+                ;;
+            (*)
+                echo "usage: pockettui browser install | check | status" >&2
+                exit 1
+                ;;
+        esac
+        ;;
     (status)
         echo "installed  $(local_version)"
         echo "backend    $(backend_state)"
@@ -1064,11 +1108,15 @@ case "${1:-}" in
         fi
         ;;
     (*)
-        echo "usage: pockettui update | version | status"
+        echo "usage: pockettui update | version | status | browser"
         echo
         echo "  update   fetch and install the current version, in place"
         echo "  version  what is installed here, and what is current"
         echo "  status   whether the backend is running, and answering"
+        echo
+        echo "  browser install  download a browser for the browser pane"
+        echo "  browser check    what stops the browser here from starting"
+        echo "  browser status   which browser the pane would stream from"
         ;;
 esac
 EOF
@@ -2091,6 +2139,103 @@ if [[ -f "$VOICE_SCRIPT" ]]; then
         fi
     fi
 fi
+
+# ---------------------------------------------------------------------------
+# The browser the browser pane streams from
+# ---------------------------------------------------------------------------
+# Optional in the same sense as voice-to-text: the pane still renders sites
+# through the backend proxy without a local Chromium, so nothing here may fail
+# an install or an update. Every branch ends in one summary line and a zero
+# exit, and the only thing that can stop the step early is --no-browser.
+#
+# All of the work is chromium.py's — finding a browser, judging whether it can
+# start on this box, and downloading a private Chrome for Testing — which is
+# the usual split: logic in Python, never in bash. This is the step that runs
+# it and says what it found.
+#
+# Last but one, after the service has been restarted onto the new code and
+# after the voice question, for the reason the voice download is here too: a
+# browser this step has to fetch is a long download, and an update must not
+# hold the backend down while it runs.
+
+# A readable product name for the binary --find reported, which is all there is
+# to go on: a path and a version. A binary under ~/.pockettui/chromium is the
+# private copy this installer downloaded, anything else is what the machine
+# already had. Edge is matched before Chrome because on macOS both are bundles
+# whose executable is named after the product.
+browser_product() {
+    case "$1" in
+        */.pockettui/chromium/*)             printf 'Chrome for Testing' ;;
+        *microsoft-edge*|*"Microsoft Edge"*) printf 'Microsoft Edge' ;;
+        *google-chrome*|*"Google Chrome"*)   printf 'Google Chrome' ;;
+        *chromium*|*Chromium*)               printf 'Chromium' ;;
+        *)                                   printf 'Browser' ;;
+    esac
+}
+
+# One line about the browser, whatever happened. A browser that is here but
+# cannot start gets the check output indented under a warning first — it names
+# the libraries and the package command to install them, which is a thing only
+# the user can run — and then reads as "not available", because a browser the
+# pane cannot launch is not a browser the pane has.
+browser_setup() {
+    local later='Browser: not available, run `pockettui browser install` on this computer later'
+    local found="" path="" ver="" out="" rc=0
+    if [[ "$NO_BROWSER" == "1" ]]; then
+        say "Browser: skipped (--no-browser)"
+        return 0
+    fi
+    if [[ ! -f "$INSTALL_DIR/chromium.py" ]]; then
+        vsay "  this build ships no chromium.py, so there is nothing to look for"
+        return 0
+    fi
+    found="$("$VENV_PY" "$INSTALL_DIR/chromium.py" --find 2>/dev/null | head -1 || true)"
+    if [[ -n "$found" ]]; then
+        path="$(printf '%s\n' "$found" | awk -F'\t' '{print $1}')"
+        ver="$(printf '%s\n' "$found" | awk -F'\t' '{print $2}')"
+        if out="$("$VENV_PY" "$INSTALL_DIR/chromium.py" --check "$path" 2>&1)"; then
+            [[ -n "$ver" ]] || ver="$(printf '%s\n' "$out" | sed -n 's/^ok //p' | head -1)"
+            case "$path" in
+                */.pockettui/chromium/*)
+                    say "Browser: $(browser_product "$path")${ver:+ $ver} (downloaded)" ;;
+                *)
+                    say "Browser: $(browser_product "$path")${ver:+ $ver} (system)" ;;
+            esac
+            vsay "  $path"
+            return 0
+        fi
+        say "  ${C_WARN}$(browser_product "$path") is installed here but will not start:${C_RESET}"
+        printf '%s\n' "$out" | sed 's/^/      /'
+        say "$later"
+        note "the browser pane has no usable browser on this computer"
+        return 0
+    fi
+    say "  No Chrome, Chromium or Edge on this computer."
+    # Its output goes straight to the terminal, for the same reason the voice
+    # download does: a hundred-odd megabytes with nothing on screen reads as a
+    # hang. `set -e` would take the install down with it, hence the explicit
+    # test — exit 2 is a build whose chromium.py cannot download yet.
+    rc=0
+    "$VENV_PY" "$INSTALL_DIR/chromium.py" --install || rc=$?
+    if [[ "$rc" == "0" ]]; then
+        found="$("$VENV_PY" "$INSTALL_DIR/chromium.py" --find 2>/dev/null | head -1 || true)"
+        ver="$(printf '%s\n' "$found" | awk -F'\t' '{print $2}')"
+        say "Browser: Chrome for Testing${ver:+ $ver} downloaded to ~/.pockettui/chromium"
+        note "downloaded a browser for the browser pane"
+        return 0
+    fi
+    if [[ "$rc" == "2" ]]; then
+        say "  ${C_DIM}Downloading a browser is not available in this version yet.${C_RESET}"
+    else
+        say "  ${C_WARN}Could not download a browser.${C_RESET} It can be added later with:"
+        say "      pockettui browser install"
+    fi
+    say "$later"
+    note "the browser pane has no browser on this computer"
+    return 0
+}
+
+browser_setup || true
 
 # ---------------------------------------------------------------------------
 # Where the phone should point

@@ -562,13 +562,15 @@ def test_no_runtime_file_reads_as_never_started(tmp_path):
 # (e) the wrapper's own status subcommand
 # ---------------------------------------------------------------------------
 
-def wrapper_harness(inst, runtime="", args="status", installer_rc=0):
+def wrapper_harness(inst, runtime="", args="status", installer_rc=0,
+                    venv_py="/nonexistent/python"):
     """The wrapper's helpers and its case block, with run_installer stubbed."""
     return (
         f'INSTALL_DIR="{inst}"\n'
         'BASE_URL="https://pockettui.invalid"\n'
         'SERVICE_NAME="pockettui"\n'
         'WRAPPER_BIN="/tmp/bin"\n'
+        f'VENV_PY="{venv_py}"\n'
         "PORT=5560\n"
         + runtime
         + slice_sh(*WRAPPER_HELPERS)
@@ -1017,6 +1019,7 @@ def rendered_wrapper(tmp_path):
         'BASE_URL="https://pockettui.invalid"\n'
         'SERVICE_NAME="pockettui"\n'
         'USER_BIN="/tmp/bin"\n'
+        'VENV_PY="/tmp/pockettui/.venv/bin/python"\n'
         "PORT=5560\n"
         + slice_sh(*WRAPPER_SECTION, include_end=True)
         + 'printf "%s\\n" "$WRAPPER_CONTENT"\n'
@@ -1081,7 +1084,9 @@ def test_the_hosted_app_is_only_offered_where_a_browser_could_open_it(tmp_path):
 # an update used to print a hint instead of asking, which is how a tester ended
 # up with no voice engine and no menu. An update that already has an engine is
 # still silent, and a run with nobody at the keyboard still only prints a hint.
-VOICE_SECTION = ("voice_ask_engine() {", "# Where the phone should point")
+# The end anchor is the section that follows the voice block, whatever that
+# is: the browser step was inserted between it and the phone-address summary.
+VOICE_SECTION = ("voice_ask_engine() {", "# The browser the browser pane streams from")
 
 EOF_KEY = "\x04"  # what a terminal sends for ctrl-D, which is how EOF reaches read
 
@@ -1193,3 +1198,271 @@ def test_the_lan_summary_sends_this_computer_to_the_backend_itself(tmp_path):
     over_ssh = lan_summary(tmp_path, dict(CLEAR_SESSION, SSH_TTY="/dev/pts/0"))
     assert "On this computer" not in over_ssh
     assert "On your phone on the same Wi-Fi, open  http://192.0.2.7:5560/" in over_ssh
+
+
+# ---------------------------------------------------------------------------
+# (i) the browser the browser pane streams from
+# ---------------------------------------------------------------------------
+# The installer never decides anything about a browser itself: chromium.py
+# finds one, says whether it can start here, and downloads one. What is tested
+# is the step around it — the flag that skips it, the one summary line each
+# outcome prints, and that none of those outcomes can fail an install.
+
+FLAG_SECTION = ('VERBOSE="${POCKETTUI_VERBOSE:-0}"', "done")
+BROWSER_SETUP_SECTION = ("browser_product() {", "browser_setup || true")
+
+
+def flag_run(tmp_path, args="", env=None):
+    """The flag loop, run over `args`, reporting what it decided."""
+    body = (
+        f"set -- {args}\n"
+        + slice_sh(*FLAG_SECTION, include_end=True)
+        + 'printf "VERBOSE=%s UPDATE=%s NO_BROWSER=%s\\n" '
+          '"$VERBOSE" "$UPDATE" "$NO_BROWSER"\n'
+    )
+    full = {"POCKETTUI_VERBOSE": "", "POCKETTUI_UPDATE": "", "POCKETTUI_NO_BROWSER": ""}
+    full.update(env or {})
+    r = run_bash(tmp_path, body, env=full, name="flags.sh")
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def test_no_browser_flag_parses(tmp_path):
+    assert flag_run(tmp_path) == "VERBOSE=0 UPDATE=0 NO_BROWSER=0"
+    assert flag_run(tmp_path, "--no-browser") == "VERBOSE=0 UPDATE=0 NO_BROWSER=1"
+    # Both paths take it: a fresh install, and the update the wrapper passes it
+    # through to. The other flags still mean what they meant.
+    assert flag_run(tmp_path, "--update --no-browser") == "VERBOSE=0 UPDATE=1 NO_BROWSER=1"
+    assert flag_run(tmp_path, "-v --no-browser") == "VERBOSE=1 UPDATE=0 NO_BROWSER=1"
+    assert flag_run(tmp_path, "--update") == "VERBOSE=0 UPDATE=1 NO_BROWSER=0"
+    assert flag_run(tmp_path, env={"POCKETTUI_NO_BROWSER": "1"}) \
+        == "VERBOSE=0 UPDATE=0 NO_BROWSER=1"
+
+
+def logical_lines(text):
+    """install.sh's lines with backslash continuations joined into one."""
+    out, buf = [], ""
+    for line in text.splitlines():
+        buf += line
+        if line.endswith("\\"):
+            buf = buf[:-1] + " "
+            continue
+        out.append(buf)
+        buf = ""
+    if buf:
+        out.append(buf)
+    return out
+
+
+def test_chromium_py_listed_wherever_resolver_is(tmp_path):
+    """A sibling module the backend imports has to ship, be replaced on an
+    update and be kept in the rollback snapshot — three lists that are easy to
+    add a file to and easy to forget. resolver.py is in every one of them, so
+    it is the marker: wherever it is named, chromium.py is named too."""
+    lists = [l for l in logical_lines(INSTALL_SH.read_text())
+             if l.lstrip().startswith("for f in")]
+    with_resolver = [l for l in lists if "resolver.py" in l]
+    assert len(with_resolver) == 3, with_resolver
+    for line in with_resolver:
+        assert "chromium.py" in line, f"resolver.py ships here and chromium.py does not: {line}"
+    assert len([l for l in lists if "chromium.py" in l]) >= len(with_resolver)
+
+    # The tarball the installer unpacks is built by deploy_cloudflare.sh, which
+    # is not in the repo — checked only where it is actually present.
+    deploy = INSTALL_SH.parent / "deploy_cloudflare.sh"
+    if deploy.is_file():
+        tree = [l for l in logical_lines(deploy.read_text()) if l.startswith("RUNTIME_TREE=(")]
+        assert tree and "chromium.py" in tree[0], tree
+
+
+def fake_python(tmp_path):
+    """A stand-in for $VENV_PY, which is only ever handed a script to run.
+
+    chromium.py is invoked as `$VENV_PY <install dir>/chromium.py --find`, so
+    keeping that shape lets the fake chromium.py below be a shell script.
+    """
+    py = tmp_path / "fakepy"
+    make_exe(py, '#!/bin/bash\nscript="$1"\nshift\nexec bash "$script" "$@"\n')
+    return py
+
+
+# A chromium.py whose three answers are set by the environment:
+#   FAKE_FIND        the line --find prints (empty: nothing found, exit 1)
+#   FAKE_FIND_AFTER  what --find prints once --install has written its marker
+#   FAKE_CHECK_RC    0 for "ok <version>", 1 for the missing-libraries report
+#   FAKE_INSTALL_RC  what --install exits with (2 = this build cannot download)
+FAKE_CHROMIUM = r"""#!/bin/bash
+printf '%s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
+find_line() {
+    if [[ -n "${FAKE_INSTALLED:-}" ]] && [[ -f "${FAKE_INSTALLED}" ]]; then
+        printf '%s\n' "${FAKE_FIND_AFTER:-}"
+    else
+        printf '%s\n' "${FAKE_FIND:-}"
+    fi
+}
+case "${1:-}" in
+    --find)
+        line="$(find_line)"
+        if [[ -z "$line" ]]; then echo "not found" >&2; exit 1; fi
+        printf '%s\n' "$line"
+        ;;
+    --check)
+        if [[ "${FAKE_CHECK_RC:-0}" == "0" ]]; then
+            echo "ok ${FAKE_CHECK_VER:-153.0.1}"
+        else
+            echo "missing: libnss3.so libgbm.so.1"
+            echo "apt install libnss3 libgbm1"
+            exit 1
+        fi
+        ;;
+    --install)
+        echo "fetching Chrome for Testing"
+        if [[ "${FAKE_INSTALL_RC:-2}" == "0" ]]; then : > "${FAKE_INSTALLED}"; fi
+        exit "${FAKE_INSTALL_RC:-2}"
+        ;;
+esac
+"""
+
+
+def browser_run(tmp_path, env, no_browser="0"):
+    """browser_setup, lifted out of install.sh, over the fake chromium.py."""
+    inst = tmp_path / "pockettui"
+    inst.mkdir(exist_ok=True)
+    make_exe(inst / "chromium.py", FAKE_CHROMIUM)
+    body = (
+        f'INSTALL_DIR="{inst}"\n'
+        f'VENV_PY="{fake_python(tmp_path)}"\n'
+        f"NO_BROWSER={no_browser}\n"
+        + slice_sh(*BROWSER_SETUP_SECTION)
+        + "rc=0\nbrowser_setup || rc=$?\n"
+        + 'printf "RC=%s\\n" "$rc"\n'
+    )
+    full = {"FAKE_FIND": "", "FAKE_FIND_AFTER": "", "FAKE_INSTALLED": "",
+            "FAKE_CHECK_RC": "0", "FAKE_INSTALL_RC": "2",
+            "FAKE_LOG": str(tmp_path / "chromium-args.txt")}
+    full.update(env)
+    r = run_bash(tmp_path, body, env=full, name="browser_setup.sh")
+    assert r.returncode == 0, r.stderr
+    # Nothing here may fail an install, whatever chromium.py said.
+    assert "RC=0" in r.stdout, r.stdout
+    return r.stdout
+
+
+def summary_of(out):
+    lines = [l for l in out.splitlines() if l.startswith("Browser:")]
+    assert len(lines) == 1, f"expected exactly one summary line:\n{out}"
+    return lines[0]
+
+
+LATER = "Browser: not available, run `pockettui browser install` on this computer later"
+
+
+def test_browser_setup_summary_lines(tmp_path):
+    # A browser that is here and starts: named from its own path, with the
+    # version --find reported.
+    out = browser_run(tmp_path, {"FAKE_FIND": "/usr/bin/google-chrome\t153.0.1"})
+    assert summary_of(out) == "Browser: Google Chrome 153.0.1 (system)"
+
+    out = browser_run(tmp_path, {"FAKE_FIND": "/snap/bin/chromium\t140.0.2"})
+    assert summary_of(out) == "Browser: Chromium 140.0.2 (system)"
+
+    # A macOS bundle: the product name is the binary's, spaces and all.
+    edge = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+    out = browser_run(tmp_path, {"FAKE_FIND": f"{edge}\t152.0.3"})
+    assert summary_of(out) == "Browser: Microsoft Edge 152.0.3 (system)"
+
+    # One this installer downloaded on an earlier run is not a system browser.
+    prev = f"{tmp_path}/.pockettui/chromium/131.0.1/chrome-linux64/chrome"
+    out = browser_run(tmp_path, {"FAKE_FIND": f"{prev}\t131.0.1"})
+    assert summary_of(out) == "Browser: Chrome for Testing 131.0.1 (downloaded)"
+
+    # Here but unable to start: the check output is indented under a warning,
+    # because the package line in it is the one thing only the user can run.
+    out = browser_run(tmp_path, {"FAKE_FIND": "/usr/bin/google-chrome\t153.0.1",
+                                 "FAKE_CHECK_RC": "1"})
+    assert "  Google Chrome is installed here but will not start:" in out
+    assert "      missing: libnss3.so libgbm.so.1" in out
+    assert "      apt install libnss3 libgbm1" in out
+    assert summary_of(out) == LATER
+
+    # Nothing found, and this build cannot download one yet.
+    out = browser_run(tmp_path, {"FAKE_INSTALL_RC": "2"})
+    assert "Downloading a browser is not available in this version yet." in out
+    assert summary_of(out) == LATER
+
+    # Nothing found, and the download failed.
+    out = browser_run(tmp_path, {"FAKE_INSTALL_RC": "1"})
+    assert "Could not download a browser." in out
+    assert "      pockettui browser install" in out
+    assert summary_of(out) == LATER
+
+    # Nothing found, and the download worked: the version comes from asking
+    # again, which is the only thing that knows what landed.
+    got = f"{tmp_path}/.pockettui/chromium/154.0.1/chrome-linux64/chrome"
+    out = browser_run(tmp_path, {"FAKE_INSTALL_RC": "0",
+                                 "FAKE_INSTALLED": str(tmp_path / "installed.mark"),
+                                 "FAKE_FIND_AFTER": f"{got}\t154.0.1"})
+    assert summary_of(out) == \
+        "Browser: Chrome for Testing 154.0.1 downloaded to ~/.pockettui/chromium"
+
+    # --no-browser looks for nothing and downloads nothing.
+    out = browser_run(tmp_path, {"FAKE_FIND": "/usr/bin/google-chrome\t153.0.1"},
+                      no_browser="1")
+    assert summary_of(out) == "Browser: skipped (--no-browser)"
+    assert "fetching" not in out
+
+
+def test_wrapper_browser_subcommands(tmp_path):
+    inst = install_dir(tmp_path)
+    make_exe(inst / "chromium.py", FAKE_CHROMIUM)
+    py = str(fake_python(tmp_path))
+    log = tmp_path / "chromium-args.txt"
+    base = {"FAKE_FIND": "", "FAKE_FIND_AFTER": "", "FAKE_INSTALLED": "",
+            "FAKE_CHECK_RC": "0", "FAKE_INSTALL_RC": "2", "FAKE_LOG": str(log)}
+    found = dict(base, FAKE_FIND="/usr/bin/google-chrome\t153.0.1")
+
+    def run(args, env):
+        return run_bash(tmp_path, wrapper_harness(inst, args=args, venv_py=py), env=env)
+
+    r = run("browser status", found)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "/usr/bin/google-chrome\t153.0.1"
+
+    r = run("browser status", base)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "no browser found"
+
+    log.unlink(missing_ok=True)
+    r = run("browser check", found)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "ok 153.0.1"
+    # The path --find gave is the one that gets checked, tab and all stripped.
+    assert "--check /usr/bin/google-chrome" in log.read_text()
+
+    r = run("browser check", dict(found, FAKE_CHECK_RC="1"))
+    assert r.returncode == 1
+    assert "missing: libnss3.so libgbm.so.1" in r.stdout
+    assert "apt install libnss3 libgbm1" in r.stdout
+
+    r = run("browser check", base)
+    assert r.returncode == 1
+    assert r.stderr.strip() == "no browser found"
+
+    # install hands the exit code straight back: 2 is a build that cannot
+    # download yet, and the wrapper has no opinion about it.
+    r = run("browser install", base)
+    assert r.returncode == 2
+    assert "fetching Chrome for Testing" in r.stdout
+
+    for args in ("browser bogus", "browser"):
+        r = run(args, base)
+        assert r.returncode == 1, args
+        assert r.stderr.strip() == "usage: pockettui browser install | check | status"
+
+    # And the three are listed where the other subcommands are.
+    r = run("help", base)
+    assert r.returncode == 0, r.stderr
+    assert "usage: pockettui update | version | status | browser" in r.stdout
+    assert "browser install  download a browser for the browser pane" in r.stdout
+    assert "browser check    what stops the browser here from starting" in r.stdout
+    assert "browser status   which browser the pane would stream from" in r.stdout
