@@ -294,6 +294,24 @@ function browserZoomClean(v) {
   return out;
 }
 
+// The column's rows as the column can hold them: the three pane types and no
+// other string, each of them once, and two at the most — the column beside the
+// terminal stacks no deeper (26-side-pane.js). Both halves of the record go
+// through this, because a record is only worth writing in the shape it will be
+// read back in, and a hand-edited or older one must not name a row the column
+// cannot draw.
+function sideRowsClean(v) {
+  const out = [];
+  if (!Array.isArray(v)) return out;
+  for (const t of v) {
+    if (t !== "diff" && t !== "files" && t !== "browser") continue;
+    if (out.includes(t)) continue;
+    out.push(t);
+    if (out.length === 2) break;
+  }
+  return out;
+}
+
 // The active profile's credentials, mirrored into the two keys this app used
 // before profiles existed. Nothing here reads them back — it is cheap insurance
 // for an older shell still cached on the same origin, which knows only those.
@@ -372,24 +390,31 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_alt_on", "1");
     else localStorage.removeItem("pockettui_alt_on");
   },
-  // Which pane, if any, is split out beside the terminal on a wide layout —
+  // Which panes, if any, are split out beside the terminal on a wide layout —
   // the git changes ("diff"), the file explorer ("files"), the in-app browser
-  // ("browser"), or none — and the session it was open in. One key rather than
-  // one per pane because it is one slot (26-side-pane.js). The browser keeps
-  // the page it was on in the same record, since a pane restored to a blank
-  // frame would have lost the whole of what it was showing. The session is
-  // half the answer because the pane is that session's own: a reload brings it
-  // back for that session and for no other. Null by default: the whole pane is the terminal's until something
-  // asks for the split. The width is shared for the same reason, and is 0 until
-  // one has been dragged, which reads as "half the main pane" at the next open.
+  // ("browser") — as the column's rows, the top one first, and the session
+  // they were open in. One key rather than one per pane because it is one
+  // column (26-side-pane.js), and the order is half of what has to come back:
+  // two rows restored the other way up are not the column that was left. The
+  // browser keeps the page it was on in the same record, since a pane restored
+  // to a blank frame would have lost the whole of what it was showing. The
+  // session is half the answer because the column is that session's own: a
+  // reload brings it back for that session and for no other. Null by default:
+  // the whole pane is the terminal's until something asks for the split. The
+  // width and the seam between the rows are shared for the same reason, and
+  // are 0 until one has been dragged, which reads as "half" at the next open.
   //
-  // An older build wrote the owner here as a bare string, with no session to
-  // reopen it in — JSON.parse rejects it, and a pane belonging to nobody is a
-  // pane that is not reopened.
+  // Two older shapes come back through here. The first build wrote the owner
+  // as a bare string, with no session to reopen it in — JSON.parse rejects it,
+  // and a pane belonging to nobody is a pane that is not reopened. The
+  // one-slot build after it wrote { owner, session }: one pane and no order,
+  // which is this record with a single row.
   get sidePane() {
     let v = null;
     try { v = JSON.parse(localStorage.getItem("pockettui_side_pane")); } catch (e) {}
-    if (!v || (v.owner !== "diff" && v.owner !== "files" && v.owner !== "browser")) return null;
+    if (!v || typeof v !== "object") return null;
+    const rows = sideRowsClean(Array.isArray(v.rows) ? v.rows : [v.owner]);
+    if (!rows.length) return null;
     // The browser's tabs, in the strip's order, and which of them was on
     // screen. The address above is that same tab's, kept beside them so an
     // older shell reading this record still opens the pane on the page it
@@ -419,7 +444,7 @@ const cfg = {
       tabs.push({ url: u, lan: !!(e && e.lan) });
     }
     return {
-      owner: v.owner,
+      rows: rows,
       session: typeof v.session === "string" ? v.session : "",
       url: typeof v.url === "string" ? v.url : "",
       tabs: tabs,
@@ -427,11 +452,15 @@ const cfg = {
     };
   },
   set sidePane(v) {
-    if (v && (v.owner === "diff" || v.owner === "files" || v.owner === "browser")
-        && v.session) {
-      const rec = { owner: v.owner, session: v.session };
-      if (v.owner === "browser" && v.url) rec.url = v.url;
-      if (v.owner === "browser" && Array.isArray(v.tabs)) {
+    const rows = v ? sideRowsClean(v.rows) : [];
+    if (rows.length && v.session) {
+      // The top row said again under the key the one-slot build reads. Nothing
+      // here reads it back — it is the same cheap insurance as mirrorLegacyKeys'
+      // above, for an older shell still cached on this origin, which would
+      // otherwise find a record it cannot parse and reopen no pane at all.
+      const rec = { owner: rows[0], rows: rows, session: v.session };
+      if (rows.includes("browser") && v.url) rec.url = v.url;
+      if (rows.includes("browser") && Array.isArray(v.tabs)) {
         // A bare string wherever there is nothing more to say, so a shell too
         // old to know about the mode still reads those tabs back.
         rec.tabs = v.tabs.map((t) => {
@@ -450,6 +479,16 @@ const cfg = {
     return Number.isFinite(v) ? v : 0;
   },
   set sideWidth(v) { localStorage.setItem("pockettui_side_w", String(v)); },
+  // Where the seam between the column's two rows was last dragged to, as the
+  // top row's share of the window's height. 0 until one has been dragged,
+  // which reads as an even split at the next second row; a share of none or
+  // all of it is no column at all, so anything outside those ends reads the
+  // same as never dragged.
+  get sideSplit() {
+    const v = parseFloat(localStorage.getItem("pockettui_side_split"));
+    return Number.isFinite(v) && v > 0 && v < 1 ? v : 0;
+  },
+  set sideSplit(v) { localStorage.setItem("pockettui_side_split", String(v)); },
   // How tall the pane's file list was last dragged to. 0 until one has been
   // dragged, which leaves the list sized by the files in it under its cap.
   get diffListHeight() {

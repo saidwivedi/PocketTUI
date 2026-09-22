@@ -413,7 +413,7 @@ function browserPush(tab, url) {
 function browserRemember() {
   if (!browserDocked) return;
   const rec = cfg.sidePane;
-  if (!rec || rec.owner !== "browser") return;
+  if (!rec || !rec.rows.includes("browser")) return;
   // A tab with nothing in it yet is not an address to come back to, so it is
   // left out — and the index has to be the one the shortened list spells,
   // which is what the walk below counts.
@@ -428,10 +428,12 @@ function browserRemember() {
     // strings and still gets every one of those tabs back.
     tabs.push(browserTabs[i].lan ? { url: u, lan: true } : u);
   }
-  cfg.sidePane = {
-    owner: "browser", session: rec.session, url: browserCurrentUrl(),
-    tabs: tabs, tab: at,
-  };
+  // Written back over the record as it stands rather than as a record of its
+  // own: the rows and their order are the column's half of this key, and the
+  // browser rewriting it on every landing must not be what loses them.
+  cfg.sidePane = Object.assign({}, rec, {
+    url: browserCurrentUrl(), tabs: tabs, tab: at,
+  });
 }
 
 // The URL a pane opened with nothing to show should go to: whatever this
@@ -439,7 +441,7 @@ function browserRemember() {
 // terminal and belongs to it, the way the folder and the diff do.
 function browserRememberedUrl() {
   const rec = cfg.sidePane;
-  return rec && rec.owner === "browser" && rec.session === (currentSession || "")
+  return rec && rec.rows.includes("browser") && rec.session === (currentSession || "")
     ? browserNormalize(rec.url || "") : "";
 }
 
