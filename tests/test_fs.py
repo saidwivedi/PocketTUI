@@ -6,6 +6,7 @@ bare import of app, which is exactly the middleware's --no-auth short-circuit �
 the auth path itself is covered by the transcribe suite's server-level tests.
 """
 
+import io
 import os
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -467,9 +469,9 @@ def test_download_link_refuses_a_path_it_cannot_resolve(client, tree):
     for bad in ("relative/beta.txt", "../../etc/passwd", ""):
         assert client.get("/api/fs/download_link",
                           params={"path": bad}).status_code == 404
-    # A directory is not a download either.
+    # A directory resolves and is a download of its own — see the zip tests.
     assert client.get("/api/fs/download_link",
-                      params={"path": str(tree / "sub")}).status_code == 404
+                      params={"path": str(tree / "sub")}).status_code == 200
 
 
 def test_signed_download_of_a_vanished_file_is_404(client, tree):
@@ -477,6 +479,92 @@ def test_signed_download_of_a_vanished_file_is_404(client, tree):
     url, _ = mint(client, tree / "doomed.bin")
     (tree / "doomed.bin").unlink()
     assert client.get(url).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# folder download
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def folder(tmp_path):
+    """A tree carrying every shape the archive has to decide about."""
+    root = tmp_path / "bundle"
+    (root / "deep").mkdir(parents=True)
+    (root / "top.txt").write_text("top\n")
+    (root / "deep" / "inner.bin").write_bytes(b"\x00\x01deep")
+    # Nothing in it, and it still has to survive an extraction.
+    (root / "empty").mkdir()
+    os.symlink(root / "top.txt", root / "link.txt")
+    # A link back at the folder itself: followed, the walk would never end.
+    os.symlink(root, root / "loop")
+    return root
+
+
+# What the archive of the fixture holds, in full: the folder and each directory
+# under it as entries of their own, the two files, and neither symlink.
+BUNDLE_ENTRIES = ["bundle/", "bundle/deep/", "bundle/deep/inner.bin",
+                  "bundle/empty/", "bundle/top.txt"]
+
+
+def opened_zip(body):
+    return zipfile.ZipFile(io.BytesIO(body))
+
+
+def test_download_of_a_folder_is_a_zip_of_the_tree(client, folder):
+    r = client.get("/api/fs/download", params={"path": str(folder)})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    dispo = r.headers["content-disposition"]
+    assert dispo.startswith("attachment") and "bundle.zip" in dispo
+
+    zf = opened_zip(r.content)
+    # Readable as an archive at all, which is the bit the streaming write could
+    # plausibly get wrong: the sizes ride in data descriptors after each member.
+    assert zf.testzip() is None
+    assert sorted(zf.namelist()) == BUNDLE_ENTRIES
+    assert zf.read("bundle/top.txt") == b"top\n"
+    assert zf.read("bundle/deep/inner.bin") == b"\x00\x01deep"
+
+
+def test_download_of_a_folder_bigger_than_a_chunk(client, folder, monkeypatch):
+    """Several reads per file, which is where a drained buffer could drop bytes."""
+    monkeypatch.setattr(A, "ZIP_CHUNK_BYTES", 1024)
+    blob = os.urandom(5000)
+    (folder / "deep" / "big.bin").write_bytes(blob)
+    r = client.get("/api/fs/download", params={"path": str(folder)})
+    assert r.status_code == 200
+    assert opened_zip(r.content).read("bundle/deep/big.bin") == blob
+
+
+def test_download_link_of_a_folder_names_and_serves_the_zip(client, folder):
+    url, data = mint(client, folder)
+    assert data["name"] == "bundle.zip"
+
+    r = client.get(url)
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    assert "bundle.zip" in r.headers["content-disposition"]
+    # The route the UI actually sends a folder to, serving what the gated one
+    # serves — the signed path is the whole point for a folder, whose size is
+    # unknown until the archive is over.
+    assert sorted(opened_zip(r.content).namelist()) == BUNDLE_ENTRIES
+    direct = client.get("/api/fs/download", params={"path": str(folder)})
+    assert opened_zip(r.content).read("bundle/top.txt") == \
+        opened_zip(direct.content).read("bundle/top.txt")
+
+
+def test_download_of_a_file_is_still_the_file(client, folder):
+    """The folder route is an addition, not a change of what a file does."""
+    r = client.get("/api/fs/download", params={"path": str(folder / "top.txt")})
+    assert r.status_code == 200
+    assert r.content == b"top\n"
+    assert "top.txt" in r.headers["content-disposition"]
+    assert r.headers["content-type"] == "application/octet-stream"
+
+
+def test_capabilities_lists_zip_dir(client):
+    assert client.get("/api/version").json()["capabilities"]["zip_dir"] is True
+    assert A.server_capabilities()["zip_dir"] is True
 
 
 # ---------------------------------------------------------------------------
