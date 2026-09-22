@@ -1163,10 +1163,17 @@ function closeFullBrowser() {
   if (back === "screen-term") refit(0);
 }
 
-const BROWSER_HOME = "https://www.google.com/";
+// DuckDuckGo rather than Google: the proxy fetches every page from the
+// computer, so a search engine sees the computer's public address, and Google
+// rate-limits /search for a shared one (an institute NAT, a large office) with
+// a captcha whose site key refuses to run on any origin but Google's own —
+// which through the proxy it never is. DuckDuckGo has no such wall and its
+// results page renders in the sandboxed frame. Google is still one typed
+// address away.
+const BROWSER_HOME = "https://duckduckgo.com/";
 // Where a line that is not an address goes (browserTyped). Beside the home
 // page so the two stay the same engine.
-const BROWSER_SEARCH = "https://www.google.com/search?q=";
+const BROWSER_SEARCH = "https://duckduckgo.com/?q=";
 
 // Every way in lands here — the globe key, the header button, a tapped private
 // URL in the terminal, a restored session — so the two shapes are one entry
