@@ -1022,14 +1022,27 @@ function browserSeedTabs(urls, active) {
 // are both read from there.
 function syncBrowserExpand() {
   const on = browserDocked && browserExpanded;
-  $("screen-term").classList.toggle("side-full", on);
+  sideSetFull("browser", on);
   const btn = $("btn-browser-expand");
   if (!btn) return;
   btn.querySelector("use").setAttribute("href", on ? "#i-collapse" : "#i-expand");
   btn.setAttribute("aria-label", on ? "Shrink the browser pane" : "Expand the browser pane");
 }
 
+// The expand set from outside the pane, the docked explorer's filesSetExpanded
+// for the same reason: only one row of the column fills the main area, and the
+// other row's arrival folds this one away (sideSetFull, 26-side-pane.js).
+function browserSetExpanded(v) {
+  browserExpanded = v;
+  cfg.browserExpanded = v;
+  syncBrowserExpand();
+}
+
+// False is the column refusing the row — the pane it would have taken is a
+// docked editor with unsaved work whose owner said stay (sideClaim,
+// 26-side-pane.js) — and nothing about the browser has moved by then.
 function openDockedBrowser() {
+  if (!sideClaim("browser")) return false;
   browserDocked = true;
   browserOpen = true;
   // Redundant beside a live terminal — it is right there — and the pane has
@@ -1038,8 +1051,8 @@ function openDockedBrowser() {
   $("screen-browser").classList.add("docked");
   $("screen-browser").classList.add("active");
   syncBrowserExpand();
-  sideClaim("browser");
   browserRemember();
+  return true;
 }
 
 // The frame keeps its page: the pane is a tap away again, and reloading a dev
@@ -1100,8 +1113,11 @@ function openBrowser(url, tabs, at) {
   if (needsSetup()) { openSettings(true); return; }
   if (demoMode) { toast("No browser in the demo"); return; }
   if (Array.isArray(tabs) && tabs.length) browserSeedTabs(tabs, at);
-  if (isWideLayout() && $("screen-term").classList.contains("active")) openDockedBrowser();
-  else openFullBrowser();
+  // A refused row is no pane at all: seeding a tab into one and sending it
+  // somewhere would be a page loading where nothing opened.
+  if (isWideLayout() && $("screen-term").classList.contains("active")) {
+    if (!openDockedBrowser()) return;
+  } else openFullBrowser();
   browserLoadMarks();
   // Ahead of any press, so the key's own click has nothing to wait for.
   browserEnsureTabToken();
@@ -1121,6 +1137,16 @@ function openBrowser(url, tabs, at) {
   const last = browserCurrentUrl() || browserRememberedUrl() || BROWSER_HOME;
   if (last !== tab.loaded) browserNavigate(last, tab.idx < 0);
   else { browserSetField(last); syncBrowserNav(); }
+}
+
+// The globe key's own way in and out, the folder key's toggle (openFilesAtCwd,
+// 28-file-explorer.js) mirrored: the pane the key put up is the pane it puts
+// away. Full screen there is nothing to toggle — back is how that one leaves —
+// so openBrowser stays the way in for everything else, and a tapped URL still
+// lands in a pane that is already open.
+function toggleBrowserPane() {
+  if (browserDocked) { closeDockedBrowser(); return; }
+  openBrowser();
 }
 
 // ---- what the proxied page says back ---------------------------------------
@@ -1293,9 +1319,7 @@ $("btn-browser-tab").addEventListener("click", async () => {
 // Another tab in the pane, at the end of the strip where a browser keeps it.
 $("btn-browser-newtab").addEventListener("click", () => browserAddTab());
 $("btn-browser-expand").addEventListener("click", () => {
-  browserExpanded = !browserExpanded;
-  cfg.browserExpanded = browserExpanded;
-  syncBrowserExpand();
+  browserSetExpanded(!browserExpanded);
   refit(0);
 });
 $("btn-browser-close").addEventListener("click", () => closeDockedBrowser());

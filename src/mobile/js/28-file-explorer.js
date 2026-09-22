@@ -232,7 +232,7 @@ function closeExplorer() {
 // seam it hides and the width it overrides are both read from there.
 function syncFilesExpand() {
   const on = filesDocked && filesExpanded;
-  $("screen-term").classList.toggle("side-full", on);
+  sideSetFull("files", on);
   // Every bar the pane can wear one in: the listing's own, and the editor's,
   // the reader's and the viewer's while a file is open in it.
   for (const btn of document.querySelectorAll(".dock-expand")) {
@@ -241,10 +241,25 @@ function syncFilesExpand() {
   }
 }
 
+// The expand set from outside the pane: only one row of the column may fill the
+// main area, so the other row's arrival folds this one away (sideSetFull,
+// 26-side-pane.js). The flag, the key it is remembered under and the bars it is
+// drawn on all move together, which is what makes this a function rather than
+// three lines at the caller.
+function filesSetExpanded(v) {
+  filesExpanded = v;
+  cfg.filesExpanded = v;
+  syncFilesExpand();
+}
+
 // Opening the pane a second time is a navigation within it, not a fresh entry:
 // a path tapped in the terminal lands in the pane already open, and the crumb
 // stack it walks back through is worth keeping.
 function openDockedFiles(path) {
+  // The column's answer comes first, and a no is final: the row this would take
+  // may be a docked editor with unsaved work whose owner was asked and said
+  // stay (sideClaim, 26-side-pane.js), and nothing here may have moved by then.
+  if (!sideClaim("files")) return Promise.resolve(false);
   const already = filesDocked;
   filesDocked = true;
   filesOrigin = "screen-term";
@@ -254,7 +269,6 @@ function openDockedFiles(path) {
   $("screen-files").classList.add("docked");
   $("screen-files").classList.add("active");
   syncFilesExpand();
-  sideClaim("files");
   if (already) return navigateDir(path);
   filesStack = [];           // seeded once loadDir below resolves the real path
   return loadDir(path);
@@ -343,9 +357,7 @@ function filesBack() {
 // the same thing in all of them.
 for (const btn of document.querySelectorAll(".dock-expand")) {
   btn.addEventListener("click", () => {
-    filesExpanded = !filesExpanded;
-    cfg.filesExpanded = filesExpanded;
-    syncFilesExpand();
+    filesSetExpanded(!filesExpanded);
     refit(0);
   });
 }
@@ -363,7 +375,10 @@ for (const btn of document.querySelectorAll(".dock-close")) {
 function filesFollowSession() {
   if (!isWideLayout() || filesDocked) return;
   if (demoMode) { sideDrop("files"); return; }
-  openFilesAtCwd();
+  // Handed back because the claim it makes is a round trip away: the cwd has to
+  // answer before the row is in the column, and the restore that called this
+  // has an order to put the rows in once it is (sideOrder, 26-side-pane.js).
+  return openFilesAtCwd();
 }
 
 // ---- putting the whole view away (see fileViews in 09-image-viewer.js) ------
