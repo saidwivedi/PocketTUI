@@ -3459,7 +3459,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
 
 @media (min-width: 768px) and (min-height: 500px) {
   :is(#screen-files, #screen-files-2).docked .dock-only,
-  #screen-browser.docked .dock-only,
+  :is(#screen-browser, #screen-browser-2).docked .dock-only,
   #screen-editor.docked .dock-only,
   #screen-reader.docked .dock-only,
   #viewer.docked .dock-only { display: inline-flex; }
@@ -3469,9 +3469,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
      .docked rule outweighs .screen.active, and the sibling rule outweighs
      both. */
   :is(#screen-files, #screen-files-2).docked,
-  #screen-browser.docked { display: none; }
+  :is(#screen-browser, #screen-browser-2).docked { display: none; }
   #screen-term.active ~ :is(#screen-files, #screen-files-2).docked.active,
-  #screen-term.active ~ #screen-browser.docked.active {
+  #screen-term.active ~ :is(#screen-browser, #screen-browser-2).docked.active {
     display: flex;
     flex-direction: column;
     position: fixed;
@@ -3492,7 +3492,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
      it — the phone's full-screen explorer, seated beside the rail. The seam
      goes with the split it no longer divides. */
   #screen-term.side-full.active ~ :is(#screen-files, #screen-files-2).docked.active,
-  #screen-term.side-full.active ~ #screen-browser.docked.active {
+  #screen-term.side-full.active ~ :is(#screen-browser, #screen-browser-2).docked.active {
     left: calc(var(--sidebar-w) + var(--rail-gutter));
     width: auto;
   }
@@ -3553,7 +3553,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
      because it is stuck to a viewport. Still positioned — #files-suggest is
      absolute against it. */
   :is(#screen-files, #screen-files-2).docked .topbar,
-  #screen-browser.docked .topbar {
+  :is(#screen-browser, #screen-browser-2).docked .topbar {
     position: relative;
     top: 0;
     flex: 0 0 auto;
@@ -3570,11 +3570,11 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* The rail's own compaction, for the same reason: eight controls and a path
      across 340px, where the phone's bar had the whole window. */
   :is(#screen-files, #screen-files-2).docked .icon-btn,
-  #screen-browser.docked .icon-btn,
+  :is(#screen-browser, #screen-browser-2).docked .icon-btn,
   #screen-editor.docked .icon-btn,
   #screen-reader.docked .icon-btn { padding: 6px; }
   :is(#screen-files, #screen-files-2).docked .icon-btn svg,
-  #screen-browser.docked .icon-btn svg,
+  :is(#screen-browser, #screen-browser-2).docked .icon-btn svg,
   #screen-editor.docked .icon-btn svg,
   #screen-reader.docked .icon-btn svg { width: 17px; height: 17px; }
   :is(#screen-files, #screen-files-2).docked #btn-files-view { padding: 5px 8px; font-size: 12px; }
@@ -3597,14 +3597,14 @@ html.term-open #dbg-panel { opacity: 0.85; }
      them is drawn on the same number. A bottom row runs to the window's edge
      and absorbs the safe-bottom inset, the way a single row does. */
   #screen-term.active ~ :is(#screen-files, #screen-files-2).docked.active.side-top,
-  #screen-term.active ~ #screen-browser.docked.active.side-top,
+  #screen-term.active ~ :is(#screen-browser, #screen-browser-2).docked.active.side-top,
   #screen-term.active ~ #screen-editor.docked.active.side-top,
   #screen-term.active ~ #screen-reader.docked.active.side-top,
   #screen-term.active ~ #viewer.docked.show.side-top {
     bottom: calc(100% - var(--side-split) + var(--side-gutter) / 2);
   }
   #screen-term.active ~ :is(#screen-files, #screen-files-2).docked.active.side-bot,
-  #screen-term.active ~ #screen-browser.docked.active.side-bot,
+  #screen-term.active ~ :is(#screen-browser, #screen-browser-2).docked.active.side-bot,
   #screen-term.active ~ #screen-editor.docked.active.side-bot,
   #screen-term.active ~ #screen-reader.docked.active.side-bot,
   #screen-term.active ~ #viewer.docked.show.side-bot {
@@ -3614,7 +3614,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
      filling the main area covers the column, and there is nothing of the one
      under it left to see. */
   #screen-term.active ~ :is(#screen-files, #screen-files-2).docked.active.side-hidden,
-  #screen-term.active ~ #screen-browser.docked.active.side-hidden,
+  #screen-term.active ~ :is(#screen-browser, #screen-browser-2).docked.active.side-hidden,
   #screen-term.active ~ #screen-editor.docked.active.side-hidden,
   #screen-term.active ~ #screen-reader.docked.active.side-hidden,
   #screen-term.active ~ #viewer.docked.show.side-hidden { display: none; }
@@ -3663,14 +3663,14 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* The editor's and the reader's fixed column, not the explorer's page scroll:
    the frame inside has to be given a height, and an auto-height block gives it
    none. The docked rules above override every part of this. */
-#screen-browser {
+:is(#screen-browser, #screen-browser-2) {
   position: fixed; inset: 0;
   flex-direction: column;
   background: var(--paper);
   padding-top: var(--safe-top);
   padding-bottom: var(--safe-bot);
 }
-#screen-browser.active { display: flex; }
+:is(#screen-browser, #screen-browser-2).active { display: flex; }
 /* The list screens scroll the page under a sticky topbar; this one is a fixed
    column, so its bar just sits in the flow, the editor bar's arrangement —
    relative rather than static only so it can be given a layer, which is what
@@ -4285,7 +4285,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-term, #screen-editor, #screen-reader {
     left: calc(var(--sidebar-w) + var(--rail-gutter));
   }
-  :is(#screen-files, #screen-files-2), #screen-browser { margin-left: calc(var(--sidebar-w) + var(--rail-gutter)); }
+  :is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2) {
+    margin-left: calc(var(--sidebar-w) + var(--rail-gutter));
+  }
 
   /* The rail's row for the session open in the main pane, in the accent the
      app already speaks. The phone never shows the list and a terminal
@@ -4442,7 +4444,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   #screen-term.active ~ #wide-empty,
   :is(#screen-files, #screen-files-2).active ~ #wide-empty,
-  #screen-browser.active ~ #wide-empty,
+  :is(#screen-browser, #screen-browser-2).active ~ #wide-empty,
   #screen-editor.active ~ #wide-empty,
   #screen-reader.active ~ #wide-empty { display: none; }
 
