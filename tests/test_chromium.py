@@ -1167,6 +1167,44 @@ def test_a_capture_echo_is_not_painted_over_the_still():
     run(main())
 
 
+def test_an_adopted_tab_paints_after_the_pane_reconnects(home):
+    """A shell reload: the old pane's socket goes (hide), a new one attaches,
+    re-opens the tab and shows it. The new canvas never got the still the old
+    stream ended on, so the fresh stream's first frame is not that still's
+    echo, even when it is the very picture the still was taken over — and
+    frames the old client never acknowledged do not hold it back either."""
+    async def main():
+        with pytest.MonkeyPatch.context() as mp:
+            fb, made = a_browser(mp)
+            old = FakeSink()
+            fb.attach_pane("p1", old)
+            tab = await fb.open("p1", "t1", "https://example.net/one", dpr=2)
+            tab.session.replies["Page.captureScreenshot"] = lambda p: _shot()
+            await tab.show()
+            tab.session.fire("Page.screencastFrame", a_cast(b"the page"))
+            await asyncio.sleep(C.IDLE_STILL_S + 0.2)
+            assert [h["kind"] for h, _ in old.frames] == ["cast", "still"]
+            assert tab._pending          # the old client never acknowledged it
+
+            await fb.detach_pane("p1")
+            assert not tab.live
+            new = FakeSink()
+            fb.attach_pane("p1", new)
+            assert await fb.open("p1", "t1", "https://example.net/one",
+                                 target_id=tab.target_id) is tab
+            await tab.show()
+            # Inside the echo window of the still taken before the detach.
+            assert time.monotonic() - tab._still_at < C.STILL_ECHO_S
+            tab.session.fire("Page.screencastFrame", a_cast(b"the page", sid=7))
+            await asyncio.sleep(tab._frame_gap())
+            casts = [b for h, b in new.frames if h["kind"] == "cast"]
+            assert casts and casts[0].endswith(b"the page")
+            assert [h["kind"] for h, _ in old.frames] == ["cast", "still"]
+            await fb.shutdown()
+
+    run(main())
+
+
 def test_no_settled_picture_where_it_would_show_no_more_than_the_stream():
     """The capture is worth an encode and a quarter of a megabyte for the
     detail it adds, and on a 1x client at the top of the ladder it adds
