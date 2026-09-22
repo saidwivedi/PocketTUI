@@ -13,7 +13,9 @@ tailnet name in this repo fails the deploy's leak scan.
 """
 
 import gzip
+import html
 import json
+import re
 import socket
 import sys
 import threading
@@ -121,6 +123,12 @@ class SiteHandler(BaseHTTPRequestHandler):
         elif path == "/setcookie":
             self.send_body(b"ok", "text/plain", extra=(
                 ("Set-Cookie", "keep=yes; Path=/; Max-Age=3600"),))
+        elif path == "/setcookies":
+            # One value made of the three characters the shim's configuration
+            # attribute has to escape, and one the page is not meant to read.
+            self.send_body(b"ok", "text/plain", extra=(
+                ("Set-Cookie", "tricky=a'b<c&d; Path=/; Max-Age=3600"),
+                ("Set-Cookie", "hidden=nope; Path=/; Max-Age=3600; HttpOnly"),))
         elif path == "/style.css":
             self.send_body(SHEET.format(port=self.port).encode(), "text/css")
         elif path == "/big.bin":
@@ -267,6 +275,58 @@ def test_mint_takes_the_prefix_the_shell_reports(client, site):
     assert body["url"] == f"/b/{body['token']}/h/127.0.0.1:{site}/"
 
 
+def test_a_mint_from_another_origin_is_another_token(client, site):
+    """The record is keyed by the mount: flavour, prefix and origin together."""
+    first = mint(client, f"http://127.0.0.1:{site}/").json()
+    again = mint(client, f"http://127.0.0.1:{site}/other").json()
+    assert again["token"] == first["token"]
+    other = mint(client, f"http://127.0.0.1:{site}/",
+                 origin="https://other.example.net").json()
+    assert other["token"] != first["token"]
+    assert len(A.BROWSE) == 2
+
+
+def test_a_second_mount_gets_its_own_token(client, site):
+    """One shell through `tailscale serve`, one reaching this server directly.
+
+    The prefix cannot be moved onto the existing record: it is in the shim's
+    configuration and in every URL of every page already served under that
+    token, so the other shell would be left holding links to a mount its
+    browser cannot reach.
+    """
+    tailnet = mint(client, f"http://127.0.0.1:{site}/").json()
+    local = mint(client, f"http://127.0.0.1:{site}/", prefix="").json()
+    assert local["token"] != tailnet["token"]
+    assert local["prefix"] == ""
+    assert local["url"] == f"/b/{local['token']}/h/127.0.0.1:{site}/"
+    assert len(A.BROWSE) == 2
+    assert A.BROWSE[tailnet["token"]].prefix == PREFIX
+    assert A.BROWSE[local["token"]].prefix == ""
+    # One jar and one pool between them: two shells reaching one machine are
+    # two views of the same browsing session.
+    assert A.BROWSE[local["token"]].client is A.BROWSE[tailnet["token"]].client
+
+
+def test_a_second_mount_leaves_the_first_shells_pages_alone(client, site):
+    """The founder's breakage: a local mint with no prefix moved the record the
+    live pane's pages were built from, and every link in them lost /pockettui.
+    """
+    tailnet = mint(client, f"http://127.0.0.1:{site}/").json()["token"]
+    local = mint(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+
+    page = client.get(f"{base_of(tailnet, site)}/"[len(PREFIX):])
+    assert page.status_code == 200
+    assert f'"prefix": "{PREFIX}"' in page.text
+    assert f'href="{base_of(tailnet, site)}/whoami"' in page.text
+    assert 'href="/b/' not in page.text
+
+    # And the shell that minted second gets its own mount's spelling.
+    bare = client.get(f"{base_of(local, site, prefix='')}/")
+    assert bare.status_code == 200
+    assert '"prefix": ""' in bare.text
+    assert f'href="{base_of(local, site, prefix="")}/whoami"' in bare.text
+
+
 @pytest.mark.parametrize("url", ["", "ftp://example.net/x", "http:///nohost",
                                  "not a url", "/relative"])
 def test_a_url_that_is_not_one_is_refused(client, url):
@@ -346,6 +406,17 @@ def test_the_tab_mint_is_idempotent_within_its_flavour(client, site):
     second = mint_tab(client, f"http://127.0.0.1:{site}/other").json()
     assert first["token"] == second["token"]
     assert len(A.BROWSE) == 1
+
+
+def test_the_tab_mint_is_keyed_by_mount_like_the_pane(client, site):
+    tailnet = mint_tab(client, f"http://127.0.0.1:{site}/").json()["token"]
+    local = mint_tab(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+    assert local != tailnet
+    assert len(A.BROWSE) == 2
+    assert {r.sandbox for r in A.BROWSE.values()} == {False}
+    page = client.get(f"{base_of(tailnet, site)}/"[len(PREFIX):])
+    assert f'"prefix": "{PREFIX}"' in page.text
+    assert f'href="{base_of(tailnet, site)}/whoami"' in page.text
 
 
 @pytest.mark.parametrize("origin", ["http://testserver", "https://testserver",
@@ -474,6 +545,24 @@ def test_a_dead_token_heals_to_the_pane_flavour(client, site):
     assert r.status_code == 302
     assert r.headers["location"] == f"/b/{pane}/h/127.0.0.1:{site}/whoami"
     assert tab not in r.headers["location"]
+
+
+def test_a_dead_token_heals_to_the_mount_that_minted_last(client, site):
+    """Every sandboxed record carries its own mount's prefix, and the address
+    being healed arrives without one whatever the browser saw (`tailscale
+    serve` strips it), so the shell that asked for something last is the best
+    guess there is."""
+    first = mint(client, f"http://127.0.0.1:{site}/").json()["token"]
+    later = mint(client, f"http://127.0.0.1:{site}/", prefix="").json()["token"]
+    A.BROWSE[first].last_used -= 1
+    r = client.get(f"/b/deadtoken/h/127.0.0.1:{site}/whoami",
+                   follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == f"/b/{later}/h/127.0.0.1:{site}/whoami"
+    A.BROWSE[later].last_used -= 2       # now the other one is the recent mount
+    r = client.get(f"/b/deadtoken/h/127.0.0.1:{site}/whoami",
+                   follow_redirects=False)
+    assert r.headers["location"] == f"{PREFIX}/b/{first}/h/127.0.0.1:{site}/whoami"
 
 
 def test_a_dead_token_is_never_healed_into_the_tab_flavour(client, site):
@@ -645,6 +734,31 @@ def test_cookies_live_in_the_jar_and_not_in_the_browser(client, site):
     second = client.get(f"{base_of(body['token'], site)}/whoami"[len(PREFIX):])
     assert second.status_code == 200
     assert "sid=1" in second.text
+
+
+def test_the_shim_is_seeded_with_the_cookies_the_page_may_read(client, site):
+    """Sandboxed, the page's own document.cookie throws, so the shim keeps a jar
+    of its own — and it has to start with what the session already holds, or a
+    script that reads back what the hop before set finds nothing. HttpOnly ones
+    stay out of it: the page was never meant to see them, and they go to the
+    target from here regardless."""
+    tok = mint(client, f"http://127.0.0.1:{site}/").json()["token"]
+    base = base_of(tok, site)
+    assert client.get(f"{base}/"[len(PREFIX):]).status_code == 200
+    assert client.get(f"{base}/setcookies"[len(PREFIX):]).status_code == 200
+
+    page = client.get(f"{base}/"[len(PREFIX):]).text
+    raw = re.search(r"<script data-cfg='([^']*)'", page).group(1)
+    # A single-quoted attribute the page must not be able to end: the three
+    # characters a cookie value may carry come through as entities.
+    assert "&#39;" in raw and "&lt;" in raw and "&amp;" in raw
+    cfg = json.loads(html.unescape(raw))
+    pairs = dict(p.split("=", 1) for p in cfg["cookies"].split("; "))
+    assert pairs["sid"] == "1"
+    assert pairs["tricky"] == "a'b<c&d"
+    assert "hidden" not in pairs
+    # And the value the page is not shown is still the one the target is sent.
+    assert "hidden=nope" in client.get(f"{base}/whoami"[len(PREFIX):]).text
 
 
 def test_a_redirect_comes_back_pointing_at_the_proxy(client, site):
