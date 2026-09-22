@@ -54,7 +54,7 @@ function sideType(id) {
 // which elements are in its row, how it closes, how its expand is folded away,
 // and what a row that just changed height has to be told.
 //
-//   { type, els(), close(), setExpanded(on), onRowResize?() }
+//   { type, els(), close(), setExpanded(on), onRowResize?(), onFold?(hidden) }
 //
 // close() ends in sideDrop(id) or refuses — the docked editor with unsaved work
 // is the one thing in the app that can say no to the column.
@@ -338,6 +338,13 @@ function sideLayout() {
           at === 0 ? "Move this pane down" : "Move this pane up");
       }
     }
+    // Whether this row has just been folded away behind the other one's expand,
+    // for the pane that has something running in it: the browser's streamed page
+    // is a picture arriving many times a second, and a row that is display:none
+    // is nowhere to paint it (42-browser.js). After the classes above, because a
+    // pane told it is back reads its own box to say how big the page should be.
+    const inst = sideInst[id];
+    if (inst && inst.onFold) inst.onFold(cls === "side-hidden");
   }
 }
 

@@ -882,8 +882,17 @@
      a page's key events have to come from something focused, so every key the
      streamed page gets is read off this: 1px and transparent, inside the wrap
      so giving it the focus scrolls nothing, and never carrying a character of
-     its own — what is typed is forwarded and the field is left empty. -->
-<template id="browser-full-tpl"><div class="fb-wrap"><canvas class="fb-canvas"></canvas><textarea class="fb-focus" aria-hidden="true" tabindex="-1" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><div class="fb-menu" hidden></div><div class="fb-tip" hidden></div><div class="fb-err" hidden></div></div></template>
+     its own — what is typed is forwarded and the field is left empty.
+
+     The last two are what the page asks of its browser and cannot be answered
+     by a picture: .fb-auth is the credentials sheet for an HTTP challenge and
+     .fb-ask is the bar that turns a page's file input into a press of this
+     device's own (43-full-browser.js). Both are drawn over the page they belong
+     to rather than as sheets, because with two panes and tabs behind them there
+     would otherwise be no saying whose challenge or whose file dialog it is.
+     Their contents are written at the ask; a page's modal dialog is the app's
+     own sheet instead, being the same question in the same words. -->
+<template id="browser-full-tpl"><div class="fb-wrap"><canvas class="fb-canvas"></canvas><textarea class="fb-focus" aria-hidden="true" tabindex="-1" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><div class="fb-menu" hidden></div><div class="fb-tip" hidden></div><div class="fb-err" hidden></div><div class="fb-auth" hidden></div><div class="fb-ask" hidden></div></div></template>
 
 <!-- ============================================================
      EDITOR
@@ -1127,6 +1136,13 @@
         <input id="browser-proxy-toggle" type="checkbox">
       </div>
       <p class="sheet-note" id="browser-status-line"></p>
+      <!-- Sign out of everything at once: the streamed browser's whole profile
+           on the computer — cookies, logins, site data — deleted, which is the
+           only place any of that is kept. Shaped like the Forget below it
+           rather than like an action row, being the same kind of thing, and
+           hidden where there is no browser on the computer to have a profile
+           (browserSyncSetting, 42-browser.js). -->
+      <button type="button" id="btn-browser-clear" hidden>Clear browsing data</button>
     </div>
     <!-- The one destructive thing in the sheet, so it stays out of the footer
          where a thumb aiming at Save would pass over it. -->
