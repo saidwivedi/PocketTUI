@@ -1093,9 +1093,17 @@ IDLE_STILL_S = 0.35
 # either way) and they do not start the clock above: winding it on the capture's
 # own echo is a page at rest photographing itself every half second for as long
 # as it is left alone, which is what a first cut of this did, 10 pictures and
-# 3.5 Mbit/s for a page nobody had touched. The price of the window is a page
-# that changes once, inside it, and not again: that frame is shown soft.
-STILL_ECHO_S = 0.25
+# 3.5 Mbit/s for a page nobody had touched.
+#
+# And they are not sent either. Measured against Chrome 153 at 1200x800 CSS and
+# 2x: the echo about 90 ms after the capture is byte for byte the last
+# screencast frame before it, at the CSS size, and the client paints every
+# frame newer than the one on screen, so sending it put the soft picture back
+# over the sharp one a tenth of a second after the sharp one arrived. A frame
+# inside this window that is the same bytes as the last one Chrome sent before
+# the capture is that echo and is dropped; any other frame is the page changing
+# and goes out, and starts the clock again.
+STILL_ECHO_S = 0.5
 
 # And for a tab whose page never fires a load event — an adopted target, a page
 # that was already there when the pane found it — the clock is started again
@@ -1128,51 +1136,45 @@ PACE_MAX_S = 0.1
 # for one with no page committed yet (see `_start_cast`).
 CAST_START_S = 2.0
 
-# What the stream runs at, best first: (ceiling on the pixel ratio, JPEG
-# quality, frames per second, the fraction of the viewport the frames are
-# drawn at).
+# What the stream runs at, best first: (JPEG quality, frames per second).
 #
-# The pixel ratio is not a size. Measured against Chrome 153: a tab at 1200x800
-# CSS and a device scale factor of 2 renders at 2400x1600 and its screencast
+# A rung buys bytes with the quality of a moving picture and with its rate, and
+# never with its sharpness. Measured against Chrome 153: a tab at 1200x800 CSS
+# and a device scale factor of 2 renders at 2400x1600 and its screencast
 # frames still come back 1200x800, because the screencast is the headless
-# window's own surface and the window is one pixel per CSS pixel. Only the
-# settled picture, which is a screenshot, is made at the ratio. So the rung
-# that caps the ratio buys a smaller settled picture and a cheaper page to
-# render, and nothing at all on the stream — the last column is what takes
-# pixels off the stream, as a ceiling under the size Chrome would have sent.
-# Every rung is cheaper than the one above it on all three counts that cost
-# anything, which is not the same as being one step worse on each: a rung that
-# gave the quality back to buy the pixel ratio (measured: 41 KB a frame at
-# either ratio, since the ratio is not on the stream) was a step down that
-# made the link's problem worse.
+# window's own surface. So the casts are the CSS size at every rung, and the
+# settled picture (a screenshot, taken at the client's own ratio) is what makes
+# a page at rest sharp. Rungs used to cap the ratio and shrink the viewport as
+# well; a Retina client left at the bottom rung by a quiet link then got 1x
+# stills and 840x560 casts stretched over 2400x1600, which is a page that looks
+# blurred on a link with nothing wrong with it.
 #
 # The top rung's quality is 70 rather than the 60 it was: measured on the same
 # page, a frame is 74.6 KB at q60 and 85.9 KB at q70, and 15% more bytes on the
 # rung that is only chosen while the link has room is worth the edges it keeps.
 STREAM_LEVELS = (
-    (None, 70, 24, 1.0),
-    (None, 45, 24, 1.0),
-    (1.0, 45, 16, 1.0),
-    (1.0, 40, 10, 0.7),
+    (70, 24),
+    (55, 24),
+    (45, 16),
+    (40, 10),
 )
 
-# Delivery is the milliseconds between a frame joining the send queue and the
+# Delivery is the milliseconds between a cast joining the send queue and the
 # client saying it drew it. What the level can do something about is not that
 # number but the part of it above the link's own floor: the quickest delivery
 # lately is one frame's distance and nothing else, and everything over it is
 # the bytes divided by what the link carries. A tailnet with 150 ms of
 # distance in it is not a reason to make the picture worse — no frame waits
-# for the ack any more — and a link that takes 150 ms *longer* than its floor
+# for the ack any more — and a link that takes 250 ms *longer* than its floor
 # to move one frame is.
 #
-# So: past `OVER_DOWN_MS` over the floor the stream steps down, and under
-# `OVER_UP_MS` for `LEVEL_HOLD_S` it steps back up. The gap between the two is
-# the hysteresis, so a link sitting between them stays where it is rather than
-# hunting around one threshold.
-OVER_DOWN_MS = 150.0
-OVER_UP_MS = 80.0
+# Only casts are measured. A settled picture or a popup frame is several times
+# a cast's bytes by design, and the client's ack of a frame comes after it is
+# decoded and painted, so the cast behind one of them — and the cast it
+# displaced — reports the picture's cost, not the link's. A frame the client
+# threw away unpainted (`dropped`) says nothing about the link either.
+OVER_DOWN_MS = 250.0
 DELIVER_ALPHA = 0.3
-LEVEL_HOLD_S = 5.0
 
 # The other half of the same question, and the half a link with a ceiling on
 # it answers: what share of the frames made in the last second never left,
@@ -1180,13 +1182,27 @@ LEVEL_HOLD_S = 5.0
 # the stale one. Measured against a link carrying 1 Mbit/s, every frame is
 # delivered in the same time as every other — its own transfer — so nothing
 # above tells the level anything, while nine frames in ten are being thrown
-# away. Under `DROP_UP` the link is carrying what is made of it.
+# away. Judged only over a second that made at least `DROP_MIN_FRAMES`, so one
+# frame of two is not half the stream refused.
 DROP_DOWN = 0.25
-DROP_UP = 0.05
+DROP_MIN_FRAMES = 4
 
-# And no more than one step this often, whichever measurement asked for it:
-# a rung has to be given a second at its own settings before it is judged.
-LEVEL_MIN_GAP_S = 1.0
+# The level is judged once every `LEVEL_TICK_S` while the tab is live, whether
+# or not frames are flowing: a page at rest sends nothing, and a judgement
+# that only ran on frames never ran again once the page went quiet, leaving it
+# at whatever rung the last burst had pushed it to. Either signal over its
+# threshold on two evaluations in a row is a step down, at most one rung per
+# `LEVEL_MIN_GAP_S`; `LEVEL_HOLD_S` with no evaluation asking for one is a step
+# back up. A quiet link is not a bad one.
+LEVEL_TICK_S = 1.0
+LEVEL_DOWN_EVALS = 2
+LEVEL_MIN_GAP_S = 2.0
+LEVEL_HOLD_S = 5.0
+
+# A tab starts again at the top of the ladder when what it was measured on is
+# gone: a navigation (a new page is not the old page's cost), the pane's
+# socket coming back, or being shown after this long in the background.
+LEVEL_RESET_HIDDEN_S = 30.0
 
 # How long after the last frame the measured rate stops being reported.
 RATE_STALE_S = 2.0
@@ -1196,10 +1212,20 @@ RATE_STALE_S = 2.0
 # flight is trimmed by age rather than emptied by acks.
 PENDING_MAX = 64
 
-# The level each pane was last streaming at. A new tab starts where the pane
-# left off rather than at the top of the ladder with a step down to rediscover,
-# which is what made every new tab on a slow link stutter for its first seconds.
+# The level each pane was last streaming at, and when: pane -> (level, time).
+# A new tab starts where the pane left off rather than at the top of the ladder
+# with a step down to rediscover, which is what made every new tab on a slow
+# link stutter for its first seconds — but only for `LEVEL_MEMORY_S`, after
+# which what the link was doing then is no evidence of what it is doing now.
 _LEVEL_MEMORY: dict = {}
+LEVEL_MEMORY_S = 60.0
+
+
+def _remembered_level(pane: str) -> int:
+    level, at = _LEVEL_MEMORY.get(pane, (0, 0.0))
+    if time.monotonic() - at > LEVEL_MEMORY_S:
+        return 0
+    return max(0, min(len(STREAM_LEVELS) - 1, int(level)))
 
 SELECTION_MAX = 1 << 20
 
@@ -1659,11 +1685,31 @@ class PaneTab:
         self._seq = 0
         self._casts = 0                 # frames emitted, for the settle race
         # What the stream is running at, and the measurements it is chosen on.
-        self._level = int(_LEVEL_MEMORY.get(pane, 0))
-        self._pending: dict = {}        # seq -> when the frame was queued
+        self._level = _remembered_level(pane)
+        # seq -> (when the cast was queued, whether its delivery is the link's
+        # alone to answer for); see `_taint_pending`.
+        self._pending: dict = {}
         self._over_ms = 0.0             # smoothed; the level hangs off it
         self._rtt_ms = 0.0              # the quickest delivery lately
-        self._good_since = 0.0
+        self._measured = 0              # casts measured since the last judgement
+        self._bad_evals = 0             # judgements in a row asking for less
+        self._good_since = time.monotonic()
+        self._level_why = ""
+        self._level_task: "asyncio.Task | None" = None
+        # The last settled picture or popup frame on its way to the client:
+        # (seq, when). Casts queued behind it until the client has it wait on
+        # its bytes and its decode, so they are not measured.
+        self._heavy: "tuple[int, float] | None" = None
+        self._hidden_at = 0.0
+        # Main-frame commits so far. The first is the page the tab was opened
+        # for, which starts at the pane's remembered level; every later one is
+        # a new page and starts at the top.
+        self._commits = 0
+        # The last screencast frame Chrome sent, and the ones a capture's echo
+        # may repeat once the capture is out (see STILL_ECHO_S).
+        self._last_cast_body = b""
+        self._echo_bodies: tuple = ()
+        self._echo_open = False
         self._emits: deque = deque(maxlen=PAINTING_FRAMES)
         self._last_emit = 0.0
         self._cast_w = 0                # what the last cast frame really was
@@ -1705,7 +1751,8 @@ class PaneTab:
         and rendered at a correspondingly higher scale, so the same surface
         comes back with everything on it bigger. `dpr_max` is the ceiling: a
         3x phone asking for a 3x surface of a desktop-sized viewport is asking
-        for four times the pixels of a 1.5x one, over the same link.
+        for four times the pixels of a 1.5x one, over the same link. The
+        stream's level is not: no rung changes what the page is rendered at.
         """
         z = self.zoom or 1.0
         dpr = min(self.dpr, self._dpr_cap())
@@ -1714,10 +1761,8 @@ class PaneTab:
                 "deviceScaleFactor": dpr * z, "mobile": False}
 
     def _dpr_cap(self) -> float:
-        """The pixel ratio this tab may ask for: the config's, then the level's."""
-        cap = float(self.config.get("dpr_max") or 2)
-        level = STREAM_LEVELS[self._level][0]
-        return cap if level is None else min(cap, level)
+        """The pixel ratio this tab may ask for, which is the config's."""
+        return float(self.config.get("dpr_max") or 2)
 
     def _quality(self) -> int:
         """The JPEG quality to stream at.
@@ -1727,26 +1772,19 @@ class PaneTab:
         and the rungs below are this module's numbers.
         """
         top = int(self.config.get("jpeg_quality") or 70)
-        return top if self._level == 0 else min(top, STREAM_LEVELS[self._level][1])
+        return top if self._level == 0 else min(top, STREAM_LEVELS[self._level][0])
 
     def _frame_gap(self) -> float:
-        return 1.0 / float(STREAM_LEVELS[self._level][2])
+        return 1.0 / float(STREAM_LEVELS[self._level][1])
 
     def _cast_size(self) -> "tuple[int, int]":
-        """The most the screencast may send, which the level may shrink.
+        """The most the screencast may send: the surface, at every level.
 
-        A ceiling under what Chrome would have sent, never over it: the level's
-        fraction is of the CSS viewport, which is the size the frames actually
-        come back at, so 0.7 is 0.7 of the picture on the wire whatever pixel
-        ratio the page is being rendered at.
+        Chrome sends the CSS size whatever this says (see STREAM_LEVELS), and
+        the odd frame it does send at the surface — the one that answers a
+        capture — is a sharp one worth having rather than one to scale down.
         """
-        w, h = self._surface()
-        lim = STREAM_LEVELS[self._level][3]
-        if lim < 1.0:
-            m = self._metrics()
-            w = min(w, max(1, int(round(m["width"] * lim))))
-            h = min(h, max(1, int(round(m["height"] * lim))))
-        return w, h
+        return self._surface()
 
     def _surface(self) -> "tuple[int, int]":
         """The device pixels that viewport comes to, which is the frame size.
@@ -1830,11 +1868,28 @@ class PaneTab:
             # the settled picture below is only worth taking where it would be
             # bigger than this.
             self._cast_w = w
+        else:
+            self._taint_pending()
+            self._heavy = (self._seq, time.monotonic())
         self._rate_drops += self.sink.put_frame(
             {"tab": self.tab, "seq": self._seq, "kind": kind, "w": w, "h": h,
              "cssW": self.css_w, "cssH": self.css_h, "zoom": self.zoom,
              "fmt": fmt}, body) or 0
         return self._seq
+
+    def _taint_pending(self) -> None:
+        """A settled picture or a popup frame is going out: the casts already
+        in flight share its link and its client, so their deliveries are no
+        measurement of the stream."""
+        for seq, (queued, _clean) in self._pending.items():
+            self._pending[seq] = (queued, False)
+
+    def _behind_heavy(self, now: float) -> bool:
+        """Is a settled picture or popup frame still on its way to the client?
+        Bounded, so a lost ack cannot stop the measuring for good."""
+        if self._heavy is not None and now - self._heavy[1] > 2 * LEVEL_TICK_S:
+            self._heavy = None
+        return self._heavy is not None
 
     def _say(self, msg: dict) -> None:
         self.sink.put_json(msg)
@@ -1853,6 +1908,9 @@ class PaneTab:
                 "fps": round(self._fps, 1) if self._streaming() else 0.0,
                 "kbps": round(self._kbps) if self._streaming() else 0,
                 "rttMs": round(self._rtt_ms),
+                "overMs": round(self._over_ms),
+                "dropShare": round(self._drop_share, 2),
+                "levelReason": self._level_why,
                 # The sharp frames: how many this tab has sent and how long ago
                 # the last one went. A page that looks soft is a page with no
                 # recent still, which is the one question a screenshot of the
@@ -1911,6 +1969,9 @@ class PaneTab:
         self.frame_id = frame.get("id") or self.frame_id
         was = self.url
         self.url = frame.get("url") or self.url
+        if self._commits:
+            self._reset_level("navigation")
+        self._commits += 1
         # Another site's icon is worse than none: kept across a navigation
         # within one origin (where it is still right, and the probe may find
         # nothing to replace it with) and dropped when the host changes.
@@ -1975,6 +2036,9 @@ class PaneTab:
             self.zoom = float(zoom)
         self._cancel(self._freeze_task)
         self._freeze_task = None
+        if self._hidden_at and time.monotonic() - self._hidden_at > LEVEL_RESET_HIDDEN_S:
+            self._reset_level("shown after a long time hidden")
+        self._hidden_at = 0.0
         await self.session.send("Emulation.setDeviceMetricsOverride", self._metrics())
         if self.frozen:
             await self.session.send("Page.setWebLifecycleState", {"state": "active"})
@@ -1982,6 +2046,10 @@ class PaneTab:
         await self._start_cast()
         self.live = True
         self.shown_at = time.monotonic()
+        self._good_since = self.shown_at
+        self._bad_evals = 0
+        if self._level_task is None or self._level_task.done():
+            self._level_task = asyncio.ensure_future(self._level_loop())
         # A page that is already loaded and sitting still gets its sharp
         # picture from the quiet that follows; one still arriving gets it from
         # its load event. The second timer is for a tab that fires neither.
@@ -1994,12 +2062,14 @@ class PaneTab:
         if not self.live:
             return
         self.live = False
+        self._hidden_at = time.monotonic()
         self._popup_open = False
         # No stream to come to rest: a timer left running here would take its
         # picture of whatever the tab is showing when it is next streamed.
         self._cancel(self._quiet_task)
         self._cancel(self._show_task)
-        self._quiet_task = self._show_task = None
+        self._cancel(self._level_task)
+        self._quiet_task = self._show_task = self._level_task = None
         await self._stop_cast()
         if not self.dead:
             self._freeze_task = asyncio.ensure_future(self._freeze_later())
@@ -2071,6 +2141,10 @@ class PaneTab:
             await self._start_cast()
         except (CDPError, CDPClosed, asyncio.TimeoutError) as e:
             log(f"tab {self.tab}: could not restart the stream: {e!r}")
+            return
+        # Whatever the restart was for, the page gets its full-resolution
+        # picture as soon as it is quiet again.
+        self._arm_idle_still()
 
     def _on_cast(self, params: dict) -> None:
         sid = params.get("sessionId")
@@ -2087,6 +2161,13 @@ class PaneTab:
             self._held.append((sid, body))
             self._ack_cdp(sid)
             return
+        if self._is_echo(body):
+            # The capture's echo: the picture the settled one already shows.
+            # Sent, it would be painted over the sharp one.
+            self._ack_cdp(sid)
+            return
+        self._echo_open = False
+        self._last_cast_body = body
         wait = self._last_emit + self._frame_gap() - time.monotonic()
         if wait > 0:
             # Sooner than this level's frame rate wants it. Held rather than
@@ -2097,13 +2178,26 @@ class PaneTab:
             self._send_cast(sid, body)
         if self._input_at:
             self._arm_settle()
-        elif not self._still_at or (time.monotonic() - self._still_at
-                                    >= STILL_ECHO_S):
+        else:
             # Nobody asked for this frame, so it is the page painting itself —
             # and the picture it leaves behind, once it stops, is what the
-            # settled capture is for. Unless it is the last capture's own echo
-            # (see STILL_ECHO_S), which shows what that capture already sent.
+            # settled capture is for. The capture's own echo never gets here.
             self._arm_idle_still()
+
+    def _is_echo(self, body: bytes) -> bool:
+        """Is this frame the last capture's echo? See STILL_ECHO_S.
+
+        Two of them, measured: one at the surface's full size as the capture
+        is answered, and one ~90 ms later at the CSS size that is byte for
+        byte the last frame before the capture. The first is the still's own
+        picture again and the second is the soft one it replaced.
+        """
+        if not self._echo_open or time.monotonic() - self._still_at >= STILL_ECHO_S:
+            return False
+        if body in self._echo_bodies:
+            return True
+        size = image_size(body)
+        return size is not None and size[0] >= self._surface()[0]
 
     def _hold_paced(self, sid, body: bytes, wait: float) -> None:
         if self._paced is not None:     # the browser owes us only one at a time
@@ -2146,7 +2240,7 @@ class PaneTab:
         self._emits.append(now)
         seq = self._emit("cast", body, "jpeg")
         if seq is not None:
-            self._pending[seq] = now
+            self._pending[seq] = (now, not self._behind_heavy(now))
             if len(self._pending) > PENDING_MAX:
                 for old in sorted(self._pending)[:-PENDING_MAX // 2]:
                     del self._pending[old]
@@ -2156,7 +2250,7 @@ class PaneTab:
         self._ack_cdp(sid)
 
     def _rate_tick(self, now: float) -> None:
-        """What the stream is costing, once a second, and what it says.
+        """What the stream is costing, once a second.
 
         `_rate_frames` counts what left and `_rate_drops` what the queue threw
         away to make room for it, so their ratio is how much of the stream the
@@ -2169,10 +2263,10 @@ class PaneTab:
         made = self._rate_frames + self._rate_drops
         self._kbps = self._rate_bytes * 8 / 1000.0 / span
         self._fps = self._rate_frames / span
-        self._drop_share = (self._rate_drops / made) if made else 0.0
+        self._drop_share = ((self._rate_drops / made)
+                            if made >= DROP_MIN_FRAMES else 0.0)
         self._rate_bytes = self._rate_frames = self._rate_drops = 0
         self._rate_at = now
-        self._judge(now)
 
     def _ack_cdp(self, sid) -> None:
         if sid is None or self.dead:
@@ -2186,25 +2280,30 @@ class PaneTab:
         except (CDPError, CDPClosed, asyncio.TimeoutError):
             pass
 
-    def ack(self, seq: int) -> None:
-        """The client has drawn everything up to `seq`.
+    def ack(self, seq: int, dropped: bool = False) -> None:
+        """The client has drawn everything up to `seq` (or, `dropped`, threw
+        `seq` away unpainted).
 
         Nothing waits for this — the browser was acknowledged when the frame
         went out — but it is the one measurement of how long a frame takes to
         arrive, and that is what the level is chosen on.
         """
         now = time.monotonic()
+        if self._heavy is not None and seq >= self._heavy[0]:
+            self._heavy = None
         sent = None
         for pending in sorted(s for s in self._pending if s <= seq):
-            queued = self._pending.pop(pending)
+            entry = self._pending.pop(pending)
             if pending == seq:
-                sent = queued
-        if sent is None:        # an ack for a frame that was dropped or aged out
+                sent = entry
+        if sent is None or dropped:     # dropped, aged out, or not a cast
             return
-        self._note_delivery(sent, now)
+        queued, clean = sent
+        if clean:
+            self._note_delivery(queued, now)
 
     def _note_delivery(self, sent: float, now: float) -> None:
-        """One frame's delivery time, and what it says about the level."""
+        """One cast's delivery time, folded into what the level is judged on."""
         ms = (now - sent) * 1000
         # The quickest delivery lately is the link's floor: one frame's
         # distance with nothing queued behind it. It is allowed to drift back
@@ -2213,7 +2312,17 @@ class PaneTab:
         self._rtt_ms = ms if not self._rtt_ms else min(ms, self._rtt_ms * 1.05 + 1)
         over = max(0.0, ms - self._rtt_ms)
         self._over_ms = self._over_ms * (1 - DELIVER_ALPHA) + over * DELIVER_ALPHA
-        self._judge(now)
+        self._measured += 1
+
+    async def _level_loop(self) -> None:
+        """Judge the level once a tick for as long as the tab is live."""
+        try:
+            while self.live and not self.dead:
+                await asyncio.sleep(LEVEL_TICK_S)
+                if self.live and not self.dead:
+                    self._judge(time.monotonic())
+        except asyncio.CancelledError:
+            return
 
     def _judge(self, now: float) -> None:
         """Whether the stream is worth more or less than it is being sent at.
@@ -2222,45 +2331,62 @@ class PaneTab:
         that sit in the queue behind other frames (`_over_ms`, a latency the
         user feels on every click) and frames that never leave it at all
         (`_drop_share`, a link with a ceiling, where the delivered ones all
-        take the same time and say nothing). Either one is a step down; it
-        takes both being clear, and staying clear, to buy a step back up.
+        take the same time and say nothing). Either one, on `LEVEL_DOWN_EVALS`
+        judgements in a row, is a step down; `LEVEL_HOLD_S` with neither is a
+        step back up, frames or no frames.
         """
-        if now - self._level_at < LEVEL_MIN_GAP_S:
+        if now - self._rate_at >= LEVEL_TICK_S * 0.5:
+            self._rate_tick(now)
+        # A delivery average with no delivery behind it since the last
+        # judgement is history: a page at rest has sent nothing to measure.
+        fresh, self._measured = self._measured > 0, 0
+        slow = fresh and self._over_ms > OVER_DOWN_MS
+        refused = self._drop_share > DROP_DOWN
+        if slow or refused:
+            self._bad_evals += 1
+            self._good_since = now
+            if (self._bad_evals >= LEVEL_DOWN_EVALS
+                    and now - self._level_at >= LEVEL_MIN_GAP_S
+                    and self._level < len(STREAM_LEVELS) - 1):
+                self._set_level(self._level + 1,
+                                "frames behind" if slow else "frames dropped")
             return
-        if self._over_ms > OVER_DOWN_MS:
-            self._good_since = 0.0
-            self._set_level(self._level + 1,
-                            f"{self._over_ms:.0f} ms behind on a "
-                            f"{self._rtt_ms:.0f} ms link")
-        elif self._drop_share > DROP_DOWN:
-            self._good_since = 0.0
-            self._set_level(self._level + 1,
-                            f"{self._drop_share * 100:.0f}% of frames dropped")
-        elif self._over_ms < OVER_UP_MS and self._drop_share <= DROP_UP:
-            if not self._good_since:
-                self._good_since = now
-            elif now - self._good_since >= LEVEL_HOLD_S:
-                self._good_since = now
-                self._set_level(self._level - 1, "the link has room")
-        else:
-            self._good_since = 0.0
+        self._bad_evals = 0
+        if self._level > 0 and now - self._good_since >= LEVEL_HOLD_S:
+            self._set_level(self._level - 1, "the link has room")
+
+    def _reset_level(self, why: str) -> None:
+        """Back to the top of the ladder: what the level was measured on is gone."""
+        self._over_ms = 0.0
+        self._drop_share = 0.0
+        self._bad_evals = 0
+        self._good_since = time.monotonic()
+        self._set_level(0, why)
 
     def _set_level(self, level: int, why: str) -> None:
         level = max(0, min(len(STREAM_LEVELS) - 1, level))
         if level == self._level:
             return
         was, self._level = self._level, level
+        now = time.monotonic()
         # Remembered for the pane rather than the tab: it is the link that was
         # slow, and the next tab opens on the same one.
-        _LEVEL_MEMORY[self.pane] = level
-        # The smoothed measurement describes the level just left. Put back to
-        # neither fast nor slow, so the step is not repeated (or undone) until
-        # frames measured at the new level say so — one hiccup should cost one
-        # rung, not the whole ladder.
-        self._over_ms = OVER_UP_MS
+        _LEVEL_MEMORY[self.pane] = (level, now)
+        # One line with the numbers that moved it, so a report of a soft page
+        # can be read off the journal.
+        self._level_why = why
+        log(f"tab {self.tab}: level {was}->{level} ({why}) "
+            f"over={self._over_ms:.0f}ms floor={self._rtt_ms:.0f}ms "
+            f"drop={self._drop_share:.2f} kbps={self._kbps:.0f}")
+        # The measurements describe the level just left. Put back to neither
+        # fast nor slow, so the step is not repeated (or undone) until frames
+        # measured at the new level say so — one hiccup costs one rung, not
+        # the whole ladder.
+        self._over_ms = 0.0
         self._drop_share = 0.0
-        self._level_at = time.monotonic()
-        log(f"tab {self.tab}: stream level {was} -> {level} ({why})")
+        self._bad_evals = 0
+        self._good_since = now
+        self._level_at = now
         if self.live and not self.dead:
             asyncio.ensure_future(self._restart_cast())
 
@@ -2434,7 +2560,7 @@ class PaneTab:
         if self.dead or not self.live or len(self._held) > 1:
             self._flush_held()
             return
-        self._held = []
+        held, self._held = self._held, []
         try:
             sent = self._emit("still", base64.b64decode(res.get("data") or ""),
                               "jpeg")
@@ -2443,6 +2569,9 @@ class PaneTab:
         if sent is not None:
             self._stills += 1
             self._still_at = time.monotonic()
+            self._echo_bodies = tuple(
+                {self._last_cast_body, *(b for _sid, b in held)} - {b""})
+            self._echo_open = True
 
     def _flush_held(self) -> None:
         """Send the frames held during a capture, already acknowledged."""
@@ -2787,6 +2916,8 @@ class PaneTab:
 
     # -- navigation --------------------------------------------------------
     async def nav(self, url: str) -> None:
+        if self._commits:
+            self._reset_level("navigation")
         await self.session.send("Page.navigate", {"url": url})
         # Recorded now rather than waited for: the page will report its own URL
         # a moment later and correct this, and until it does this is the honest
@@ -2890,6 +3021,10 @@ class PaneTab:
         self._emits.clear()
         self._last_emit = 0.0
         self._cast_w = 0
+        self._heavy = None
+        self._last_cast_body = b""
+        self._echo_bodies = ()
+        self._echo_open = False
         self._paced = None
         self._held = []
         self._capturing = False
@@ -2905,6 +3040,7 @@ class PaneTab:
         self._show_task = None
         self._freeze_task = None
         self._popup_task = None
+        self._level_task = None
         self._pace_task = None
         self._state_task = None
         self._dialog_task = None
@@ -2930,7 +3066,7 @@ class PaneTab:
         self._chooser = None
         self._fetch_on = False
         for task in (self._settle_task, self._quiet_task, self._show_task,
-                     self._freeze_task, self._popup_task,
+                     self._freeze_task, self._popup_task, self._level_task,
                      self._pace_task, self._state_task, self._dialog_task,
                      self._auth_task, self._fetch_task, self._linger_task,
                      self._icon_task):
@@ -3101,9 +3237,13 @@ class FullBrowser:
         # Not a reason to keep the browser: a pane with no full tab in it needs
         # no browser, and the next `open` starts one. See `_arm_idle`.
         self._arm_idle()
+        # A new socket is a new link, or the old one after whatever broke it:
+        # nothing measured on the last one says anything about this one.
+        _LEVEL_MEMORY.pop(pane, None)
         for pt in self._tabs.values():
             if pt.pane == pane:
                 pt.sink = sink
+                pt._reset_level("the pane reconnected")
 
     async def detach_pane(self, pane: str) -> None:
         """The socket went away. The tabs do not: a reload adopts them back."""
