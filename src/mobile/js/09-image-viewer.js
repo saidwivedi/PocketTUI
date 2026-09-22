@@ -430,8 +430,13 @@ function stashFileView(session, kind) {
   // stacked in is the column's own and would otherwise be gone with them
   // (sideOrder, 26-side-pane.js).
   if (sideRows.length) view.side = sideRows.slice();
-  if (kind || filesDocked || $("screen-files").classList.contains("active")) {
-    view.files = filesStash();
+  if (kind || filesAnyOpen()) {
+    // Both listings, each under its own name, and which of them the view above
+    // was opened from: two rows and one editor, so a restore that did not know
+    // whose it was would put it back in the wrong row (28-file-explorer.js).
+    view.files = filesStash("files");
+    view.files2 = filesStash("files#2");
+    view.filesOwner = filesViewOwner;
   }
   if (kind === "editor") view.editor = edStash();
   else if (kind === "reader") view.reader = readerStash();
@@ -473,15 +478,16 @@ function restoreFileView(session) {
     Promise.all(pending).then(() => sideOrder(view.boot));
     return;
   }
-  if (view.files) {
-    filesRestore(view.files);
+  if (view.files || view.files2) {
+    filesRestore(view.files, view.files2, view.filesOwner);
     // Every entry the view owned, in the order it was pushed and in the shape
     // its own push site uses: openExplorer's, one per level navigated into
     // (navigateDir's), then the single one the reader and the editor share.
     // Nothing reads these back — the unwind goes by filesStack and the screen
     // classes — but the count is what back spends, and it has to be exact. A
-    // docked pane pushed none of its own, so it gets none back.
-    if (!view.files.docked) {
+    // docked pane pushed none of its own, so it gets none back, and a copy is
+    // always docked.
+    if (view.files && !view.files.docked) {
       history.pushState({ files: true }, "", location.href);
       for (const path of view.files.stack.slice(1)) {
         history.pushState({ files: true, path: path }, "", location.href);
@@ -543,7 +549,7 @@ function openTerminal(name, resumed) {
     // away rather than tearing it down, spend the entries it owns, and finish
     // the switch when their pop lands. Nothing is discarded, so nothing is
     // asked.
-    if (kind && !docked && filesOrigin === "screen-term" && currentSession) {
+    if (kind && !docked && filesFullOrigin() === "screen-term" && currentSession) {
       // Tapping the row that is already open: the pane is this session's, and
       // so is the view on it. There is nothing to switch away from — and a
       // stash made here would be one for a session that is on screen, which
@@ -570,7 +576,7 @@ function openTerminal(name, resumed) {
     // arrives to whatever it had itself — its own pane, restored at the end of
     // this function, or none and a full-width terminal. With no session to keep
     // it for, the folder is simply dropped.
-    if (filesDocked) {
+    if (filesAnyDocked()) {
       if (name !== currentSession) {
         closePathEdit();
         // Whatever the pane is showing over its listing goes into the record
@@ -581,7 +587,7 @@ function openTerminal(name, resumed) {
         else if (closeDockedFileView()) filesTeardown();
         else return;
       }
-    } else if ($("screen-files").classList.contains("active")) {
+    } else if (filesFullScreen()) {
       // Not arriving via back — no pop happened — so the address field (if
       // open) just closes and the screen follows.
       closePathEdit();
@@ -706,7 +712,7 @@ function closeTerminal(skipReload) {
   // not it: the slot goes back here, into the session's own record, so the list
   // is never left holding a pane and reopening this session — and only this
   // session — brings it up again.
-  if (currentSession && (filesDocked || diffAnyOpen())) {
+  if (currentSession && (filesAnyDocked() || diffAnyOpen())) {
     // And the file the pane was showing over its listing, which is the same
     // session's. Nothing is discarded by a stash, so nothing is asked.
     stashFileView(currentSession, dockedFileView() ? fileViewKind() : null);

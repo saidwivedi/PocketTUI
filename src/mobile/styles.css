@@ -2892,7 +2892,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* ============================================================
    FILE EXPLORER
    ============================================================ */
-#screen-files {
+/* The column beside the terminal can hold two of these at once, so there are
+   two screens to name — the one the markup ships and the copy made beside it
+   (28-file-explorer.js) — and every rule keyed on the screen itself names both.
+   The ids inside them are duplicated rather than renamed: :is() carries the
+   same specificity a bare id does, so nothing about the cascade moves, and each
+   pane reaches its own copies through its own root. */
+:is(#screen-files, #screen-files-2) {
   padding-top: var(--safe-top);
   padding-bottom: calc(40px + var(--safe-bot));
 }
@@ -3452,7 +3458,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
 #side-split-scrim.show { pointer-events: auto; }
 
 @media (min-width: 768px) and (min-height: 500px) {
-  #screen-files.docked .dock-only,
+  :is(#screen-files, #screen-files-2).docked .dock-only,
   #screen-browser.docked .dock-only,
   #screen-editor.docked .dock-only,
   #screen-reader.docked .dock-only,
@@ -3462,9 +3468,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
      it is only on view while the terminal it is docked to is. The plain
      .docked rule outweighs .screen.active, and the sibling rule outweighs
      both. */
-  #screen-files.docked,
+  :is(#screen-files, #screen-files-2).docked,
   #screen-browser.docked { display: none; }
-  #screen-term.active ~ #screen-files.docked.active,
+  #screen-term.active ~ :is(#screen-files, #screen-files-2).docked.active,
   #screen-term.active ~ #screen-browser.docked.active {
     display: flex;
     flex-direction: column;
@@ -3485,7 +3491,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* Expanded: the pane takes the whole main area and the terminal sits under
      it — the phone's full-screen explorer, seated beside the rail. The seam
      goes with the split it no longer divides. */
-  #screen-term.side-full.active ~ #screen-files.docked.active,
+  #screen-term.side-full.active ~ :is(#screen-files, #screen-files-2).docked.active,
   #screen-term.side-full.active ~ #screen-browser.docked.active {
     left: calc(var(--sidebar-w) + var(--rail-gutter));
     width: auto;
@@ -3546,7 +3552,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
      the bar stays put because it is the flex item that does not scroll, not
      because it is stuck to a viewport. Still positioned — #files-suggest is
      absolute against it. */
-  #screen-files.docked .topbar,
+  :is(#screen-files, #screen-files-2).docked .topbar,
   #screen-browser.docked .topbar {
     position: relative;
     top: 0;
@@ -3554,7 +3560,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
     gap: 2px;
     padding: 10px 8px 8px 12px;
   }
-  #screen-files.docked .files-wrap {
+  :is(#screen-files, #screen-files-2).docked .files-wrap {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
@@ -3563,23 +3569,23 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   /* The rail's own compaction, for the same reason: eight controls and a path
      across 340px, where the phone's bar had the whole window. */
-  #screen-files.docked .icon-btn,
+  :is(#screen-files, #screen-files-2).docked .icon-btn,
   #screen-browser.docked .icon-btn,
   #screen-editor.docked .icon-btn,
   #screen-reader.docked .icon-btn { padding: 6px; }
-  #screen-files.docked .icon-btn svg,
+  :is(#screen-files, #screen-files-2).docked .icon-btn svg,
   #screen-browser.docked .icon-btn svg,
   #screen-editor.docked .icon-btn svg,
   #screen-reader.docked .icon-btn svg { width: 17px; height: 17px; }
-  #screen-files.docked #btn-files-view { padding: 5px 8px; font-size: 12px; }
-  #screen-files.docked #btn-files-ref {
+  :is(#screen-files, #screen-files-2).docked #btn-files-view { padding: 5px 8px; font-size: 12px; }
+  :is(#screen-files, #screen-files-2).docked #btn-files-ref {
     padding: 5px 8px; font-size: 12px; max-width: 92px;
   }
   /* The two dropdown scrims belong to the pane, not to the window: the
      terminal beside it is live, and a layout menu in here must not dim it.
      The pane is position:fixed, so absolute already means "this pane". */
-  #screen-files.docked #files-suggest-scrim,
-  #screen-files.docked #files-view-scrim { position: absolute; }
+  :is(#screen-files, #screen-files-2).docked #files-suggest-scrim,
+  :is(#screen-files, #screen-files-2).docked #files-view-scrim { position: absolute; }
 
   /* ---- two rows in the column ---------------------------------------------
      A second pane stacks under the first rather than taking the slot off it
@@ -3590,14 +3596,14 @@ html.term-open #dbg-panel { opacity: 0.85; }
      boxes, so a percentage resolves against the viewport, and the seam between
      them is drawn on the same number. A bottom row runs to the window's edge
      and absorbs the safe-bottom inset, the way a single row does. */
-  #screen-term.active ~ #screen-files.docked.active.side-top,
+  #screen-term.active ~ :is(#screen-files, #screen-files-2).docked.active.side-top,
   #screen-term.active ~ #screen-browser.docked.active.side-top,
   #screen-term.active ~ #screen-editor.docked.active.side-top,
   #screen-term.active ~ #screen-reader.docked.active.side-top,
   #screen-term.active ~ #viewer.docked.show.side-top {
     bottom: calc(100% - var(--side-split) + var(--side-gutter) / 2);
   }
-  #screen-term.active ~ #screen-files.docked.active.side-bot,
+  #screen-term.active ~ :is(#screen-files, #screen-files-2).docked.active.side-bot,
   #screen-term.active ~ #screen-browser.docked.active.side-bot,
   #screen-term.active ~ #screen-editor.docked.active.side-bot,
   #screen-term.active ~ #screen-reader.docked.active.side-bot,
@@ -3607,7 +3613,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* Expanded, the other row is not a shorter row but none at all: the pane
      filling the main area covers the column, and there is nothing of the one
      under it left to see. */
-  #screen-term.active ~ #screen-files.docked.active.side-hidden,
+  #screen-term.active ~ :is(#screen-files, #screen-files-2).docked.active.side-hidden,
   #screen-term.active ~ #screen-browser.docked.active.side-hidden,
   #screen-term.active ~ #screen-editor.docked.active.side-hidden,
   #screen-term.active ~ #screen-reader.docked.active.side-hidden,
@@ -4279,7 +4285,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-term, #screen-editor, #screen-reader {
     left: calc(var(--sidebar-w) + var(--rail-gutter));
   }
-  #screen-files, #screen-browser { margin-left: calc(var(--sidebar-w) + var(--rail-gutter)); }
+  :is(#screen-files, #screen-files-2), #screen-browser { margin-left: calc(var(--sidebar-w) + var(--rail-gutter)); }
 
   /* The rail's row for the session open in the main pane, in the accent the
      app already speaks. The phone never shows the list and a terminal
@@ -4435,7 +4441,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
     color: var(--tertiary);
   }
   #screen-term.active ~ #wide-empty,
-  #screen-files.active ~ #wide-empty,
+  :is(#screen-files, #screen-files-2).active ~ #wide-empty,
   #screen-browser.active ~ #wide-empty,
   #screen-editor.active ~ #wide-empty,
   #screen-reader.active ~ #wide-empty { display: none; }
