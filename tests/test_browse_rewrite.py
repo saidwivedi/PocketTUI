@@ -568,8 +568,11 @@ def test_shim_is_small_enough_to_sit_on_every_page():
     # so it is kept small deliberately. Raise the cap when behaviour needs the
     # room rather than trimming what the shim does — which is what the tab
     # flavour did: window.open, the storage gate and the close listener are
-    # three behaviours the pane has no other way to get.
-    assert len(A.BROWSE_SHIM.encode("utf-8")) < 10240
+    # three behaviours the pane has no other way to get, and the cookie jar and
+    # the credentials gate are two more the sandbox leaves no other way to
+    # have, and handing a targeted link and a scripted open to the pane is one
+    # more: a window the laptop's browser opens is out of the pane for good.
+    assert len(A.BROWSE_SHIM.encode("utf-8")) < 14336
 
 
 def test_shim_reads_a_proxy_path_without_the_token():
@@ -654,6 +657,71 @@ console.log(JSON.stringify(written));
     assert got[4] == cases[4]
 
 
+def test_shim_hands_a_targeted_link_to_the_pane():
+    # A link with target="_blank" used to be left to the browser, and the
+    # frame's sandbox carries allow-popups: the arxiv links on a proxied page
+    # opened in a window of the laptop's browser, outside the pane for good.
+    # In the pane a named target is posted out instead; a tab is a window in
+    # its own right and its browser still knows where to put one.
+    assert 'var t=(a.getAttribute("target")||"").toLowerCase(),n=t&&t!=="_self";' \
+        in A.BROWSE_SHIM
+    assert "if(n&&!C.sandbox)return;" in A.BROWSE_SHIM
+    # _parent and _top name the shell, which the sandbox refuses anyway, so
+    # they stay this frame's own navigation rather than becoming a tab.
+    assert 'if(n&&t!=="_parent"&&t!=="_top"){out(h);return}' in A.BROWSE_SHIM
+    assert '"pockettui-open"' in A.BROWSE_SHIM
+
+
+def test_shim_opens_the_pane_a_tab_rather_than_a_window(tmp_path):
+    # The pane flavour has no window to hand back: an open goes out as an
+    # address for the pane to put in a tab of its own, unmapped, and the call
+    # answers null. The tab flavour, where a real window works, is untouched
+    # (test_shim_maps_the_window_the_page_opens, below).
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    cfg = {"prefix": PREFIX, "tok": TOK, "sch": "h",
+           "hostport": "127.0.0.1:3000", "origin": ORIGIN, "sandbox": True}
+    here = "http://box.example.net:8080" + BASE + "/h/127.0.0.1:3000/page"
+    harness = """
+const posted = [], opened = [], back = [];
+globalThis.window = globalThis;
+globalThis.parent = {postMessage(m, o) { posted.push([m, o]); }};
+globalThis.location = {origin: "http://box.example.net:8080",
+  host: "box.example.net:8080", protocol: "http:", href: HERE,
+  pathname: new URL(HERE).pathname, search: "", hash: "",
+  replace() {}, reload() {}};
+globalThis.document = {currentScript: {dataset: {cfg: CFG}}, baseURI: HERE,
+  addEventListener() {}, write() {}, writeln() {}};
+globalThis.addEventListener = function () {};
+globalThis.history = {};
+globalThis.open = function (u, n, f) { opened.push([u, n, f]); return {}; };
+SHIM
+back.push(window.open("/child", "view1"));
+back.push(window.open("http://other.example.net/x"));
+back.push(window.open());
+back.push(window.open("about:blank"));
+console.log(JSON.stringify({posted, opened, back}));
+"""
+    f = tmp_path / "open-pane.mjs"
+    # the shim goes in last, for the reason the document.write harness gives.
+    f.write_text(harness.replace("CFG", json.dumps(json.dumps(cfg)))
+                 .replace("HERE", json.dumps(here))
+                 .replace("SHIM", A.BROWSE_SHIM), encoding="utf-8")
+    out = subprocess.run([node, str(f)], check=True, capture_output=True)
+    got = json.loads(out.stdout.decode("utf-8"))
+    # The address the pane is given is the one the page meant, not the proxied
+    # spelling it clicked: the pane proxies it again itself.
+    assert got["posted"] == [
+        [{"type": "pockettui-open", "url": "http://127.0.0.1:3000/child"}, ORIGIN],
+        [{"type": "pockettui-open", "url": "http://other.example.net/x"}, ORIGIN],
+    ]
+    # A blank window is nothing to open, and no window of the device's own is
+    # ever asked for.
+    assert got["opened"] == []
+    assert got["back"] == [None, None, None, None]
+
+
 def test_shim_maps_the_window_the_page_opens(tmp_path):
     # A portal opens its views in windows of their own. Unmapped, each one
     # leaves the proxy for an address only the workstation can reach — and in
@@ -708,7 +776,93 @@ def test_shim_leaves_an_unsandboxed_page_its_own_storage():
     opaque origin where every storage access throws. A tab-flavour page is on
     this server's real origin — which the mint only hands out to a shell served
     from somewhere else — and the storage it has is the one it should use."""
-    assert 'if(!C.sandbox&&window.origin!=="null")return;' in A.BROWSE_SHIM
+    assert 'var SB=!!C.sandbox||window.origin==="null";' in A.BROWSE_SHIM
+    assert "if(!SB)return;\n try{localStorage.length;return}catch(e){}" in A.BROWSE_SHIM
+
+
+def test_shim_fakes_a_cookie_jar_only_where_the_real_one_throws():
+    """Sandboxed, every document.cookie read throws for want of
+    allow-same-origin, and a script that cannot read one decides cookies are
+    off: Google answers a search with its "having trouble accessing Google
+    Search" page. A tab-flavour page has a real cookie and keeps it."""
+    assert "if(!SB)return;\n try{void document.cookie;return}catch(e){}" in A.BROWSE_SHIM
+    assert 'Object.defineProperty(Document.prototype,"cookie",d)' in A.BROWSE_SHIM
+    # The prototype is where the accessor lives, but a browser that refuses it
+    # there still has the one document this page is.
+    assert 'Object.defineProperty(document,"cookie",d)' in A.BROWSE_SHIM
+
+
+def test_shim_drops_credentials_only_from_a_document_with_no_origin():
+    """An opaque origin cannot ask for credentials: every request it makes is
+    cross-origin, and Chrome refuses a wildcard Access-Control-Allow-Origin for
+    a credentialed one, which is what took out Google's own /complete/s and
+    /xjs/ fetches. Nothing is lost — the jar is server-side and /b/ drops the
+    frame's Cookie header — so the ask is dropped rather than the answer."""
+    for line in (
+        'if(i&&i.credentials==="include")i=new Request(i,{credentials:"same-origin"});',
+        'if(o&&o.credentials==="include")o=Object.assign({},o,'
+        '{credentials:"same-origin"});',
+    ):
+        assert line in A.BROWSE_SHIM
+    assert ("P(function(){if(!SB)return;\n"
+            ' // The same refusal on the XHR path, and the same reason the flag'
+            " is a no-op.\n"
+            ' Object.defineProperty(XMLHttpRequest.prototype,"withCredentials",{\n'
+            "  configurable:true,get:function(){return false},set:function(){}});"
+            ) in A.BROWSE_SHIM
+    # Both turn on the same word the storage and cookie polyfills gate on:
+    # three blocks return early on it, and the fetch override branches on it.
+    assert A.BROWSE_SHIM.count("if(!SB)return;") == 3
+    assert "if(SB)try{" in A.BROWSE_SHIM
+
+
+def test_shim_cookie_jar_holds_what_a_page_writes(tmp_path):
+    """The accessor, run for real: a set is readable, an attribute is ignored
+    and a deletion by expiry takes the name out."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    cfg = {"prefix": PREFIX, "tok": TOK, "sch": "h",
+           "hostport": "127.0.0.1:3000", "origin": ORIGIN, "sandbox": True,
+           "cookies": "seed=1; other=2"}
+    harness = """
+globalThis.window = globalThis;
+globalThis.location = {origin: "null", host: "127.0.0.1:3000", protocol: "http:",
+  href: "http://127.0.0.1:3000/", pathname: "/", search: "", hash: ""};
+globalThis.origin = "null";
+globalThis.Document = function () {};
+Object.defineProperty(Document.prototype, "cookie", {configurable: true,
+  get() { throw new Error("SecurityError"); },
+  set() { throw new Error("SecurityError"); }});
+globalThis.document = Object.create(Document.prototype);
+document.currentScript = {dataset: {cfg: CFG}};
+document.baseURI = "http://127.0.0.1:3000/";
+document.addEventListener = function () {};
+globalThis.addEventListener = function () {};
+globalThis.history = {};
+SHIM
+const out = [document.cookie];
+document.cookie = "a=b; Path=/x; Domain=.example.net; Secure; SameSite=None";
+out.push(document.cookie);
+document.cookie = "seed=3";
+out.push(document.cookie);
+document.cookie = "other=; Max-Age=0";
+out.push(document.cookie);
+document.cookie = "a=; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+out.push(document.cookie);
+console.log(JSON.stringify(out));
+"""
+    f = tmp_path / "cookie.js"
+    f.write_text(harness.replace("CFG", json.dumps(json.dumps(cfg)))
+                 .replace("SHIM", A.BROWSE_SHIM), encoding="utf-8")
+    got = subprocess.run([node, str(f)], check=True, capture_output=True, text=True)
+    assert json.loads(got.stdout) == [
+        "seed=1; other=2",
+        "seed=1; other=2; a=b",
+        "seed=3; other=2; a=b",
+        "seed=3; a=b",
+        "seed=3",
+    ]
 
 
 def test_shim_never_zooms_the_page_it_sits_on():
@@ -822,7 +976,8 @@ def test_shim_tag_config_round_trips():
     raw = re.search(r"data-cfg='([^']*)'", tag).group(1)
     assert json.loads(html.unescape(raw)) == {
         "prefix": PREFIX, "tok": TOK, "sch": "h",
-        "hostport": "127.0.0.1:3000", "origin": ORIGIN, "sandbox": True}
+        "hostport": "127.0.0.1:3000", "origin": ORIGIN, "sandbox": True,
+        "cookies": ""}
 
 
 def test_shim_tag_config_says_which_kind_of_document_it_is_in():
