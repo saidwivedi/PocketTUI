@@ -336,6 +336,25 @@ document.addEventListener("keydown", (e) => {
     if (!e.repeat) toggleDiffPane();
     return;
   }
+  // A new session on the same three keys, and this one does not wait for a
+  // terminal: the rail is on screen everywhere the wide layout is, and the
+  // empty state — no sessions yet — is exactly when the key is worth having.
+  // A plain Ctrl+L is the shell's clear-screen and the browser's address bar,
+  // and the shift takes neither: xterm's no-shift branch is where the form
+  // feed comes from. L rather than the N a new session suggests, because no
+  // browser reserves this one — Chrome, Edge and Firefox all keep their new
+  // window, incognito window and reopened tab on chords that never reach the
+  // page, and Edge's paste-and-go is not one of those, so preventDefault has
+  // the last word. The key arrives here on Windows and Linux as well as on a
+  // Mac. No sheet, no prompt: the name is the one an empty field would have
+  // produced.
+  if ((e.code || "") === "KeyL") {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    // Auto-repeat on a held chord would mint a session per repeat.
+    if (!e.repeat) createAndOpenSession(defaultSessionName(), false);
+    return;
+  }
   // The digit row's code is fixed where its key is not: with Shift down a US
   // layout puts !@#$%^&*( in e.key, and other layouts put their own symbols
   // there. Where a remapped or soft keyboard sends no code at all, the old
