@@ -30,13 +30,68 @@
 // star are the active tab's. A landing is routed the other way round, to
 // whichever tab's frame posted it, so a tab that is not on screen still keeps
 // its stack and its chip's name up to date.
+//
+// Two of these panes can be up at once: the column beside the terminal holds
+// two rows and either of them can be a browser (26-side-pane.js). So what
+// follows is a factory rather than a module — one call of makeBrowserPane is
+// one pane — and what sits above it is what the two of them genuinely share,
+// which is the computer's own answers (the token it mints, the list of
+// bookmarks it keeps) and the words and paces that are constants either way.
 
-let browserDocked = false;      // in the slot beside the terminal, not over it
-let browserOpen = false;        // either shape is up
+// ------------------------------------------------------------
+// Every pane of this kind
+// ------------------------------------------------------------
+
+// As many as the strip holds and anybody keeps track of. Eight chips still
+// carry a readable name at the docked width; past that a tab is a sliver.
+const BROWSER_TAB_MAX = 8;
+
+// What the proxy says went wrong, in the words a user can act on. Anything
+// unlisted is a page that did not load, which is all the shell can honestly
+// say about it.
+const BROWSE_ERRORS = {
+  refused: "Nothing is answering at that address",
+  timeout: "That page took too long to answer",
+  tls: "That site's certificate could not be read",
+  unknown_host: "That address did not resolve",
+  loop: "That address is PocketTUI itself",
+  upstream: "That page could not be loaded",
+};
+
+// The failures that mean "not on this scheme, perhaps": nothing listening on
+// the port, nothing answering in time, or a plaintext port that turned out to
+// want TLS. A guessed scheme gets one retry as the other one on these; the
+// rest are the target answering, and answering is not a reason to try again.
+const BROWSE_SCHEME_RETRY = { refused: 1, timeout: 1, tls: 1 };
+
+// Why the mint refused, same idea. bad_prefix and bad_origin are the shell's
+// own bugs rather than the user's, so they read as one failure.
+const BROWSE_MINT_ERRORS = {
+  bad_url: "That is not an address to open",
+  loop: "That address is PocketTUI itself",
+  browse_unavailable: "Browsing isn't available on this computer yet",
+};
+
+// The steps the two buttons walk, a desktop browser's own set. 1 is one of
+// them, so a page that has been zoomed always has a step back to its size.
+const BROWSER_ZOOMS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+
+// DuckDuckGo rather than Google: the proxy fetches every page from the
+// computer, so a search engine sees the computer's public address, and Google
+// rate-limits /search for a shared one (an institute NAT, a large office) with
+// a captcha whose site key refuses to run on any origin but Google's own —
+// which through the proxy it never is. DuckDuckGo has no such wall and its
+// results page renders in the sandboxed frame. Google is still one typed
+// address away.
+const BROWSER_HOME = "https://duckduckgo.com/";
+// Where a line that is not an address goes (browserTyped). Beside the home
+// page so the two stay the same engine.
+const BROWSER_SEARCH = "https://duckduckgo.com/?q=";
+
+// One token per computer rather than per pane: the mint is the machine's
+// answer about itself, and a second pane asking for one of its own would be
+// a second ask for the record the backend hands back either way.
 let browserToken = null;        // {token, prefix} once api/browse has answered
-// Which screen the full-screen shape covered, to put back when it closes.
-let browserOriginFrom = null;
-let browserExpanded = cfg.browserExpanded;
 // The permission a tab put on the computer's own network is served under,
 // asked for when the pane opens rather than at the press: the key should turn a
 // page round, not first wait on a round trip to the computer.
@@ -45,9 +100,136 @@ let browserTabToken = null;
 // mint's same-origin gate). Asked once, and the key goes.
 let browserTabBlocked = false;
 
-// As many as the strip holds and anybody keeps track of. Eight chips still
-// carry a readable name at the docked width; past that a tab is a sliver.
-const BROWSER_TAB_MAX = 8;
+// ---- bookmarks -------------------------------------------------------------
+// Kept on the computer rather than in this browser's storage: the phone and the
+// laptop reach the same machine, and a page worth keeping is worth keeping from
+// both. The whole list goes back on every change — it is a handful of entries
+// the shell already holds, so a merge protocol would buy nothing.
+
+let browserMarks = [];           // as the computer holds them, oldest first
+let browserMarksAsked = false;   // the GET has been made and answered
+// What each page called itself, as its shim reported it. Kept here rather than
+// read off the frame: the document is cross-origin and its title is not ours
+// to ask for after the fact.
+let browserMarkTitles = {};
+
+function browserMarkAt(url) {
+  return browserMarks.findIndex((b) => b && b.url === url);
+}
+
+// What to write on a chip: the title the page reported, and failing that its
+// host — a chip with no words on it is not a chip.
+function browserMarkName(url) {
+  const t = browserMarkTitles[url];
+  if (t) return t;
+  try { return new URL(url).host; } catch (e) { return url; }
+}
+
+function browserMarkHost(url) {
+  try { return new URL(url).host; } catch (e) { return url; }
+}
+
+// Asked once per pane opening rather than at boot: a shell that never opens the
+// pane should not be asking this computer for a list it will not draw. A failed
+// ask is not remembered, so the next opening tries again.
+async function browserLoadMarks() {
+  if (browserMarksAsked || !hasCapStrict("bookmarks")) return;
+  browserMarksAsked = true;
+  try {
+    const r = await fetch(apiURL("api/browse/bookmarks"), {
+      cache: "no-store", headers: authHeaders(),
+    });
+    const d = await r.json();
+    if (!r.ok || !d || !Array.isArray(d.bookmarks)) throw new Error("bad answer");
+    browserMarks = d.bookmarks;
+  } catch (e) {
+    dbg("bookmarks: load failed", e);
+    browserMarksAsked = false;
+    return;
+  }
+  browserRenderMarks();
+}
+
+// Optimistic: every pane's bar is drawn from the change before the write goes
+// out, because the alternative is a chip that appears a round trip after the
+// tap. A refused write is the one case that reads back — what is on disk is then
+// the truth and the bars are showing something that never got there.
+async function browserSaveMarks() {
+  browserRenderMarks();
+  try {
+    const r = await fetch(apiURL("api/browse/bookmarks"), {
+      method: "PUT", cache: "no-store",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ bookmarks: browserMarks }),
+    });
+    if (!r.ok) throw new Error("http " + r.status);
+  } catch (e) {
+    dbg("bookmarks: save failed", e);
+    toast("Could not save bookmark");
+    browserMarksAsked = false;
+    browserLoadMarks();
+  }
+}
+
+// The panes the column has, by the id it knows each of them by ("browser" for
+// the one the markup ships, "browser#2" for the copy made beside it). Everything
+// below the factory that the rest of the app calls is a dispatcher over this.
+const browserPanes = {};
+
+function browserOpenIds() {
+  return Object.keys(browserPanes).filter((id) => browserPanes[id].isOpen());
+}
+
+function browserAnyOpen() { return browserOpenIds().length > 0; }
+
+function browserAnyDocked() {
+  return Object.values(browserPanes).some((pane) => pane.isDocked());
+}
+
+// Whether there is a row of the column to open into. Off a wide layout, or with
+// no terminal behind it, the pane's only shape is the full-screen one — which is
+// the markup's own pane and never a copy of it.
+function browserDockable() {
+  return isWideLayout() && $("screen-term").classList.contains("active");
+}
+
+// The bar in every pane. A bookmark is the computer's rather than a pane's, so a
+// page starred in one row shows up in the other row's bar too; which chip is
+// drawn as the page on screen is each pane's own answer (renderBrowserMarks, in
+// the factory).
+function browserRenderMarks() {
+  for (const pane of Object.values(browserPanes)) pane.renderMarks();
+}
+
+// ------------------------------------------------------------
+// One pane
+// ------------------------------------------------------------
+
+// One call of this is one pane. The body below is the module this file used to
+// be, wrapped rather than rewritten — it is not indented into the function,
+// because every line of it would then have moved and the change would read as a
+// rewrite of a pane that has not changed. What the wrapper buys is that each
+// `let` is now that pane's own, and a mint landing from a navigation started
+// before the user touched the other pane still builds its frame in the pane it
+// was asked for, which no swapped "current pane" pointer can promise across an
+// await. `root` is that pane's own screen and `q` is how every id inside it is
+// reached, since the copy carries the same ids as the original; `id` is what the
+// column calls it, and what the body branches on wherever a copy is not the
+// markup's own pane (the expand it remembers, the full-screen shape it never
+// takes, its own half of the record). What the rest of the app calls is the
+// dispatchers under the factory.
+function makeBrowserPane(id, root) {
+
+const q = (name) => root.querySelector("#" + name);
+
+let browserDocked = false;      // in the slot beside the terminal, not over it
+let browserOpen = false;        // either shape is up
+// Which screen the full-screen shape covered, to put back when it closes.
+let browserOriginFrom = null;
+// The copy never arrives expanded and never writes the preference back: what
+// is remembered is the markup's own pane's expand, the docked explorer's rule
+// (filesExpanded, 28-file-explorer.js).
+let browserExpanded = id === "browser" ? cfg.browserExpanded : false;
 
 // One tab. `frame` is made on its first navigation (browserFrame) and stays in
 // the wrap, hidden, while another tab is on screen — which is what makes going
@@ -124,32 +306,6 @@ function browserAlive(tab, gen) {
 function browserBase() { return new URL(apiURL(""), location.href); }
 function browserOrigin() { return browserBase().origin; }
 function browserPrefix() { return browserBase().pathname.replace(/\/$/, ""); }
-
-// What the proxy says went wrong, in the words a user can act on. Anything
-// unlisted is a page that did not load, which is all the shell can honestly
-// say about it.
-const BROWSE_ERRORS = {
-  refused: "Nothing is answering at that address",
-  timeout: "That page took too long to answer",
-  tls: "That site's certificate could not be read",
-  unknown_host: "That address did not resolve",
-  loop: "That address is PocketTUI itself",
-  upstream: "That page could not be loaded",
-};
-
-// The failures that mean "not on this scheme, perhaps": nothing listening on
-// the port, nothing answering in time, or a plaintext port that turned out to
-// want TLS. A guessed scheme gets one retry as the other one on these; the
-// rest are the target answering, and answering is not a reason to try again.
-const BROWSE_SCHEME_RETRY = { refused: 1, timeout: 1, tls: 1 };
-
-// Why the mint refused, same idea. bad_prefix and bad_origin are the shell's
-// own bugs rather than the user's, so they read as one failure.
-const BROWSE_MINT_ERRORS = {
-  bad_url: "That is not an address to open",
-  loop: "That address is PocketTUI itself",
-  browse_unavailable: "Browsing isn't available on this computer yet",
-};
 
 // Where a tab is, and where the pane is: the pane is wherever its active tab
 // is, which is the rule the whole topbar follows.
@@ -371,7 +527,7 @@ async function browserEnsureTabToken() {
 }
 
 function browserSetField(url) {
-  const f = $("browser-url");
+  const f = q("browser-url");
   if (f) f.value = url || "";
 }
 
@@ -387,7 +543,7 @@ function browserFrame(tab) {
   // from before a teardown: whatever was still in flight for it gets no frame
   // out of this, whoever asks and however late.
   if (browserTabs.indexOf(tab) < 0) return null;
-  const tpl = $("browser-frame-tpl");
+  const tpl = q("browser-frame-tpl");
   if (!tpl) return null;
   tab.frame = tpl.content.firstElementChild.cloneNode(true);
   // A tab on the computer's own network is this list's absence and nothing
@@ -399,7 +555,7 @@ function browserFrame(tab) {
   // why browserSetLan replaces the element rather than editing it.
   if (tab.lan) tab.frame.removeAttribute("sandbox");
   tab.frame.hidden = tab !== browserTab();
-  $("browser-wrap").appendChild(tab.frame);
+  q("browser-wrap").appendChild(tab.frame);
   return tab.frame;
 }
 
@@ -417,7 +573,7 @@ function browserDropFrames() {
 
 function syncBrowserNav() {
   const tab = browserTab();
-  const back = $("btn-browser-back"), fwd = $("btn-browser-fwd");
+  const back = q("btn-browser-back"), fwd = q("btn-browser-fwd");
   if (back) back.disabled = tab.idx <= 0;
   if (fwd) fwd.disabled = tab.idx < 0 || tab.idx >= tab.stack.length - 1;
 }
@@ -442,7 +598,7 @@ function browserPush(tab, url) {
 function browserRemember() {
   if (!browserDocked) return;
   const rec = cfg.sidePane;
-  if (!rec || !rec.rows.includes("browser")) return;
+  if (!rec || !rec.rows.includes(id)) return;
   // A tab with nothing in it yet is not an address to come back to, so it is
   // left out — and the index has to be the one the shortened list spells,
   // which is what the walk below counts.
@@ -463,7 +619,7 @@ function browserRemember() {
   // this pane's own row id, so a second browser in the other row keeps its own
   // strip rather than the two writing over each other.
   const panes = Object.assign({}, rec.panes);
-  panes.browser = { url: browserCurrentUrl(), tabs: tabs, tab: at };
+  panes[id] = { url: browserCurrentUrl(), tabs: tabs, tab: at };
   cfg.sidePane = Object.assign({}, rec, { panes: panes });
 }
 
@@ -476,7 +632,7 @@ function browserRememberedUrl() {
   // Keyed by this pane's row: the record holds an entry for every browser row it
   // names and none for a row it does not, so this is also the check that the
   // pane was one of them.
-  const p = rec.panes.browser;
+  const p = rec.panes[id];
   return p ? browserNormalize(p.url || "") : "";
 }
 
@@ -497,32 +653,49 @@ async function browserNavigateIn(tab, raw, push = true) {
   // A new destination is a new navigation, so the one silent re-mint it is
   // allowed comes back. Back, forward and reload keep whatever is left of it.
   if (push) tab.reminted = false;
-  // Which permission this tab's pages are fetched under, and where its frame is
-  // sent. On the computer's own network it is the other one, and a frame that
-  // has not loaded anything yet goes in through the hop that clears this
-  // computer's address of whatever a shell it once served left there — before
-  // the first document that could read it runs. Past that hop the pages are
-  // ordinary ones: going through it again would wipe what the page itself has
-  // since put there, which is the session the user just logged in with.
+  // The computer and the frame, or a test standing in for both: everything
+  // under this line — the stack, the chip, the address field and the record —
+  // is the pane's own bookkeeping and happens either way, which is what makes
+  // the hook worth having rather than a stub over the whole function
+  // (side_column_smoke.mjs). Null in every build that is not being driven by
+  // one.
+  if (api.navigateHook) api.navigateHook(url, push);
+  else if (!await browserPointFrame(tab, url, gen)) return;
+  tab.loaded = url;
+  if (push) browserPush(tab, url);
+  if (tab === browserTab()) { browserSetField(url); syncBrowserNav(); }
+  renderBrowserTabs();
+  browserRemember();
+}
+
+// Which permission this tab's pages are fetched under, and where its frame is
+// sent. On the computer's own network it is the other one, and a frame that has
+// not loaded anything yet goes in through the hop that clears this computer's
+// address of whatever a shell it once served left there — before the first
+// document that could read it runs. Past that hop the pages are ordinary ones:
+// going through it again would wipe what the page itself has since put there,
+// which is the session the user just logged in with. False is a navigation that
+// got nowhere, and its caller writes nothing down.
+async function browserPointFrame(tab, url, gen) {
   let target;
   if (tab.lan) {
     const rec = await browserEnsureTabToken();
-    if (!browserAlive(tab, gen)) return;
-    if (!rec) { toast("Couldn't reach the computer"); return; }
+    if (!browserAlive(tab, gen)) return false;
+    if (!rec) { toast("Couldn't reach the computer"); return false; }
     const proxied = browserProxied(url, rec);
     target = tab.primed ? proxied : browserEnterUrl(proxied, rec);
   } else {
-    if (!await browserEnsureToken(url)) return;
+    if (!await browserEnsureToken(url)) return false;
     // The mint is a round trip, and this may be a tab the strip has closed or a
     // pane that has been taken down since it was asked for. Nothing below this
     // line is worth doing then, and the frame it would make is worse than
     // nothing.
-    if (!browserAlive(tab, gen)) return;
+    if (!browserAlive(tab, gen)) return false;
     target = browserProxied(url);
   }
-  if (!target) { toast("That is not an address to open"); return; }
+  if (!target) { toast("That is not an address to open"); return false; }
   const frame = browserFrame(tab);
-  if (!frame) return;
+  if (!frame) return false;
   // Before the load rather than after its landing: the frame's width is the
   // viewport the page lays itself out against, so setting it here is what
   // saves the zoomed page a reflow on its first paint.
@@ -546,11 +719,7 @@ async function browserNavigateIn(tab, raw, push = true) {
     frame.src = target;
     tab.primed = true;
   }
-  tab.loaded = url;
-  if (push) browserPush(tab, url);
-  if (tab === browserTab()) { browserSetField(url); syncBrowserNav(); }
-  renderBrowserTabs();
-  browserRemember();
+  return true;
 }
 
 // The tab on screen, which is what every control in the topbar acts on.
@@ -564,7 +733,7 @@ function browserNavigate(raw, push = true) {
 // mode a tab's rather than the pane's: a switch re-reads it here, and a tab
 // that was never turned round is dark beside one that was.
 function syncBrowserLan() {
-  const btn = $("btn-browser-tab");
+  const btn = q("btn-browser-tab");
   if (!btn) return;
   const on = !!(browserTab() && browserTab().lan);
   btn.classList.toggle("on", on);
@@ -602,10 +771,6 @@ function browserSetLan(tab, on) {
 }
 
 // ---- zoom ------------------------------------------------------------------
-
-// The steps the two buttons walk, a desktop browser's own set. 1 is one of
-// them, so a page that has been zoomed always has a step back to its size.
-const BROWSER_ZOOMS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 
 // Zoom belongs to the host, not to the page: a dev server read at 125% is read
 // at 125% on every page it serves, which is what a desktop browser's per-site
@@ -690,9 +855,9 @@ function browserStepZoom(delta) {
 // The file bar's dropdown, drawn where one is needed (showViewMenu,
 // 28-file-explorer.js): a class on the wrap, a scrim inside the pane.
 function showBrowserZoomMenu(on) {
-  $("browser-zoom-wrap").classList.toggle("open", on);
-  $("browser-menu-scrim").classList.toggle("show", on);
-  $("btn-browser-zoom").setAttribute("aria-expanded", on ? "true" : "false");
+  q("browser-zoom-wrap").classList.toggle("open", on);
+  q("browser-menu-scrim").classList.toggle("show", on);
+  q("btn-browser-zoom").setAttribute("aria-expanded", on ? "true" : "false");
   if (on) syncBrowserZoom();
 }
 
@@ -703,78 +868,8 @@ function syncBrowserZoom(host) {
   const factor = browserZoomFor(host === undefined ? browserZoomHost() : host);
   // A host left anywhere but 100% is a state that outlives the pane being
   // closed, so the key carries it: nothing else on screen would say so.
-  $("btn-browser-zoom").classList.toggle("on", factor !== 1);
-  $("browser-zoom-pct").textContent = Math.round(factor * 100) + "%";
-}
-
-// ---- bookmarks -------------------------------------------------------------
-// Kept on the computer rather than in this browser's storage: the phone and the
-// laptop reach the same machine, and a page worth keeping is worth keeping from
-// both. The whole list goes back on every change — it is a handful of entries
-// the shell already holds, so a merge protocol would buy nothing.
-
-let browserMarks = [];           // as the computer holds them, oldest first
-let browserMarksAsked = false;   // the GET has been made and answered
-// What each page called itself, as its shim reported it. Kept here rather than
-// read off the frame: the document is cross-origin and its title is not ours
-// to ask for after the fact.
-let browserMarkTitles = {};
-
-function browserMarkAt(url) {
-  return browserMarks.findIndex((b) => b && b.url === url);
-}
-
-// What to write on a chip: the title the page reported, and failing that its
-// host — a chip with no words on it is not a chip.
-function browserMarkName(url) {
-  const t = browserMarkTitles[url];
-  if (t) return t;
-  try { return new URL(url).host; } catch (e) { return url; }
-}
-
-function browserMarkHost(url) {
-  try { return new URL(url).host; } catch (e) { return url; }
-}
-
-// Asked once per pane opening rather than at boot: a shell that never opens the
-// pane should not be asking this computer for a list it will not draw. A failed
-// ask is not remembered, so the next opening tries again.
-async function browserLoadMarks() {
-  if (browserMarksAsked || !hasCapStrict("bookmarks")) return;
-  browserMarksAsked = true;
-  try {
-    const r = await fetch(apiURL("api/browse/bookmarks"), {
-      cache: "no-store", headers: authHeaders(),
-    });
-    const d = await r.json();
-    if (!r.ok || !d || !Array.isArray(d.bookmarks)) throw new Error("bad answer");
-    browserMarks = d.bookmarks;
-  } catch (e) {
-    dbg("bookmarks: load failed", e);
-    browserMarksAsked = false;
-    return;
-  }
-  renderBrowserMarks();
-}
-
-// Optimistic: the bar is already drawn from the change by the time this runs,
-// because the alternative is a chip that appears a round trip after the tap. A
-// refused write is the one case that reads back — what is on disk is then the
-// truth and the bar is showing something that never got there.
-async function browserSaveMarks() {
-  try {
-    const r = await fetch(apiURL("api/browse/bookmarks"), {
-      method: "PUT", cache: "no-store",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ bookmarks: browserMarks }),
-    });
-    if (!r.ok) throw new Error("http " + r.status);
-  } catch (e) {
-    dbg("bookmarks: save failed", e);
-    toast("Could not save bookmark");
-    browserMarksAsked = false;
-    browserLoadMarks();
-  }
+  q("btn-browser-zoom").classList.toggle("on", factor !== 1);
+  q("browser-zoom-pct").textContent = Math.round(factor * 100) + "%";
 }
 
 // The star is a toggle rather than a menu: there are two things anyone wants
@@ -786,12 +881,11 @@ function browserToggleMark() {
   if (i >= 0) browserMarks.splice(i, 1);
   else browserMarks.push({ url: url, title: browserMarkName(url),
                            added: Math.round(Date.now() / 1000) });
-  renderBrowserMarks();
   browserSaveMarks();
 }
 
 function renderBrowserMarks() {
-  const bar = $("browser-bookmarks");
+  const bar = q("browser-bookmarks");
   const here = browserCurrentUrl();
   bar.textContent = "";
   for (const b of browserMarks) {
@@ -812,8 +906,6 @@ function renderBrowserMarks() {
         const i = browserMarkAt(url);
         if (i < 0) return;
         browserMarks.splice(i, 1);
-        renderBrowserMarks();
-        syncBrowserStar();
         browserSaveMarks();
       },
     }, "\u00d7");
@@ -829,7 +921,7 @@ function renderBrowserMarks() {
 // Whether the page on screen is one of them. Re-asked on every landing, since
 // the page moves under the key.
 function syncBrowserStar() {
-  const btn = $("btn-browser-star");
+  const btn = q("btn-browser-star");
   const on = browserMarkAt(browserCurrentUrl()) >= 0;
   btn.querySelector("use").setAttribute("href", on ? "#i-star-fill" : "#i-star");
   btn.setAttribute("aria-label", on ? "Remove this bookmark" : "Bookmark this page");
@@ -859,8 +951,8 @@ function browserTabName(tab) {
 // only where tabs are. The "+" after them is markup and is not touched, being
 // outside the row they live in.
 function renderBrowserTabs() {
-  const bar = $("browser-tab-row");
-  const plus = $("btn-browser-newtab");
+  const bar = q("browser-tab-row");
+  const plus = q("btn-browser-newtab");
   if (!bar || !plus) return;
   browserTabs.forEach((tab, i) => {
     const name = browserTabName(tab);
@@ -978,9 +1070,16 @@ function browserAddTab() {
     toast("Eight tabs is as many as this pane holds");
     return;
   }
+  browserHomeTab(browserMakeTab(false));
+}
+
+// A tab sent to the home page with the address field waiting on it. The "+"
+// opens one, and so does a copy of this pane the split menu has just made —
+// which is a second window of the same browser, and a window opens the way its
+// first tab does.
+function browserHomeTab(tab) {
   const gen = browserGen;
-  const tab = browserMakeTab(false);
-  const f = $("browser-url");
+  const f = q("browser-url");
   // Focused inside the click rather than after the navigation: on a phone the
   // keyboard comes up for a focus a gesture asked for and for no other, and the
   // address only lands a turn later. Selected once it has, so the first
@@ -1081,8 +1180,8 @@ function browserSeedTabs(urls, active) {
 // are both read from there.
 function syncBrowserExpand() {
   const on = browserDocked && browserExpanded;
-  sideSetFull("browser", on);
-  const btn = $("btn-browser-expand");
+  sideSetFull(id, on);
+  const btn = q("btn-browser-expand");
   if (!btn) return;
   btn.querySelector("use").setAttribute("href", on ? "#i-collapse" : "#i-expand");
   btn.setAttribute("aria-label", on ? "Shrink the browser pane" : "Expand the browser pane");
@@ -1093,17 +1192,17 @@ function syncBrowserExpand() {
 // other row's arrival folds this one away (sideSetFull, 26-side-pane.js).
 function browserSetExpanded(v) {
   browserExpanded = v;
-  cfg.browserExpanded = v;
+  if (id === "browser") cfg.browserExpanded = v;
   syncBrowserExpand();
 }
 
 // This pane as a row of the column: the one screen it puts in its row, the way it
 // closes, and its expand, all of which are the column's to ask for and this
 // module's to do (26-side-pane.js).
-sideRegister("browser", {
+sideRegister(id, {
   type: "browser",
-  els: () => [$("screen-browser")],
-  close: () => closeDockedBrowser("browser"),
+  els: () => [root],
+  close: () => closeDockedBrowser(),
   setExpanded: (on) => browserSetExpanded(on),
 });
 
@@ -1111,14 +1210,14 @@ sideRegister("browser", {
 // docked editor with unsaved work whose owner said stay (sideClaim,
 // 26-side-pane.js) — and nothing about the browser has moved by then.
 function openDockedBrowser(opts) {
-  if (!sideClaim("browser", opts)) return false;
+  if (!sideClaim(id, opts)) return false;
   browserDocked = true;
   browserOpen = true;
   // Redundant beside a live terminal — it is right there — and the pane has
   // its own cross for leaving.
-  $("btn-browser-term").style.display = "none";
-  $("screen-browser").classList.add("docked");
-  $("screen-browser").classList.add("active");
+  q("btn-browser-term").style.display = "none";
+  root.classList.add("docked");
+  root.classList.add("active");
   syncBrowserExpand();
   browserRemember();
   return true;
@@ -1127,19 +1226,15 @@ function openDockedBrowser(opts) {
 // The frame keeps its page: the pane is a tap away again, and reloading a dev
 // server every time it is closed would be the wrong trade. Only the slot and
 // the classes go back.
-// `id` is which of the column's rows this is about, and this build has one
-// browser whose id is "browser": anything else names a row this module has no
-// pane for, and there is nothing here to close for it.
-function closeDockedBrowser(id) {
-  if (id && id !== "browser") return;
+function closeDockedBrowser() {
   if (!browserDocked) return;
   browserDocked = false;
   browserOpen = false;
   showBrowserZoomMenu(false);
-  $("screen-browser").classList.remove("docked");
-  $("screen-browser").classList.remove("active");
+  root.classList.remove("docked");
+  root.classList.remove("active");
   syncBrowserExpand();       // takes .side-full off the terminal with it
-  sideDrop("browser");
+  sideDrop(id);
 }
 
 function openFullBrowser() {
@@ -1149,12 +1244,12 @@ function openFullBrowser() {
   $(browserOriginFrom).classList.remove("active");
   // Only the terminal is worth a one-tap way back to — the button says
   // terminal, exactly as the explorer's does.
-  $("btn-browser-term").style.display =
+  q("btn-browser-term").style.display =
     browserOriginFrom === "screen-term" ? "" : "none";
   browserDocked = false;
   browserOpen = true;
-  $("screen-browser").classList.remove("docked");
-  $("screen-browser").classList.add("active");
+  root.classList.remove("docked");
+  root.classList.add("active");
   syncBrowserExpand();
   syncChrome();
   history.pushState({ browser: true }, "", location.href);
@@ -1164,7 +1259,7 @@ function openFullBrowser() {
 // here touches history.
 function closeFullBrowser() {
   showBrowserZoomMenu(false);
-  $("screen-browser").classList.remove("active");
+  root.classList.remove("active");
   const back = browserOriginFrom || "screen-list";
   browserOriginFrom = null;
   browserOpen = false;
@@ -1175,34 +1270,20 @@ function closeFullBrowser() {
   if (back === "screen-term") refit(0);
 }
 
-// DuckDuckGo rather than Google: the proxy fetches every page from the
-// computer, so a search engine sees the computer's public address, and Google
-// rate-limits /search for a shared one (an institute NAT, a large office) with
-// a captcha whose site key refuses to run on any origin but Google's own —
-// which through the proxy it never is. DuckDuckGo has no such wall and its
-// results page renders in the sandboxed frame. Google is still one typed
-// address away.
-const BROWSER_HOME = "https://duckduckgo.com/";
-// Where a line that is not an address goes (browserTyped). Beside the home
-// page so the two stay the same engine.
-const BROWSER_SEARCH = "https://duckduckgo.com/?q=";
-
 // Every way in lands here — the globe key, the header button, a tapped private
 // URL in the terminal, a restored session — so the two shapes are one entry
 // point, the way openExplorer is for the folder. `tabs` and `at` are the strip
 // a reload is putting back (restoreFileView, 09-image-viewer.js); every other
-// caller opens the pane on whatever it was left holding. `id` is which of the
-// column's rows it opens as — this build has one browser, whose id is "browser",
-// and an id naming another row has no pane here to open — and `opts` is the
-// column's own (sideClaim's `keep`).
-function openBrowser(url, tabs, at, id, opts) {
-  if (id && id !== "browser") return;
+// caller opens the pane on whatever it was left holding; `opts` is the column's
+// own (sideClaim's `keep`). Which of the column's rows this is, is the factory's
+// `id` — the dispatcher under it is what picks the pane a caller means.
+function openBrowser(url, tabs, at, opts) {
   if (needsSetup()) { openSettings(true); return; }
   if (demoMode) { toast("No browser in the demo"); return; }
   if (Array.isArray(tabs) && tabs.length) browserSeedTabs(tabs, at);
   // A refused row is no pane at all: seeding a tab into one and sending it
   // somewhere would be a page loading where nothing opened.
-  if (isWideLayout() && $("screen-term").classList.contains("active")) {
+  if (browserDockable()) {
     if (!openDockedBrowser(opts)) return;
   } else openFullBrowser();
   browserLoadMarks();
@@ -1222,19 +1303,16 @@ function openBrowser(url, tabs, at, id, opts) {
   // as broken, and the address field is one tap away either way.
   const tab = browserTab();
   const last = browserCurrentUrl() || browserRememberedUrl() || BROWSER_HOME;
+  // A copy with nothing in it at all is a second window rather than this one
+  // reopened — the split menu has just made it — and a window opens on its home
+  // page with the address field waiting, never on a copy of the other pane's
+  // strip.
+  if (id !== "browser" && tab.idx < 0 && last === BROWSER_HOME) {
+    browserHomeTab(tab);
+    return;
+  }
   if (last !== tab.loaded) browserNavigate(last, tab.idx < 0);
   else { browserSetField(last); syncBrowserNav(); }
-}
-
-// The globe key's own way in and out, the folder key's toggle (openFilesAtCwd,
-// 28-file-explorer.js) mirrored: the pane the key put up is the pane it puts
-// away. Full screen there is nothing to toggle — back is how that one leaves —
-// so openBrowser stays the way in for everything else, and a tapped URL still
-// lands in a pane that is already open.
-function toggleBrowserPane() {
-  const id = sideFocusedOf("browser");
-  if (id) { closeDockedBrowser(id); return; }
-  openBrowser();
 }
 
 // ---- what the proxied page says back ---------------------------------------
@@ -1261,7 +1339,7 @@ window.addEventListener("message", (e) => {
     if (!url) return;
     // Not while it is being typed into: the user is mid-address and the page
     // finishing its load must not take the field away from them.
-    if (live && document.activeElement !== $("browser-url")) browserSetField(url);
+    if (live && document.activeElement !== q("browser-url")) browserSetField(url);
     if (tab.navigating) {
       // The load this pane asked for, so this is the address it landed on
       // rather than somewhere new: it corrects the entry the navigation made,
@@ -1383,29 +1461,29 @@ function browserStepIn(tab, delta) {
 
 function browserStep(delta) { browserStepIn(browserTab(), delta); }
 
-$("btn-browser-back").addEventListener("click", () => browserStep(-1));
-$("btn-browser-fwd").addEventListener("click", () => browserStep(1));
-$("btn-browser-reload").addEventListener("click", () => {
+q("btn-browser-back").addEventListener("click", () => browserStep(-1));
+q("btn-browser-fwd").addEventListener("click", () => browserStep(1));
+q("btn-browser-reload").addEventListener("click", () => {
   const u = browserCurrentUrl();
   if (u) browserNavigate(u, false);
 });
-$("btn-browser-zoom").addEventListener("click", () => {
-  showBrowserZoomMenu(!$("browser-zoom-wrap").classList.contains("open"));
+q("btn-browser-zoom").addEventListener("click", () => {
+  showBrowserZoomMenu(!q("browser-zoom-wrap").classList.contains("open"));
 });
 // Stepping leaves the panel up: a zoom is walked to, not picked, and the label
 // above these two is what says where it got to.
-$("browser-zoom-minus").addEventListener("click", () => browserStepZoom(-1));
-$("browser-zoom-plus").addEventListener("click", () => browserStepZoom(1));
-$("browser-zoom-pct").addEventListener("click", () => browserSetZoom(1));
-$("browser-menu-scrim").addEventListener("click", () => showBrowserZoomMenu(false));
-$("btn-browser-star").addEventListener("click", () => browserToggleMark());
+q("browser-zoom-minus").addEventListener("click", () => browserStepZoom(-1));
+q("browser-zoom-plus").addEventListener("click", () => browserStepZoom(1));
+q("browser-zoom-pct").addEventListener("click", () => browserSetZoom(1));
+q("browser-menu-scrim").addEventListener("click", () => showBrowserZoomMenu(false));
+q("btn-browser-star").addEventListener("click", () => browserToggleMark());
 // This tab, on the computer's own network: the same address in the same frame,
 // fetched this time as a page in its own right. An app written to be the top
 // window then works — top is the page itself, the views it writes are its own
 // to reach, and the storage and cookies a real visit would have are there —
 // none of which is true of a tab in the ordinary mode. A second press puts the
 // tab back, and the tab beside it is unaffected either way.
-$("btn-browser-tab").addEventListener("click", async () => {
+q("btn-browser-tab").addEventListener("click", async () => {
   const tab = browserTab();
   if (tab.lan) { browserSetLan(tab, false); return; }
   if (!browserUrlIn(tab)) return;
@@ -1421,18 +1499,18 @@ $("btn-browser-tab").addEventListener("click", async () => {
   browserSetLan(tab, true);
 });
 // Another tab in the pane, at the end of the strip where a browser keeps it.
-$("btn-browser-newtab").addEventListener("click", () => browserAddTab());
-$("btn-browser-expand").addEventListener("click", () => {
+q("btn-browser-newtab").addEventListener("click", () => browserAddTab());
+q("btn-browser-expand").addEventListener("click", () => {
   browserSetExpanded(!browserExpanded);
   refit(0);
 });
-$("btn-browser-close").addEventListener("click", () => closeDockedBrowser());
-$("btn-browser-term").addEventListener("click", () => history.back());
+q("btn-browser-close").addEventListener("click", () => closeDockedBrowser());
+q("btn-browser-term").addEventListener("click", () => history.back());
 
-$("browser-url").addEventListener("keydown", (e) => {
+q("browser-url").addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
-    const v = $("browser-url").value.trim();
+    const v = q("browser-url").value.trim();
     if (v) browserNavigate(browserTyped(v));
     // Blurred either way: on a phone the address bar is what the keyboard is
     // up for, and the page underneath is what the tap was about. A new tab's
@@ -1440,7 +1518,7 @@ $("browser-url").addEventListener("keydown", (e) => {
     // back from the page they just asked for would be the opposite of the help
     // it was armed to give.
     browserCancelGrab();
-    $("browser-url").blur();
+    q("browser-url").blur();
     return;
   }
   if (e.key === "Escape") {
@@ -1449,7 +1527,7 @@ $("browser-url").addEventListener("keydown", (e) => {
     e.stopPropagation();
     browserSetField(browserCurrentUrl());
     browserCancelGrab();
-    $("browser-url").blur();
+    q("browser-url").blur();
   }
 });
 
@@ -1461,12 +1539,12 @@ $("browser-url").addEventListener("keydown", (e) => {
 // the pane — the terminal beside it is live and Escape is one of its keys.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (!$("screen-browser").classList.contains("active")) return;
-  if (e.target === $("browser-url")) return;
-  if (browserDocked && !$("screen-browser").contains(e.target)) return;
+  if (!root.classList.contains("active")) return;
+  if (e.target === q("browser-url")) return;
+  if (browserDocked && !root.contains(e.target)) return;
   // Ahead of the pane's own Escape: an open panel is the top thing to dismiss,
   // exactly as the file bar's dropdowns are.
-  if ($("browser-zoom-wrap").classList.contains("open")) {
+  if (q("browser-zoom-wrap").classList.contains("open")) {
     e.preventDefault();
     showBrowserZoomMenu(false);
     return;
@@ -1478,16 +1556,17 @@ document.addEventListener("keydown", (e) => {
 }, true);
 
 window.addEventListener("popstate", () => {
-  // The docked pane pushed nothing, so no pop is ever its own.
+  // The docked pane pushed nothing, so no pop is ever its own — and a copy of
+  // this pane is only ever docked, so no pop is ever a copy's.
   if (browserDocked) return;
-  if (!$("screen-browser").classList.contains("active")) return;
+  if (!root.classList.contains("active")) return;
   closeFullBrowser();
 });
 
 // The left-edge back gesture the other full-screen views carry
 // (attachEdgeSwipe, 28-file-explorer.js). Docked it never fires: the pane is
 // beside the terminal, not over it, and the gesture belongs to the screen.
-attachEdgeSwipe($("screen-browser"), () => history.back());
+attachEdgeSwipe(root, () => history.back());
 
 // ---- per-session and per-computer state ------------------------------------
 
@@ -1521,9 +1600,9 @@ function browserTeardown() {
   browserOriginFrom = null;
   browserDropFrames();
   showBrowserZoomMenu(false);
-  $("screen-browser").classList.remove("docked");
-  $("screen-browser").classList.remove("active");
-  if (wasDocked) { syncBrowserExpand(); sideDrop("browser"); }
+  root.classList.remove("docked");
+  root.classList.remove("active");
+  if (wasDocked) { syncBrowserExpand(); sideDrop(id); }
 }
 
 // Only the docked shape comes back: it is the only one a rail switch can
@@ -1556,10 +1635,10 @@ function browserRestore(s) {
   else { browserSetField(""); syncBrowserNav(); }
 }
 
-// Everything the pane holds about the computer being left, for a switch to
-// another one (switchProfile, 40-profiles.js). The token is that machine's
-// process, and a page it was serving is not a page on the next one.
-function browserResetForProfile() {
+// This pane back to nothing, for a switch to another computer
+// (browserResetForProfile, under the factory). A page the machine being left was
+// serving is not a page on the next one.
+function browserReset() {
   if (browserDocked) closeDockedBrowser();
   else browserTeardown();
   // Again on its own account: the docked path above goes through
@@ -1567,11 +1646,6 @@ function browserResetForProfile() {
   // machine being left must not land in the pane the next one gets.
   browserGen++;
   browserCancelGrab();
-  browserToken = null;
-  // The next computer answers for itself, both on the flavour and on whether
-  // it is the one that served this shell.
-  browserTabToken = null;
-  browserTabBlocked = false;
   // Every tab with it, frames and all: they are pages on the machine being
   // left. A fresh one takes their place, the way a closed pane's does.
   browserDropFrames();
@@ -1579,11 +1653,6 @@ function browserResetForProfile() {
   browserActive = 0;
   renderBrowserTabs();
   syncBrowserLan();
-  // Another computer keeps its own list, and the one on screen is this one's.
-  browserMarks = [];
-  browserMarksAsked = false;
-  browserMarkTitles = {};
-  renderBrowserMarks();
   showBrowserZoomMenu(false);
   // Nothing is blanked through a frame's location any more: browserDropFrames
   // takes the elements out of the document, which discards their browsing
@@ -1593,31 +1662,205 @@ function browserResetForProfile() {
   syncBrowserNav();
 }
 
-// Whether the computer on the other end can proxy pages at all. Strictly
-// checked: a server too old for api/browse 404s the mint, and the pill's globe
-// key stays hidden rather than being left to fail. The header button is not a
-// control any more (the pane is a two-pane feature) — it is what buildKeybar
-// reads the answer off on a rebuild, which is why its hidden state is still
-// kept, and this is the one place either of them is set.
-function syncBrowseCap() {
-  const on = hasCapStrict("browse");
-  const btn = $("btn-browser");
-  if (btn) btn.hidden = !on;
-  const key = $("keybar").querySelector(".k-browser");
-  if (key) key.classList.toggle("show", on);
+// The two keys in this pane's own bar that a capability answer takes away. The
+// globe key and the header button are the app's rather than a pane's and are
+// dealt with once (syncBrowseCap, under the factory), which is also what calls
+// this.
+function browserSyncCap() {
   // Its own capability, not the proxy's: a server can store bookmarks without
   // httpx to fetch pages with, and one too old for the route would answer the
   // save with a 404 the user only learns about after tapping the star.
-  $("btn-browser-star").hidden = !hasCapStrict("bookmarks");
+  q("btn-browser-star").hidden = !hasCapStrict("bookmarks");
   // Strictly checked too, and with the computer's own refusal on top of it: a
   // server too old for the mode answers with the pane's own permission, and a
   // tab turned round on that is a tab that cannot do the one thing it was
   // turned round for.
   // Opening another tab is not gated: it is a frame in here, which every
   // computer that can show a page at all can serve.
-  $("btn-browser-tab").hidden = !hasCapStrict("browse_tab") || browserTabBlocked;
+  q("btn-browser-tab").hidden = !hasCapStrict("browse_tab") || browserTabBlocked;
 }
 
 renderBrowserTabs();
 syncBrowserNav();
 syncBrowserLan();
+
+// What the column and the rest of the app can ask of this pane. Everything else
+// in the body above is the pane's own and stays in the closure.
+const api = {
+  // Null in every build but one being driven by the column's smoke check, which
+  // hands a pane its navigations instead of a computer (browserNavigateIn).
+  navigateHook: null,
+  isOpen: () => browserOpen,
+  isDocked: () => browserDocked,
+  open: openBrowser,
+  closeDocked: closeDockedBrowser,
+  renderMarks: renderBrowserMarks,
+  syncCap: browserSyncCap,
+  stash: browserStash,
+  restore: browserRestore,
+  teardown: browserTeardown,
+  reset: browserReset,
+};
+browserPanes[id] = api;
+return api;
+
+}
+
+// ------------------------------------------------------------
+// The panes, and the app's way in to them
+// ------------------------------------------------------------
+
+// The pane the markup ships, which is the one every existing way in opens and
+// the only one that is ever the whole window.
+makeBrowserPane("browser", $("screen-browser"));
+
+// The second one, made out of the first: the copy is the whole shape — the tab
+// strip with its window controls, the address row, the bookmarks bar and the
+// wrap the frames go in — with the ids inside it duplicated, which is why the
+// factory reaches them through its own root rather than through the document.
+// What does not come over is what belonged to the pane it was copied from: its
+// chips, its frames, its bookmarks, the address in its field and the classes the
+// column had given it. The frame template does, because that is markup and not
+// state — every frame either pane cuts has to carry the same sandbox list. It
+// goes in right after the original, so it is a following sibling of #screen-term
+// exactly as the original is, which is what the stylesheet's rules are written
+// against.
+function browserMakeAt(id) {
+  if (id !== "browser#2" || browserPanes[id]) return null;
+  const src = $("screen-browser");
+  const clone = src.cloneNode(true);
+  clone.id = "screen-browser-2";
+  clone.classList.remove("active", "docked",
+                         "side-top", "side-bot", "side-hidden");
+  clone.querySelector("#browser-tab-row").textContent = "";
+  const wrap = clone.querySelector("#browser-wrap");
+  const tpl = wrap.querySelector("#browser-frame-tpl");
+  wrap.textContent = "";
+  wrap.appendChild(tpl);
+  const marks = clone.querySelector("#browser-bookmarks");
+  marks.textContent = "";
+  marks.hidden = true;
+  clone.querySelector("#browser-url").value = "";
+  clone.querySelector("#browser-zoom-wrap").classList.remove("open");
+  clone.querySelector("#browser-menu-scrim").classList.remove("show");
+  clone.querySelector("#btn-browser-zoom").setAttribute("aria-expanded", "false");
+  clone.querySelector("#btn-browser-term").style.display = "none";
+  const split = clone.querySelector(".dock-split-wrap");
+  split.classList.remove("open");
+  split.querySelector(".dock-split").setAttribute("aria-expanded", "false");
+  split.querySelector(".dock-split-menu").textContent = "";
+  src.after(clone);
+  sideWireBar(clone);
+  const pane = makeBrowserPane(id, clone);
+  // The capability answer landed before this pane existed, so its own two keys
+  // are told now rather than waiting on a computer that has already spoken — and
+  // its bookmarks bar with them, since the list is the computer's and this is
+  // the one bar that has never drawn it.
+  pane.syncCap();
+  pane.renderMarks();
+  return pane;
+}
+
+// The pane a row id names, made the first time that row is asked for and kept
+// from then on — a copy that has been closed is a copy that can be opened again,
+// and making a fresh one would throw away the tabs it was holding.
+function browserPaneAt(id) {
+  return browserPanes[id] || browserMakeAt(id);
+}
+
+// How the column opens a second one when the split menu asks for it.
+sideMakers.browser = (id) => !!browserPaneAt(id);
+
+// Which of the column's browser rows a call is about. The split menu and a
+// restored record name one; everything else — the globe key, a private URL
+// tapped in the terminal — means the pane a press last named, which with one
+// open is the only answer there is (sideFocusedOf, 26-side-pane.js). The id
+// names a slot rather than a pane that must already exist: opening the second
+// one is what makes it.
+function openBrowser(url, tabs, at, id, opts) {
+  let want = id || sideFocusedOf("browser") || "browser";
+  // The copy is only ever a row of the column. Off a wide layout, or with no
+  // terminal behind it, the only shape left is the full-screen one, and that one
+  // is the markup's own pane.
+  if (want !== "browser" && !browserDockable()) want = "browser";
+  const pane = browserPaneAt(want);
+  return pane ? pane.open(url, tabs, at, opts) : undefined;
+}
+
+// One row of the column, or every one of them: the narrow-layout fallback and
+// the profile switch mean all, the registry and the split menu's eviction mean
+// one. A close for a pane that was never made is nothing to do.
+function closeDockedBrowser(id) {
+  if (id) {
+    const pane = browserPanes[id];
+    if (pane) pane.closeDocked();
+    return;
+  }
+  for (const pane of Object.values(browserPanes)) pane.closeDocked();
+}
+
+// The globe key's own way in and out, the folder key's toggle (openFilesAtCwd,
+// 28-file-explorer.js) mirrored: the pane the key put up is the pane it puts
+// away, and with two browser rows open that is the one last pressed in. Full
+// screen there is nothing to toggle — back is how that one leaves — so
+// openBrowser stays the way in for everything else, and a tapped URL still lands
+// in a pane that is already open.
+function toggleBrowserPane() {
+  const id = sideFocusedOf("browser");
+  if (id) { closeDockedBrowser(id); return; }
+  openBrowser();
+}
+
+// ---- the rail's stash (see fileViews in 09-image-viewer.js) -----------------
+// Each strip under its own name: two rows of pages, and a restore that did not
+// know which was which would put one back in the other's row.
+
+function browserStash(id) {
+  const pane = browserPanes[id];
+  return pane && pane.isOpen() ? pane.stash() : null;
+}
+
+function browserRestore(a, b) {
+  if (a) browserPanes.browser.restore(a);
+  if (b) {
+    const pane = browserPaneAt("browser#2");
+    if (pane) pane.restore(b);
+  }
+}
+
+function browserTeardown() {
+  for (const pane of Object.values(browserPanes)) pane.teardown();
+}
+
+// Everything the panes hold about the computer being left, for a switch to
+// another one (switchProfile, 40-profiles.js). Each pane's own half first, then
+// the half that was never a pane's: the tokens are that machine's process, and
+// the bookmarks are its list.
+function browserResetForProfile() {
+  for (const pane of Object.values(browserPanes)) pane.reset();
+  browserToken = null;
+  // The next computer answers for itself, both on the flavour and on whether it
+  // is the one that served this shell.
+  browserTabToken = null;
+  browserTabBlocked = false;
+  browserMarks = [];
+  browserMarksAsked = false;
+  browserMarkTitles = {};
+  browserRenderMarks();
+}
+
+// Whether the computer on the other end can proxy pages at all. Strictly
+// checked: a server too old for api/browse 404s the mint, and the pill's globe
+// key stays hidden rather than being left to fail. The header button is not a
+// control any more (the pane is a two-pane feature) — it is what buildKeybar
+// reads the answer off on a rebuild, which is why its hidden state is still
+// kept, and this is the one place either of them is set. The keys inside a pane
+// are that pane's own, and every pane hears the answer.
+function syncBrowseCap() {
+  const on = hasCapStrict("browse");
+  const btn = $("btn-browser");
+  if (btn) btn.hidden = !on;
+  const key = $("keybar").querySelector(".k-browser");
+  if (key) key.classList.toggle("show", on);
+  for (const pane of Object.values(browserPanes)) pane.syncCap();
+}
