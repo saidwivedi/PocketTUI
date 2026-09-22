@@ -2035,6 +2035,163 @@ def _missing_libs(path: str) -> "list[str]":
     return libs
 
 
+PROBE_TIMEOUT_S = 15.0
+PROBE_POLL_S = 0.05
+
+
+def _one_line(e: BaseException) -> str:
+    """An exception as one line, because these are printed one to a line."""
+    return " ".join(str(e).split()) or e.__class__.__name__
+
+
+def _unlink(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _drop_profile(path: Path) -> None:
+    """Remove the probe's throwaway profile, and never fail over it.
+
+    A browser that had to be killed goes on writing its profile for a moment,
+    and a directory that grows while it is being removed is how this used to
+    raise `Directory not empty` out of `--check`. One retry, then it stays and
+    is mentioned; it is a few files in the temp directory either way.
+    """
+    for delay in (0.0, 1.0):
+        if delay:
+            time.sleep(delay)
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+    log(f"left the probe's temp profile behind: {path}")
+
+
+def _wait_gone(proc: subprocess.Popen, timeout: float) -> bool:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if proc.poll() is not None:
+            return True
+        time.sleep(PROBE_POLL_S)
+    return proc.poll() is not None
+
+
+def _stop_probe(proc: subprocess.Popen, write_fd: int) -> None:
+    """Ask the browser to close, then insist, the way `Browser.close` does."""
+    try:
+        os.write(write_fd,
+                 json.dumps({"id": 2, "method": "Browser.close"}).encode() + b"\0")
+    except OSError:
+        pass
+    for sig in (None, signal.SIGTERM, signal.SIGKILL):
+        if sig is not None:
+            try:
+                # start_new_session put it in its own group, so this reaches the
+                # zygote and the renderers too.
+                os.killpg(os.getpgid(proc.pid), sig)
+            except OSError:
+                pass
+        if _wait_gone(proc, 3.0):
+            return
+
+
+def _ask_version(write_fd: int, read_fd: int,
+                 proc: subprocess.Popen) -> "tuple[bool, str]":
+    """Send `Browser.getVersion` down the pipe and wait for its reply."""
+    try:
+        os.write(write_fd,
+                 json.dumps({"id": 1, "method": "Browser.getVersion"}).encode() + b"\0")
+    except OSError as e:
+        return False, f"could not speak to it: {_one_line(e)}"
+    os.set_blocking(read_fd, False)
+    buf = b""
+    end = time.monotonic() + PROBE_TIMEOUT_S
+    while time.monotonic() < end:
+        if proc.poll() is not None:
+            return False, f"it exited {proc.returncode} without answering"
+        try:
+            chunk = os.read(read_fd, 1 << 16)
+        except BlockingIOError:
+            time.sleep(PROBE_POLL_S)
+            continue
+        except OSError as e:
+            return False, f"the protocol pipe broke: {_one_line(e)}"
+        if not chunk:
+            return False, "the protocol pipe closed without an answer"
+        buf += chunk
+        while b"\0" in buf:
+            raw, buf = buf.split(b"\0", 1)
+            try:
+                msg = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if msg.get("id") != 1:
+                continue
+            if "error" in msg:
+                return False, f"it refused the protocol: {msg['error']}"
+            return True, (msg.get("result") or {}).get("product") or ""
+    return False, f"it did not answer the protocol within {PROBE_TIMEOUT_S:.0f}s"
+
+
+def _probe_launch(path: str, version: str) -> "tuple[bool, str]":
+    """Start `path` the way the pane does, and ask it who it is.
+
+    `--dump-dom about:blank` was this probe once, and it is not a question every
+    browser answers: a downloaded Chrome for Testing is not an official build,
+    so it applies the field trial testing config that official Chrome ignores,
+    and under that config the one-shot dump never prints and never exits — while
+    the same binary launches, navigates and evaluates over the debugging pipe in
+    under a second. The pipe is the only way this program ever drives a browser,
+    so the pipe is what gets probed: the flags `launch_flags` produces, the two
+    fds Chrome expects them on, and one `Browser.getVersion`.
+
+    A throwaway profile, not the pane's: the pane's may be in use by a browser
+    that is running right now. No systemd scope either — whether a scope can be
+    had is `systemd_scope_available`'s question, not this binary's fault.
+    """
+    found = Found(path=path, version=version, major=int(version.split(".")[0]),
+                  source="check")
+    profile = Path(tempfile.mkdtemp(prefix="pockettui-check-"))
+    errf = tempfile.NamedTemporaryFile(prefix="pockettui-check-", suffix=".log",
+                                       delete=False)
+    err_path = Path(errf.name)
+    cmd = [path] + launch_flags(found, {}, str(profile), DEFAULT_WIDTH,
+                                DEFAULT_HEIGHT, user_agent_for(version))
+    r_in, w_in = os.pipe()    # the child reads this on fd 3
+    r_out, w_out = os.pipe()  # the child writes this on fd 4
+    proc = None
+    try:
+        try:
+            proc = subprocess.Popen(
+                cmd, preexec_fn=_pipe_preexec(r_in, w_out), pass_fds=(3, 4),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errf,
+                close_fds=True, start_new_session=True, env=launch_env())
+        finally:
+            errf.close()
+            os.close(r_in)
+            os.close(w_out)
+        ok, detail = _ask_version(w_in, r_out, proc)
+    finally:
+        if proc is not None:
+            _stop_probe(proc, w_in)
+        for fd in (w_in, r_out):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        said = ""
+        try:
+            said = err_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            pass
+        _unlink(err_path)
+        _drop_profile(profile)
+    if ok:
+        return True, detail
+    return False, (detail + "\n" + said).strip()
+
+
 def _check(path: str) -> int:
     if not _executable(path):
         print(f"not executable: {path}", file=sys.stderr)
@@ -2043,27 +2200,25 @@ def _check(path: str) -> int:
     if missing:
         print("missing: " + " ".join(missing))
         print(_package_line())
-    with tempfile.TemporaryDirectory(prefix="pockettui-check-") as tmp:
-        try:
-            out = subprocess.run(
-                [path, "--headless=new", "--disable-gpu", "--no-first-run",
-                 f"--user-data-dir={tmp}", "--dump-dom", "about:blank"],
-                capture_output=True, text=True, timeout=15)
-        except subprocess.TimeoutExpired:
-            print("timed out after 15s starting the browser", file=sys.stderr)
-            return 1
-        except OSError as e:
-            print(f"could not run it: {e}", file=sys.stderr)
-            return 1
-    if out.returncode != 0:
-        err = (out.stderr or "").strip()
-        for line in err.splitlines()[-5:] or [f"exited {out.returncode} saying nothing"]:
+    probed = _probe_version(path)
+    if not probed:
+        print(f"it does not answer --version as a Chromium {MIN_MAJOR} or newer: "
+              f"{path}", file=sys.stderr)
+        return 1
+    # Nothing below is allowed to raise: `--check` is a verdict, and both the
+    # installer and `--install` read it as one.
+    try:
+        ok, detail = _probe_launch(path, probed[0])
+    except OSError as e:
+        print(f"could not start it: {_one_line(e)}", file=sys.stderr)
+        return 1
+    if not ok:
+        for line in detail.splitlines()[-6:] or ["it did not start"]:
             print(line, file=sys.stderr)
-        if any(m in err for m in SANDBOX_MARKERS):
+        if any(m in detail for m in SANDBOX_MARKERS):
             print(SANDBOX_HINT, file=sys.stderr)
         return 1
-    probed = _probe_version(path)
-    print(f"ok {probed[0] if probed else 'unknown'}")
+    print(f"ok {probed[0]}")
     return 0
 
 
@@ -2123,10 +2278,6 @@ class InstallError(Exception):
 
 class _Retry(Exception):
     """This attempt failed in a way another attempt might survive."""
-
-
-def _one_line(e: BaseException) -> str:
-    return " ".join(str(e).split()) or e.__class__.__name__
 
 
 def _download_platform() -> str:
@@ -2368,13 +2519,6 @@ def _installed_binary(vdir: Path) -> "str | None":
     return None
 
 
-def _unlink(path: Path) -> None:
-    try:
-        path.unlink()
-    except OSError:
-        pass
-
-
 def _prune(root: Path, keep: str) -> None:
     """Leave the version just installed, `current`, and nothing else of ours."""
     try:
@@ -2472,7 +2616,7 @@ def _install_run(version: "str | None", dry_run: bool) -> int:
         raise InstallError(f"the download unpacked without a browser in {vdir}")
     # The same probe `--check` runs: a browser that cannot start here is not
     # worth pointing `current` at, and its complaint is the useful output.
-    if _probe(binary) != 0:
+    if _check(binary) != 0:
         # The tree and the `.part` stay: nothing about them is known to be
         # wrong, and the next run has nothing left to download.
         print("the downloaded browser will not start here", file=sys.stderr)
@@ -2483,24 +2627,10 @@ def _install_run(version: "str | None", dry_run: bool) -> int:
     return 0
 
 
-def _probe(binary: str) -> int:
-    """`--check`'s verdict on a path, with its own housekeeping not counting.
-
-    A browser that had to be killed can still be writing the probe's throwaway
-    profile when the temp directory goes, and that raises out of `_check`. It is
-    still the browser's verdict, not a problem with the tree we unpacked.
-    """
-    try:
-        return _check(binary)
-    except OSError as e:
-        print(f"the browser did not shut down cleanly: {_one_line(e)}", file=sys.stderr)
-        return 1
-
-
 def _already(root: Path, ver: str) -> "str | None":
     """The browser already unpacked for `ver`, if there is one and it starts."""
     binary = _installed_binary(root / ver)
-    return binary if binary and _probe(binary) == 0 else None
+    return binary if binary and _check(binary) == 0 else None
 
 
 def _adopt(root: Path, ver: str, binary: str) -> None:

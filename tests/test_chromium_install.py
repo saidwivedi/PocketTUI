@@ -48,12 +48,32 @@ MEMBER = {
                 "MacOS/Google Chrome for Testing"),
 }[PLATFORM]
 
-FAKE_BROWSER = f"""#!/bin/sh
-case "$1" in
-  --version) echo "Google Chrome for Testing {VERSION}" ;;
-  *) echo "<html></html>" ;;
-esac
-"""
+# A browser is a thing that says what version it is and then answers the
+# DevTools protocol on fd 3 / fd 4, which is all the probe asks of one.
+FAKE_BROWSER = """#!@PY@
+import json
+import os
+import sys
+
+if "--version" in sys.argv:
+    print("Google Chrome for Testing @VER@")
+    raise SystemExit(0)
+
+buf = b""
+while True:
+    chunk = os.read(3, 4096)
+    if not chunk:
+        break
+    buf += chunk
+    while b"\\0" in buf:
+        raw, buf = buf.split(b"\\0", 1)
+        msg = json.loads(raw.decode())
+        if msg.get("method") == "Browser.getVersion":
+            reply = dict(id=msg["id"], result=dict(product="HeadlessChrome/@VER@"))
+            os.write(4, json.dumps(reply).encode() + b"\\0")
+        elif msg.get("method") == "Browser.close":
+            raise SystemExit(0)
+""".replace("@PY@", sys.executable).replace("@VER@", VERSION)
 
 
 def build_zip() -> bytes:
@@ -277,15 +297,10 @@ def test_install_prunes_older_versions(home, server):
 
 def test_install_keeps_the_tree_when_the_browser_will_not_start(home, server,
                                                                 monkeypatch, capsys):
-    # First the probe says no the noisiest way it can: a browser that had to be
-    # killed, still writing the throwaway profile as the probe's temp dir goes.
-    def wont_start(path):
-        raise OSError(39, "Directory not empty", "Default")
-
-    monkeypatch.setattr(C, "_check", wont_start)
+    # First the probe says no, the way a box with no usable sandbox does.
+    monkeypatch.setattr(C, "_check", lambda path: 1)
     assert C.main(["--install"]) == 1
-    err = capsys.readouterr().err
-    assert "did not shut down cleanly" in err and "will not start here" in err
+    assert "will not start here" in capsys.readouterr().err
     part = root(home) / f"{VERSION}.zip.part"
     assert part.stat().st_size == len(ZIP)
     assert not (root(home) / "current").exists()
@@ -342,3 +357,55 @@ def test_dry_run_can_pin_a_version(home, server, capsys):
     assert f"version {OLDER}" in capsys.readouterr().out
     assert C.main(["--install", "--version", "1.2.3.4", "--dry-run"]) == 1
     assert "no Chrome for Testing 1.2.3.4" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# The probe both --check and --install rest on
+# ---------------------------------------------------------------------------
+
+def test_check_is_a_verdict_and_not_a_traceback(home, monkeypatch, capsys):
+    """Whatever the probe does, `--check` answers 0 or 1 and says why."""
+    binary = fake_installed(home, VERSION)
+    monkeypatch.setattr(C, "_missing_libs", lambda path: [])
+
+    monkeypatch.setattr(C, "_probe_launch",
+                        lambda path, version: (True, "Chrome/999.0.1.2"))
+    assert C.main(["--check", str(binary)]) == 0
+    assert capsys.readouterr().out.strip() == f"ok {VERSION}"
+
+    # The temp profile of a browser that had to be killed can still be growing
+    # as the probe tidies up, which used to come out of here as an OSError.
+    def blows_up(path, version):
+        raise OSError(39, "Directory not empty", "Default")
+
+    monkeypatch.setattr(C, "_probe_launch", blows_up)
+    assert C.main(["--check", str(binary)]) == 1
+    assert "could not start it" in capsys.readouterr().err
+
+    monkeypatch.setattr(C, "_probe_launch",
+                        lambda path, version: (False, "No usable sandbox! unshare"))
+    assert C.main(["--check", str(binary)]) == 1
+    err = capsys.readouterr().err
+    assert "No usable sandbox" in err and "unprivileged user namespaces" in err
+
+    assert C.main(["--check", "/nowhere/chrome"]) == 1
+    assert "not executable" in capsys.readouterr().err
+
+
+def test_check_needs_a_version_it_can_read(home, tmp_path, capsys):
+    mute = tmp_path / "mute"
+    mute.write_text("#!/bin/sh\nexit 0\n")
+    mute.chmod(0o755)
+    assert C.main(["--check", str(mute)]) == 1
+    assert "does not answer --version" in capsys.readouterr().err
+
+
+def test_drop_profile_gives_up_quietly(home, monkeypatch, capsys):
+    stuck = home / "stuck"
+    stuck.mkdir()
+    (stuck / "Default").write_text("x")
+    monkeypatch.setattr(C.shutil, "rmtree", lambda *a, **k: None)
+    monkeypatch.setattr(C.time, "sleep", lambda s: None)
+    C._drop_profile(stuck)          # returns, and says so once
+    assert "left the probe's temp profile behind" in capsys.readouterr().out
+    assert stuck.exists()
