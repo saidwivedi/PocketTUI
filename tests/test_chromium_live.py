@@ -167,7 +167,7 @@ def test_open_data_url_receives_cast_frame_then_still(tmp_path, monkeypatch):
         seen = len(sink.frames)
         tab.note_input("mouseMoved")
         still, data = await wait_frame(sink, "still", after=seen)
-        assert still["fmt"] == "webp" and data[:4] == b"RIFF"
+        assert still["fmt"] == "jpeg" and data[:2] == b"\xff\xd8"
         assert (still["w"], still["h"]) == (400, 300)
 
     live(body, tmp_path)
