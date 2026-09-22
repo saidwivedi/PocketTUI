@@ -129,6 +129,7 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+        await shutdown_full_browser()
         await reap_lingering()
 
 
@@ -1445,6 +1446,12 @@ def server_capabilities() -> dict:
         # /api/fs/thumb — the explorer grid's tiles. False on an install with
         # no ffmpeg to render them with, where the grid keeps its icons.
         "thumbs": ffmpeg_exe() is not None,
+        # /ws/browser/<pane> + /api/browser/status — "full browser" mode, where
+        # a real Chromium runs on this computer and the pane paints its pixels.
+        # False where there is no Chromium to run (and on an install with no
+        # chromium.py at all), which is what the shell reads to decide whether
+        # to offer the mode beside the proxy the pane already has.
+        "browser_full": browser_full_available(),
         # /api/fs/thumb for a .pdf, whose page one needs a renderer ffmpeg's
         # presence says nothing about — a machine can have ffmpeg and no
         # poppler, so this is its own flag rather than part of "thumbs". False
@@ -6476,6 +6483,40 @@ def browse_available() -> bool:
     return _httpx_module() is not None
 
 
+_CHROMIUM = None
+
+
+def _chromium_module():
+    """chromium.py, imported on first use, or None when it will not import.
+
+    Lazy for the same reason httpx is: this server has to boot on an install
+    whose files predate the module, and an import at the top would turn a
+    missing sibling into a server that does not start at all.
+    """
+    global _CHROMIUM
+    if _CHROMIUM is None:
+        try:
+            _CHROMIUM = importlib.import_module("chromium")
+        except Exception:  # noqa: BLE001 — anything at all reads as "not here"
+            _CHROMIUM = False
+    return _CHROMIUM or None
+
+
+def browser_full_available() -> bool:
+    """Whether this computer has a browser the pane could stream from.
+
+    One `--version` spawn, cached in the module for 30 s, which is why this is
+    allowed in the capability map at all.
+    """
+    mod = _chromium_module()
+    if mod is None:
+        return False
+    try:
+        return mod.find_chromium(mod.load_browser_config()) is not None
+    except Exception:  # noqa: BLE001 — a probe that throws is a browser we lack
+        return False
+
+
 @dataclasses.dataclass
 class BrowseToken:
     """One pane's standing permission to reach the network through this server.
@@ -7390,6 +7431,33 @@ def api_browse_bookmarks_put(body: dict = Body(...)) -> Response:
     except OSError:
         return fs_error("not_writable", 500)
     return no_store(JSONResponse({"bookmarks": clean}))
+
+
+@app.get("/api/browser/status")
+def api_browser_status() -> Response:
+    """What full-browser mode is doing: the browser, and every open tab.
+
+    Gated on the pairing token by the middleware, like every other /api/ route.
+    Answers on a machine with no browser and on an install with no chromium.py
+    — the page uses it to explain why the mode is not there, so a refusal would
+    be the one answer it cannot use.
+    """
+    mod = _chromium_module()
+    if mod is None:
+        return no_store(JSONResponse({
+            "running": False, "pid": None, "version": "", "tabs": [],
+            "launch_error": "this install has no browser support",
+            "memMb": None, "capMb": None, "found": None}))
+    fb = mod.FullBrowser.get()
+    try:
+        found = mod.find_chromium(fb.config)
+    except Exception:  # noqa: BLE001 — a probe that throws is a browser we lack
+        found = None
+    body = dict(fb.snapshot())
+    body["found"] = ({"path": found.path, "version": found.version}
+                     if found is not None else None)
+    body["capMb"] = fb.config.get("memory_mb")
+    return no_store(JSONResponse(body))
 
 
 @app.api_route("/b/{tok}/{sch}/{hostport}/{rest:path}", methods=BROWSE_METHODS)
@@ -8474,6 +8542,324 @@ async def reap_lingering() -> None:
         if att.live:
             continue
         await reap_socketless(view, att, loop)
+
+
+# ---------------------------------------------------------------------------
+# Full browser: the pane's socket
+# ---------------------------------------------------------------------------
+# One socket per pane, carrying the pixels one way and the commands the other.
+# It is the attach socket's shape deliberately — first frame authenticates, and
+# every later frame is one JSON message — because the pane is a second terminal
+# as far as this server is concerned: something on the phone driving something
+# on the computer, where the only thing that must never happen is an open port
+# that drives it for free.
+
+# How often the pane is told what the browser is doing, unprompted. Slow: it is
+# for the status line, and every tab change already arrives as its own message.
+BROWSER_STATUS_S = 10.0
+
+
+def browser_failure(exc: Exception) -> tuple[str, str]:
+    """One exception, as a code the pane can act on and a line it can show."""
+    mod = _chromium_module()
+    if mod is not None:
+        if isinstance(exc, mod.TabLimit):
+            return "tab_limit", str(exc)
+        if isinstance(exc, mod.BrowserUnavailable):
+            return "unavailable", str(exc)
+        if isinstance(exc, mod.CDPClosed):
+            return "closed", str(exc)
+        if isinstance(exc, mod.CDPError):
+            return "cdp", exc.message
+    if isinstance(exc, KeyError):
+        return "no_tab", "that tab is not open"
+    if isinstance(exc, asyncio.TimeoutError):
+        return "timeout", "the browser did not answer"
+    if isinstance(exc, (ValueError, TypeError)):
+        return "bad_request", str(exc)
+    return "failed", str(exc) or exc.__class__.__name__
+
+
+def browser_tab_id(msg: dict) -> str:
+    tab = str(msg.get("tab") or "")
+    if not tab or len(tab) > 64:
+        raise ValueError("a tab id is required")
+    return tab
+
+
+def browser_num(msg: dict, key: str, default: float, low: float,
+                high: float) -> float:
+    """One number out of a client message, clamped rather than refused.
+
+    A phone mid-rotation reports a height of zero and a zooming gesture reports
+    fractions; neither is worth an error message on a stream.
+    """
+    try:
+        val = float(msg.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    if val != val:  # NaN
+        return default
+    return max(low, min(val, high))
+
+
+def browser_geometry(msg: dict) -> dict:
+    return {
+        "css_w": int(browser_num(msg, "cssW", 1280, 64, 8192)),
+        "css_h": int(browser_num(msg, "cssH", 800, 64, 8192)),
+        "dpr": browser_num(msg, "dpr", 1.0, 0.5, 4.0),
+        "zoom": browser_num(msg, "zoom", 1.0, 0.25, 5.0),
+    }
+
+
+def browser_need(fb, pane: str, msg: dict):
+    """The PaneTab a message names, or KeyError — which becomes `no_tab`."""
+    pt = fb.tab(pane, browser_tab_id(msg))
+    if pt is None:
+        raise KeyError("no_tab")
+    return pt
+
+
+async def browser_op_open(fb, pane: str, msg: dict) -> None:
+    target = str(msg.get("targetId") or "") or None
+    await fb.open(pane, browser_tab_id(msg), str(msg.get("url") or "about:blank"),
+                  target_id=target, **browser_geometry(msg))
+
+
+async def browser_op_close(fb, pane: str, msg: dict) -> None:
+    await fb.close_tab(pane, browser_tab_id(msg))
+
+
+async def browser_op_show(fb, pane: str, msg: dict) -> None:
+    geo = browser_geometry(msg)
+    await browser_need(fb, pane, msg).show(geo["css_w"], geo["css_h"],
+                                           geo["dpr"], geo["zoom"])
+
+
+async def browser_op_hide(fb, pane: str, msg: dict) -> None:
+    await browser_need(fb, pane, msg).hide()
+
+
+async def browser_op_resize(fb, pane: str, msg: dict) -> None:
+    geo = browser_geometry(msg)
+    await browser_need(fb, pane, msg).resize(geo["css_w"], geo["css_h"], geo["dpr"])
+
+
+async def browser_op_zoom(fb, pane: str, msg: dict) -> None:
+    await browser_need(fb, pane, msg).set_zoom(browser_num(msg, "z", 1.0, 0.25, 5.0))
+
+
+async def browser_op_nav(fb, pane: str, msg: dict) -> None:
+    url = str(msg.get("url") or "").strip()
+    if not url:
+        raise ValueError("a url is required")
+    await browser_need(fb, pane, msg).nav(url)
+
+
+async def browser_op_back(fb, pane: str, msg: dict) -> None:
+    await browser_need(fb, pane, msg).back()
+
+
+async def browser_op_fwd(fb, pane: str, msg: dict) -> None:
+    await browser_need(fb, pane, msg).fwd()
+
+
+async def browser_op_reload(fb, pane: str, msg: dict) -> None:
+    await browser_need(fb, pane, msg).reload()
+
+
+async def browser_op_stop(fb, pane: str, msg: dict) -> None:
+    await browser_need(fb, pane, msg).stop()
+
+
+async def browser_op_ack(fb, pane: str, msg: dict) -> None:
+    pt = fb.tab(pane, browser_tab_id(msg))
+    if pt is not None:                      # an ack for a closed tab is not news
+        pt.ack(int(browser_num(msg, "seq", 0, 0, 1 << 53)))
+
+
+# Every message type the pane's socket understands, as type -> handler. The
+# handlers take (FullBrowser, pane, message) and raise; browser_dispatch turns
+# whatever they raise into one `error` reply and leaves the socket open. The
+# input half of the pane — mouse, key, text and the hit-testing the link and
+# cursor answers come from — is added here.
+BROWSER_OPS = {
+    "open": browser_op_open,
+    "close": browser_op_close,
+    "show": browser_op_show,
+    "hide": browser_op_hide,
+    "resize": browser_op_resize,
+    "zoom": browser_op_zoom,
+    "nav": browser_op_nav,
+    "back": browser_op_back,
+    "fwd": browser_op_fwd,
+    "reload": browser_op_reload,
+    "stop": browser_op_stop,
+    "ack": browser_op_ack,
+}
+
+
+async def browser_dispatch(fb, pane: str, out, msg: dict) -> None:
+    """Run one message. Nothing it can do closes the socket.
+
+    A pane that has lost its socket has lost the page on it, so a bad message,
+    a tab that is already gone and a browser that just died all come back as
+    `error` — which the pane can show, and recover from by opening again.
+    """
+    kind = str(msg.get("type") or "")
+    handler = BROWSER_OPS.get(kind)
+    if handler is None:
+        log(f"browser pane {pane}: ignoring {kind!r}")
+        return
+    try:
+        await handler(fb, pane, msg)
+    except Exception as e:  # noqa: BLE001 — see the docstring
+        code, message = browser_failure(e)
+        if code == "failed":
+            log(f"browser pane {pane}: {kind} failed: {e!r}")
+        out.put_json({"type": "error", "tab": msg.get("tab"), "code": code,
+                      "message": message})
+
+
+async def browser_writer(ws: WebSocket, out) -> None:
+    """The one thing that writes to this socket.
+
+    Frames are produced by screencast events, by the settle timer and by the
+    popup loop, all at once and all for the same socket; a send from each would
+    interleave a binary frame's bytes with a JSON message. One writer draining
+    one queue is what keeps a frame whole — and it is also where a phone that
+    cannot keep up gets its backlog of stale frames thinned (see SendQueue).
+    """
+    try:
+        while True:
+            item = await out.get()
+            if item is None:
+                return
+            if isinstance(item, bytes):
+                await ws.send_bytes(item)
+            else:
+                await ws.send_text(json.dumps(item))
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — a dead socket is the receive loop's news
+        return
+
+
+async def browser_status_loop(out, fb) -> None:
+    while True:
+        await asyncio.sleep(BROWSER_STATUS_S)
+        out.put_json({"type": "status", **fb.snapshot()})
+
+
+def browser_full_found(fb):
+    """find_chromium off the event loop: the first call spawns `--version`."""
+    mod = _chromium_module()
+    try:
+        return mod.find_chromium(fb.config) if mod is not None else None
+    except Exception:  # noqa: BLE001 — a probe that throws is a browser we lack
+        return None
+
+
+async def shutdown_full_browser() -> None:
+    """Stop the streaming browser, for a server on its way down.
+
+    The service unit is KillMode=process so that tmux survives a restart, which
+    means systemd stops this process and leaves every child it started running
+    — including a Chromium with the user's whole browsing session in it. The
+    pipe closing is the backstop; this is the orderly version, and it runs
+    before the lingering PTYs because it is the one with a deadline.
+    """
+    mod = _chromium_module()
+    if mod is None:
+        return
+    try:
+        await mod.FullBrowser.get().shutdown()
+    except Exception as e:  # noqa: BLE001 — never hold up the shutdown
+        log(f"browser shutdown failed: {e!r}")
+
+
+@app.websocket("/ws/browser/{pane}")
+async def ws_browser(ws: WebSocket, pane: str) -> None:
+    """One pane's pixel stream, and the commands that drive it.
+
+    The first frame carries the pairing token, exactly as the attach socket's
+    does and for the same reason: CORS does not apply to WebSockets, so this
+    handshake is the only thing between the open port and a browser running as
+    this user with this user's logins in it.
+
+    A disconnect is not the end of the tabs. The phone reloads, the socket goes
+    and the targets stay — hidden, so nothing is being streamed at nobody — and
+    the shell's next `open` names the target id it remembered and gets its page
+    back rather than a fresh one.
+    """
+    await ws.accept()
+    token = ""
+    dev = ""
+    try:
+        first = await asyncio.wait_for(ws.receive(), timeout=5)
+        if first.get("type") == "websocket.disconnect":
+            return
+        msg = json.loads(first.get("text") or "{}")
+        if isinstance(msg, dict):
+            token = str(msg.get("token", ""))
+            candidate = str(msg.get("dev", ""))
+            dev = candidate if DEV_RE.match(candidate) else ""
+    except (asyncio.TimeoutError, AttributeError, ValueError, KeyError,
+            json.JSONDecodeError):
+        pass
+
+    # A page this server's own proxy served has no business here whatever
+    # credential it managed to put on the call — the same gate require_token
+    # applies to the HTTP routes, which a WebSocket handshake skips.
+    if browse_referer_is_proxied(ws.headers.get("referer", "")):
+        await ws.close(code=4403, reason="proxied page")
+        return
+    if AUTH_TOKEN is not None:
+        ok, reason = check_auth(token, peer_ip(ws.scope.get("client")), "ws-browser")
+        if not ok:
+            log(f"browser pane {pane} close reason={reason}")
+            await ws.close(code=4401, reason="bad token")
+            return
+
+    mod = _chromium_module()
+    if mod is None:
+        await ws.close(code=4503, reason="no browser support")
+        return
+
+    fb = mod.FullBrowser.get()
+    out = mod.SendQueue()
+    fb.attach_pane(pane, out)
+    writer = asyncio.create_task(browser_writer(ws, out))
+    status = asyncio.create_task(browser_status_loop(out, fb))
+    log(f"browser pane {pane} open dev={dev or '-'}")
+
+    found = await run_in_threadpool(browser_full_found, fb)
+    out.put_json({"type": "ready", "version": found.version if found else "",
+                  "capMb": fb.config.get("memory_mb")})
+    try:
+        while True:
+            frame = await ws.receive()
+            if frame.get("type") == "websocket.disconnect":
+                break
+            text = frame.get("text")
+            if not text:
+                continue
+            try:
+                data = json.loads(text)
+            except ValueError:
+                log(f"browser pane {pane}: unparsable message")
+                continue
+            if isinstance(data, dict):
+                await browser_dispatch(fb, pane, out, data)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        status.cancel()
+        out.close()
+        await fb.detach_pane(pane)
+        writer.cancel()
+        await asyncio.gather(status, writer, return_exceptions=True)
+        log(f"browser pane {pane} closed")
 
 
 @app.websocket("/ws/attach/{session_name}")
