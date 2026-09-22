@@ -262,7 +262,7 @@ def test_config_defaults_floor_and_env_override(home, monkeypatch):
     assert cfg["freeze_after_s"] == 300
     assert cfg["idle_exit_s"] == 600
     assert cfg["dpr_max"] == 2
-    assert cfg["jpeg_quality"] == 60
+    assert cfg["jpeg_quality"] == 70
     assert cfg["binary"] is None
 
     monkeypatch.setattr(C, "_total_ram_mb", lambda: 64 * 1024)
@@ -292,7 +292,7 @@ def test_config_falls_back_per_key(home, monkeypatch):
     assert cfg["memory_mb"] == 900
     assert cfg["dpr_max"] == 3
     assert cfg["binary"] == "/opt/chrome/chrome"
-    assert cfg["jpeg_quality"] == 60
+    assert cfg["jpeg_quality"] == 70
     assert cfg["idle_exit_s"] == 600
 
 
@@ -1016,6 +1016,135 @@ def test_no_settled_picture_while_the_page_paints_itself():
 
 async def _shot():
     return {"data": base64.b64encode(b"\xff\xd8settled").decode()}
+
+
+# A real screencast frame comes back at the CSS size whatever the pixel ratio
+# is — that is the whole reason the settled picture exists — so the fake ones
+# below carry a JPEG header saying 800x600 against a 2x tab's 1600x1200
+# surface. The payload in `cast_frame` parses as no image at all, which makes
+# the frame look as big as the surface and no capture worth taking.
+def a_cast(payload=b"", sid=1):
+    return cast_frame(a_jpeg(800, 600) + payload, sid=sid)
+
+
+def test_idle_still_after_quiet_period():
+    """A page nobody has touched is the one the founder was looking at: it
+    loads, it sits there, and until this it was never shown at more than the
+    stream's half resolution."""
+    async def main():
+        sess = FakeSession({"Page.captureScreenshot": lambda p: _shot()})
+        sink = FakeSink()
+        tab = a_tab(sess, sink, dpr=2)
+        await tab.show()
+        sess.calls.clear()
+
+        # Frames flowing: no capture, whatever the quiet timer would like.
+        for _ in range(3):
+            sess.fire("Page.screencastFrame", a_cast(b"one"))
+            await asyncio.sleep(C.IDLE_STILL_S / 2)
+        assert "Page.captureScreenshot" not in sess.methods()
+
+        # They stop, and the picture the page came to rest at is taken once.
+        await asyncio.sleep(C.IDLE_STILL_S + 0.2)
+        assert sess.methods().count("Page.captureScreenshot") == 1
+        assert [h["kind"] for h, _ in sink.frames][-1] == "still"
+        assert tab.info()["stills"] == 1
+
+        # And not again: a page at rest is photographed once, not every third
+        # of a second for as long as it is left alone.
+        await asyncio.sleep(C.IDLE_STILL_S * 3)
+        assert sess.methods().count("Page.captureScreenshot") == 1
+
+        # New activity is a new picture to be sharp about.
+        sess.fire("Page.screencastFrame", a_cast(b"two"))
+        await asyncio.sleep(C.IDLE_STILL_S + 0.2)
+        assert sess.methods().count("Page.captureScreenshot") == 2
+        assert tab.info()["stills"] == 2
+        assert tab.info()["lastStillMs"] < 1000
+        tab._teardown()
+
+    run(main())
+
+
+def test_idle_still_armed_by_load_and_show():
+    """A tab that loads a page and never paints again still gets one."""
+    async def main():
+        sess = FakeSession({"Page.captureScreenshot": lambda p: _shot()})
+        sink = FakeSink()
+        tab = a_tab(sess, sink, dpr=2)
+        await tab.show()
+        sess.calls.clear()
+
+        sess.fire("Page.loadEventFired", {})
+        await asyncio.sleep(C.IDLE_STILL_S + 0.2)
+        assert sess.methods().count("Page.captureScreenshot") == 1
+        assert [h["kind"] for h, _ in sink.frames] == ["still"]
+
+        # The same for a tab that was shown with a page already on it: no load
+        # event fires for an adopted target, so the show is the news.
+        sess.calls.clear()
+        sink.frames.clear()
+        await tab.hide()
+        await tab.show()
+        await asyncio.sleep(C.IDLE_STILL_S + 0.2)
+        assert sess.methods().count("Page.captureScreenshot") == 1
+        tab._teardown()
+
+    run(main())
+
+
+def test_no_idle_still_while_painting():
+    """A capture holds the stream for the length of an encode, so a page that
+    is painting — which is a page whose next frame is the settled picture —
+    never gets one."""
+    async def main():
+        sess = FakeSession({"Page.captureScreenshot": lambda p: _shot()})
+        sink = FakeSink()
+        tab = a_tab(sess, sink, dpr=2)
+        await tab.show()
+        sess.calls.clear()
+
+        end = time.monotonic() + C.IDLE_STILL_S * 4
+        while time.monotonic() < end:
+            sess.fire("Page.screencastFrame", a_cast(b"frame"))
+            await asyncio.sleep(1.0 / C.STREAM_LEVELS[0][2])
+        assert "Page.captureScreenshot" not in sess.methods()
+        assert [h["kind"] for h, _ in sink.frames].count("cast") > 3
+
+        await asyncio.sleep(C.IDLE_STILL_S + 0.3)
+        assert sess.methods().count("Page.captureScreenshot") == 1
+        tab._teardown()
+
+    run(main())
+
+
+def test_input_settle_supersedes_idle_timer():
+    """Both clocks can be running; the one that knows what it is waiting for
+    wins, and the page is captured once."""
+    async def main():
+        sess = FakeSession({"Page.captureScreenshot": lambda p: _shot()})
+        sink = FakeSink()
+        tab = a_tab(sess, sink, dpr=2)
+        await tab.show()
+        sess.calls.clear()
+
+        sess.fire("Page.screencastFrame", a_cast(b"the page"))
+        await asyncio.sleep(0.05)
+        assert tab._quiet_task is not None and not tab._quiet_task.done()
+
+        # An input lands inside the quiet window. Its own settle takes the
+        # picture, and the quiet timer is cancelled rather than taking a
+        # second one behind it.
+        tab.note_input("mousePressed")
+        assert tab._quiet_task is None
+        await asyncio.sleep(C.SETTLE_DELAY_S + 0.1)
+        assert sess.methods().count("Page.captureScreenshot") == 1
+        await asyncio.sleep(C.IDLE_STILL_S + C.SETTLE_MIN_GAP_S + 0.2)
+        assert sess.methods().count("Page.captureScreenshot") == 1
+        assert [h["kind"] for h, _ in sink.frames].count("still") == 1
+        tab._teardown()
+
+    run(main())
 
 
 def test_a_popup_is_painted_from_screenshots_until_the_next_click():
