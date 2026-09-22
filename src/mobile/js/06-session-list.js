@@ -487,17 +487,25 @@ async function createSessionNamed(base, exact) {
            error: data && data.error ? data.error : "" };
 }
 
-async function createSession() {
-  const typed = $("new-name").value.trim();
-  // tmux reads these as window/pane separators, so a name carrying one never
-  // addresses the session it looks like. The server rejects them too.
-  for (const c of [".", ":"]) {
-    if (typed.includes(c)) { toast("Names can't contain " + c); return; }
-  }
-  const base = typed || defaultSessionName();
+// Held while a create is in flight, so the second of two presses in the same
+// breath is dropped rather than answered with a second session — the sheet's
+// Create button can be double-tapped and the Ctrl+Shift+L chord pressed twice
+// just as fast, and the suffixing above means neither collides loudly enough
+// for the user to notice what happened.
+let creatingSession = false;
+
+// Making a session and landing in it, with no form around it: the sheet reads
+// a name from its field and the chord has none to read, but both end the same
+// way — the session on screen and the rail already showing it. `exact` means
+// the name came from the user and is not the shell's to suffix.
+async function createAndOpenSession(base, exact) {
+  if (creatingSession) return;
+  creatingSession = true;
   try {
-    const made = await createSessionNamed(base, !!typed);
+    const made = await createSessionNamed(base, exact);
     if (!made.session) { toast(made.error || "Couldn't create the session"); return; }
+    // Harmless with nothing open — every sheet is already not showing — and
+    // the one path that does have a sheet up needs it gone.
     showSheet(false);
     $("new-name").value = "";
     openTerminal(made.session);
@@ -507,7 +515,19 @@ async function createSession() {
     loadSessions(false, true);
   } catch (e) {
     toast("Couldn't create the session");
+  } finally {
+    creatingSession = false;
   }
+}
+
+async function createSession() {
+  const typed = $("new-name").value.trim();
+  // tmux reads these as window/pane separators, so a name carrying one never
+  // addresses the session it looks like. The server rejects them too.
+  for (const c of [".", ":"]) {
+    if (typed.includes(c)) { toast("Names can't contain " + c); return; }
+  }
+  await createAndOpenSession(typed || defaultSessionName(), !!typed);
 }
 
 $("btn-new").addEventListener("click", openNewSession);
