@@ -236,6 +236,55 @@ def test_the_address_field_carries_the_way_out_of_the_pane(doc):
     assert "openExternal: () => browserOutPress(tab)," in doc
 
 
+def test_a_pdf_is_drawn_where_a_plugin_can_run(doc):
+    """The founder opened a PDF in a proxy tab and got Chrome's own "This page
+    has been blocked": the viewer is a plugin, and a plugin never runs inside
+    the sandbox those frames carry. The backend answers such a document with a
+    card that names the PDF (browse_pdf_response in app.py), and the pane shows
+    it the only two ways there are — the same frame without the sandbox, served
+    as a page in its own right, or the computer's own Chrome."""
+    assert 'if (d.type === "pockettui-pdf") {' in doc
+    assert "function browserPdfShow(" in doc and "function browserPdfLeave(" in doc
+    # The tab is on the PDF, not on the card: the address field, the chip, the
+    # record and the arrow all read the tab.
+    assert ("  browserPush(tab, url);\n"
+            '  if (name) { tab.title = name; tab.titleFor = url; }') in doc
+    # The other flavour first, taken through the same flip the network key makes
+    # rather than a second way of doing it — for this document, with the answer
+    # the key held remembered so the tab can be given it back.
+    assert "function browserFlipLan(" in doc
+    assert ("    tab.lanBefore = tab.lan;\n"
+            "    tab.pdf = url;\n"
+            "    browserFlipLan(tab, true);") in doc
+    assert "  if (browserTabAllowed()) {" in doc
+    # Then the stream, for that document alone: no host goes on the streamed
+    # record for the sake of one file, which is what browserSetFull does not do.
+    assert ('    toast("PDFs stream from the computer\'s Chrome");\n'
+            "    browserSetFull(tab, true);") in doc
+    assert "  if (tab.pdfAsked) {" in doc
+    assert ('    toast("Use the arrow in the address field to open this PDF'
+            ' in your browser");') in doc
+    # And the tab's own flavour back at its next address, in the navigation that
+    # is already being made.
+    assert "  if (tab.pdf && url !== tab.pdf) browserPdfLeave(tab);" in doc
+    assert "  if (!!tab.lan !== back) browserFlipLan(tab, back);" in doc
+    # A PDF has no shim in it to report its landing, and the arrow reads the
+    # answer the user gave rather than the one the document took.
+    assert "    if (tab.pdf) return;" in doc
+    assert "  if (tab.pdf ? tab.lanBefore : tab.lan) return true;" in doc
+    assert "      const lan = t.pdf ? t.lanBefore : t.lan;" in doc
+
+
+def test_the_monitor_key_is_gone_where_there_is_nothing_to_stream_from(doc):
+    """Both keys on the address row are hidden in JS by the attribute alone, and
+    .icon-btn is display:inline-flex — which the attribute does not undo. A
+    computer with no browser to stream from must not draw the key."""
+    assert '#btn-browser-full[hidden] { display: none; }' in doc
+    assert '#btn-browser-tab[hidden] { display: none; }' in doc
+    assert 'id="btn-browser-full" hidden' in doc
+    assert 'q("btn-browser-full").hidden = !hasCapStrict("browser_full");' in doc
+
+
 # The addresses the key hands to the computer rather than to this device's
 # browser, run as the shell runs them. A table rather than a reading of the
 # source: the rule is four lists in a trench coat, and only the answers matter.
@@ -396,7 +445,7 @@ def test_a_landing_the_proxy_did_not_serve_hands_its_tab_over(doc):
     # The network key has nothing to offer a streamed tab, so it goes while one
     # is on screen.
     assert ("btn.hidden = !hasCapStrict(\"browse_tab\") || browserTabBlocked\n"
-            "               || browserIsFull(browserTab());") in doc
+            "               || browserIsFull(browserTab())") in doc
     # A streamed tab is zoomed on the computer — there is no element here to
     # scale, only a picture of one — and its history is the real browser's.
     assert "tab.full.setZoom(factor);" in doc
