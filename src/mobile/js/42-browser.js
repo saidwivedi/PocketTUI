@@ -610,13 +610,20 @@ const BROWSER_ZOOMS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 // Zoom belongs to the host, not to the page: a dev server read at 125% is read
 // at 125% on every page it serves, which is what a desktop browser's per-site
 // zoom does. The port is part of the key — :3000 and :8000 are two apps.
+//
+// A host that has never been zoomed is drawn at the last factor the user set
+// anywhere (cfg.browserZoomDefault), so a new tab opens at the size they are
+// reading at rather than back at 100%; a host's own factor still wins. This is
+// a desktop browser's default zoom plus its per-site list.
 function browserZoomHost(url) {
   try { return new URL(url || browserCurrentUrl()).host; } catch (e) { return ""; }
 }
 
 function browserZoomFor(host) {
-  const z = host ? cfg.browserZoom[host] : 0;
-  return typeof z === "number" ? z : 1;
+  const own = host ? cfg.browserZoom[host] : undefined;
+  if (typeof own === "number") return own;
+  const def = cfg.browserZoomDefault;
+  return typeof def === "number" ? def : 1;
 }
 
 // Draw the page at this size, by scaling the frame element rather than the
@@ -645,7 +652,8 @@ function browserApplyZoom(factor, frame = browserTab().frame) {
   frame.style.transform = factor === 1 ? "" : "scale(" + factor + ")";
 }
 
-// A zoom the user asked for: applied, remembered against the host, and shown
+// A zoom the user asked for: applied, remembered against the host and as the
+// default for hosts without one of their own, and shown
 // on the panel that asked for it. No toast — the panel is open, its label is
 // the reading, and a step that cannot go further leaves the number where it
 // was, which is the honest answer to a press against an end.
@@ -654,9 +662,13 @@ function browserSetZoom(factor) {
   const host = browserZoomHost();
   if (host) {
     const rec = cfg.browserZoom;
-    if (factor === 1) delete rec[host]; else rec[host] = factor;
+    // 1 is written like any other factor rather than dropped: it is what holds
+    // this host at 100% against a default that is not.
+    rec[host] = factor;
     cfg.browserZoom = rec;
   }
+  // And it is the default from here on, for every host with no factor of its own.
+  cfg.browserZoomDefault = factor;
   syncBrowserZoom();
 }
 

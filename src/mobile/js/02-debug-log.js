@@ -278,6 +278,15 @@ function writeActiveProfile(field, v) {
   setActiveProfile(addProfile({ [field]: v }).id);
 }
 
+// One zoom factor or nothing: the bounds are the pane's own steps, widened a
+// little, and anything outside them is not a factor this app wrote. 1 is a
+// factor like any other — with a default zoom in play, a host held at 100% has
+// to be spelled out to beat that default.
+function browserZoomOne(z) {
+  return typeof z === "number" && Number.isFinite(z) && z >= 0.25 && z <= 5
+    ? z : undefined;
+}
+
 // A host -> zoom-factor map with everything that is not one of those thrown
 // away, used on the way in and on the way out of cfg.browserZoom: what is read
 // back is whatever survived the last write, and a hand-edited or older record
@@ -286,10 +295,8 @@ function browserZoomClean(v) {
   const out = {};
   if (!v || typeof v !== "object") return out;
   for (const h of Object.keys(v)) {
-    const z = v[h];
-    if (typeof z === "number" && Number.isFinite(z) && z >= 0.25 && z <= 5 && z !== 1) {
-      out[h] = z;
-    }
+    const z = browserZoomOne(v[h]);
+    if (z !== undefined) out[h] = z;
   }
   return out;
 }
@@ -608,10 +615,9 @@ const cfg = {
   },
   // How big the browser pane draws a host's pages, as a factor per host: a dev
   // server read at 125% is still at 125% the next time it is opened, which is
-  // what a desktop browser's per-site zoom does. Only the hosts that are not
-  // at 1 are written, so the record stays the size of the handful of pages
-  // someone has actually zoomed. The bounds are the pane's own steps, widened
-  // a little: anything outside them is not a factor this app wrote.
+  // what a desktop browser's per-site zoom does. Every host the user zoomed is
+  // written, 100% included, because a host's own factor is what beats
+  // browserZoomDefault.
   get browserZoom() {
     let v = null;
     try { v = JSON.parse(localStorage.getItem("pockettui_browser_zoom")); } catch (e) {}
@@ -622,6 +628,19 @@ const cfg = {
     if (Object.keys(rec).length) {
       localStorage.setItem("pockettui_browser_zoom", JSON.stringify(rec));
     } else localStorage.removeItem("pockettui_browser_zoom");
+  },
+  // The size every host with no factor of its own is drawn at: the last zoom
+  // the user set anywhere, which is what a desktop browser's default zoom is.
+  // Undefined until one has been set, and read back as undefined if what is
+  // stored is not a factor the pane can use.
+  get browserZoomDefault() {
+    const v = Number(localStorage.getItem("pockettui_browser_zoom_default"));
+    return browserZoomOne(v);
+  },
+  set browserZoomDefault(v) {
+    if (typeof v === "number" && Number.isFinite(v)) {
+      localStorage.setItem("pockettui_browser_zoom_default", String(v));
+    } else localStorage.removeItem("pockettui_browser_zoom_default");
   },
   // What order the file explorer lists a folder in: "name" (the backend's own
   // dirs-first, alphabetical order, the default), "newest", "oldest" or
