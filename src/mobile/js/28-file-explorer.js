@@ -346,7 +346,11 @@ function filesSheetPane() { return filesPanes[filesSheetOwner] || filesActive();
 // there is one of it, over the window, whichever listing raised it.
 function filesShowActions(entry) {
   $("file-actions-title").textContent = entry.name;
-  $("btn-file-download").style.display = entry.type === "dir" ? "none" : "";
+  // A folder downloads as a zip the server builds while it sends it, so the row
+  // is offered over one too — but only where the server on the other end can
+  // build it, since an older one answers a folder with a 404.
+  $("btn-file-download").style.display =
+    entry.type === "dir" && !hasCap("zip_dir") ? "none" : "";
   // Only where the tap itself no longer reaches the editor. Every other text
   // file already opens there, so an Edit row would say nothing.
   $("btn-file-edit").style.display =
@@ -1983,6 +1987,14 @@ function sheetDownload() {
   const e = filesSelected;
   if (!e) return;
   showSheet(false);
+  // A folder has no size to weigh the two ways down against — the archive is
+  // built as it is sent and nobody knows how big it is until it is over — so it
+  // always goes the browser's way round rather than through a blob this page
+  // would have to hold whole.
+  if (e.type === "dir") {
+    downloadViaLink(joinPath(filesPath, e.name), e.name + ".zip");
+    return;
+  }
   downloadFile(joinPath(filesPath, e.name), e.name, e.size);
 }
 
