@@ -608,8 +608,8 @@ $("browser-stream-toggle").addEventListener("change", (e) => {
 // browserClearProfile (42-browser.js) arranges.
 $("btn-browser-clear").addEventListener("click", async () => {
   const yes = await appConfirm(
-    "Clear every cookie and login the computer's browser is holding?",
-    { confirmLabel: "Clear" });
+    "Every cookie and login the computer's browser is holding is deleted.",
+    { title: "Clear browser logins?", confirmLabel: "Clear" });
   if (yes) browserClearProfile();
 });
 // Fetches and paints the learned-corrections list. Hidden outright rather than

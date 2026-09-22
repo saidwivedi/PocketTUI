@@ -63,6 +63,14 @@ let confirmResolve = null;
 function appConfirm(message, opts={}) {
   return new Promise((resolve) => {
     confirmResolve = resolve;
+    // `title` is the question an app-owned ask puts as the heading, the message
+    // then being its consequence. Without one — a page's own dialog, whose text
+    // is all there is — the heading hides and stops naming the dialog.
+    const title = $("confirm-title");
+    title.textContent = opts.title || "";
+    title.hidden = !opts.title;
+    if (opts.title) $("sheet-confirm").setAttribute("aria-labelledby", "confirm-title");
+    else $("sheet-confirm").removeAttribute("aria-labelledby");
     $("confirm-msg").textContent = message;
     $("btn-confirm-ok").textContent = opts.confirmLabel || "OK";
     // Both set on every ask rather than only where they change, so no question

@@ -4,8 +4,8 @@
 // Both kill entry points — a row's trash button and the session sheet's kill
 // row — ask the same question through the same themed dialog.
 function confirmKill(name) {
-  return appConfirm("Kill '" + name + "'? Programs running in it are terminated.",
-                    { confirmLabel: "Kill" });
+  return appConfirm("Programs running in it are terminated.",
+                    { title: "Kill '" + name + "'?", confirmLabel: "Kill" });
 }
 
 function trashBtn(s) {

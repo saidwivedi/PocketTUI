@@ -803,12 +803,12 @@ async function diffRevertBlock(path, header, hunk, block) {
 async function diffDiscard(f) {
   const gone = f.status === "??";
   const ok = await appConfirm(diffIsDir(f.path)
-    ? "Discard " + f.path + "? It is untracked, so discarding deletes the "
-      + "folder and everything in it."
+    ? "It is untracked, so discarding deletes the folder and everything in it."
     : gone
-    ? "Discard " + f.path + "? It is untracked, so discarding deletes the file."
-    : "Discard your changes to " + f.path + "? They cannot be brought back.",
-    { confirmLabel: "Discard" });
+    ? "It is untracked, so discarding deletes the file."
+    : "Your changes to " + f.path + " cannot be brought back.",
+    { title: gone || diffIsDir(f.path) ? "Discard " + f.path + "?" : "Discard changes?",
+      confirmLabel: "Discard" });
   if (ok) await diffApply({ path: f.path, action: "discard_file" });
 }
 
