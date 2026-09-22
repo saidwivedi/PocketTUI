@@ -1725,3 +1725,84 @@ def test_ws_browser_mouse_before_open_is_no_tab_error(client, monkeypatch,
 
         ws.send_text(json.dumps({"type": "hide", "tab": "t1"}))
         assert json.loads(ws.receive_text())["code"] == "no_tab"
+
+
+# ---------------------------------------------------------------------------
+# Full browser: the reset and the file a page's input is given
+# ---------------------------------------------------------------------------
+
+class OpenTab:
+    """A record in the tab table, which is all `has_tabs` looks at."""
+
+    dead = False
+
+
+def test_browser_reset_refused_with_open_tab(client, monkeypatch, tmp_path,
+                                             no_browser_singleton):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    profile = tmp_path / ".pockettui" / "chromium-profile"
+    profile.mkdir(parents=True)
+
+    fb = CH.FullBrowser.get()
+    fb._tabs[("p1", "t1")] = OpenTab()
+
+    # Somebody is looking at a page. Pulling the profile out from under it
+    # would be indistinguishable from a crash, so the answer is no.
+    r = client.post("/api/browser/reset", headers=HDRS)
+    assert r.status_code == 409
+    assert r.json() == {"error": "browser tabs are open"}
+    assert profile.is_dir()
+
+    assert client.post("/api/browser/reset").status_code == 401
+
+
+def test_browser_reset_removes_profile(client, monkeypatch, tmp_path,
+                                       no_browser_singleton):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    profile = tmp_path / ".pockettui" / "chromium-profile" / "Default"
+    profile.mkdir(parents=True)
+    (profile / "Cookies").write_bytes(b"every login the phone has made")
+    downloads = tmp_path / ".pockettui" / "downloads"
+    downloads.mkdir(parents=True)
+    (downloads / "report.pdf").write_bytes(b"the user's own file")
+
+    fb = CH.FullBrowser.get()
+    stopped = []
+
+    async def shutdown(timeout=6.0):
+        stopped.append(True)
+
+    monkeypatch.setattr(fb, "shutdown", shutdown)
+    r = client.post("/api/browser/reset", headers=HDRS)
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert stopped == [True]              # the browser is never left holding it
+    assert not (tmp_path / ".pockettui" / "chromium-profile").exists()
+    # The downloads are the user's files and not part of the session.
+    assert (downloads / "report.pdf").read_bytes() == b"the user's own file"
+
+
+def test_browser_upload_writes_under_uploads(client, monkeypatch, tmp_path):
+    root = tmp_path / "uploads" / "browser"
+    monkeypatch.setattr(A, "BROWSER_UPLOAD_DIR", root)
+
+    # The name the page's file input will show is kept as the user sees it —
+    # spaces and all — and is one path component whatever the phone sent.
+    r = client.post("/api/browser/upload?name=../../notes%20v2.txt",
+                    content=b"hello", headers=HDRS)
+    body = r.json()
+    assert body["name"] == "notes v2.txt" and body["bytes"] == 5
+    staged = Path(body["path"])
+    assert staged.read_bytes() == b"hello"
+    assert staged.parent.parent == root
+    assert staged.name == "notes v2.txt"
+
+    # Each one lands in a directory of its own, so the same name twice is two
+    # files rather than one overwritten.
+    second = client.post("/api/browser/upload?name=notes v2.txt",
+                         content=b"other", headers=HDRS).json()
+    assert second["path"] != body["path"]
+    assert Path(second["path"]).read_bytes() == b"other"
+
+    assert client.post("/api/browser/upload", content=b"",
+                       headers=HDRS).status_code == 400
+    assert client.post("/api/browser/upload", content=b"x").status_code == 401
