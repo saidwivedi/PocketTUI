@@ -3413,6 +3413,43 @@ html.term-open #dbg-panel { opacity: 0.85; }
    hidden a class further: it is worth pressing only while there are two
    (26-side-pane.js). */
 .dock-swap { display: none; }
+/* The key that opens another pane in the column, and the menu it drops. The wrap
+   wears .dock-only with the pane's other controls, so it comes and goes with
+   them and is absent from the phone with them; it exists at all because the menu
+   is positioned against it. */
+.dock-split-wrap { position: relative; align-items: center; }
+/* #files-view-menu's panel, said again for a menu that is not the explorer's:
+   the app has one dropdown, drawn wherever one is needed. Hung under the key at
+   the bar's right, since a pane is several times the width of the handful of
+   words in it. */
+.dock-split-menu {
+  display: none;
+  position: absolute;
+  top: 100%; right: 0;
+  margin-top: 6px;
+  min-width: 148px;
+  overflow: hidden;
+  background: var(--card);
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
+  z-index: 60;
+}
+.dock-split-wrap.open .dock-split-menu { display: block; }
+/* #theme-scrim's recipe with the tint taken out, and layered between the
+   terminal and the panes rather than over everything: the menu drops out of a
+   bar inside a pane, and a scrim above the panes would be a scrim above the menu
+   too. One under the panes (55) and over everything the terminal draws inside
+   itself — the key bar and the strips above it carry layers of their own, and a
+   scrim they cover takes none of the presses it is there for. A press in a pane
+   is closed by the document's own instead (26-side-pane.js). */
+#side-split-scrim {
+  position: fixed; inset: 0;
+  background: transparent;
+  pointer-events: none;
+  z-index: 54;
+}
+#side-split-scrim.show { pointer-events: auto; }
 
 @media (min-width: 768px) and (min-height: 500px) {
   #screen-files.docked .dock-only,
@@ -3580,6 +3617,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
      and neither of them expanded is the whole of when it has anything to do. */
   #screen-term.side-two:not(.side-full) > #diff-pane .dock-swap,
   #screen-term.side-two:not(.side-full).active ~ .docked .dock-swap {
+    display: inline-flex;
+  }
+  /* The split key's wrap in the diff's head. The .dock-only rule at the top of
+     this block shows the pane's controls off .docked, and the diff pane never
+     wears that class — it is a pane inside #screen-term rather than a screen
+     docked beside it — so its own open class is what shows this one. */
+  #screen-term.diff-open > :is(#diff-pane, #diff-pane-2) .dock-split-wrap {
     display: inline-flex;
   }
 }

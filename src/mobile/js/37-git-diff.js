@@ -84,14 +84,22 @@ function diffIsDir(path) { return path.endsWith("/"); }
 // right and the poll are the same fact, and nothing sets one without the rest.
 // The width, the seam and the refit are the slot's (26-side-pane.js), which is
 // also where the explorer gets pushed out of the way if it is holding it.
-function diffSetOpen(open) {
+//
+// `id` is which of the column's rows this is about, and this build has one diff
+// pane whose id is "diff": anything else names a row nothing here has a pane for
+// — a record can ask for a second of a kind — and there is nothing to open or
+// close for it. `rec` is that row's own half of the record a boot is putting
+// back, which for the one pane is already in cfg.diffTab; `opts` is the column's
+// (sideClaim's `keep`).
+function diffSetOpen(open, id, rec, opts) {
+  if (id && id !== "diff") return false;
   diffOpen = open;
   $("screen-term").classList.toggle("diff-open", open);
   if (!open) { sideDrop("diff"); return; }
   // The column can refuse the row: the one it would have taken is a docked
   // editor with unsaved work whose owner said stay (sideClaim, 26-side-pane.js),
   // and a split that never opened must not leave the class behind it.
-  if (!sideClaim("diff")) {
+  if (!sideClaim("diff", opts)) {
     diffOpen = false;
     $("screen-term").classList.remove("diff-open");
     return;
@@ -103,7 +111,14 @@ function diffSetOpen(open) {
   diffPoll(true);
 }
 
-function toggleDiffPane() { diffSetOpen(!diffOpen); }
+// The chord's way in and out. Which pane it is about is the column's answer, not
+// this module's: with two diff rows open it is the one last pressed in, and with
+// none it is a new one (sideFocusedOf, 26-side-pane.js).
+function toggleDiffPane() {
+  const id = sideFocusedOf("diff");
+  if (id) diffSetOpen(false, id);
+  else diffSetOpen(true);
+}
 
 // The pane is a view of one computer's repo, so a switch to another closes it
 // and drops what both tabs last heard. The per-session records that would have
@@ -126,6 +141,18 @@ function diffResetForProfile() {
 }
 
 $("btn-diff-close").addEventListener("click", () => diffSetOpen(false));
+
+// This pane as a row of the column: which elements are in it, how it closes, and
+// what it has to redo when the row changes height. No expand of its own — the
+// diff is a list over a body and has nothing to gain from covering the column —
+// so that one is a no-op rather than a branch over in the arbiter.
+sideRegister("diff", {
+  type: "diff",
+  els: () => [$("diff-pane")],
+  close: () => diffSetOpen(false, "diff"),
+  setExpanded: () => {},
+  onRowResize: () => { if (diffListH) applyDiffListH(diffListH); },
+});
 
 // Three rows of the list at the size the stylesheet sets it in — below that it
 // stops reading as a list of files and becomes a strip.
@@ -889,9 +916,10 @@ syncDiffTabs();
 // arrive.
 const sideBoot = cfg.sidePane;
 if (sideBoot && sideBoot.session) {
-  // The browser's half of that record is the tabs it had open, the page each
-  // one was on and which of them was in front: the other two panes reopen from
-  // the session alone, and it cannot.
-  fileViews.set(sideBoot.session, { boot: sideBoot.rows, bootUrl: sideBoot.url,
-                                    bootTabs: sideBoot.tabs, bootTab: sideBoot.tab });
+  // Each row's own half of that record goes into the map with it, keyed by the
+  // row it belongs to: the browser's is the tabs it had open, the page each one
+  // was on and which of them was in front, and a pane cannot reopen on that from
+  // the session alone the way the explorer and this one can.
+  fileViews.set(sideBoot.session,
+                { boot: sideBoot.rows, bootPanes: sideBoot.panes });
 }

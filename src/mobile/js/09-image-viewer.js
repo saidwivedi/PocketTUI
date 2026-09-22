@@ -454,19 +454,17 @@ function restoreFileView(session) {
   // A record a reload left behind names the rows rather than carrying them:
   // nothing was ever stashed, so each pane opens the way opening it by hand
   // does — the changes of this session's repo, the explorer at its cwd, the
-  // browser on the tabs that record does carry. Which way up they end is not
-  // decided here: the explorer's open is a round trip away (filesFollowSession
-  // hands that promise back), so the column is put in the recorded order once
-  // whatever was asked for is in it.
+  // browser on the tabs that record does carry, each off its own half of it
+  // (sideBootOpen, 26-side-pane.js). Which way up they end is not decided here:
+  // the explorer's open is a round trip away and hands that promise back, so the
+  // column is put in the recorded order once whatever was asked for is in it.
   if (view.boot) {
     if (!isWideLayout()) return;
-    let pending;
-    for (const type of view.boot) {
-      if (type === "diff") diffSetOpen(true);
-      else if (type === "browser") openBrowser(view.bootUrl, view.bootTabs, view.bootTab);
-      else pending = filesFollowSession();
+    const pending = [];
+    for (const id of view.boot) {
+      pending.push(sideBootOpen(id, view.bootPanes ? view.bootPanes[id] : null));
     }
-    Promise.resolve(pending).then(() => sideOrder(view.boot));
+    Promise.all(pending).then(() => sideOrder(view.boot));
     return;
   }
   if (view.files) {

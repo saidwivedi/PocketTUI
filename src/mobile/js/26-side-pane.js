@@ -33,20 +33,88 @@ const SIDE_ROW_MIN = 160;
 // pointermove, and it is a constant either way.
 const SIDE_GUTTER = 7;
 
-// Which elements each pane type puts in its row. The explorer's row is four of
-// them because a file opened from the docked pane opens inside the pane — the
-// editor, the reader and the viewer seat themselves over its listing
-// (28-file-explorer.js) and belong to whichever row the listing is in.
-const SIDE_ELS = {
-  diff: ["diff-pane"],
-  files: ["screen-files", "screen-editor", "screen-reader", "viewer"],
-  browser: ["screen-browser"],
-};
+// What each pane type is called in the menu that opens one.
+const SIDE_LABEL = { files: "Files", browser: "Browser", diff: "Changes" };
 
-let sideRows = [];      // "diff", "files", "browser" — top row first, at most two
+// A row is an instance of a pane, not a pane type: the column can hold two
+// explorers, or two browsers, and the two halves of the record, the focus and
+// the keys all have to be able to say which of them they mean. The id is the
+// type for the pane the markup ships and `type + "#2"` for the one made at
+// runtime beside it, and it names a slot rather than a birth order — either can
+// be the one that is open, and a record naming only "files#2" restores that one
+// alone.
+function sideType(id) {
+  const at = id.indexOf("#");
+  return at < 0 ? id : id.slice(0, at);
+}
+
+// Every instance the column knows about, open or not, keyed by id. Each module
+// hands its own in at load (and, from the second instance on, at the moment it
+// makes one), because everything here that is not geometry belongs to the pane:
+// which elements are in its row, how it closes, how its expand is folded away,
+// and what a row that just changed height has to be told.
+//
+//   { type, els(), close(), setExpanded(on), onRowResize?() }
+//
+// close() ends in sideDrop(id) or refuses — the docked editor with unsaved work
+// is the one thing in the app that can say no to the column.
+const sideInst = {};
+
+function sideRegister(id, inst) { sideInst[id] = inst; }
+
+function sideEls(id) {
+  const inst = sideInst[id];
+  return inst ? inst.els() : [];
+}
+
+// Which slot of a type is free, top slot first: the id the markup's own pane
+// answers to, then the clone's. Null when the column already holds both.
+function sideFreeId(type) {
+  for (const id of [type, type + "#2"]) if (!sideRows.includes(id)) return id;
+  return null;
+}
+
+// How a second instance of a type is made. Each module that can duplicate
+// itself puts its factory in here; a type with none cannot be opened twice, and
+// the menu below leaves it out rather than offering a row that would do
+// nothing.
+const sideMakers = {};
+
+function sideCreate(type) {
+  const make = sideMakers[type];
+  if (!make) return null;
+  const id = sideFreeId(type);
+  return id && make(id) ? id : null;
+}
+
+let sideRows = [];      // instance ids — top row first, at most two
 let sideWidth = 0;      // 0 until sized — see sideClaim()
 let sideSplit = 0;      // the top row's share of the window, 0 until sized
 let sideFull = null;    // which row is filling the main area, or null for neither
+
+// The instance of each type a key press means. With one of a kind open it is
+// that one; with two, the one last pressed in, because the pane the user is
+// working in is the pane a key about that type is about. Set by the press
+// itself below and by an open (the pane that just arrived is the one its key
+// toggles back away).
+const sideFocus = { diff: null, files: null, browser: null };
+
+// Which open instance a node is inside, or null for a node in none of them.
+function sideIdAt(node) {
+  for (const id of sideRows) {
+    for (const el of sideEls(id)) if (el && el.contains(node)) return id;
+  }
+  return null;
+}
+
+function sideFocusedOf(type) {
+  const want = sideFocus[type];
+  if (want && sideRows.includes(want)) return want;
+  // Nothing pressed in yet, or the pressed one has since closed: the topmost
+  // row of that type, which with one open is the only answer there is.
+  for (const id of sideRows) if (sideType(id) === type) return id;
+  return null;
+}
 
 // The main pane is the window less the rail and the seam it is drawn on, read
 // off the seam itself rather than recomputed from --sidebar-w: the rail's own
@@ -62,7 +130,7 @@ function sideMainW() {
 // the widest pane in the column, since one width serves both rows.
 function sideClampW(px) {
   let min = SIDE_MIN.diff;
-  for (const t of sideRows) min = Math.max(min, SIDE_MIN[t] || 0);
+  for (const id of sideRows) min = Math.max(min, SIDE_MIN[sideType(id)] || 0);
   const max = Math.max(min, sideMainW() - SIDE_TERM_MIN);
   return Math.round(Math.min(max, Math.max(min, px)));
 }
@@ -85,31 +153,45 @@ function applySideSplit(frac) {
     "--side-split", (sideSplit * 100).toFixed(3) + "%");
 }
 
-// Clearing an expand through the module that owns it: the flag, the key it is
-// remembered under and the icons on its own bar are that module's, and this
-// knows only which pane is which. The diff has no expand of its own.
-function sideSetExpanded(who, on) {
-  if (who === "files") filesSetExpanded(on);
-  else if (who === "browser") browserSetExpanded(on);
+// Clearing an expand through the instance that owns it: the flag, the key it is
+// remembered under and the icons on its own bar are that pane's, and this knows
+// only which row is which. The diff registers a no-op — it has no expand.
+function sideSetExpanded(id, on) {
+  const inst = sideInst[id];
+  if (inst) inst.setExpanded(on);
 }
 
-// Puts `who` in the column: a second row under whatever is there, or the bottom
-// row taken off whoever had it — through that pane's own close, so it forgets
-// itself exactly as its own cross would. False is that close saying no (the
-// docked editor asking about unsaved work), and the caller has to stand down
-// with it rather than open half a pane. The refit is what carries the new width
-// to xterm and on to tmux: the terminal has just changed shape, and it only
-// learns that from a fit.
-function sideClaim(who) {
-  if (sideRows.includes(who)) return true;
+// Puts `id` in the column: a second row under whatever is there, or a row taken
+// off whoever had it — through that pane's own close, so it forgets itself
+// exactly as its own cross would. False is that close saying no (the docked
+// editor asking about unsaved work), and the caller has to stand down with it
+// rather than open half a pane. The refit is what carries the new width to xterm
+// and on to tmux: the terminal has just changed shape, and it only learns that
+// from a fit.
+//
+// `opts.keep` is the row the press came from — the split key in a pane's own bar
+// (sideMenuPick) — and it is the row that stays: what the user pressed in is
+// never what the press throws out. The other one goes, and the arrival takes
+// its slot rather than the bottom, so a pane opened from the bottom row's bar
+// lands on top and the row pressed in stays where it was. Without it the bottom
+// row is the one that goes, which is every other way in.
+function sideClaim(id, opts) {
+  if (sideRows.includes(id)) return true;
+  let at = -1;
   if (sideRows.length >= 2) {
-    const out = sideRows[1];
-    if (out === "diff") diffSetOpen(false);
-    else if (out === "files") closeDockedFiles();
-    else if (out === "browser") closeDockedBrowser();
+    const keep = opts && sideRows.includes(opts.keep) ? opts.keep : null;
+    const out = keep ? (sideRows[0] === keep ? sideRows[1] : sideRows[0]) : sideRows[1];
+    at = sideRows.indexOf(out);
+    const inst = sideInst[out];
+    if (inst) inst.close();
     if (sideRows.length >= 2) return false;
   }
-  sideRows.push(who);
+  // The evicted row's own slot, which is a push whenever that was the bottom.
+  if (at >= 0) sideRows.splice(at, 0, id);
+  else sideRows.push(id);
+  // The pane that just arrived is the one its key toggles away again, whichever
+  // of the two instances it is.
+  sideFocus[sideType(id)] = id;
   // A pane filling the main area has no room beside it for the one arriving,
   // so the arrival is what collapses it — the same press would otherwise land
   // a row behind a pane covering it.
@@ -126,10 +208,13 @@ function sideClaim(who) {
 
 // The mirror, and a no-op for a pane that is not in the column — the two close
 // paths (its own cross, and another pane claiming) both land here.
-function sideDrop(who) {
-  const at = sideRows.indexOf(who);
+function sideDrop(id) {
+  const at = sideRows.indexOf(id);
   if (at < 0) return;
   sideRows.splice(at, 1);
+  // A closed row is nothing for a key to toggle: the focus goes back to
+  // whichever of that type is still open, which sideFocusedOf works out.
+  if (sideFocus[sideType(id)] === id) sideFocus[sideType(id)] = null;
   if (!sideRows.length) {
     sideFull = null;
     cfg.sidePane = null;
@@ -151,17 +236,35 @@ function sideDrop(who) {
 // order their own opens resolve, and this is what says which way up they were
 // (sideOrder). The browser's page and tabs are the browser's own half of the
 // record (browserRemember, 42-browser.js) and only carry over while it is
-// still one of the rows.
+// still one of the rows, and it is kept per instance: `panes` is that half, one
+// entry per row that has one, so two browsers do not write over each other's
+// tabs. An entry for a row that has just closed is dropped with it — a pane the
+// column no longer holds has nothing to come back to.
 function sideRemember() {
   if (!sideRows.length) return;
   const prev = cfg.sidePane;
-  const rec = { rows: sideRows.slice(), session: currentSession || "" };
-  if (sideRows.includes("browser") && prev) {
-    rec.url = prev.url;
-    rec.tabs = prev.tabs;
-    rec.tab = prev.tab;
-  }
+  const prevPanes = prev && prev.panes ? prev.panes : {};
+  const rec = { rows: sideRows.slice(), session: currentSession || "", panes: {} };
+  for (const id of sideRows) if (prevPanes[id]) rec.panes[id] = prevPanes[id];
   cfg.sidePane = rec;
+}
+
+// How each row of a remembered column is put back: the record names ids, and
+// every type has its own way in — the changes of this session's repo, the
+// explorer at its cwd, the browser on the tabs the record carries. The pane's
+// own half of the record goes with it, and the promise (the explorer's open is a
+// cwd round trip away) comes back so the caller can order the rows once they
+// have all landed. An id no module has an instance for is a no-op: a record can
+// name the second of a kind, and a build whose panes do not duplicate has
+// nothing to open for it.
+function sideBootOpen(id, rec) {
+  const type = sideType(id);
+  if (type === "diff") return diffSetOpen(true, id, rec);
+  if (type === "browser") {
+    const p = rec || {};
+    return openBrowser(p.url, p.tabs, p.tab, id);
+  }
+  return filesFollowSession(id);
 }
 
 // The two rows trade places. Which is on top is a preference and nothing else
@@ -195,11 +298,11 @@ function sideOrder(rows) {
 // the flag lives in the module whose pane it is, so this is the one place that
 // knows both, and the one place that can hold the column to one expanded row:
 // expanding either folds the other's expand away with it.
-function sideSetFull(who, on) {
+function sideSetFull(id, on) {
   if (on) {
-    if (sideFull && sideFull !== who) sideSetExpanded(sideFull, false);
-    sideFull = who;
-  } else if (sideFull === who) sideFull = null;
+    if (sideFull && sideFull !== id) sideSetExpanded(sideFull, false);
+    sideFull = id;
+  } else if (sideFull === id) sideFull = null;
   $("screen-term").classList.toggle("side-full", sideFull !== null);
   sideLayout();
 }
@@ -211,15 +314,17 @@ function sideSetFull(who, on) {
 function sideLayout() {
   const two = sideRows.length === 2;
   $("screen-term").classList.toggle("side-two", two);
-  for (const type of Object.keys(SIDE_ELS)) {
-    const at = two ? sideRows.indexOf(type) : -1;
+  // Every instance, not only the open ones: a pane that has just left the
+  // column is a pane whose elements are still wearing the class of the row it
+  // was in, and nothing else takes it off them.
+  for (const id of Object.keys(sideInst)) {
+    const at = two ? sideRows.indexOf(id) : -1;
     // Expanded, the row under the full pane is not a shorter row but none at
     // all: there is nothing of it left to see behind a pane covering the column.
     const cls = at < 0 ? ""
-      : sideFull ? (sideFull === type ? "" : "side-hidden")
+      : sideFull ? (sideFull === id ? "" : "side-hidden")
       : at === 0 ? "side-top" : "side-bot";
-    for (const id of SIDE_ELS[type]) {
-      const el = $(id);
+    for (const el of sideEls(id)) {
       if (!el) continue;
       el.classList.remove("side-top", "side-bot", "side-hidden");
       if (cls) el.classList.add(cls);
@@ -236,12 +341,115 @@ function sideLayout() {
   }
 }
 
-// The key is in every bar a row can wear one in — the diff's head, the
+// ---- the keys in a pane's own bar -------------------------------------------
+// Both of them are in every bar a row can wear one in — the diff's head, the
 // explorer's, the browser's, and the three file views seated in the explorer's
-// row — and it does the same one thing in all of them.
-for (const btn of document.querySelectorAll(".dock-swap")) {
-  btn.addEventListener("click", sideSwap);
+// row — and each does the same one thing in all of them. Wired under a root
+// rather than once over the document, because a second instance of a pane is a
+// runtime copy of its markup: the copy brings its own keys, and they are wired
+// here the same way the shipped ones are.
+function sideWireBar(root) {
+  for (const btn of root.querySelectorAll(".dock-swap")) {
+    btn.addEventListener("click", sideSwap);
+  }
+  for (const btn of root.querySelectorAll(".dock-split")) {
+    btn.addEventListener("click", () => {
+      const wrap = btn.closest(".dock-split-wrap");
+      showSplitMenu(wrap, !wrap.classList.contains("open"));
+    });
+  }
 }
+
+// Which types the split key's menu offers: the ones that are not up at all, and
+// the ones that are but can be opened a second time in the free slot. A type
+// with no factory (sideMakers) cannot, so it is left out rather than offered as
+// a row that would do nothing.
+function sideSplitTypes() {
+  const out = [];
+  for (const type of ["files", "browser", "diff"]) {
+    const up = sideRows.some((id) => sideType(id) === type);
+    if (!up || (sideMakers[type] && sideFreeId(type))) out.push(type);
+  }
+  return out;
+}
+
+// The wrap whose menu is open, or null. One at a time, which is what the scrim
+// below belongs to.
+let sideSplitAt = null;
+
+// The header menu's recipe (showThemeMenu, 04-theme.js): open and closed are one
+// class on the wrap, the rows are written at open rather than kept in step —
+// the column changes under them and a menu is only ever read open — and the
+// scrim takes the press that closes it.
+function showSplitMenu(wrap, on) {
+  if (sideSplitAt && sideSplitAt !== wrap) showSplitMenu(sideSplitAt, false);
+  wrap.classList.toggle("open", on);
+  $("side-split-scrim").classList.toggle("show", on);
+  const btn = wrap.querySelector(".dock-split");
+  btn.setAttribute("aria-expanded", on ? "true" : "false");
+  sideSplitAt = on ? wrap : null;
+  if (!on) return;
+  const from = sideIdAt(btn);
+  const menu = wrap.querySelector(".dock-split-menu");
+  menu.textContent = "";
+  for (const type of sideSplitTypes()) {
+    const row = el("button", { type: "button", class: "view-row", role: "menuitem" },
+                   el("span", {}, SIDE_LABEL[type]));
+    row.addEventListener("click", () => {
+      showSplitMenu(wrap, false);
+      sideMenuPick(from, type);
+    });
+    menu.appendChild(row);
+  }
+}
+
+// A row of that menu pressed. The type's own way in, with the pane the menu
+// belongs to named as the row to keep: picked from a full column, this is the
+// one press in the app that must not throw out the pane it was made from
+// (sideClaim). A type already up gets a second instance made for it first, and a
+// build that cannot make one has not offered the row.
+function sideMenuPick(from, type) {
+  const up = sideRows.some((id) => sideType(id) === type);
+  const id = up ? sideCreate(type) : type;
+  if (!id) return;
+  const opts = { keep: from };
+  if (type === "diff") diffSetOpen(true, id, null, opts);
+  else if (type === "files") filesOpenAtCwd(id, opts);
+  else openBrowser("", null, 0, id, opts);
+}
+
+// Which pane a press landed in, and the press that closes an open split menu.
+// On capture, so a press the pane's own handlers act on is still seen here.
+//
+// The menu's scrim cannot take every press that should close it: the menu drops
+// out of a bar inside a pane, and the panes are stacked above the scrim (the
+// stylesheet's z-index — a scrim over them would be a scrim over the menu). So a
+// press elsewhere in a pane is closed here, and a press anywhere else is the
+// scrim's own, which swallows it rather than letting it through to the terminal.
+document.addEventListener("pointerdown", (e) => {
+  const id = sideIdAt(e.target);
+  if (id) sideFocus[sideType(id)] = id;
+  if (sideSplitAt && !sideSplitAt.contains(e.target)
+      && e.target !== $("side-split-scrim")) {
+    showSplitMenu(sideSplitAt, false);
+  }
+}, true);
+
+$("side-split-scrim").addEventListener("click", () => {
+  if (sideSplitAt) showSplitMenu(sideSplitAt, false);
+});
+
+// A hardware keyboard's Escape closes the menu, showThemeMenu's own rule: on
+// capture and ahead of every handler that would otherwise read the press as
+// leaving the pane under it.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !sideSplitAt) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  showSplitMenu(sideSplitAt, false);
+}, true);
+
+sideWireBar(document);
 
 // Dragging the seam resizes the pane live, the rail's railResize() mirrored:
 // the width moves by the pointer's travel rather than jumping to it, the
@@ -296,10 +504,15 @@ for (const btn of document.querySelectorAll(".dock-swap")) {
     dragging = false;
     handle.classList.remove("dragging");
     cfg.sideSplit = sideSplit;
-    // The diff's own list/body seam is a height inside a row that has just
-    // changed height, and its clamp is against that row: a list left as tall as
-    // a taller row allowed would push the diff past the bottom of this one.
-    if (sideRows.includes("diff") && diffListH) applyDiffListH(diffListH);
+    // Whatever a pane has to redo when its row changes height, asked of the
+    // panes in the column rather than known here: the diff's own list/body seam
+    // is a height inside the row, and its clamp is against that row — a list
+    // left as tall as a taller row allowed would push the diff past the bottom
+    // of this one.
+    for (const id of sideRows) {
+      const inst = sideInst[id];
+      if (inst && inst.onRowResize) inst.onRowResize();
+    }
   };
   handle.addEventListener("pointerup", finish);
   handle.addEventListener("pointercancel", finish);
