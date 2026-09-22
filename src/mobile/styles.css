@@ -3815,8 +3815,12 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 .browser-hint-x svg { width: 16px; height: 16px; }
 .browser-hint-go:active, .browser-hint-x:active { transform: scale(0.96); }
-#browser-url-wrap { flex: 1; min-width: 0; display: flex; }
-/* Same field as #files-path-input, compacted for the topbar row. */
+/* Positioned, because the key that opens this page outside the app sits inside
+   the field rather than after it. */
+#browser-url-wrap { flex: 1; min-width: 0; display: flex; position: relative; }
+/* Same field as #files-path-input, compacted for the topbar row. The right
+   padding is the key's slot: a field that ended where its box does would scroll
+   a long address under the glyph. */
 #browser-url {
   width: 100%;
   font-family: var(--mono);
@@ -3825,9 +3829,23 @@ html.term-open #dbg-panel { opacity: 0.85; }
   background: var(--paper-rec);
   border: 1px solid var(--hair);
   border-radius: 10px;
-  padding: 8px 10px;
+  padding: 8px 34px 8px 10px;
 }
 #browser-url:focus { border-color: var(--umber); outline: none; }
+/* In the field, at its right end: smaller than the keys on the row and drawn in
+   the secondary ink, because it belongs to the address it sits on rather than to
+   the bar. */
+#btn-browser-out {
+  position: absolute;
+  top: 50%; right: 3px;
+  transform: translateY(-50%);
+  padding: 4px;
+  border-radius: 8px;
+}
+#btn-browser-out svg { width: 16px; height: 16px; }
+/* .icon-btn is display:inline-flex, which a bare [hidden] does not outrank. */
+#btn-browser-out[hidden] { display: none; }
+#btn-browser-out:active { transform: translateY(-50%) scale(0.94); }
 /* The zoom key's panel, on the file bar's dropdown recipe (#files-view-menu):
    a class on the wrap opens it, a scrim inside the pane closes it. Anchored on
    the edge it shares with its button rather than the left, because the key
