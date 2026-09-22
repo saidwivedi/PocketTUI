@@ -65,8 +65,15 @@ function appConfirm(message, opts={}) {
     confirmResolve = resolve;
     $("confirm-msg").textContent = message;
     $("btn-confirm-ok").textContent = opts.confirmLabel || "OK";
+    // Both set on every ask rather than only where they change, so no question
+    // can leave the sheet dressed for the last one. `okOnly` is the question
+    // with no second answer — a page's alert() in the browser pane, where the
+    // page goes on either way (43-full-browser.js) — and `danger: false` is a
+    // yes that destroys nothing, which every ask that comes from a page is.
+    $("btn-confirm-cancel").hidden = !!opts.okOnly;
+    $("btn-confirm-ok").classList.toggle("danger", opts.danger !== false);
     showSheet(true, "sheet-confirm");
-    $("btn-confirm-cancel").focus();
+    $(opts.okOnly ? "btn-confirm-ok" : "btn-confirm-cancel").focus();
   });
 }
 function settleConfirm(answer) {
@@ -74,6 +81,9 @@ function settleConfirm(answer) {
   const resolve = confirmResolve;
   confirmResolve = null;   // before showSheet: its settle hook must not loop
   showSheet(false);
+  // Put back what a one-answer question took away, so the sheet is never left
+  // dressed for the last thing that asked it (appConfirm's okOnly).
+  $("btn-confirm-cancel").hidden = false;
   resolve(answer);
 }
 $("btn-confirm-ok").addEventListener("click", () => settleConfirm(true));
