@@ -3615,7 +3615,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
 
   /* The key that trades the rows, in every bar a row can wear one in. Two rows
      and neither of them expanded is the whole of when it has anything to do. */
-  #screen-term.side-two:not(.side-full) > #diff-pane .dock-swap,
+  #screen-term.side-two:not(.side-full) > :is(#diff-pane, #diff-pane-2) .dock-swap,
   #screen-term.side-two:not(.side-full).active ~ .docked .dock-swap {
     display: inline-flex;
   }
@@ -4568,8 +4568,12 @@ html.term-open #dbg-panel { opacity: 0.85; }
    .diff-open class stays on; only these rules stop applying).
    The seam and the width are shared with the docked file explorer, which wants
    the same slot (26-side-pane.js): .side-open is the terminal narrowing for
-   whichever of the two is in it, .diff-open only says which. */
-#diff-pane, #side-gutter, #side-hsplit { display: none; }
+   whichever of the two is in it, .diff-open only says which.
+   The column can hold two of these at once, so there are two panes to name —
+   the one the markup ships and the copy made beside it (37-git-diff.js) — and
+   every rule keyed on the pane names both. .diff-open then says only that one
+   of them is up; which one is that pane's own .open, below. */
+:is(#diff-pane, #diff-pane-2), #side-gutter, #side-hsplit { display: none; }
 
 @media (min-width: 768px) and (min-height: 500px) {
   /* The slot's width, dragged and remembered (26-side-pane.js), and the seam
@@ -4587,8 +4591,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
      terminal's own flex arithmetic is untouched. Its own paper and grain for
      the reason the rail paints its own: while a terminal is open syncChrome
      puts the terminal's background on html/body, and that must not bleed in
-     here. */
-  #screen-term.diff-open > #diff-pane {
+     here. .open is this pane's own: with two of them the screen's .diff-open
+     says a diff is up and this says which. */
+  #screen-term.diff-open > :is(#diff-pane, #diff-pane-2).open {
     display: flex;
     flex-direction: column;
     position: fixed;
@@ -4605,13 +4610,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* Its row of the column, when it is sharing one with another pane — the
      docked explorer's rules said again for a pane that lives inside
      #screen-term rather than beside it, and off the same two numbers. */
-  #screen-term.diff-open > #diff-pane.side-top {
+  #screen-term.diff-open > :is(#diff-pane, #diff-pane-2).side-top {
     bottom: calc(100% - var(--side-split) + var(--side-gutter) / 2);
   }
-  #screen-term.diff-open > #diff-pane.side-bot {
+  #screen-term.diff-open > :is(#diff-pane, #diff-pane-2).side-bot {
     top: calc(var(--side-split) + var(--side-gutter) / 2);
   }
-  #screen-term.diff-open > #diff-pane.side-hidden { display: none; }
+  #screen-term.diff-open > :is(#diff-pane, #diff-pane-2).side-hidden { display: none; }
 
   /* The rail's gutter recipe verbatim (see #rail-resize), mirrored: it is the
      same recessed seam, and the two edges of the terminal should not read as
@@ -4795,7 +4800,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
      the diff's floor. The drag clamps to the same numbers live
      (37-git-diff.js); these are what hold a height the window has since shrunk
      under, or one restored at boot with no pane on screen to measure. */
-  #diff-pane.list-sized > #diff-files {
+  :is(#diff-pane, #diff-pane-2).list-sized > #diff-files {
     height: var(--diff-list-h);
     min-height: 72px;
     max-height: calc(100% - 171px);

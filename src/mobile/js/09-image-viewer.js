@@ -438,8 +438,14 @@ function stashFileView(session, kind) {
   else if (kind === "viewer") view.viewer = viewerStash();
   // The pane goes down with the session it belongs to, both halves of it: the
   // slot is given back here (diffSetOpen, and filesTeardown's own sideDrop) and
-  // the record above is the whole of what puts it up again.
-  if (diffOpen) { view.diff = true; diffSetOpen(false); }
+  // the record above is the whole of what puts it up again. Which of the two
+  // diff panes were up goes in by name, since the column can hold both and
+  // putting one back in the other's place is not the column that was left.
+  const diffs = diffOpenIds();
+  if (diffs.length) {
+    view.diffs = diffs;
+    for (const id of diffs) diffSetOpen(false, id);
+  }
   // The third thing that can hold it, and the only one that carries state
   // worth more than a re-fetch: the page on screen and the way back through
   // the ones before it.
@@ -483,8 +489,9 @@ function restoreFileView(session) {
     }
   }
   // The other thing that can hold a row, back in it against this session's
-  // repo — diffSetOpen's own poll asks for it.
-  if (view.diff) diffSetOpen(true);
+  // repo — diffSetOpen's own poll asks for it. Each pane that was up, under the
+  // name it was up as; what each was showing is its own and never left it.
+  if (view.diffs) for (const id of view.diffs) diffSetOpen(true, id);
   if (view.browser) browserRestore(view.browser);
   // Every row that was put away is back by now, stacked in the order the
   // restores above happen to run in rather than the order it was left in.
@@ -584,9 +591,9 @@ function openTerminal(name, resumed) {
     // with no screen of its own to have been dealt with above — the branches
     // that stash it have already closed it, so this is the case where it was
     // the only thing the leaving session had open.
-    if (diffOpen && name !== currentSession) {
+    if (diffAnyOpen() && name !== currentSession) {
       if (currentSession) stashFileView(currentSession, null);
-      else diffSetOpen(false);
+      else for (const id of diffOpenIds()) diffSetOpen(false, id);
     }
     // The browser pane is the third thing that can hold that slot, and docked
     // it reaches here under the diff's rule. Full screen it is over the rail
@@ -699,7 +706,7 @@ function closeTerminal(skipReload) {
   // not it: the slot goes back here, into the session's own record, so the list
   // is never left holding a pane and reopening this session — and only this
   // session — brings it up again.
-  if (currentSession && (filesDocked || diffOpen)) {
+  if (currentSession && (filesDocked || diffAnyOpen())) {
     // And the file the pane was showing over its listing, which is the same
     // session's. Nothing is discarded by a stash, so nothing is asked.
     stashFileView(currentSession, dockedFileView() ? fileViewKind() : null);

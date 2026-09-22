@@ -52,6 +52,153 @@ const DIFF_POLL_MS = 2000;
 const DIFF_POLL_FACTOR = 4;
 const DIFF_POLL_MAX_MS = 60000;
 
+// The two panes below are two closures of one factory rather than one module's
+// state (26-side-pane.js can hold two rows of a kind), so what is shared has to
+// be what is genuinely shared: the paces above, the helpers here that only ever
+// read their arguments, and nothing else.
+
+// A row whose path ends in a slash is a folder the untracked walk collapsed
+// into one entry — git says "everything under here is new" rather than listing
+// it — so there is no diff to open and the actions act on the whole tree.
+function diffIsDir(path) { return path.endsWith("/"); }
+
+// Three rows of the list at the size the stylesheet sets it in — below that it
+// stops reading as a list of files and becomes a strip.
+const DIFF_LIST_MIN = 72;
+// What the diff keeps whatever the drag asks for: a hunk header and enough
+// lines under it to be worth looking at.
+const DIFF_BODY_MIN = 120;
+
+// The pane's own toast rather than the app's: this one carries a button, and
+// the app's is a line of text at the foot of the window, which is the wrong
+// side of the screen for an Undo that belongs to the pane on the right. Six
+// seconds is long enough to read the line and reach the button, and short
+// enough to be gone before the next action.
+const DIFF_TOAST_MS = 6000;
+
+// Which of the six kinds of line this is, and what the gutter shows beside it.
+// Order matters: `---` and `+++` are file headers, and testing them after the
+// bare `-` and `+` would paint them as a deletion and an addition.
+function diffLineClass(line) {
+  if (line.startsWith("@@")) return "hunk";
+  if (line.startsWith("---") || line.startsWith("+++")
+      || line.startsWith("diff ") || line.startsWith("index ")
+      || line.startsWith("old mode") || line.startsWith("new mode")
+      || line.startsWith("new file") || line.startsWith("deleted file")
+      || line.startsWith("similarity index") || line.startsWith("dissimilarity index")
+      || line.startsWith("rename ") || line.startsWith("copy ")
+      || line.startsWith("\\ ")) return "meta";
+  if (line.startsWith("+")) return "add";
+  if (line.startsWith("-")) return "del";
+  return "ctx";
+}
+
+// Inside a hunk the first character is the whole line's story — `+`, `-` or a
+// space — so the patch logic reads it directly rather than through
+// diffLineClass(), which is answering the other question, how to paint the
+// line, and calls a removed line that itself begins `--` a file header.
+function diffMark(line) {
+  return line[0] === "+" || line[0] === "-" ? line[0] : " ";
+}
+
+// A block is a maximal run of removed and added lines inside a hunk — what a
+// reader means by "this change", and the unit VS Code stages when it offers to
+// stage one. Context lines are what separates two of them. Each entry is the
+// inclusive span of the hunk's own line array, index 0 being its `@@`.
+function diffBlocks(hunk) {
+  const blocks = [];
+  let run = null;
+  for (let i = 1; i < hunk.lines.length; i++) {
+    if (diffMark(hunk.lines[i]) === " ") { run = null; continue; }
+    if (run) run.to = i;
+    else blocks.push(run = { from: i, to: i });
+  }
+  return blocks;
+}
+
+// The one-block patch a block action sends: the header block git printed
+// before its first `@@` — `diff --git`, `index`, `---`/`+++` and whatever mode
+// or rename lines the change earned — then this hunk with every other block in
+// it flattened into the state the action reads from.
+//
+// Which state that is, is the direction. Staging applies forward to the index,
+// where the other blocks' removals are still present and their additions are
+// not, so a `-` there becomes context and a `+` goes. Reverting and unstaging
+// apply in reverse, against the new side, so it is the other way round. A hunk
+// with one block in it comes out as the whole hunk, which is what it was.
+//
+// The `@@` counts are recounted from what survives. The server applies with
+// --recount and would not read them, but a patch that says what it contains is
+// one that can be pasted into `git apply` by hand and still work.
+function diffBlockPatch(header, hunk, block, reverse) {
+  const out = [];
+  let a = 0, b = 0;             // the two sides' line counts, as they end up
+  let dropped = false;          // whether the line a `\` note belongs to went
+  for (let i = 1; i < hunk.lines.length; i++) {
+    const line = hunk.lines[i];
+    // `\ No newline at end of file` is not a line of either side but a note
+    // about the one above it, so it follows that line's fate and counts for
+    // neither.
+    if (line.startsWith("\\")) { if (!dropped) out.push(line); continue; }
+    const mark = diffMark(line);
+    let text = line;
+    if (mark !== " " && (i < block.from || i > block.to)) {
+      if (mark === (reverse ? "+" : "-")) text = " " + line.slice(1);
+      else { dropped = true; continue; }
+    }
+    dropped = false;
+    out.push(text);
+    if (diffMark(text) !== "+") a++;
+    if (diffMark(text) !== "-") b++;
+  }
+  const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(hunk.lines[0]);
+  const at = m ? "@@ -" + m[1] + "," + a + " +" + m[2] + "," + b + " @@" + m[3]
+               : hunk.lines[0];
+  return header.concat([at], out).join("\n") + "\n";
+}
+
+// ------------------------------------------------------------
+// Every pane of this kind
+// ------------------------------------------------------------
+
+// The panes the column has, by the id it knows each of them by ("diff" for the
+// one the markup ships, "diff#2" for the copy made beside it). Everything below
+// that the rest of the app calls is a dispatcher over this.
+const diffPanes = {};
+
+function diffOpenIds() {
+  return Object.keys(diffPanes).filter((id) => diffPanes[id].isOpen());
+}
+
+function diffAnyOpen() { return diffOpenIds().length > 0; }
+
+// The terminal screen narrows for a diff row while either pane is in the column
+// and stops as soon as neither is, so the class it wears says that a diff is up
+// and no more; which one it is, is that pane's own `.open`.
+function syncDiffOpen() {
+  $("screen-term").classList.toggle("diff-open", diffAnyOpen());
+}
+
+// ------------------------------------------------------------
+// One pane
+// ------------------------------------------------------------
+
+// One call of this is one pane. The body below is the module this file used to
+// be, wrapped rather than rewritten — it is not indented into the function,
+// because every line of it would then have moved and the change would read as a
+// rewrite of a pane that has not changed. What the wrapper buys is that each
+// `let` is now that pane's own, and an answer landing from a fetch started
+// before the user touched the other pane still writes into the pane it was asked
+// for, which no swapped "current pane" pointer can promise across an await.
+// `root` is that pane's own element and `q` is how every id inside it is
+// reached, since the copy carries the same ids as the original; `id` is what the
+// column calls it, and the only thing the body branches on (the markup's pane
+// keeps its tab as the app's preference, the copy keeps its own in the record).
+// What the rest of the app calls is the dispatchers under the factory.
+function makeDiffPane(id, root) {
+
+const q = (name) => root.querySelector("#" + name);
+
 let diffOpen = false;
 let diffSession = null;     // whose changes are on screen; null before the first
 let diffRoot = "";
@@ -61,70 +208,77 @@ let diffTextKey = "";       // the last /diff body, verbatim
 let diffFetching = false;   // one poll at a time; a tick lands on this and leaves
 let diffNextAt = 0;         // no scheduled poll before this clock time
 
-// Which tab is on screen, and what each of them last heard. The answer is kept
-// per tab rather than only compared: a tab coming back on screen has a list to
-// draw at once, and waiting for its own fetch to land would blank the pane for
-// as long as that repo takes. `key` is the body that list was drawn from, so
-// a poll that changed nothing still costs no repaint; `every` is the pace this
-// tab's own last answer earned.
-let diffTab = cfg.diffTab;
+// What each of the two tabs last heard. The answer is kept per tab rather than
+// only compared: a tab coming back on screen has a list to draw at once, and
+// waiting for its own fetch to land would blank the pane for as long as that
+// repo takes. `key` is the body that list was drawn from, so a poll that changed
+// nothing still costs no repaint; `every` is the pace this tab's own last answer
+// earned.
 const diffTabs = {
   tracked: { key: "", body: "", data: null, every: DIFF_POLL_MS },
   untracked: { key: "", body: "", data: null, every: DIFF_POLL_MS },
 };
 
-function diffTabState() { return diffTabs[diffTab]; }
+// Which of them is on screen. The markup's own pane opens on the tab the app was
+// left on; a copy opens on whatever the pane it was made beside is showing,
+// because it is a second look at the same repo and landing on the other list
+// would read as the split having changed something. From there each keeps its
+// own (diffRememberTab).
+let diffTab = id === "diff" ? cfg.diffTab
+            : diffPanes.diff ? diffPanes.diff.tab() : cfg.diffTab;
 
-// A row whose path ends in a slash is a folder the untracked walk collapsed
-// into one entry — git says "everything under here is new" rather than listing
-// it — so there is no diff to open and the actions act on the whole tree.
-function diffIsDir(path) { return path.endsWith("/"); }
+function diffTabState() { return diffTabs[diffTab]; }
 
 // The one way the split opens or closes: the class, the slot on the terminal's
 // right and the poll are the same fact, and nothing sets one without the rest.
 // The width, the seam and the refit are the slot's (26-side-pane.js), which is
 // also where the explorer gets pushed out of the way if it is holding it.
 //
-// `id` is which of the column's rows this is about, and this build has one diff
-// pane whose id is "diff": anything else names a row nothing here has a pane for
-// — a record can ask for a second of a kind — and there is nothing to open or
-// close for it. `rec` is that row's own half of the record a boot is putting
-// back, which for the one pane is already in cfg.diffTab; `opts` is the column's
-// (sideClaim's `keep`).
-function diffSetOpen(open, id, rec, opts) {
-  if (id && id !== "diff") return false;
+// Two of these panes can be up, so what puts this one on screen is its own
+// class and what narrows the terminal for it is the screen's, read off both
+// (syncDiffOpen). `rec` is this row's own half of the record a boot is putting
+// back — the tab it was left on, which only a copy keeps there — and `opts` is
+// the column's (sideClaim's `keep`).
+function diffSetOpen(open, rec, opts) {
   diffOpen = open;
-  $("screen-term").classList.toggle("diff-open", open);
-  if (!open) { sideDrop("diff"); return; }
+  root.classList.toggle("open", open);
+  syncDiffOpen();
+  if (!open) { sideDrop(id); return true; }
   // The column can refuse the row: the one it would have taken is a docked
   // editor with unsaved work whose owner said stay (sideClaim, 26-side-pane.js),
   // and a split that never opened must not leave the class behind it.
-  if (!sideClaim("diff", opts)) {
+  if (!sideClaim(id, opts)) {
     diffOpen = false;
-    $("screen-term").classList.remove("diff-open");
-    return;
+    root.classList.remove("open");
+    syncDiffOpen();
+    return false;
+  }
+  if (id !== "diff") {
+    if (rec && (rec.tab === "tracked" || rec.tab === "untracked")
+        && rec.tab !== diffTab) {
+      diffTab = rec.tab;
+      syncDiffTabs();
+    }
+    // The row is in the column now, so the record has a slot for it: this fills
+    // it, whether the tab came back with the row or is the one the pane was
+    // closed on. Without it a copy closed on Untracked and opened again would
+    // be showing one list and remembered as the other.
+    diffRememberTab(diffTab);
   }
   // The list's height is restored the same way the width is, but only once one
   // has been dragged: with nothing stored the list stays sized by the files in
-  // it, which is what the pane has always opened as.
+  // it, which is what the pane has always opened as. The height is the column's
+  // rather than a pane's, so both panes open at whatever was last dragged to.
   if (cfg.diffListHeight) applyDiffListH(cfg.diffListHeight);
   diffPoll(true);
+  return true;
 }
 
-// The chord's way in and out. Which pane it is about is the column's answer, not
-// this module's: with two diff rows open it is the one last pressed in, and with
-// none it is a new one (sideFocusedOf, 26-side-pane.js).
-function toggleDiffPane() {
-  const id = sideFocusedOf("diff");
-  if (id) diffSetOpen(false, id);
-  else diffSetOpen(true);
-}
-
-// The pane is a view of one computer's repo, so a switch to another closes it
-// and drops what both tabs last heard. The per-session records that would have
-// reopened it go the same way, in switchProfile's own dropAllFileViews(): they
-// are the sessions of the machine being left.
-function diffResetForProfile() {
+// This pane back to nothing: the row, the session it was showing, the selection
+// and what both its tabs last heard. Asked for by the profile switch
+// (diffResetForProfile, under the factory) — the one thing that invalidates
+// every pane at once.
+function diffReset() {
   diffSetOpen(false);
   diffSession = null;
   diffRoot = "";
@@ -136,30 +290,23 @@ function diffResetForProfile() {
     st.key = ""; st.body = ""; st.data = null; st.every = DIFF_POLL_MS;
   }
   syncDiffTabs();
-  $("diff-files").textContent = "";
-  $("diff-body").textContent = "";
+  q("diff-files").textContent = "";
+  q("diff-body").textContent = "";
 }
 
-$("btn-diff-close").addEventListener("click", () => diffSetOpen(false));
+q("btn-diff-close").addEventListener("click", () => diffSetOpen(false));
 
 // This pane as a row of the column: which elements are in it, how it closes, and
 // what it has to redo when the row changes height. No expand of its own — the
 // diff is a list over a body and has nothing to gain from covering the column —
 // so that one is a no-op rather than a branch over in the arbiter.
-sideRegister("diff", {
+sideRegister(id, {
   type: "diff",
-  els: () => [$("diff-pane")],
-  close: () => diffSetOpen(false, "diff"),
+  els: () => [root],
+  close: () => diffSetOpen(false),
   setExpanded: () => {},
   onRowResize: () => { if (diffListH) applyDiffListH(diffListH); },
 });
-
-// Three rows of the list at the size the stylesheet sets it in — below that it
-// stops reading as a list of files and becomes a strip.
-const DIFF_LIST_MIN = 72;
-// What the diff keeps whatever the drag asks for: a hunk header and enough
-// lines under it to be worth looking at.
-const DIFF_BODY_MIN = 120;
 
 let diffListH = 0;          // 0 while the list is sized by its own rows
 
@@ -167,9 +314,9 @@ let diffListH = 0;          // 0 while the list is sized by its own rows
 // than worked out from the pane's padding and header: the safe-area insets and
 // whatever the header ended up being are already in those edges.
 function diffSplitSpan() {
-  return $("diff-body").getBoundingClientRect().bottom -
-         $("diff-files").getBoundingClientRect().top -
-         $("diff-vsplit").offsetHeight;
+  return q("diff-body").getBoundingClientRect().bottom -
+         q("diff-files").getBoundingClientRect().top -
+         q("diff-vsplit").offsetHeight;
 }
 
 // Clamped on every read, the way the width is: a remembered height is a height
@@ -191,9 +338,8 @@ function diffClampListH(px) {
 // to and nothing else.
 function applyDiffListH(px) {
   diffListH = diffClampListH(px);
-  const pane = $("diff-pane");
-  pane.classList.add("list-sized");
-  pane.style.setProperty("--diff-list-h", diffListH + "px");
+  root.classList.add("list-sized");
+  root.style.setProperty("--diff-list-h", diffListH + "px");
 }
 
 // The horizontal seam, the slot's sideResize() turned on its side: the list's height moves
@@ -202,14 +348,14 @@ function applyDiffListH(px) {
 // edge, takes a difference. No refit: the terminal beside this has not changed
 // shape, only the two boxes on this side of it.
 (function diffSplitResize() {
-  const handle = $("diff-vsplit");
+  const handle = q("diff-vsplit");
   let dragging = false, dragOff = 0;
   handle.addEventListener("pointerdown", (e) => {
     dragging = true;
     // Off the element rather than diffListH: until the first drag the list is
     // sized by its rows and diffListH is 0, and what is on screen is what the
     // drag has to start from.
-    dragOff = $("diff-files").getBoundingClientRect().height - e.clientY;
+    dragOff = q("diff-files").getBoundingClientRect().height - e.clientY;
     handle.classList.add("dragging");
     handle.setPointerCapture(e.pointerId);
     e.preventDefault();
@@ -333,8 +479,8 @@ function renderChanges(body, data) {
   diffRoot = data.root || "";
   const files = data.files || [];
   const name = diffRoot ? diffRoot.slice(diffRoot.lastIndexOf("/") + 1) : "";
-  $("diff-root").textContent = name || "Changes";
-  $("diff-root").title = diffRoot;
+  q("diff-root").textContent = name || "Changes";
+  q("diff-root").title = diffRoot;
 
   // The untracked tab is one list: git has never seen any of it, so there is
   // no index half for a row to also be in. It rides in the unstaged slot
@@ -368,7 +514,7 @@ function renderChanges(body, data) {
     diffTextKey = "";
   }
 
-  const list = $("diff-files");
+  const list = q("diff-files");
   list.textContent = "";
   if (diffTab === "untracked") {
     if (files.length) list.appendChild(diffSection("unstaged", "Untracked", files));
@@ -383,8 +529,8 @@ function renderChanges(body, data) {
 
   if (!files.length) {
     diffTextKey = "";
-    $("diff-body").textContent = "";
-    $("diff-body").appendChild(diffNote(
+    q("diff-body").textContent = "";
+    q("diff-body").appendChild(diffNote(
       data.error ? data.error
         : !diffRoot ? "Open a session to see its changes"
         : diffTab === "untracked" ? "Nothing untracked in " + name
@@ -399,14 +545,14 @@ function renderChanges(body, data) {
 function diffSetTab(tab) {
   if (tab === diffTab) return;
   diffTab = tab;
-  cfg.diffTab = tab;
+  diffRememberTab(tab);
   syncDiffTabs();
   // The selection belongs to the list it was made in, and so does the diff
   // under it: both go rather than being carried into a list they are not in.
   diffScope = "unstaged";
   diffSelected = "";
   diffTextKey = "";
-  $("diff-body").textContent = "";
+  q("diff-body").textContent = "";
   const st = diffTabState();
   if (st.data) {
     st.key = "";                    // drawn from the cache, not deduped away
@@ -417,16 +563,31 @@ function diffSetTab(tab) {
   diffPoll(true);
 }
 
+// Where this pane's tab is kept. The markup's own pane keeps it as the app's
+// preference, which is what the next window opens on; a copy keeps it in the
+// column's own record under its row id, beside the browser's half of the same
+// record (browserRemember, 42-browser.js) — two panes writing one preference
+// would each be undoing the other, and the record is per session, which is what
+// a second look at a repo is worth remembering against.
+function diffRememberTab(tab) {
+  if (id === "diff") { cfg.diffTab = tab; return; }
+  const rec = cfg.sidePane;
+  if (!rec || !rec.rows.includes(id)) return;
+  const panes = Object.assign({}, rec.panes);
+  panes[id] = { tab: tab };
+  cfg.sidePane = Object.assign({}, rec, { panes: panes });
+}
+
 // One writer for the two tabs and the pace beside them: which is pressed, and
 // what the header says about how often this repo is being asked.
 function syncDiffTabs() {
   for (const name of ["tracked", "untracked"]) {
-    const btn = $("btn-diff-" + name);
+    const btn = q("btn-diff-" + name);
     btn.setAttribute("aria-pressed", name === diffTab ? "true" : "false");
     btn.classList.toggle("on", name === diffTab);
   }
   const every = diffTabState().every;
-  $("diff-every").textContent = every > DIFF_POLL_MS
+  q("diff-every").textContent = every > DIFF_POLL_MS
     ? "refresh " + Math.round(every / 1000) + " s" : "";
 }
 
@@ -434,11 +595,11 @@ function syncDiffTabs() {
 // first look at a tab, and every look after a session change. Idempotent, so
 // the poll can say it every tick without rebuilding the row underneath.
 function diffShowLoading() {
-  const list = $("diff-files");
+  const list = q("diff-files");
   if (list.firstElementChild && list.firstElementChild.classList.contains("loading")) return;
   list.textContent = "";
   list.appendChild(el("div", { class: "diff-note loading" }, "Loading…"));
-  $("diff-body").textContent = "";
+  q("diff-body").textContent = "";
 }
 
 // A click is the one place the pane is ahead of its poll, so it renders its own
@@ -455,11 +616,11 @@ function diffSelect(scope, path) {
   diffScope = scope;
   diffSelected = path;
   diffTextKey = "";
-  for (const row of $("diff-files").querySelectorAll(".diff-file")) {
+  for (const row of q("diff-files").querySelectorAll(".diff-file")) {
     row.classList.toggle("selected",
       row.dataset.scope === scope && row.dataset.path === path);
   }
-  $("diff-body").scrollTop = 0;
+  q("diff-body").scrollTop = 0;
   if (diffIsDir(path)) diffShowDir(path);
   else diffLoadFile(scope, path);
 }
@@ -467,87 +628,6 @@ function diffSelect(scope, path) {
 // ------------------------------------------------------------
 // The diff
 // ------------------------------------------------------------
-
-// Which of the six kinds of line this is, and what the gutter shows beside it.
-// Order matters: `---` and `+++` are file headers, and testing them after the
-// bare `-` and `+` would paint them as a deletion and an addition.
-function diffLineClass(line) {
-  if (line.startsWith("@@")) return "hunk";
-  if (line.startsWith("---") || line.startsWith("+++")
-      || line.startsWith("diff ") || line.startsWith("index ")
-      || line.startsWith("old mode") || line.startsWith("new mode")
-      || line.startsWith("new file") || line.startsWith("deleted file")
-      || line.startsWith("similarity index") || line.startsWith("dissimilarity index")
-      || line.startsWith("rename ") || line.startsWith("copy ")
-      || line.startsWith("\\ ")) return "meta";
-  if (line.startsWith("+")) return "add";
-  if (line.startsWith("-")) return "del";
-  return "ctx";
-}
-
-// Inside a hunk the first character is the whole line's story — `+`, `-` or a
-// space — so the patch logic reads it directly rather than through
-// diffLineClass(), which is answering the other question, how to paint the
-// line, and calls a removed line that itself begins `--` a file header.
-function diffMark(line) {
-  return line[0] === "+" || line[0] === "-" ? line[0] : " ";
-}
-
-// A block is a maximal run of removed and added lines inside a hunk — what a
-// reader means by "this change", and the unit VS Code stages when it offers to
-// stage one. Context lines are what separates two of them. Each entry is the
-// inclusive span of the hunk's own line array, index 0 being its `@@`.
-function diffBlocks(hunk) {
-  const blocks = [];
-  let run = null;
-  for (let i = 1; i < hunk.lines.length; i++) {
-    if (diffMark(hunk.lines[i]) === " ") { run = null; continue; }
-    if (run) run.to = i;
-    else blocks.push(run = { from: i, to: i });
-  }
-  return blocks;
-}
-
-// The one-block patch a block action sends: the header block git printed
-// before its first `@@` — `diff --git`, `index`, `---`/`+++` and whatever mode
-// or rename lines the change earned — then this hunk with every other block in
-// it flattened into the state the action reads from.
-//
-// Which state that is, is the direction. Staging applies forward to the index,
-// where the other blocks' removals are still present and their additions are
-// not, so a `-` there becomes context and a `+` goes. Reverting and unstaging
-// apply in reverse, against the new side, so it is the other way round. A hunk
-// with one block in it comes out as the whole hunk, which is what it was.
-//
-// The `@@` counts are recounted from what survives. The server applies with
-// --recount and would not read them, but a patch that says what it contains is
-// one that can be pasted into `git apply` by hand and still work.
-function diffBlockPatch(header, hunk, block, reverse) {
-  const out = [];
-  let a = 0, b = 0;             // the two sides' line counts, as they end up
-  let dropped = false;          // whether the line a `\` note belongs to went
-  for (let i = 1; i < hunk.lines.length; i++) {
-    const line = hunk.lines[i];
-    // `\ No newline at end of file` is not a line of either side but a note
-    // about the one above it, so it follows that line's fate and counts for
-    // neither.
-    if (line.startsWith("\\")) { if (!dropped) out.push(line); continue; }
-    const mark = diffMark(line);
-    let text = line;
-    if (mark !== " " && (i < block.from || i > block.to)) {
-      if (mark === (reverse ? "+" : "-")) text = " " + line.slice(1);
-      else { dropped = true; continue; }
-    }
-    dropped = false;
-    out.push(text);
-    if (diffMark(text) !== "+") a++;
-    if (diffMark(text) !== "-") b++;
-  }
-  const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(hunk.lines[0]);
-  const at = m ? "@@ -" + m[1] + "," + a + " +" + m[2] + "," + b + " @@" + m[3]
-               : hunk.lines[0];
-  return header.concat([at], out).join("\n") + "\n";
-}
 
 // The actions one block earns in the list it is in, floated over its first
 // line by the stylesheet. Suppressed on a truncated diff: its last hunk is cut
@@ -583,7 +663,7 @@ function diffLineEl(line, a, b) {
 // their own, which is what gives the group a corner to sit in and a run of
 // lines to be hovered over.
 function renderDiff(data) {
-  const body = $("diff-body");
+  const body = q("diff-body");
   body.textContent = "";
   if (data.binary) { body.appendChild(diffNote("Binary file")); return; }
   if (data.error) { body.appendChild(diffNote(data.error)); return; }
@@ -641,16 +721,10 @@ function renderDiff(data) {
 // The actions
 // ------------------------------------------------------------
 
-// The pane's own toast rather than the app's: this one carries a button, and
-// the app's is a line of text at the foot of the window, which is the wrong
-// side of the screen for an Undo that belongs to the pane on the right. Six
-// seconds is long enough to read the line and reach the button, and short
-// enough to be gone before the next action.
-const DIFF_TOAST_MS = 6000;
 let diffToastTimer = 0;
 
 function diffToast(text, actionLabel, run) {
-  const box = $("diff-toast");
+  const box = q("diff-toast");
   box.textContent = "";
   box.appendChild(el("span", { class: "msg" }, text));
   if (actionLabel) {
@@ -668,7 +742,7 @@ function diffToast(text, actionLabel, run) {
 
 function diffToastHide() {
   clearTimeout(diffToastTimer);
-  $("diff-toast").classList.remove("on");
+  q("diff-toast").classList.remove("on");
 }
 
 // Every action ends the same way whether it worked or not: the pane is now
@@ -748,7 +822,7 @@ async function diffDiscard(f) {
 let diffBusyN = 0;
 function diffBusy(on) {
   diffBusyN = Math.max(0, diffBusyN + (on ? 1 : -1));
-  $("diff-busy").classList.toggle("on", diffBusyN > 0);
+  q("diff-busy").classList.toggle("on", diffBusyN > 0);
 }
 
 async function diffFetchJSON(url) {
@@ -764,8 +838,8 @@ async function diffFetchJSON(url) {
 function diffShowDir(path) {
   if (diffTextKey === "dir " + path) return;
   diffTextKey = "dir " + path;
-  $("diff-body").textContent = "";
-  $("diff-body").appendChild(
+  q("diff-body").textContent = "";
+  q("diff-body").appendChild(
     diffNote("Untracked directory — stage or discard it whole."));
 }
 
@@ -790,9 +864,9 @@ async function diffLoadFile(scope, path) {
     diffTextKey = diff.body;
     // A file being edited in the terminal changes under a reader who is partway
     // down it; keeping the offset is what lets them keep reading.
-    const keep = $("diff-body").scrollTop;
+    const keep = q("diff-body").scrollTop;
     renderDiff(diff.data);
-    $("diff-body").scrollTop = keep;
+    q("diff-body").scrollTop = keep;
   } catch (e) {
     // Quiet, like the poll it shares: an unreachable backend already nags from
     // the terminal's banner.
@@ -874,38 +948,146 @@ function diffPace(elapsedMs) {
   syncDiffTabs();
 }
 
-$("btn-diff-tracked").addEventListener("click", () => diffSetTab("tracked"));
-$("btn-diff-untracked").addEventListener("click", () => diffSetTab("untracked"));
+q("btn-diff-tracked").addEventListener("click", () => diffSetTab("tracked"));
+q("btn-diff-untracked").addEventListener("click", () => diffSetTab("untracked"));
 
 // A server older than these routes serves 404s to every one of them, so the
 // pane says what to do about that instead of polling a computer that cannot
-// answer, and the rail stops offering a chord that would open it. Called when
-// the capability map lands — before that hasCap() answers yes, which is the
-// map's own contract for a server too old to send one.
-function syncGitCap() {
-  const on = hasCap("git");
-  const row = $("rk-diff");
-  if (row) row.hidden = !on;
+// answer. The rail's own row is not this pane's and is dealt with once
+// (syncGitCap, under the factory), which is also what calls this.
+function diffSyncCap(on) {
   if (on) return;
-  $("diff-files").textContent = "";
-  $("diff-body").textContent = "";
-  $("diff-body").appendChild(diffNote(
+  q("diff-files").textContent = "";
+  q("diff-body").textContent = "";
+  q("diff-body").appendChild(diffNote(
     "This computer's pockettui is older than the app. "
     + "Run `pockettui update` there."));
 }
 
-// The ticks run forever and decline; diffPoll()'s own gates are the switch, so
-// a pane closed, hidden, phone-width or covered by the explorer costs nothing.
-setInterval(diffPoll, DIFF_POLL_MS);
-// A tab coming back has been stale for as long as it was away, and the tick it
-// would otherwise wait for is up to two seconds of showing that stale answer.
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) diffPoll(true);
-});
-
 // The tab the last session was left on, drawn before anything is fetched so
 // the pane never opens with neither button pressed.
 syncDiffTabs();
+
+// What the column and the rest of the app can ask of this pane. Everything else
+// in the body above is the pane's own and stays in the closure.
+const api = {
+  tab: () => diffTab,
+  isOpen: () => diffOpen,
+  setOpen: diffSetOpen,
+  poll: diffPoll,
+  reset: diffReset,
+  syncCap: diffSyncCap,
+};
+diffPanes[id] = api;
+return api;
+
+}
+
+// ------------------------------------------------------------
+// The panes, and the app's way in to them
+// ------------------------------------------------------------
+
+// The pane the markup ships, which is the one every existing way in opens.
+makeDiffPane("diff", $("diff-pane"));
+
+// The second one, made out of the first: the copy is the whole shape — head,
+// tabs, list, seam, body and toast — with the ids inside it duplicated, which is
+// why the factory reaches them through its own root rather than through the
+// document. What does not come over is what belonged to the pane it was copied
+// from: the rows it had drawn, the diff under them, its toast, and the height
+// its seam had been dragged to. It goes in right after the original and inside
+// #screen-term, so it is a sibling the stylesheet's rules already name.
+function diffMakeAt(id) {
+  if (id !== "diff#2" || diffPanes[id]) return null;
+  const src = $("diff-pane");
+  const clone = src.cloneNode(true);
+  clone.id = "diff-pane-2";
+  clone.classList.remove("open", "list-sized",
+                         "side-top", "side-bot", "side-hidden");
+  clone.style.removeProperty("--diff-list-h");
+  for (const name of ["diff-root", "diff-files", "diff-body",
+                      "diff-toast", "diff-every"]) {
+    clone.querySelector("#" + name).textContent = "";
+  }
+  clone.querySelector("#diff-root").removeAttribute("title");
+  clone.querySelector("#diff-toast").classList.remove("on");
+  clone.querySelector("#diff-busy").classList.remove("on");
+  const wrap = clone.querySelector(".dock-split-wrap");
+  wrap.classList.remove("open");
+  wrap.querySelector(".dock-split").setAttribute("aria-expanded", "false");
+  wrap.querySelector(".dock-split-menu").textContent = "";
+  src.after(clone);
+  sideWireBar(clone);
+  const pane = makeDiffPane(id, clone);
+  // The capability answer landed before this pane existed, so it is told now
+  // rather than polling a computer that cannot answer it.
+  pane.syncCap(hasCap("git"));
+  return pane;
+}
+
+// The pane a row id names, made the first time that row is asked for and kept
+// from then on — a copy that has been closed is a copy that can be opened
+// again, and making a fresh one would throw away the repo it was reading.
+function diffPaneAt(id) {
+  return diffPanes[id] || diffMakeAt(id);
+}
+
+// How the column opens a second one when the split menu asks for it.
+sideMakers.diff = (id) => !!diffPaneAt(id);
+
+// Which of the column's diff rows a call is about. The id names a slot rather
+// than a pane that must already exist: a record can come back naming the second
+// one, and opening it is what makes it. A close for a pane that was never made
+// is nothing to do.
+function diffSetOpen(open, id, rec, opts) {
+  const at = id || "diff";
+  const pane = open ? diffPaneAt(at) : diffPanes[at];
+  if (!pane) return false;
+  return pane.setOpen(open, rec, opts);
+}
+
+// The chord's way in and out. Which pane it is about is the column's answer, not
+// this module's: with two diff rows open it is the one last pressed in, and with
+// none it is a new one (sideFocusedOf, 26-side-pane.js).
+function toggleDiffPane() {
+  const id = sideFocusedOf("diff");
+  if (id) diffSetOpen(false, id);
+  else diffSetOpen(true);
+}
+
+// The pane is a view of one computer's repo, so a switch to another closes every
+// one of them and drops what all their tabs last heard. The per-session records
+// that would have reopened them go the same way, in switchProfile's own
+// dropAllFileViews(): they are the sessions of the machine being left.
+function diffResetForProfile() {
+  for (const pane of Object.values(diffPanes)) pane.reset();
+}
+
+// A server older than these routes serves 404s to every one of them, so the rail
+// stops offering a chord that would open a pane, and each pane says what to do
+// about it instead of polling. Called when the capability map lands — before
+// that hasCap() answers yes, which is the map's own contract for a server too
+// old to send one.
+function syncGitCap() {
+  const on = hasCap("git");
+  const row = $("rk-diff");
+  if (row) row.hidden = !on;
+  for (const pane of Object.values(diffPanes)) pane.syncCap(on);
+}
+
+// The ticks run forever and decline; diffPoll()'s own gates are the switch, so
+// a pane closed, hidden, phone-width or covered by the explorer costs nothing.
+// One clock for the column rather than one per pane: two panes asking the same
+// repo should ask it on the same beat rather than a second apart.
+setInterval(() => {
+  for (const pane of Object.values(diffPanes)) pane.poll();
+}, DIFF_POLL_MS);
+// A tab coming back has been stale for as long as it was away, and the tick it
+// would otherwise wait for is up to two seconds of showing that stale answer.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  for (const pane of Object.values(diffPanes)) pane.poll(true);
+});
 
 // The column on the terminal's right, as it was left — for the session that
 // had it and for no other. Nothing opens here: the panes are that session's
