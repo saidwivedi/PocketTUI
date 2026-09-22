@@ -603,6 +603,31 @@ def cast_frame(payload=b"\x01\x02\x03", sid=1):
             "metadata": {"deviceWidth": 800, "deviceHeight": 600}}
 
 
+@pytest.fixture(autouse=True)
+def forget_stream_levels():
+    """The level a pane was last streaming at is remembered across tabs — and
+    would otherwise be remembered across tests, so the next one to open a tab
+    on `p1` would start part-way down the ladder."""
+    C._LEVEL_MEMORY.clear()
+    yield
+    C._LEVEL_MEMORY.clear()
+
+
+async def wait_capturing(tab, want=True, timeout=2.0):
+    """Until the settle capture is (or is no longer) under way."""
+    end = time.monotonic() + timeout
+    while tab._capturing is not want and time.monotonic() < end:
+        await asyncio.sleep(0.01)
+    return tab._capturing is want
+
+
+def delivered(tab, ms: float) -> None:
+    """One frame that took `ms` to reach the client's screen."""
+    tab._seq += 1
+    tab._pending[tab._seq] = time.monotonic() - ms / 1000
+    tab.ack(tab._seq)
+
+
 def test_stream_state_machine_show_hide_freeze():
     async def main():
         sess, sink = FakeSession(), FakeSink()
@@ -644,8 +669,6 @@ def test_stream_state_machine_show_hide_freeze():
         assert header["kind"] == "cast" and header["fmt"] == "jpeg"
         assert (header["w"], header["h"]) == (800, 600)
         assert header["seq"] == 1 and body == b"\xff\xd8jpeg"
-        tab.ack(header["seq"])
-        await settle()
         assert ("Page.screencastFrameAck", {"sessionId": 1}) in sess.calls
 
         tab._teardown()
@@ -672,9 +695,12 @@ def test_settle_frame_dropped_when_newer_cast_frame_arrived():
         # painting on its own, and its frames are newer than the picture. It
         # is dropped and they go instead.
         tab.note_input("mouseMoved")
-        await asyncio.sleep(C.SETTLE_DELAY_S + 0.05)
+        assert await wait_capturing(tab)
         assert taken and taken[0]["fromSurface"] is True
-        assert taken[0]["format"] == "webp"
+        # A JPEG, not the WebP this used to take: measured on a laptop at
+        # 1200x800 CSS and 2x, the WebP at q85 takes 305 ms to encode against
+        # 112 ms for this, and the stream is held for every one of them.
+        assert taken[0]["format"] == "jpeg" and taken[0]["quality"] == 75
         sess.fire("Page.screencastFrame", cast_frame(b"newer"))
         sess.fire("Page.screencastFrame", cast_frame(b"newer still"))
         gate.set()
@@ -691,12 +717,12 @@ def test_settle_frame_dropped_when_newer_cast_frame_arrived():
         sink.frames.clear()
         gate.clear()
         tab.note_input("mouseReleased")
-        await asyncio.sleep(C.SETTLE_DELAY_S + 0.05)
+        assert await wait_capturing(tab)
         sess.fire("Page.screencastFrame", cast_frame(b"echo of the capture"))
         gate.set()
         await asyncio.sleep(0.05)
         assert [h["kind"] for h, _ in sink.frames] == ["still"]
-        assert sink.frames[-1][0]["fmt"] == "webp"
+        assert sink.frames[-1][0]["fmt"] == "jpeg"
 
         tab._teardown()
 
@@ -723,8 +749,9 @@ def test_zoom_metrics_override_math():
                               "deviceScaleFactor": 2, "mobile": False}
     assert tab._surface() == (2000, 1400)
 
-    # A client that cannot keep up is streamed at 1x whatever it asked for.
-    tab._dpr_forced = True
+    # A client that cannot keep up is streamed at 1x whatever it asked for:
+    # the third rung of the ladder caps the ratio.
+    tab._level = 2
     assert tab._metrics()["deviceScaleFactor"] == 1
 
 
@@ -750,28 +777,245 @@ def test_resize_and_zoom_restart_a_live_stream():
     run(main())
 
 
-def test_slow_acks_drop_to_one_pixel_per_pixel():
+def test_the_browser_is_acknowledged_without_waiting_for_the_client():
+    async def main():
+        sess, sink = FakeSession(), FakeSink()
+        tab = a_tab(sess, sink)
+        await tab.show()
+        sess.calls.clear()
+
+        sess.fire("Page.screencastFrame", cast_frame(b"\xff\xd8one", sid=7))
+        await settle()
+        # Out and acknowledged before anyone said they had drawn it. Chrome
+        # makes no further frame until the ack, so an ack that waits for the
+        # phone puts the whole round trip between one frame and the next.
+        assert [h["kind"] for h, _ in sink.frames] == ["cast"]
+        assert ("Page.screencastFrameAck", {"sessionId": 7}) in sess.calls
+
+        # The client's own ack is a measurement now and nothing else: it moves
+        # no frames and it is not sent on to the browser a second time.
+        assert tab._rtt_ms == 0.0
+        tab.ack(sink.frames[-1][0]["seq"])
+        await settle()
+        assert tab._rtt_ms > 0
+        assert sess.methods().count("Page.screencastFrameAck") == 1
+
+        # An ack for a frame that was dropped on the way out is not news.
+        tab.ack(999)
+        assert sess.methods().count("Page.screencastFrameAck") == 1
+        tab._teardown()
+
+    run(main())
+
+
+def test_a_burst_is_paced_to_the_level_and_the_browser_waits_with_it():
+    async def main():
+        sess, sink = FakeSession(), FakeSink()
+        tab = a_tab(sess, sink)
+        await tab.show()
+        sess.calls.clear()
+
+        sess.fire("Page.screencastFrame", cast_frame(b"first", sid=1))
+        await settle()
+        assert [b for _h, b in sink.frames] == [b"first"]
+
+        # Inside the level's frame interval: held rather than sent, and the
+        # browser is left unacknowledged, so it makes no third frame to drop.
+        sess.fire("Page.screencastFrame", cast_frame(b"second", sid=2))
+        await settle()
+        assert [b for _h, b in sink.frames] == [b"first"]
+        assert ("Page.screencastFrameAck", {"sessionId": 2}) not in sess.calls
+
+        await asyncio.sleep(1.0 / C.STREAM_LEVELS[0][2] + 0.03)
+        assert [b for _h, b in sink.frames] == [b"first", b"second"]
+        assert ("Page.screencastFrameAck", {"sessionId": 2}) in sess.calls
+        tab._teardown()
+
+    run(main())
+
+
+def test_a_link_with_only_distance_in_it_is_left_alone(monkeypatch):
+    """Nothing waits for the ack any more, so a long link is not a slow one.
+
+    Before the ack was decoupled, 400 ms of distance meant 7 frames a second
+    and the stream stepped itself down looking for the cause. What the level
+    can act on is bytes the link cannot carry, which is the time a frame takes
+    *over* the floor every frame pays.
+    """
     async def main():
         sess, sink = FakeSession(), FakeSink()
         tab = a_tab(sess, sink, dpr=2)
         await tab.show()
-        assert sess.params("Page.startScreencast")[0]["maxWidth"] == 1600
-
-        for _ in range(C.SLOW_ACK_STREAK):
-            sess.fire("Page.screencastFrame", cast_frame())
-            await settle()
-            seq = sink.frames[-1][0]["seq"]
-            # Pretend the frame left a second ago: the link is the limit here,
-            # not the browser.
-            sid, _sent, timer = tab._unacked[seq]
-            tab._unacked[seq] = (sid, time.monotonic() - 1.0, timer)
-            tab.ack(seq)
-        await asyncio.sleep(0.05)
-        assert tab._dpr_forced
-        assert sess.params("Page.startScreencast")[-1]["maxWidth"] == 800
+        for _ in range(20):
+            delivered(tab, 400)
+        assert tab._level == 0
+        assert round(tab._rtt_ms) == 400
         tab._teardown()
 
     run(main())
+
+
+def test_frames_the_link_refuses_step_the_level_down():
+    """A link with a ceiling on it delivers every frame in the same time as
+    every other — its own transfer — so the acks say nothing at all. What it
+    is doing shows in the frames that never left the queue."""
+    async def main():
+        sess, queue = FakeSession(), C.SendQueue()
+        tab = a_tab(sess, queue)
+        await tab.show()
+        assert tab._level == 0
+
+        # Twelve frames onto a queue nobody is reading: two of them survive
+        # and the rest are displaced, which is the writer not keeping up.
+        for _ in range(12):
+            tab._send_cast(None, b"\xff\xd8" + b"x" * 4000)
+        tab._rate_at -= 1.0
+        tab._rate_tick(time.monotonic())
+        assert tab._level == 1
+
+        # And one step per LEVEL_MIN_GAP_S however loudly it is asked for: a
+        # rung is given a second at its own settings before it is judged.
+        for _ in range(12):
+            tab._send_cast(None, b"\xff\xd8" + b"x" * 4000)
+        tab._rate_at -= 1.0
+        tab._rate_tick(time.monotonic())
+        assert tab._level == 1
+        tab._teardown()
+
+    run(main())
+
+
+def test_the_level_follows_delivery_down_and_back_up(monkeypatch):
+    monkeypatch.setattr(C, "LEVEL_HOLD_S", 0.05)
+    monkeypatch.setattr(C, "LEVEL_MIN_GAP_S", 0.0)
+
+    async def main():
+        sess, sink = FakeSession(), FakeSink()
+        tab = a_tab(sess, sink, dpr=2)
+        await tab.show()
+        assert tab._level == 0
+        # The configured quality is the top of the ladder, not a fixed setting.
+        assert sess.params("Page.startScreencast")[-1]["quality"] == 55
+        assert sess.params("Page.startScreencast")[-1]["maxWidth"] == 1600
+
+        # The link's floor, which the level can do nothing about: a frame of
+        # distance and nothing queued behind it.
+        for _ in range(3):
+            delivered(tab, 20)
+        assert tab._level == 0
+
+        # Frames that now take a fifth of a second *longer* than that floor:
+        # this is bytes the link cannot carry, and the ladder is walked down.
+        for _ in range(3):
+            delivered(tab, 260)
+        assert tab._level == 1
+        # And not again on the next frame: the smoothing has to confirm it at
+        # the rung just taken, so one hiccup costs one rung and not the ladder.
+        delivered(tab, 260)
+        assert tab._level == 1
+        delivered(tab, 260)
+        delivered(tab, 260)
+        assert tab._level == 2
+        await asyncio.sleep(0.05)
+        # The third rung gives up the pixel ratio, which is what the settled
+        # picture is taken at, and slows the stream down.
+        assert sess.params("Page.startScreencast")[-1]["maxWidth"] == 800
+        assert C.STREAM_LEVELS[2][2] < C.STREAM_LEVELS[0][2]
+
+        # In between the two thresholds nothing moves, in either direction: a
+        # link sitting 120 ms over its floor stays where it is rather than
+        # hunting around one threshold.
+        for _ in range(6):
+            delivered(tab, 120 + tab._rtt_ms)
+        assert tab._level == 2
+
+        # Fast again, but not until it has stayed fast: the smoothing has to
+        # come down first, and then it has to stay down.
+        for _ in range(6):
+            delivered(tab, tab._rtt_ms + 5)
+        assert tab._level == 2
+        await asyncio.sleep(C.LEVEL_HOLD_S + 0.01)
+        delivered(tab, tab._rtt_ms + 5)
+        assert tab._level == 1
+
+        # And the pane remembers, so its next tab does not start at the top of
+        # the ladder with a step down to rediscover.
+        assert C._LEVEL_MEMORY["p1"] == 1
+        other = a_tab(FakeSession(), FakeSink())
+        assert other._level == 1
+        tab._teardown()
+        other._teardown()
+
+    run(main())
+
+
+def test_no_settled_picture_where_it_would_show_no_more_than_the_stream():
+    """The capture is worth an encode and a quarter of a megabyte for the
+    detail it adds, and on a 1x client at the top of the ladder it adds
+    none: the screenshot and the screencast frame are the same picture."""
+    async def main():
+        sess = FakeSession({"Page.captureScreenshot": lambda p: _shot()})
+        sink = FakeSink()
+        tab = a_tab(sess, sink, dpr=1)
+        await tab.show()
+
+        tab.note_input("mousePressed")
+        sess.fire("Page.screencastFrame", cast_frame(b"the click"))
+        await asyncio.sleep(C.SETTLE_DELAY_S + 0.1)
+        assert "Page.captureScreenshot" not in sess.methods()
+        assert [h["kind"] for h, _ in sink.frames] == ["cast"]
+
+        # But where no frame carried what the input did, it is the only way
+        # the last thing the user did ever reaches the screen.
+        await asyncio.sleep(C.SETTLE_MIN_GAP_S)
+        tab.note_input("mousePressed")
+        await asyncio.sleep(C.SETTLE_DELAY_S + 0.1)
+        assert "Page.captureScreenshot" in sess.methods()
+        tab._teardown()
+
+    run(main())
+
+
+def test_no_settled_picture_while_the_page_paints_itself():
+    async def main():
+        sess = FakeSession({"Page.captureScreenshot":
+                            lambda p: _shot()})
+        sink = FakeSink()
+        tab = a_tab(sess, sink)
+        await tab.show()
+
+        # A click, and then the page painting on its own: its own next frame
+        # is the settled picture, so taking one would stop the stream for the
+        # length of an encode to send the same thing twice.
+        tab.note_input("mousePressed")
+        for _ in range(C.PAINTING_FRAMES):
+            sess.fire("Page.screencastFrame", cast_frame(b"paint"))
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(C.SETTLE_DELAY_S + 0.1)
+        assert "Page.captureScreenshot" not in sess.methods()
+
+        # A page that has stopped painting gets exactly one.
+        await asyncio.sleep(C.PAINTING_WINDOW_S)
+        sess.calls.clear()
+        tab.note_input("mousePressed")
+        await asyncio.sleep(C.SETTLE_DELAY_S + 0.05)
+        assert sess.methods().count("Page.captureScreenshot") == 1
+
+        # And never a second one inside the gap: a drag would otherwise cost
+        # one capture per step, each of them the stream held for an encode.
+        sess.calls.clear()
+        tab.note_input("mousePressed")
+        await asyncio.sleep(C.SETTLE_DELAY_S + 0.05)
+        assert "Page.captureScreenshot" not in sess.methods()
+        await asyncio.sleep(C.SETTLE_MIN_GAP_S)
+        assert sess.methods().count("Page.captureScreenshot") == 1
+        tab._teardown()
+
+    run(main())
+
+
+async def _shot():
+    return {"data": base64.b64encode(b"\xff\xd8settled").decode()}
 
 
 def test_a_popup_is_painted_from_screenshots_until_the_next_click():
@@ -858,7 +1102,7 @@ def test_a_fresh_input_under_the_capture_does_not_strand_held_frames():
 
         sess = FakeSession({"Page.captureScreenshot": screenshot})
         sink = FakeSink()
-        tab = a_tab(sess, sink)
+        tab = a_tab(sess, sink, dpr=2)
         await tab.show()
 
         tab.note_input("mouseMoved")
@@ -874,6 +1118,11 @@ def test_a_fresh_input_under_the_capture_does_not_strand_held_frames():
         assert not tab._capturing
         assert [(h["kind"], b) for h, b in sink.frames] == [("cast", b"held")]
 
+        # What a 2x tab's screencast really hands back is the CSS viewport, so
+        # the settled picture is four times its pixels and worth taking. The
+        # frame above is three bytes with no size to read out of it, so what
+        # Chrome would have said is said here instead.
+        tab._cast_w = 800
         gate.set()
         await asyncio.sleep(C.SETTLE_DELAY_S + 0.1)
         assert [h["kind"] for h, _ in sink.frames] == ["cast", "still"]
