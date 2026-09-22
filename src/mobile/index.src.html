@@ -117,6 +117,14 @@
     <symbol id="i-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
       <path d="M4.5 9.5h5v-5M19.5 9.5h-5v-5M4.5 14.5h5v5M19.5 14.5h-5v5"/>
     </symbol>
+    <!-- The key that opens another pane in this column: the column's two rows
+         drawn as what they are, two boxes one above the other. A divider line
+         was tried first and reads as a rule rather than a pair — the thing this
+         key is about is what ends up either side of one. -->
+    <symbol id="i-split" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4.5" y="4.5" width="15" height="6" rx="1.5"/>
+      <rect x="4.5" y="13.5" width="15" height="6" rx="1.5"/>
+    </symbol>
     <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M3.5 7a2 2 0 0 1 2-2h3.8l2 2.3h7.2a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>
     </symbol>
@@ -374,6 +382,15 @@
   </div>
 </div>
 
+<!-- The split menu's scrim, and outside every screen rather than inside one:
+     the menu drops out of a bar in a pane beside the terminal, so a scrim that
+     went away with the session list (#theme-scrim's, above) would never be
+     there when this one is needed. Untinted — the menu is a handful of words
+     out of a key in a bar, not a sheet over the app — and it takes the press
+     that closes it wherever that press is not in a pane itself
+     (26-side-pane.js). -->
+<div id="side-split-scrim"></div>
+
 <!-- ============================================================
      TERMINAL
      ============================================================ -->
@@ -540,6 +557,18 @@
            (26-side-pane.js), which is why it is not one of the .dock-only pair
            below: those are shown by being docked at all. The glyph points the
            way this pane would move, and sideLayout turns it over. -->
+      <!-- The way to open another pane in this column without leaving the
+           one you are in: the menu it drops names the panes that are not up,
+           and the pane this key is in is the row that stays when the column
+           has to make room for the one picked (sideMenuPick, 26-side-pane.js).
+           Shown wherever the pane is docked at all, since a column of one is
+           exactly when there is room for a second. -->
+      <div class="dock-split-wrap dock-only">
+        <button type="button" class="icon-btn dock-split"
+                aria-haspopup="menu" aria-expanded="false"
+                aria-label="Open another pane in this column"><svg><use href="#i-split"/></svg></button>
+        <div class="dock-split-menu" role="menu"></div>
+      </div>
       <button type="button" class="icon-btn dock-swap"
               aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
       <button type="button" class="icon-btn" id="btn-diff-close"
@@ -652,6 +681,14 @@
          because the cross is the one that ends the pane and the outermost
          control is where a window's close always sits. Expand swaps its face
          for #i-collapse while the pane is filling the main area. -->
+    <!-- The split key and the menu it drops, the diff head's pair
+         (26-side-pane.js). -->
+    <div class="dock-split-wrap dock-only">
+      <button type="button" class="icon-btn dock-split"
+              aria-haspopup="menu" aria-expanded="false"
+              aria-label="Open another pane in this column"><svg><use href="#i-split"/></svg></button>
+      <div class="dock-split-menu" role="menu"></div>
+    </div>
     <button class="icon-btn dock-swap" type="button"
             aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
     <button class="icon-btn dock-only dock-expand" id="btn-files-expand"
@@ -737,6 +774,14 @@
       </div>
       <!-- The docked pane's own two controls, shown only while the browser is
            beside the terminal rather than over it — files-expand/close's pair. -->
+      <!-- The split key and the menu it drops, the diff head's pair
+           (26-side-pane.js). -->
+      <div class="dock-split-wrap dock-only">
+        <button type="button" class="icon-btn dock-split"
+                aria-haspopup="menu" aria-expanded="false"
+                aria-label="Open another pane in this column"><svg><use href="#i-split"/></svg></button>
+        <div class="dock-split-menu" role="menu"></div>
+      </div>
       <button class="icon-btn dock-swap" type="button"
               aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
       <button class="icon-btn dock-only" id="btn-browser-expand"
@@ -837,6 +882,14 @@
          (28-file-explorer.js), and the size it is read at and the way out
          belong to the pane wherever it is. Hidden in every other shape, and
          wired by class rather than by id since three bars now carry them. -->
+    <!-- The split key and the menu it drops, the diff head's pair
+         (26-side-pane.js). -->
+    <div class="dock-split-wrap dock-only">
+      <button type="button" class="icon-btn dock-split"
+              aria-haspopup="menu" aria-expanded="false"
+              aria-label="Open another pane in this column"><svg><use href="#i-split"/></svg></button>
+      <div class="dock-split-menu" role="menu"></div>
+    </div>
     <button class="icon-btn dock-swap" type="button"
             aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
     <button class="icon-btn dock-only dock-expand" type="button"
@@ -863,6 +916,14 @@
             aria-label="Download this file"><svg><use href="#i-download"/></svg></button>
     <button type="button" id="btn-reader-edit">Edit</button>
     <!-- The editor bar's pair, for the same reason. -->
+    <!-- The split key and the menu it drops, the diff head's pair
+         (26-side-pane.js). -->
+    <div class="dock-split-wrap dock-only">
+      <button type="button" class="icon-btn dock-split"
+              aria-haspopup="menu" aria-expanded="false"
+              aria-label="Open another pane in this column"><svg><use href="#i-split"/></svg></button>
+      <div class="dock-split-menu" role="menu"></div>
+    </div>
     <button class="icon-btn dock-swap" type="button"
             aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
     <button class="icon-btn dock-only dock-expand" type="button"
@@ -1423,6 +1484,14 @@
     <button class="icon-btn viewer-btn dock-only" type="button" id="btn-viewer-back"
             aria-label="Back to the folder"><svg><use href="#i-back"/></svg></button>
     <button class="icon-btn viewer-btn" type="button" id="btn-viewer-download" aria-label="Download this file"><svg><use href="#i-download"/></svg></button>
+    <!-- The split key and the menu it drops, the diff head's pair
+         (26-side-pane.js). -->
+    <div class="dock-split-wrap dock-only">
+      <button type="button" class="icon-btn viewer-btn dock-split"
+              aria-haspopup="menu" aria-expanded="false"
+              aria-label="Open another pane in this column"><svg><use href="#i-split"/></svg></button>
+      <div class="dock-split-menu" role="menu"></div>
+    </div>
     <button class="icon-btn viewer-btn dock-swap" type="button"
             aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
     <button class="icon-btn viewer-btn dock-only dock-expand" type="button"

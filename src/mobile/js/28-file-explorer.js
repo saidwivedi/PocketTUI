@@ -157,14 +157,16 @@ function fmtSize(n) {
   return Math.round(v / 1024) + " TB";
 }
 
-function openExplorer(path) {
+function openExplorer(path, opts) {
   // Nothing to browse yet — prompt instead of failing against the static host.
   if (needsSetup()) { openSettings(true); return; }
   // Beside a terminal there is room for both, so the explorer docks rather than
   // taking the screen. Every caller lands here — the folder key, a tapped path,
-  // the editor's parent folder — so the two shapes are one entry point.
+  // the editor's parent folder — so the two shapes are one entry point. `opts`
+  // is nothing to do with the folder: it is the column's, carried through to the
+  // claim the docked shape makes (sideClaim, 26-side-pane.js).
   if (isWideLayout() && $("screen-term").classList.contains("active")) {
-    return openDockedFiles(path);
+    return openDockedFiles(path, opts);
   }
   if (!$("screen-files").classList.contains("active")) {
     filesOrigin = $("screen-term").classList.contains("active")
@@ -255,11 +257,11 @@ function filesSetExpanded(v) {
 // Opening the pane a second time is a navigation within it, not a fresh entry:
 // a path tapped in the terminal lands in the pane already open, and the crumb
 // stack it walks back through is worth keeping.
-function openDockedFiles(path) {
+function openDockedFiles(path, opts) {
   // The column's answer comes first, and a no is final: the row this would take
   // may be a docked editor with unsaved work whose owner was asked and said
   // stay (sideClaim, 26-side-pane.js), and nothing here may have moved by then.
-  if (!sideClaim("files")) return Promise.resolve(false);
+  if (!sideClaim("files", opts)) return Promise.resolve(false);
   const already = filesDocked;
   filesDocked = true;
   filesOrigin = "screen-term";
@@ -274,7 +276,11 @@ function openDockedFiles(path) {
   return loadDir(path);
 }
 
-function closeDockedFiles() {
+// `id` is which of the column's rows this is about, and this build has one
+// explorer whose id is "files": anything else names a row this module has no
+// pane for (26-side-pane.js) and there is nothing here to close for it.
+function closeDockedFiles(id) {
+  if (id && id !== "files") return;
   if (!filesDocked) return;
   // A file opened in the pane goes with the pane, and the editor gets the same
   // say about unsaved work that its own back gives it.
@@ -365,6 +371,16 @@ for (const btn of document.querySelectorAll(".dock-close")) {
   btn.addEventListener("click", () => closeDockedFiles());
 }
 
+// This pane as a row of the column. Four elements, because a file opened from the
+// docked pane opens inside the pane: the editor, the reader and the viewer seat
+// themselves over the listing and belong to whichever row the listing is in.
+sideRegister("files", {
+  type: "files",
+  els: () => [$("screen-files"), $("screen-editor"), $("screen-reader"), $("viewer")],
+  close: () => closeDockedFiles("files"),
+  setExpanded: (on) => filesSetExpanded(on),
+});
+
 // The pane a session comes back to with no folder to put in it: a reload
 // remembered that this session had the explorer docked (cfg.sidePane), and the
 // explorer's half of that is a claim on the slot rather than a folder — so it
@@ -372,13 +388,14 @@ for (const btn of document.querySelectorAll(".dock-close")) {
 // caller is restoreFileView's reload path; a rail switch always has a folder.
 // The demo has no files to open at all, so it gives the slot back instead of
 // leaving the terminal narrowed against an empty pane.
-function filesFollowSession() {
+function filesFollowSession(id) {
+  if (id && id !== "files") return;
   if (!isWideLayout() || filesDocked) return;
   if (demoMode) { sideDrop("files"); return; }
   // Handed back because the claim it makes is a round trip away: the cwd has to
   // answer before the row is in the column, and the restore that called this
   // has an order to put the rows in once it is (sideOrder, 26-side-pane.js).
-  return openFilesAtCwd();
+  return filesOpenAtCwd("files");
 }
 
 // ---- putting the whole view away (see fileViews in 09-image-viewer.js) ------
@@ -488,13 +505,25 @@ async function fetchPaneCwd() {
   return "";
 }
 
+// The folder key's own way in and out. Docked, it is a toggle: the pane it opened
+// is the pane it puts away, and which pane that is is the column's answer rather
+// than this module's — with two explorer rows it is the one last pressed in
+// (sideFocusedOf, 26-side-pane.js). Full screen there is nothing to toggle —
+// back is how that one leaves — so the opener below stays the way in for
+// everything else, including the split menu, which never toggles.
+function openFilesAtCwd() {
+  const id = sideFocusedOf("files");
+  if (id) { closeDockedFiles(id); return; }
+  return filesOpenAtCwd("files");
+}
+
 // The terminal entry point. The pane's cwd is asked for at tap time — it moves
-// with every cd — and $HOME quietly stands in when tmux cannot say.
-async function openFilesAtCwd() {
+// with every cd — and $HOME quietly stands in when tmux cannot say. `id` is the
+// row it opens as and `opts` the column's (sideClaim's `keep`); this build has
+// one explorer, and an id naming another row has no pane here to open.
+async function filesOpenAtCwd(id, opts) {
+  if (id && id !== "files") return;
   if (demoMode) { toast("No files in the demo"); return; }
-  // Docked, the folder key is a toggle: the pane it opened is the pane it puts
-  // away. Full screen there is nothing to toggle — back is how that one leaves.
-  if (filesDocked) { closeDockedFiles(); return; }
   const from = currentSession;
   const cwd = await fetchPaneCwd();
   if (cwd === null) return;
@@ -502,7 +531,7 @@ async function openFilesAtCwd() {
   // session it was asked of: opening now would put one session's folder in
   // another session's slot, which is the one thing the pane must never do.
   if (currentSession !== from) return;
-  const ok = await openExplorer(cwd);
+  const ok = await openExplorer(cwd, opts);
   // The folder that actually resolved, not the string asked for: a cwd tmux
   // could not give lands at $HOME, and that is where the pane is. Docked only —
   // full screen there is no terminal beside it to keep up with.

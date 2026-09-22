@@ -294,22 +294,90 @@ function browserZoomClean(v) {
   return out;
 }
 
-// The column's rows as the column can hold them: the three pane types and no
-// other string, each of them once, and two at the most — the column beside the
-// terminal stacks no deeper (26-side-pane.js). Both halves of the record go
-// through this, because a record is only worth writing in the shape it will be
-// read back in, and a hand-edited or older one must not name a row the column
-// cannot draw.
+// The column's rows as the column can hold them: instance ids of the three pane
+// types and no other string, each of them once, and two at the most — the column
+// beside the terminal stacks no deeper, and it holds at most two of a kind, so
+// "files" and "files#2" are the only two names an explorer row can have
+// (26-side-pane.js). Both halves of the record go through this, because a record
+// is only worth writing in the shape it will be read back in, and a hand-edited
+// or older one must not name a row the column cannot draw.
+const SIDE_ID_RE = /^(diff|files|browser)(#2)?$/;
+
 function sideRowsClean(v) {
   const out = [];
   if (!Array.isArray(v)) return out;
   for (const t of v) {
-    if (t !== "diff" && t !== "files" && t !== "browser") continue;
+    if (typeof t !== "string" || !SIDE_ID_RE.test(t)) continue;
     if (out.includes(t)) continue;
     out.push(t);
     if (out.length === 2) break;
   }
   return out;
+}
+
+// One browser row's own half of that record: the tabs in the strip's order,
+// which of them was on screen, and the address that one was on. The cap is the
+// strip's own (BROWSER_TAB_MAX, 42-browser.js) spelled out rather than read:
+// this runs while the shell is still loading its fragments, and that one is
+// declared in a later fragment than this.
+//
+// Cleaned with the index rather than beside it: dropping an entry moves every
+// tab after it up one, and an index left counting against the record as it was
+// written names the tab next to the one that was on screen — the pane then sends
+// that one to `url` and shows the same page twice.
+function browserRecClean(v) {
+  const raw = v && Array.isArray(v.tabs) ? v.tabs : [];
+  const want = v && typeof v.tab === "number" && v.tab >= 0 ? Math.trunc(v.tab) : 0;
+  const tabs = [];
+  let at = 0;
+  // Either shape an entry may have been written in: the address alone, or the
+  // address with the mode that tab was left in (the computer's own network,
+  // 42-browser.js). The pair comes back out of here whichever went in, so the
+  // pane has one shape to read.
+  for (let i = 0; i < raw.length && tabs.length < 8; i++) {
+    const e = raw[i];
+    const u = typeof e === "string" ? e.trim()
+            : (e && typeof e.url === "string" ? e.url.trim() : "");
+    if (!u) continue;
+    if (i <= want) at = tabs.length;
+    tabs.push({ url: u, lan: !!(e && e.lan) });
+  }
+  return {
+    url: v && typeof v.url === "string" ? v.url : "",
+    tabs: tabs,
+    tab: Math.min(at, Math.max(0, tabs.length - 1)),
+  };
+}
+
+// The same, written out: the pair only where there is something more to say than
+// the address, so a shell too old to know about the mode still reads those tabs
+// back as strings.
+function browserRecWrite(v) {
+  if (!v || typeof v !== "object") return null;
+  const out = {};
+  if (typeof v.url === "string" && v.url) out.url = v.url;
+  if (Array.isArray(v.tabs)) {
+    out.tabs = v.tabs.map((t) => {
+      if (typeof t === "string") return t || null;
+      if (!t || typeof t.url !== "string" || !t.url) return null;
+      return t.lan ? { url: t.url, lan: true } : t.url;
+    }).filter((t) => t).slice(0, 8);
+    out.tab = Math.min(Math.max(0, Math.trunc(v.tab) || 0),
+                       Math.max(0, out.tabs.length - 1));
+  }
+  return out.url || out.tabs ? out : null;
+}
+
+// A diff row's half is which of its two lists was on screen, and nothing else:
+// the changes themselves are the repo's and are re-read at every open.
+function diffRecClean(v) {
+  return { tab: v && v.tab === "untracked" ? "untracked" : "tracked" };
+}
+
+// Only what differs from what the getter would have assumed, so a column of
+// panes left as they open writes no halves at all.
+function diffRecWrite(v) {
+  return v && v.tab === "untracked" ? { tab: "untracked" } : null;
 }
 
 // The active profile's credentials, mirrored into the two keys this app used
@@ -408,69 +476,60 @@ const cfg = {
   // as a bare string, with no session to reopen it in — JSON.parse rejects it,
   // and a pane belonging to nobody is a pane that is not reopened. The
   // one-slot build after it wrote { owner, session }: one pane and no order,
-  // which is this record with a single row.
+  // which is this record with a single row. The build after that kept the
+  // browser's half in flat keys beside the rows, which is instance "browser"'s
+  // half and is read back as that.
+  //
+  // `panes` always has an entry for every row that can carry one, filled with
+  // defaults where the record said nothing, so a reader never has to null-check
+  // the half of the record it came for.
   get sidePane() {
     let v = null;
     try { v = JSON.parse(localStorage.getItem("pockettui_side_pane")); } catch (e) {}
     if (!v || typeof v !== "object") return null;
     const rows = sideRowsClean(Array.isArray(v.rows) ? v.rows : [v.owner]);
     if (!rows.length) return null;
-    // The browser's tabs, in the strip's order, and which of them was on
-    // screen. The address above is that same tab's, kept beside them so an
-    // older shell reading this record still opens the pane on the page it
-    // was left on. The cap is the strip's own (BROWSER_TAB_MAX,
-    // 42-browser.js) spelled out rather than read: this getter runs while
-    // the shell is still loading its fragments, and that one is declared in
-    // a later fragment than this.
-    //
-    // Cleaned with the index rather than beside it: dropping an entry moves
-    // every tab after it up one, and an index left counting against the record
-    // as it was written names the tab next to the one that was on screen — the
-    // pane then sends that one to `url` and shows the same page twice.
-    const raw = Array.isArray(v.tabs) ? v.tabs : [];
-    const want = typeof v.tab === "number" && v.tab >= 0 ? Math.trunc(v.tab) : 0;
-    const tabs = [];
-    let at = 0;
-    // Either shape an entry may have been written in: the address alone, or
-    // the address with the mode that tab was left in (the computer's own
-    // network, 42-browser.js). The pair comes back out of here whichever went
-    // in, so the pane has one shape to read.
-    for (let i = 0; i < raw.length && tabs.length < 8; i++) {
-      const e = raw[i];
-      const u = typeof e === "string" ? e.trim()
-              : (e && typeof e.url === "string" ? e.url.trim() : "");
-      if (!u) continue;
-      if (i <= want) at = tabs.length;
-      tabs.push({ url: u, lan: !!(e && e.lan) });
+    const src = v.panes && typeof v.panes === "object" ? v.panes : { browser: v };
+    const panes = {};
+    for (const id of rows) {
+      const t = sideType(id);
+      if (t === "browser") panes[id] = browserRecClean(src[id]);
+      else if (t === "diff") panes[id] = diffRecClean(src[id]);
     }
+    // The first browser's half said again in the flat keys, where the shell that
+    // wrote this record before the column could hold two of a kind reads it —
+    // and where an older shell still cached on this origin reads it too.
+    const flat = panes.browser || { url: "", tabs: [], tab: 0 };
     return {
       rows: rows,
       session: typeof v.session === "string" ? v.session : "",
-      url: typeof v.url === "string" ? v.url : "",
-      tabs: tabs,
-      tab: Math.min(at, Math.max(0, tabs.length - 1)),
+      panes: panes,
+      url: flat.url,
+      tabs: flat.tabs,
+      tab: flat.tab,
     };
   },
   set sidePane(v) {
     const rows = v ? sideRowsClean(v.rows) : [];
     if (rows.length && v.session) {
-      // The top row said again under the key the one-slot build reads. Nothing
-      // here reads it back — it is the same cheap insurance as mirrorLegacyKeys'
-      // above, for an older shell still cached on this origin, which would
-      // otherwise find a record it cannot parse and reopen no pane at all.
-      const rec = { owner: rows[0], rows: rows, session: v.session };
-      if (rows.includes("browser") && v.url) rec.url = v.url;
-      if (rows.includes("browser") && Array.isArray(v.tabs)) {
-        // A bare string wherever there is nothing more to say, so a shell too
-        // old to know about the mode still reads those tabs back.
-        rec.tabs = v.tabs.map((t) => {
-          if (typeof t === "string") return t || null;
-          if (!t || typeof t.url !== "string" || !t.url) return null;
-          return t.lan ? { url: t.url, lan: true } : t.url;
-        }).filter((t) => t).slice(0, 8);
-        rec.tab = Math.min(Math.max(0, Math.trunc(v.tab) || 0),
-                           Math.max(0, rec.tabs.length - 1));
+      // The top row's type said again under the key the one-slot build reads.
+      // Nothing here reads it back — it is the same cheap insurance as
+      // mirrorLegacyKeys' above, for an older shell still cached on this origin,
+      // which would otherwise find a record it cannot parse and reopen no pane
+      // at all. sideType is a function declaration in a later fragment, which is
+      // hoisted and callable here; the constants over there are not.
+      const rec = { owner: sideType(rows[0]), rows: rows, session: v.session };
+      const src = v.panes && typeof v.panes === "object" ? v.panes : {};
+      const panes = {};
+      for (const id of rows) {
+        const t = sideType(id);
+        const p = t === "browser" ? browserRecWrite(src[id])
+                : t === "diff" ? diffRecWrite(src[id]) : null;
+        if (p) panes[id] = p;
       }
+      if (Object.keys(panes).length) rec.panes = panes;
+      // The flat mirror of the first browser's half, for the readers above.
+      if (panes.browser) Object.assign(rec, panes.browser);
       localStorage.setItem("pockettui_side_pane", JSON.stringify(rec));
     } else localStorage.removeItem("pockettui_side_pane");
   },
