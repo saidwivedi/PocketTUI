@@ -9455,7 +9455,7 @@ async def browser_op_files(fb, pane: str, msg: dict) -> None:
 async def browser_op_ack(fb, pane: str, msg: dict) -> None:
     pt = fb.tab(pane, browser_tab_id(msg))
     if pt is not None:                      # an ack for a closed tab is not news
-        pt.ack(int(browser_num(msg, "seq", 0, 0, 1 << 53)))
+        pt.ack(int(browser_num(msg, "seq", 0, 0, 1 << 53)), bool(msg.get("dropped")))
 
 
 # Every message type the pane's socket understands, as type -> handler. The
