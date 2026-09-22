@@ -575,8 +575,14 @@ def test_shim_is_small_enough_to_sit_on_every_page():
     # The last raise bought three the sandbox leaves no other way to have
     # either: the reads it answers with a SecurityError made absent, the frames
     # it will not share read as not loaded, and a request body buffered before
-    # it goes out. Without them the YouTube app did not boot at all.
-    assert len(A.BROWSE_SHIM.encode("utf-8")) < 17408
+    # it goes out. Without them the YouTube app did not boot at all. This one
+    # bought the two navigations that used to leave the proxy's mount for a
+    # 404: a form action written into the parser, and a location a page wrote
+    # itself, which only the navigate event catches. This one bought the two
+    # shapes of a page that did not work which nothing outside the document can
+    # see: a boot that threw its way out, and a document that came out empty.
+    # Both are what the pane's hint bar is raised on.
+    assert len(A.BROWSE_SHIM.encode("utf-8")) < 22528
 
 
 def test_shim_reads_a_proxy_path_without_the_token():
@@ -593,6 +599,29 @@ def test_shim_hands_a_traversal_to_the_pane():
     assert '"pockettui-history"' in A.BROWSE_SHIM
     for n in ("history.go=", "history.back=", "history.forward="):
         assert n in A.BROWSE_SHIM
+
+
+def test_shim_reports_a_page_that_did_not_work(tmp_path):
+    """The two failures only the document can see, and the landing that carries
+    the third: a boot that threw, a page that came out empty, and the status the
+    document was answered with. The pane raises the same bar on all three
+    (browserHint, 42-browser.js)."""
+    assert '"pockettui-health"' in A.BROWSE_SHIM
+    assert "unhandledrejection" in A.BROWSE_SHIM
+    assert "errs>=5" in A.BROWSE_SHIM
+    assert "empty:true" in A.BROWSE_SHIM
+    # Measured rather than guessed at: text, images, and the elements a page
+    # that draws itself puts its drawing in.
+    assert 'querySelector("canvas,video,iframe,svg")' in A.BROWSE_SHIM
+    assert "status:C.status||0,wall:C.wall||null" in A.BROWSE_SHIM
+    # And it parses, which is the whole of what a shim that throws would cost:
+    # everything after the failure never runs.
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    f = tmp_path / "health.js"
+    f.write_text(A.BROWSE_SHIM, encoding="utf-8")
+    subprocess.run([node, "--check", str(f)], check=True, capture_output=True)
 
 
 def test_shim_parses_as_javascript(tmp_path):
@@ -1154,6 +1183,9 @@ def test_shim_tag_config_round_trips():
     assert json.loads(html.unescape(raw)) == {
         "prefix": PREFIX, "tok": TOK, "sch": "h",
         "hostport": "127.0.0.1:3000", "origin": ORIGIN, "sandbox": True,
+        # Nothing said about the document's own status: it is a document
+        # navigation's alone, and the route fills it in there (browse_wall).
+        "status": 0, "wall": None,
         "cookies": ""}
 
 
