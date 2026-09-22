@@ -196,6 +196,35 @@ function browserHasScheme(raw) {
   return /^[a-z][a-z0-9+.-]*:(?!\d)/i.test(raw);
 }
 
+// What a line typed in the address field means. The field is two fields in one,
+// the way every browser's is: an address goes to the page, anything else to the
+// search engine — the founder's `how to cook rice` was refused as no address
+// at all, and `weather` sent to a host called weather. Chrome's rule, which is
+// the one people have in their fingers: a scheme settles it, whitespace settles
+// it the other way, and what is left is an address only if its first segment
+// reads like a host or a path was typed after it. isPrivateHost is not the test
+// here: it answers true for
+// every dotless name, which is right for the scheme guess (a dev box speaks
+// http) and wrong for this one, where a single word is far more often something
+// to look up. A tailnet short name still reaches its box as `mybox/` or
+// `mybox:3000`, the same as in Chrome.
+function browserTyped(raw) {
+  const s = (raw || "").trim();
+  if (!s || browserHasScheme(s)) return s;
+  if (/\s/.test(s)) return BROWSER_SEARCH + encodeURIComponent(s);
+  // Userinfo is not part of the name that has to look like a host.
+  const seg = s.split(/[/?#]/)[0];
+  const host = seg.slice(seg.lastIndexOf("@") + 1);
+  const v6 = host.charAt(0) === "[";
+  const name = v6 ? host.slice(0, host.indexOf("]") + 1) : host.split(":")[0];
+  const address = v6                    // a bracketed literal is nothing else
+      || /:\d+$/.test(host)             // a port is nobody's search term
+      || name.indexOf(".") !== -1       // a dot: a public name, or a v4 address
+      || name === "localhost"           // the one host that needs none
+      || s.indexOf("/") !== -1;         // a path: `mybox/` is meant as one
+  return address ? s : BROWSER_SEARCH + encodeURIComponent(s);
+}
+
 // The scheme for an address typed without one. A dev server on a private host
 // speaks http far more often than https, and everything with a public name is
 // the other way round — an intranet portal that only answers https would
@@ -910,16 +939,14 @@ function browserShowTab(i) {
   }
 }
 
-// The "+". A browser's new tab opens on its home page with the address field
-// waiting, and so does this one.
-function browserAddTab() {
-  if (browserTabs.length >= BROWSER_TAB_MAX) {
-    toast("Eight tabs is as many as this pane holds");
-    return;
-  }
+// A tab made and brought to the front, with nothing in it yet: the "+" and a
+// page that asked for a window of its own both start here, and what they do
+// differs only in where the tab is sent and whether the address field is
+// waiting for it. The caller navigates.
+function browserMakeTab(lan) {
   browserCancelGrab();
-  const gen = browserGen;
   const tab = browserNewTab();
+  tab.lan = !!lan;
   browserTabs.push(tab);
   browserActive = browserTabs.length - 1;
   for (const t of browserTabs) if (t.frame) t.frame.hidden = true;
@@ -929,6 +956,18 @@ function browserAddTab() {
   syncBrowserLan();
   renderBrowserTabs();
   renderBrowserMarks();
+  return tab;
+}
+
+// The "+". A browser's new tab opens on its home page with the address field
+// waiting, and so does this one.
+function browserAddTab() {
+  if (browserTabs.length >= BROWSER_TAB_MAX) {
+    toast("Eight tabs is as many as this pane holds");
+    return;
+  }
+  const gen = browserGen;
+  const tab = browserMakeTab(false);
   const f = $("browser-url");
   // Focused inside the click rather than after the navigation: on a phone the
   // keyboard comes up for a focus a gesture asked for and for no other, and the
@@ -1125,6 +1164,9 @@ function closeFullBrowser() {
 }
 
 const BROWSER_HOME = "https://www.google.com/";
+// Where a line that is not an address goes (browserTyped). Beside the home
+// page so the two stay the same engine.
+const BROWSER_SEARCH = "https://www.google.com/search?q=";
 
 // Every way in lands here — the globe key, the header button, a tapped private
 // URL in the terminal, a restored session — so the two shapes are one entry
@@ -1247,6 +1289,22 @@ window.addEventListener("message", (e) => {
     return;
   }
 
+  // A link the page asked to open in a window of its own, or a window it asked
+  // for by script. The laptop's browser is not where a pane's pages go: this
+  // opens a tab the way a browser answers a _blank click — in front, carrying
+  // the page, and with the address field left alone, because what was asked
+  // for is a page to read and not somewhere to type. The sender's own
+  // permission comes with it: a portal's views belong on its network too.
+  if (d.type === "pockettui-open") {
+    const url = browserNormalize(typeof d.url === "string" ? d.url : "");
+    if (!url) return;
+    // At the cap there is nowhere to put one, and spending the tab the link
+    // was clicked in is better than the click going nowhere.
+    if (browserTabs.length >= BROWSER_TAB_MAX) { browserNavigateIn(tab, url); return; }
+    browserNavigateIn(browserMakeTab(tab.lan), url);
+    return;
+  }
+
   // The frame's own back/forward/go, which the shim sends here rather than
   // letting it walk the shell's joint history and close the pane.
   if (d.type === "pockettui-history") {
@@ -1356,7 +1414,7 @@ $("browser-url").addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     const v = $("browser-url").value.trim();
-    if (v) browserNavigate(v);
+    if (v) browserNavigate(browserTyped(v));
     // Blurred either way: on a phone the address bar is what the keyboard is
     // up for, and the page underneath is what the tap was about. A new tab's
     // recovery goes with it — this blur is the user's own, and taking the field

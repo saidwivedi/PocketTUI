@@ -5559,6 +5559,11 @@ def browse_unmap_path(path: str, prefix: str) -> tuple[str, str, str] | None:
 # there to keep a crafted address from spinning this loop.
 BROWSE_PEEL_MAX = 32
 
+# How much of the jar the shim's own copy is seeded with. The seed rides in an
+# attribute on every proxied document, so a site with a fat jar pays for it on
+# each page; what a page's scripts actually read is the first few names.
+BROWSE_SHIM_COOKIE_CAP = 8 * 1024
+
 
 def browse_peel(path: str, prefix: str) -> tuple[str, str, str] | None:
     """The innermost target of a path that names this proxy, else None.
@@ -5817,11 +5822,48 @@ def browse_shim_tag(ctx: BrowseCtx, origin: str) -> str:
     characters to escape for the document not to be able to end the attribute
     or the tag early.
     """
+    client = BROWSE_CLIENT
     cfg = json.dumps({"prefix": ctx.prefix, "tok": ctx.tok, "sch": ctx.sch,
                       "hostport": ctx.hostport, "origin": origin,
-                      "sandbox": ctx.sandbox})
+                      "sandbox": ctx.sandbox,
+                      "cookies": browse_shim_cookies(
+                          ctx, client.cookies.jar if client else ())})
     cfg = cfg.replace("&", "&amp;").replace("<", "&lt;").replace("'", "&#39;")
     return f"<script data-cfg='{cfg}'>{BROWSE_SHIM}</script>"
+
+
+def browse_shim_cookies(ctx: BrowseCtx, jar) -> str:
+    """The `name=value` pairs a browser at this address would have to read.
+
+    Sandboxed, the document's own `document.cookie` throws, so the shim keeps a
+    jar of its own; this is what it starts with, because a page whose scripts
+    read a cookie they set on the hop before would otherwise find nothing.
+
+    HttpOnly ones are left out for the reason they are marked — the page was
+    never meant to see them, and they are sent from here either way. Path is not
+    matched: this is not told which path of the site it is stamping, so only the
+    site-wide ones ("/") go out and a path-scoped cookie stays server-side.
+    """
+    host = _browse_split_authority(ctx.hostport)[0].strip("[]").lower()
+    out, size = [], 0
+    for c in jar:
+        if c.path != "/" or (c.secure and ctx.sch != "s") or c.is_expired():
+            continue
+        if any(k.lower() == "httponly" for k in (getattr(c, "_rest", None) or {})):
+            continue
+        dom = (c.domain or "").lower()
+        if c.domain_specified:
+            dom = dom.lstrip(".")
+            if host != dom and not host.endswith("." + dom):
+                continue
+        elif host != dom:
+            continue
+        pair = f"{c.name}={c.value or ''}"
+        if size + len(pair) > BROWSE_SHIM_COOKIE_CAP:
+            break
+        out.append(pair)
+        size += len(pair) + 2
+    return "; ".join(out)
 
 
 # The shim the rewriter puts at the top of every proxied page. It lives here
@@ -5838,6 +5880,12 @@ var S=document.currentScript,C=null;
 try{C=JSON.parse(S.dataset.cfg)}catch(e){return}
 if(!C)return;
 var B=C.prefix+"/b/"+C.tok+"/",O=location.origin,SKIP=/^(#|data:|blob:|javascript:|mailto:|about:|tel:)/i;
+// Whether this document has no origin of its own: the pane serves it sandboxed
+// without allow-same-origin, so it sits on an opaque one. Storage and
+// document.cookie throw there, and a request that asks for credentials is
+// cross-origin from nowhere, which no answer is allowed to permit. A
+// tab-flavour page is on this server's real origin and none of that applies.
+var SB=!!C.sandbox||window.origin==="null";
 // This proxy's own path shape, on any host and under any token: B builds, this
 // reads. A restart mints a new token, so a page still open under the old one
 // would otherwise read its own proxied address as somewhere to go and wrap it
@@ -5886,14 +5934,42 @@ function report(){P(function(){
   url:unmap(location.pathname+location.search+location.hash),
   title:document.title},C.origin||"*");
 })}
+// A page that asked for a window of its own. In the pane that is a tab of the
+// pane's, not one of the laptop's browser, so the address goes out unmapped
+// for the pane to open. An http(s) one only; a blank window is nothing to open.
+function out(u){P(function(){
+ if(window.parent===window||u==null)return;
+ var t=String(u).trim();if(!t)return;
+ var r;try{r=new URL(t,document.baseURI)}catch(e){return}
+ if(r.protocol!=="http:"&&r.protocol!=="https:")return;
+ // Through map on the way out: an address relative to this page resolves to
+ // the proxy's own host, and only mapping it says which target that is.
+ parent.postMessage({type:"pockettui-open",url:unmap(map(r.href))},C.origin||"*");
+})}
 P(function(){var f=window.fetch;if(!f)return;
  window.fetch=function(i,o){
   try{
    if(typeof i==="string"||i instanceof URL)i=map(String(i));
    else if(i&&i.url)i=new Request(map(i.url),i);
   }catch(e){}
+  if(SB)try{
+   // Credentials asked for from an opaque origin are refused, not sent: every
+   // request is cross-origin from nowhere, and Chrome will not take a wildcard
+   // Access-Control-Allow-Origin for a credentialed one — which is how
+   // Google's own autocomplete and script fetches died with ERR_FAILED. There
+   // is nothing to send either way: the jar is server-side and /b/ drops the
+   // frame's Cookie header. A Request whose body is spent cannot be rebuilt,
+   // and then the call goes as it came.
+   if(i&&i.credentials==="include")i=new Request(i,{credentials:"same-origin"});
+   if(o&&o.credentials==="include")o=Object.assign({},o,{credentials:"same-origin"});
+  }catch(e){}
   return f.call(this,i,o);
  };
+});
+P(function(){if(!SB)return;
+ // The same refusal on the XHR path, and the same reason the flag is a no-op.
+ Object.defineProperty(XMLHttpRequest.prototype,"withCredentials",{
+  configurable:true,get:function(){return false},set:function(){}});
 });
 P(function(){var o=XMLHttpRequest.prototype.open;
  XMLHttpRequest.prototype.open=function(){
@@ -5998,24 +6074,32 @@ P(function(){
 });
 P(function(){var o=window.open;if(!o)return;
  // A portal opens its views in named windows; unmapped, each one leaves the
- // proxy for an address the laptop has no route to.
- window.open=function(u,n,f){return o.call(window,map(u),n,f)};
+ // proxy for an address the laptop has no route to. In the pane there is no
+ // window to hand back: the pane opens a tab instead.
+ window.open=function(u,n,f){
+  if(C.sandbox){out(u);return null}
+  return o.call(window,map(u),n,f);
+ };
 });
 P(function(){document.addEventListener("click",function(e){
  if(e.defaultPrevented||e.button||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
  var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;
  if(!a)return;
- var t=(a.getAttribute("target")||"").toLowerCase();
- if(t&&t!=="_self")return;
+ var t=(a.getAttribute("target")||"").toLowerCase(),n=t&&t!=="_self";
+ // A tab is a window in its own right and its browser knows where to put one.
+ if(n&&!C.sandbox)return;
  var h=a.href;
  if(!/^https?:/i.test(h))return;
  e.preventDefault();
+ // _parent and _top name the shell, which the sandbox refuses anyway, so here
+ // they mean this frame. Any other name is a window of its own — a tab.
+ if(n&&t!=="_parent"&&t!=="_top"){out(h);return}
  location.replace(map(h));
 },true)});
 P(function(){
  // Only where the document has no storage of its own: sandboxed it sits on
  // an opaque origin and every access throws. A tab keeps its real storage.
- if(!C.sandbox&&window.origin!=="null")return;
+ if(!SB)return;
  try{localStorage.length;return}catch(e){}
  function mk(){var m={};return{
   get length(){return Object.keys(m).length},
@@ -6028,6 +6112,33 @@ P(function(){
  ["localStorage","sessionStorage"].forEach(function(n){
   try{Object.defineProperty(window,n,{configurable:true,value:mk()})}catch(e){}
  });
+});
+P(function(){
+ // Same gate, same reason: on an opaque origin every document.cookie read
+ // throws too, and a script that cannot read one decides cookies are off —
+ // Google answers a search with its "having trouble accessing Google Search"
+ // page instead of results. C.cookies is what the server's jar already holds
+ // for this host, so the first read is not empty either.
+ if(!SB)return;
+ try{void document.cookie;return}catch(e){}
+ var J={},K=[];
+ function put(s){var i=s.indexOf("="),n=(i<0?s:s.slice(0,i)).trim();
+  if(!n)return;if(K.indexOf(n)<0)K.push(n);J[n]=i<0?"":s.slice(i+1).trim()}
+ (C.cookies||"").split(";").forEach(function(s){if(s.trim())put(s)});
+ var d={configurable:true,
+  get:function(){return K.map(function(n){return n+"="+J[n]}).join("; ")},
+  set:function(v){
+   var p=String(v).split(";"),n=(p[0].split("=")[0]||"").trim(),gone=false;
+   for(var i=1;i<p.length;i++){var a=p[i].trim(),j=a.indexOf("="),
+    k=(j<0?a:a.slice(0,j)).toLowerCase(),w=j<0?"":a.slice(j+1).trim();
+    // Path, domain, secure and samesite are nothing to a jar that is one page
+    // on one host; the real jar is server-side. Only a deletion is honoured.
+    if(k==="max-age"&&+w<=0)gone=true;
+    else if(k==="expires"&&+new Date(w)<=Date.now())gone=true}
+   if(!n)return;
+   if(gone){delete J[n];var x=K.indexOf(n);if(x>=0)K.splice(x,1)}else put(p[0])}};
+ try{Object.defineProperty(Document.prototype,"cookie",d)}
+ catch(e){try{Object.defineProperty(document,"cookie",d)}catch(e2){}}
 });
 P(function(){["DOMContentLoaded","load","popstate","hashchange"].forEach(function(n){
  addEventListener(n,report)
@@ -6319,8 +6430,9 @@ class BrowseToken:
     last_used: float
     client: object   # httpx.AsyncClient; typed loosely so the import stays lazy
     # Which flavour this is: sandboxed, for the pane's frame, or not, for a
-    # page opened as a tab in the laptop's own browser. One live record of
-    # each, and both are good on every /b/ route, HTTP and socket alike.
+    # page opened as a tab in the laptop's own browser. One live record per
+    # shell mount of each flavour — (sandbox, prefix, origin) — and every one
+    # of them is good on every /b/ route, HTTP and socket alike.
     sandbox: bool = True
 
 
@@ -6613,10 +6725,12 @@ def browse_live() -> "BrowseToken | None":
     (browserEnsureTabToken).
     """
     now = time.time()
-    for rec in BROWSE.values():
-        if rec.sandbox and browse_expiry(rec) > now:
-            return rec
-    return None
+    live = [r for r in BROWSE.values() if r.sandbox and browse_expiry(r) > now]
+    # The most recently used of them when several shells have minted: each
+    # carries its own mount's prefix, and the address being healed arrives with
+    # no prefix on it whatever the browser saw (`tailscale serve` strips it), so
+    # the shell that asked for something last is the best this can do.
+    return max(live, key=lambda r: r.last_used) if live else None
 
 
 def browse_redirect(rec: "BrowseToken", sch: str, hostport: str, path: str,
@@ -7026,9 +7140,16 @@ def browse_tab_allowed(request: Request) -> bool:
 async def api_browse(request: Request, body: dict = Body(...)) -> Response:
     """Mint the credential the iframe carries, and say where to point it.
 
-    One live token per flavour, handed back on every call rather than replaced:
-    the pane persists the proxied URL of the page it was last on, and a fresh
-    token per reload would turn every one of those into a 403.
+    One live token per shell mount — flavour, prefix and origin together —
+    handed back on every call rather than replaced: the pane persists the
+    proxied URL of the page it was last on, and a fresh token per reload would
+    turn every one of those into a 403. A shell on another mount (the same
+    laptop reaching this server directly at localhost while the phone comes
+    through `tailscale serve` under /pockettui) gets a record of its own rather
+    than moving this one: the prefix is baked into the shim's configuration and
+    into every URL inside the pages already served under this token, so
+    rewriting it here would leave the other shell's pages pointing at a mount
+    its browser cannot reach.
 
     `mode: "tab"` asks for the other flavour, whose pages are served without
     the sandbox CSP. It is for the one button that opens the current page as a
@@ -7083,8 +7204,12 @@ async def api_browse(request: Request, body: dict = Body(...)) -> Response:
 
     await browse_sweep()
     now = time.time()
-    rec = next((r for r in BROWSE.values() if r.sandbox is sandbox), None)
+    rec = next((r for r in BROWSE.values()
+                if r.sandbox is sandbox and r.prefix == prefix
+                and r.origin == origin), None)
     if rec is None:
+        # A mount this process has not minted for yet. Its own record, on the
+        # shared client, so the two shells are still one browsing session.
         rec = BrowseToken(token=secrets.token_urlsafe(24), prefix=prefix,
                           origin=origin, created=now, last_used=now,
                           client=browse_shared_client(httpx), sandbox=sandbox)
@@ -7092,10 +7217,6 @@ async def api_browse(request: Request, body: dict = Body(...)) -> Response:
         log(f"browse token minted prefix={prefix or '/'} "
             f"flavour={'pane' if sandbox else 'tab'}")
     else:
-        # The shell may have moved: a second device, or the same one reaching
-        # this server directly rather than through `tailscale serve`.
-        rec.prefix = prefix
-        rec.origin = origin
         rec.last_used = now
 
     ctx = BrowseCtx(prefix, rec.token, sch, hostport, sandbox=sandbox)
