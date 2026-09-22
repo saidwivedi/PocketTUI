@@ -2843,6 +2843,163 @@ def _missing_libs(path: str) -> "list[str]":
     return libs
 
 
+PROBE_TIMEOUT_S = 15.0
+PROBE_POLL_S = 0.05
+
+
+def _one_line(e: BaseException) -> str:
+    """An exception as one line, because these are printed one to a line."""
+    return " ".join(str(e).split()) or e.__class__.__name__
+
+
+def _unlink(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _drop_profile(path: Path) -> None:
+    """Remove the probe's throwaway profile, and never fail over it.
+
+    A browser that had to be killed goes on writing its profile for a moment,
+    and a directory that grows while it is being removed is how this used to
+    raise `Directory not empty` out of `--check`. One retry, then it stays and
+    is mentioned; it is a few files in the temp directory either way.
+    """
+    for delay in (0.0, 1.0):
+        if delay:
+            time.sleep(delay)
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+    log(f"left the probe's temp profile behind: {path}")
+
+
+def _wait_gone(proc: subprocess.Popen, timeout: float) -> bool:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if proc.poll() is not None:
+            return True
+        time.sleep(PROBE_POLL_S)
+    return proc.poll() is not None
+
+
+def _stop_probe(proc: subprocess.Popen, write_fd: int) -> None:
+    """Ask the browser to close, then insist, the way `Browser.close` does."""
+    try:
+        os.write(write_fd,
+                 json.dumps({"id": 2, "method": "Browser.close"}).encode() + b"\0")
+    except OSError:
+        pass
+    for sig in (None, signal.SIGTERM, signal.SIGKILL):
+        if sig is not None:
+            try:
+                # start_new_session put it in its own group, so this reaches the
+                # zygote and the renderers too.
+                os.killpg(os.getpgid(proc.pid), sig)
+            except OSError:
+                pass
+        if _wait_gone(proc, 3.0):
+            return
+
+
+def _ask_version(write_fd: int, read_fd: int,
+                 proc: subprocess.Popen) -> "tuple[bool, str]":
+    """Send `Browser.getVersion` down the pipe and wait for its reply."""
+    try:
+        os.write(write_fd,
+                 json.dumps({"id": 1, "method": "Browser.getVersion"}).encode() + b"\0")
+    except OSError as e:
+        return False, f"could not speak to it: {_one_line(e)}"
+    os.set_blocking(read_fd, False)
+    buf = b""
+    end = time.monotonic() + PROBE_TIMEOUT_S
+    while time.monotonic() < end:
+        if proc.poll() is not None:
+            return False, f"it exited {proc.returncode} without answering"
+        try:
+            chunk = os.read(read_fd, 1 << 16)
+        except BlockingIOError:
+            time.sleep(PROBE_POLL_S)
+            continue
+        except OSError as e:
+            return False, f"the protocol pipe broke: {_one_line(e)}"
+        if not chunk:
+            return False, "the protocol pipe closed without an answer"
+        buf += chunk
+        while b"\0" in buf:
+            raw, buf = buf.split(b"\0", 1)
+            try:
+                msg = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if msg.get("id") != 1:
+                continue
+            if "error" in msg:
+                return False, f"it refused the protocol: {msg['error']}"
+            return True, (msg.get("result") or {}).get("product") or ""
+    return False, f"it did not answer the protocol within {PROBE_TIMEOUT_S:.0f}s"
+
+
+def _probe_launch(path: str, version: str) -> "tuple[bool, str]":
+    """Start `path` the way the pane does, and ask it who it is.
+
+    `--dump-dom about:blank` was this probe once, and it is not a question every
+    browser answers: a downloaded Chrome for Testing is not an official build,
+    so it applies the field trial testing config that official Chrome ignores,
+    and under that config the one-shot dump never prints and never exits — while
+    the same binary launches, navigates and evaluates over the debugging pipe in
+    under a second. The pipe is the only way this program ever drives a browser,
+    so the pipe is what gets probed: the flags `launch_flags` produces, the two
+    fds Chrome expects them on, and one `Browser.getVersion`.
+
+    A throwaway profile, not the pane's: the pane's may be in use by a browser
+    that is running right now. No systemd scope either — whether a scope can be
+    had is `systemd_scope_available`'s question, not this binary's fault.
+    """
+    found = Found(path=path, version=version, major=int(version.split(".")[0]),
+                  source="check")
+    profile = Path(tempfile.mkdtemp(prefix="pockettui-check-"))
+    errf = tempfile.NamedTemporaryFile(prefix="pockettui-check-", suffix=".log",
+                                       delete=False)
+    err_path = Path(errf.name)
+    cmd = [path] + launch_flags(found, {}, str(profile), DEFAULT_WIDTH,
+                                DEFAULT_HEIGHT, user_agent_for(version))
+    r_in, w_in = os.pipe()    # the child reads this on fd 3
+    r_out, w_out = os.pipe()  # the child writes this on fd 4
+    proc = None
+    try:
+        try:
+            proc = subprocess.Popen(
+                cmd, preexec_fn=_pipe_preexec(r_in, w_out), pass_fds=(3, 4),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errf,
+                close_fds=True, start_new_session=True, env=launch_env())
+        finally:
+            errf.close()
+            os.close(r_in)
+            os.close(w_out)
+        ok, detail = _ask_version(w_in, r_out, proc)
+    finally:
+        if proc is not None:
+            _stop_probe(proc, w_in)
+        for fd in (w_in, r_out):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        said = ""
+        try:
+            said = err_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            pass
+        _unlink(err_path)
+        _drop_profile(profile)
+    if ok:
+        return True, detail
+    return False, (detail + "\n" + said).strip()
+
+
 def _check(path: str) -> int:
     if not _executable(path):
         print(f"not executable: {path}", file=sys.stderr)
@@ -2851,28 +3008,447 @@ def _check(path: str) -> int:
     if missing:
         print("missing: " + " ".join(missing))
         print(_package_line())
-    with tempfile.TemporaryDirectory(prefix="pockettui-check-") as tmp:
-        try:
-            out = subprocess.run(
-                [path, "--headless=new", "--disable-gpu", "--no-first-run",
-                 f"--user-data-dir={tmp}", "--dump-dom", "about:blank"],
-                capture_output=True, text=True, timeout=15)
-        except subprocess.TimeoutExpired:
-            print("timed out after 15s starting the browser", file=sys.stderr)
-            return 1
-        except OSError as e:
-            print(f"could not run it: {e}", file=sys.stderr)
-            return 1
-    if out.returncode != 0:
-        err = (out.stderr or "").strip()
-        for line in err.splitlines()[-5:] or [f"exited {out.returncode} saying nothing"]:
+    probed = _probe_version(path)
+    if not probed:
+        print(f"it does not answer --version as a Chromium {MIN_MAJOR} or newer: "
+              f"{path}", file=sys.stderr)
+        return 1
+    # Nothing below is allowed to raise: `--check` is a verdict, and both the
+    # installer and `--install` read it as one.
+    try:
+        ok, detail = _probe_launch(path, probed[0])
+    except OSError as e:
+        print(f"could not start it: {_one_line(e)}", file=sys.stderr)
+        return 1
+    if not ok:
+        for line in detail.splitlines()[-6:] or ["it did not start"]:
             print(line, file=sys.stderr)
-        if any(m in err for m in SANDBOX_MARKERS):
+        if any(m in detail for m in SANDBOX_MARKERS):
             print(SANDBOX_HINT, file=sys.stderr)
         return 1
-    probed = _probe_version(path)
-    print(f"ok {probed[0] if probed else 'unknown'}")
+    print(f"ok {probed[0]}")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
+# A machine with no Chrome, Chromium or Edge gets one of Google's own Chrome for
+# Testing builds, unpacked under `~/.pockettui/chromium/<version>/` where
+# `find_chromium` looks last. The full `chrome` build is taken and not
+# `chrome-headless-shell`: the shell is a stripped browser that cannot carry a
+# sign-in, and a persistent profile that can be signed in to is a goal of full
+# browser mode.
+#
+# Nothing here trusts the network to behave. The zip is ~190 MB, so it is
+# streamed to a `.part` file and resumed with a Range request when an earlier
+# attempt left one behind; the finished file is checked against Content-Length
+# (Google publishes no checksum for these) and unzipped only after `unzip -t`
+# agrees it is whole; and the unpacked binary has to pass the same probe
+# `--check` runs before `current` names it. A failure leaves the version
+# directory and the `.part` alone, so the next run has little or nothing left to
+# fetch — `current` is the one thing written last, because it is what the rest
+# of the module reads.
+
+# The install path is the only thing in this module that fetches a URL or opens
+# a zip, so its imports live with it rather than at the top.
+import http.client
+import platform
+import stat
+import urllib.error
+import urllib.request
+import zipfile
+
+CFT_STABLE_URL = ("https://googlechromelabs.github.io/chrome-for-testing/"
+                  "last-known-good-versions-with-downloads.json")
+CFT_VERSIONS_URL = ("https://googlechromelabs.github.io/chrome-for-testing/"
+                    "known-good-versions-with-downloads.json")
+
+INSTALL_TIMEOUT_S = 15.0
+JSON_ATTEMPTS = 3
+DOWNLOAD_ATTEMPTS = 4  # the first try and three retries
+INSTALL_BACKOFF_S = 1.0
+PROGRESS_EVERY = 5 << 20
+DOWNLOAD_CHUNK = 1 << 16
+
+# zipfile stores the unix mode but does not apply it, so everything comes out
+# 0644 and a browser that cannot be executed is not a browser. The mode in the
+# member is honoured below; these are the names that get the executable bit
+# whether the zip remembered it or not.
+EXEC_NAMES = ("chrome", "chrome_crashpad_handler", "chrome_sandbox",
+              "Google Chrome for Testing")
+EXEC_SUFFIX_RE = re.compile(r"\.(so|dylib)(\.\d+)*$")
+
+
+class InstallError(Exception):
+    """Something the user should read as one line, not as a traceback."""
+
+
+class _Retry(Exception):
+    """This attempt failed in a way another attempt might survive."""
+
+
+def _download_platform() -> str:
+    """The Chrome for Testing platform name for this machine.
+
+    Windows is not among them on purpose: nothing else in PocketTUI runs there.
+    """
+    mach = (platform.machine() or "").lower()
+    if sys.platform.startswith("linux"):
+        if mach in ("x86_64", "amd64"):
+            return "linux64"
+        if mach in ("aarch64", "arm64"):
+            return "linux-arm64"
+    elif sys.platform == "darwin":
+        if mach in ("arm64", "aarch64"):
+            return "mac-arm64"
+        if mach in ("x86_64", "amd64"):
+            return "mac-x64"
+    raise InstallError(
+        f"there is no Chrome for Testing build for {sys.platform} "
+        f"{mach or 'unknown'}; install Chrome or Chromium with this system's "
+        "package manager instead")
+
+
+def _fetch_json(url: str) -> dict:
+    last = ""
+    for attempt in range(1, JSON_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=INSTALL_TIMEOUT_S) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            last = _one_line(e)
+            if attempt < JSON_ATTEMPTS:
+                time.sleep(INSTALL_BACKOFF_S * attempt)
+    raise InstallError(f"could not read the browser version list: {last}")
+
+
+def _pick_download(data: dict, plat: str, version: "str | None") -> "tuple[str, str]":
+    """The version and zip URL to fetch, from either version-list endpoint."""
+    if version:
+        entry = next((v for v in data.get("versions") or []
+                      if v.get("version") == version), None)
+        if not entry:
+            raise InstallError(f"no Chrome for Testing {version} in the version list")
+    else:
+        entry = (data.get("channels") or {}).get("Stable")
+        if not entry:
+            raise InstallError("the version list has no Stable channel")
+    ver = str(entry.get("version") or "")
+    # The version becomes a directory name, so it is checked rather than trusted.
+    if not re.fullmatch(r"\d+(\.\d+)*", ver):
+        raise InstallError(f"the version list gave an odd version: {ver!r}")
+    builds = (entry.get("downloads") or {}).get("chrome") or []
+    url = next((str(b.get("url") or "") for b in builds
+                if b.get("platform") == plat), "")
+    if not url:
+        raise InstallError(f"Chrome for Testing {ver} has no {plat} build")
+    # Google serves the list and the zips over https; a plain-http entry could
+    # only come from a mirror, and anything else is not a URL at all.
+    if not url.startswith(("https://", "http://")):
+        raise InstallError(f"the version list gave an odd url: {url!r}")
+    return ver, url
+
+
+def _head_size(url: str) -> "int | None":
+    req = urllib.request.Request(url, method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=INSTALL_TIMEOUT_S) as resp:
+            return int(resp.headers.get("Content-Length") or 0) or None
+    except (OSError, http.client.HTTPException, ValueError):
+        return None
+
+
+def _total_size(resp, status: int, have: int) -> "int | None":
+    """The size of the whole file, whichever way this response describes it."""
+    if status == 206:
+        m = re.search(r"/(\d+)\s*$", resp.headers.get("Content-Range") or "")
+        if m:
+            return int(m.group(1))
+        length = int(resp.headers.get("Content-Length") or 0)
+        return have + length if length else None
+    return int(resp.headers.get("Content-Length") or 0) or None
+
+
+def _fetch_into(url: str, part: Path) -> "int | None":
+    """One attempt at filling `part`, resuming it when the server agrees to."""
+    have = part.stat().st_size if part.exists() else 0
+    req = urllib.request.Request(url)
+    if have:
+        req.add_header("Range", f"bytes={have}-")
+    try:
+        resp = urllib.request.urlopen(req, timeout=INSTALL_TIMEOUT_S)
+    except urllib.error.HTTPError as e:
+        if e.code == 416 and have:
+            # The part is at or past the end of what the server has: it is not a
+            # prefix of this file at all, so it goes and the next attempt starts over.
+            _unlink(part)
+            raise _Retry("the server refused to resume the download")
+        raise _Retry(f"the server answered {e.code}")
+    except (OSError, http.client.HTTPException) as e:
+        raise _Retry(_one_line(e))
+
+    with resp:
+        status = getattr(resp, "status", None) or resp.getcode()
+        total = _total_size(resp, status, have)
+        if have and status != 206:
+            have = 0  # the range was ignored, so this is the whole file again
+        mode = "ab" if have else "wb"
+        with open(part, mode) as fh:
+            done = have
+            mark = done + PROGRESS_EVERY
+            while True:
+                try:
+                    chunk = resp.read(DOWNLOAD_CHUNK)
+                except http.client.IncompleteRead as e:
+                    fh.write(e.partial)
+                    raise _Retry("the connection dropped mid-download")
+                except (OSError, http.client.HTTPException) as e:
+                    raise _Retry(_one_line(e))
+                if not chunk:
+                    break
+                fh.write(chunk)
+                done += len(chunk)
+                if done >= mark:
+                    _progress(done, total)
+                    mark = done + PROGRESS_EVERY
+    return total
+
+
+def _progress(done: int, total: "int | None") -> None:
+    """One plain line, no carriage returns: this ends up in the install log."""
+    if total:
+        print(f"  {done / (1 << 20):.1f} MiB of {total / (1 << 20):.1f} MiB "
+              f"({done * 100 // total}%)", flush=True)
+    else:
+        print(f"  {done / (1 << 20):.1f} MiB", flush=True)
+
+
+def _download(url: str, part: Path) -> None:
+    last = ""
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            total = _fetch_into(url, part)
+            have = part.stat().st_size
+            if total is None:
+                raise _Retry("the server never said how big the download is")
+            if have == total:
+                return
+            # No checksum is published, so the byte count is the only thing
+            # there is to hold the download to.
+            raise _Retry(f"got {have} of {total} bytes")
+        except _Retry as e:
+            last = str(e)
+            if attempt < DOWNLOAD_ATTEMPTS:
+                print(f"  {last}, retrying", flush=True)
+                time.sleep(INSTALL_BACKOFF_S * 2 ** (attempt - 1))
+    raise InstallError(f"the download did not finish: {last}")
+
+
+def _verify_zip(path: Path) -> None:
+    unzip = shutil.which("unzip")
+    if unzip:
+        try:
+            out = subprocess.run([unzip, "-t", str(path)], capture_output=True,
+                                 text=True, timeout=600)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise InstallError(f"could not test the download: {_one_line(e)}")
+        if out.returncode != 0:
+            tail = ((out.stdout or "") + (out.stderr or "")).strip().splitlines()
+            raise InstallError("the download is damaged: "
+                               + (tail[-1] if tail else "unzip -t said no"))
+        return
+    try:
+        with zipfile.ZipFile(path) as z:
+            bad = z.testzip()
+    except (OSError, zipfile.BadZipFile) as e:
+        raise InstallError(f"the download is not a readable zip: {_one_line(e)}")
+    if bad:
+        raise InstallError(f"the download is damaged at {bad}")
+
+
+def _member_path(dest: Path, name: str) -> Path:
+    parts = [p for p in name.split("/") if p not in ("", ".")]
+    if name.startswith("/") or ".." in parts or not parts:
+        raise InstallError(f"the download holds an unsafe path: {name!r}")
+    return dest.joinpath(*parts)
+
+
+def _wants_exec(name: str) -> bool:
+    base = name.rstrip("/").rsplit("/", 1)[-1]
+    return base in EXEC_NAMES or bool(EXEC_SUFFIX_RE.search(base))
+
+
+def _extract(zip_path: Path, dest: Path) -> None:
+    """Unpack the zip, keeping the modes and the symlinks zipfile would drop.
+
+    The mac build is an .app bundle whose Frameworks directory is held together
+    by symlinks, which `ZipFile.extract` would write out as small text files.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as z:
+        for info in z.infolist():
+            out = _member_path(dest, info.filename)
+            full = info.external_attr >> 16
+            if info.is_dir():
+                out.mkdir(parents=True, exist_ok=True)
+                continue
+            out.parent.mkdir(parents=True, exist_ok=True)
+            if stat.S_ISLNK(full):
+                target = z.read(info).decode("utf-8", "replace")
+                if out.is_symlink() or out.exists():
+                    out.unlink()
+                os.symlink(target, out)
+                continue
+            with z.open(info) as src, open(out, "wb") as fh:
+                shutil.copyfileobj(src, fh)
+            if full & 0o111 or _wants_exec(info.filename):
+                out.chmod(0o755)
+            else:
+                out.chmod(0o644)
+    for root, dirs, _files in os.walk(dest):
+        for d in [root] + [os.path.join(root, x) for x in dirs]:
+            try:
+                os.chmod(d, 0o755)
+            except OSError:
+                pass
+
+
+def _installed_binary(vdir: Path) -> "str | None":
+    for rel in DOWNLOAD_BINARIES:
+        if "*" in rel:
+            for p in sorted(vdir.glob(rel)):
+                if _executable(str(p)):
+                    return str(p)
+        else:
+            p = vdir / rel
+            if _executable(str(p)):
+                return str(p)
+    return None
+
+
+def _prune(root: Path, keep: str) -> None:
+    """Leave the version just installed, `current`, and nothing else of ours."""
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    for p in entries:
+        try:
+            if p.is_dir():
+                if p.name != keep:
+                    shutil.rmtree(p, ignore_errors=True)
+            elif p.name.endswith(".zip") or p.name.endswith(".zip.part"):
+                _unlink(p)
+        except OSError:
+            pass
+
+
+def _install(version: "str | None" = None, dry_run: bool = False) -> int:
+    try:
+        return _install_run(version, dry_run)
+    except InstallError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"could not write the browser into {config_dir() / 'chromium'}: "
+              f"{_one_line(e)}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 1
+
+
+def _install_run(version: "str | None", dry_run: bool) -> int:
+    plat = _download_platform()
+    root = config_dir() / "chromium"
+
+    # A pinned version that is already here can be answered without the network.
+    if version and not dry_run:
+        have = _already(root, version)
+        if have:
+            _adopt(root, version, have)
+            print(f"already installed {version}")
+            return 0
+
+    data = _fetch_json(CFT_VERSIONS_URL if version else CFT_STABLE_URL)
+    ver, url = _pick_download(data, plat, version)
+
+    if dry_run:
+        size = _head_size(url)
+        print(f"version {ver}")
+        print(f"platform {plat}")
+        print(f"url {url}")
+        print(f"size {size} bytes ({size / (1 << 20):.1f} MiB)" if size
+              else "size unknown")
+        return 0
+
+    have = _already(root, ver)
+    if have:
+        _adopt(root, ver, have)
+        print(f"already installed {ver}")
+        return 0
+
+    vdir = root / ver
+    part = root / f"{ver}.zip.part"
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.chmod(0o755)
+    except OSError:
+        pass
+
+    # A `.part` left by an earlier run is worth a HEAD: it may already be the
+    # whole file, in which case there is nothing to download.
+    whole = _head_size(url) if part.exists() else None
+    if whole is not None and part.stat().st_size > whole:
+        _unlink(part)
+    if whole is None or part.stat().st_size != whole:
+        print(f"downloading Chrome for Testing {ver} for {plat}", flush=True)
+        _download(url, part)
+    print("checking the download", flush=True)
+    _verify_zip(part)
+
+    if vdir.exists():
+        shutil.rmtree(vdir, ignore_errors=True)
+    print(f"unpacking into {vdir}", flush=True)
+    _extract(part, vdir)
+    if sys.platform == "darwin":
+        try:
+            subprocess.run(["xattr", "-dr", "com.apple.quarantine", str(vdir)],
+                           capture_output=True, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    binary = _installed_binary(vdir)
+    if not binary:
+        raise InstallError(f"the download unpacked without a browser in {vdir}")
+    # The same probe `--check` runs: a browser that cannot start here is not
+    # worth pointing `current` at, and its complaint is the useful output.
+    if _check(binary) != 0:
+        # The tree and the `.part` stay: nothing about them is known to be
+        # wrong, and the next run has nothing left to download.
+        print("the downloaded browser will not start here", file=sys.stderr)
+        return 1
+
+    _adopt(root, ver, binary)
+    print(f"installed {ver} {binary}")
+    return 0
+
+
+def _already(root: Path, ver: str) -> "str | None":
+    """The browser already unpacked for `ver`, if there is one and it starts."""
+    binary = _installed_binary(root / ver)
+    return binary if binary and _check(binary) == 0 else None
+
+
+def _adopt(root: Path, ver: str, binary: str) -> None:
+    """Name this binary in `current` and sweep away everything older.
+
+    The two go together, and both go last: until `current` names it, nothing
+    else in the module is looking at a half-finished install.
+    """
+    (root / "current").write_text(binary + "\n", encoding="utf-8")
+    _prune(root, ver)
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -2883,7 +3459,11 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--check", metavar="BIN",
                     help="report what stops BIN from starting headless here")
     ap.add_argument("--install", action="store_true",
-                    help="download a private Chrome for Testing (not implemented yet)")
+                    help="download a private Chrome for Testing under ~/.pockettui")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="with --install, print what it would download and stop")
+    ap.add_argument("--version", metavar="VER",
+                    help="with --install, pin the Chrome for Testing version")
     args = ap.parse_args(argv)
 
     if args.find:
@@ -2896,8 +3476,7 @@ def main(argv: "list[str] | None" = None) -> int:
     if args.check:
         return _check(args.check)
     if args.install:
-        print("not implemented")
-        return 2
+        return _install(version=args.version, dry_run=args.dry_run)
     ap.print_help()
     return 2
 
