@@ -63,6 +63,15 @@ PAGE = """<!doctype html>
 </body></html>
 """
 
+# A PDF small enough to read in an assertion and real enough to be sniffed:
+# what settles it either way is the five bytes at the front.
+PDF = (b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+       b"trailer\n<< /Root 1 0 R >>\n%%EOF\n")
+
+FRAME = """<!doctype html>
+<html><body><embed src="/doc.pdf" type="application/pdf"></body></html>
+"""
+
 SHEET = """body {{ background: url(/img.png); }}
 .x {{ background: url("http://127.0.0.1:{port}/abs.png"); }}
 @import "/more.css";
@@ -83,6 +92,27 @@ class SiteHandler(BaseHTTPRequestHandler):
 
     def send_body(self, body: bytes, ctype: str, status: int = 200,
                   extra: tuple = ()) -> None:
+        rng = re.match(r"bytes=(\d+)-(\d*)$",
+                       self.headers.get("Range", "")) if status == 200 else None
+        if rng:
+            # What Chrome's PDF viewer asks a large document for, so the proxy
+            # has to carry the header up and the 206 back down.
+            start = int(rng.group(1))
+            end = min(int(rng.group(2)) if rng.group(2) else len(body) - 1,
+                      len(body) - 1)
+            piece = body[start:end + 1]
+            self.send_response(206)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(piece)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Range",
+                             f"bytes {start}-{end}/{len(body)}")
+            for name, value in extra:
+                self.send_header(name, value)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(piece)
+            return
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -157,6 +187,18 @@ class SiteHandler(BaseHTTPRequestHandler):
                            "text/html; charset=utf-8", status=403)
         elif path == "/style.css":
             self.send_body(SHEET.format(port=self.port).encode(), "text/css")
+        elif path == "/doc.pdf":
+            self.send_body(PDF, "application/pdf")
+        elif path == "/bin.pdf":
+            # A PDF handed out as a generic stream, which is what makes the
+            # name the only thing the headers say about it.
+            self.send_body(PDF, "application/octet-stream", extra=(
+                ("Content-Disposition", 'attachment; filename="report.pdf"'),))
+        elif path == "/sniff":
+            # Nothing but the bytes: no type worth reading and no name.
+            self.send_body(PDF, "application/octet-stream")
+        elif path == "/frame.html":
+            self.send_body(FRAME.encode(), "text/html; charset=utf-8")
         elif path == "/big.bin":
             self.send_body(BIG, "application/octet-stream")
         elif path == "/gz":
@@ -2025,6 +2067,190 @@ def test_the_tab_flavour_is_never_handed_off(client, site, monkeypatch):
 def test_which_addresses_are_the_computers_browsers(host, path, handed):
     assert A.browse_handoff_host(host, path) is handed
 
+
+# ---------------------------------------------------------------------------
+# A PDF, which the sandbox cannot draw
+# ---------------------------------------------------------------------------
+# Chrome's PDF viewer is a plugin and a sandboxed frame runs none, so a PDF
+# opened in the pane's own flavour is answered with a card naming the document
+# instead of bytes no frame will draw. The unsandboxed flavour, which is where
+# the viewer runs, gets the bytes — typed and inline, whatever the target said.
+
+
+def pdf_of(body: str) -> dict:
+    """The message the PDF card posts, read back out of it."""
+    m = re.search(r"var M = (\{.*?\});", body)
+    assert m, body[:400]
+    return json.loads(m.group(1))
+
+
+def test_a_pdf_navigation_in_the_sandbox_is_a_card(client, site):
+    body, _ = opened(client, site)
+    r = client.get(f"{base_of(body['token'], site)}/doc.pdf"[len(PREFIX):],
+                   headers=NAV, follow_redirects=False)
+    assert r.status_code == 200
+    assert "This PDF needs a real viewer" in r.text
+    assert "Chrome cannot show PDFs inside the pane's sandbox" in r.text
+    assert ">Open the PDF<" in r.text
+    # The bytes stay behind: what goes out is a page, not a document no frame
+    # in this flavour can draw.
+    assert "%PDF-" not in r.text
+    assert pdf_of(r.text) == {"type": "pockettui-pdf",
+                              "url": f"http://127.0.0.1:{site}/doc.pdf",
+                              "name": "doc.pdf"}
+    # Addressed to the shell that minted the token, and served on an origin of
+    # its own like every other page this proxy prints.
+    assert json.dumps(SHELL_ORIGIN) in r.text
+    assert r.headers["content-security-policy"] == A.BROWSE_SANDBOX
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_the_card_names_the_address_the_query_and_all(client, site):
+    body, _ = opened(client, site)
+    r = client.get(f"{base_of(body['token'], site)}/doc.pdf?page=3"[len(PREFIX):],
+                   headers=NAV)
+    assert pdf_of(r.text)["url"] == f"http://127.0.0.1:{site}/doc.pdf?page=3"
+
+
+def test_a_pdf_sent_as_a_stream_is_named_by_its_disposition(client, site):
+    """The headers say "bytes"; the name is the only thing that says PDF."""
+    body, _ = opened(client, site)
+    r = client.get(f"{base_of(body['token'], site)}/bin.pdf"[len(PREFIX):],
+                   headers=NAV)
+    assert r.status_code == 200
+    assert pdf_of(r.text) == {"type": "pockettui-pdf",
+                              "url": f"http://127.0.0.1:{site}/bin.pdf",
+                              "name": "report.pdf"}
+
+
+def test_a_pdf_with_nothing_but_its_bytes_is_recognised(client, site):
+    """No usable type and no name, so the signature is what is left."""
+    body, _ = opened(client, site)
+    r = client.get(f"{base_of(body['token'], site)}/sniff"[len(PREFIX):],
+                   headers=NAV)
+    assert "This PDF needs a real viewer" in r.text
+    assert pdf_of(r.text)["name"] == "sniff"
+
+
+def test_a_binary_that_is_not_a_pdf_is_streamed_as_it_was(client, site):
+    """The peek settles it either way: nine mebibytes still go through whole."""
+    body, _ = opened(client, site)
+    r = client.get(f"{base_of(body['token'], site)}/big.bin"[len(PREFIX):],
+                   headers=NAV)
+    assert r.status_code == 200
+    assert r.content == BIG
+
+
+def test_a_pdf_the_page_fetched_for_itself_is_bytes(client, site):
+    """An <embed> is the page asking for a document to draw inside itself.
+
+    A card in its place would put this proxy's own page inside somebody's
+    layout, so only the frame's own navigation is answered with one.
+    """
+    body, _ = opened(client, site)
+    r = client.get(f"{base_of(body['token'], site)}/doc.pdf"[len(PREFIX):],
+                   headers={"sec-fetch-mode": "no-cors",
+                            "sec-fetch-dest": "embed",
+                            "accept": "*/*"})
+    assert r.status_code == 200
+    assert r.content == PDF
+    assert r.headers["content-type"] == "application/pdf"
+
+
+def test_a_page_embedding_a_pdf_is_served_as_a_page(client, site):
+    body, _ = opened(client, site)
+    base = base_of(body["token"], site)
+    page = client.get(f"{base}/frame.html"[len(PREFIX):], headers=NAV)
+    assert page.status_code == 200
+    assert "pockettui-pdf" not in page.text
+    assert f'src="{base}/doc.pdf"' in page.text
+    # And the address it was rewritten to answers with the document itself.
+    sub = client.get(f"{base}/doc.pdf"[len(PREFIX):],
+                     headers={"sec-fetch-mode": "no-cors",
+                              "sec-fetch-dest": "object", "accept": "*/*"})
+    assert sub.content == PDF
+
+
+def test_the_tab_flavour_gets_the_pdf_typed_and_inline(client, site):
+    """The flavour whose frame is allowed the viewer, which is the whole point.
+
+    The target sent a generic stream marked as an attachment; both would have
+    the browser save the file rather than show it.
+    """
+    body = mint_tab(client, f"http://127.0.0.1:{site}/bin.pdf").json()
+    r = client.get(body["url"][len(PREFIX):], headers=NAV,
+                   follow_redirects=False)
+    assert r.status_code == 200
+    assert r.content == PDF
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.headers["content-disposition"] == 'inline; filename="report.pdf"'
+    assert "content-security-policy" not in r.headers
+
+
+def test_the_tab_flavour_carries_a_range_request_through(client, site):
+    """What Chrome's viewer does to a large document, hop by hop."""
+    body = mint_tab(client, f"http://127.0.0.1:{site}/doc.pdf").json()
+    path = body["url"][len(PREFIX):]
+    head = client.get(path, headers=dict(NAV, Range="bytes=0-7"),
+                      follow_redirects=False)
+    assert head.status_code == 206
+    assert head.content == PDF[:8]
+    assert head.headers["content-range"] == f"bytes 0-7/{len(PDF)}"
+    assert head.headers["accept-ranges"] == "bytes"
+    assert head.headers["content-type"] == "application/pdf"
+    # The tail, asked for the way a viewer asks for the trailer.
+    tail = client.get(path, headers=dict(NAV, Range=f"bytes={len(PDF) - 6}-"),
+                      follow_redirects=False)
+    assert tail.status_code == 206
+    assert tail.content == PDF[-6:]
+
+
+def test_a_head_of_a_pdf_answers_with_the_targets_own_headers(client, site):
+    """HEAD is answered before any of this: there is no body to read."""
+    body = mint_tab(client, f"http://127.0.0.1:{site}/doc.pdf").json()
+    r = client.head(body["url"][len(PREFIX):], follow_redirects=False)
+    assert r.status_code == 200
+    assert r.content == b""
+    assert r.headers["content-length"] == str(len(PDF))
+
+
+@pytest.mark.parametrize("disposition,name", [
+    ('attachment; filename="report.pdf"', "report.pdf"),
+    ("attachment; filename=report.pdf", "report.pdf"),
+    ("inline; filename=report.pdf; size=1", "report.pdf"),
+    ("attachment; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf", "résumé.pdf"),
+    # A target does not get to name a path, only a file.
+    ('attachment; filename="../../etc/passwd"', "passwd"),
+    ('attachment; filename="C:\\\\docs\\\\report.pdf"', "report.pdf"),
+    ("attachment", ""),
+    ("", ""),
+])
+def test_what_a_disposition_names(disposition, name):
+    assert A.browse_disposition_name(disposition) == name
+
+
+@pytest.mark.parametrize("base,disposition,is_pdf", [
+    ("application/pdf", "", True),
+    ("application/x-pdf", "", True),
+    ("application/octet-stream", 'attachment; filename="a.pdf"', True),
+    ("application/octet-stream", 'attachment; filename="a.zip"', False),
+    ("application/octet-stream", "", False),
+    # A type that says what it is is believed, name or no name.
+    ("image/png", 'attachment; filename="a.pdf"', False),
+    ("text/html", "", False),
+])
+def test_which_responses_read_as_a_pdf(base, disposition, is_pdf):
+    assert A.browse_is_pdf(base, disposition) is is_pdf
+
+
+@pytest.mark.parametrize("path,name", [
+    ("/dir/resume.pdf", "resume.pdf"),
+    ("/dir/my%20resume.pdf", "my resume.pdf"),
+    ("/", "document.pdf"),
+    ("", "document.pdf"),
+])
+def test_what_a_pdf_is_called_when_only_the_path_says(path, name):
+    assert A.browse_pdf_name("", path) == name
 
 # ---------------------------------------------------------------------------
 # What the pane's hint bar is drawn from

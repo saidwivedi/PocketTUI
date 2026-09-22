@@ -6631,7 +6631,7 @@ def browse_handoff_page(url: str, reason: str, origin: "str | None") -> str:
     return BROWSE_HANDOFF_PAGE.format(
         css=BROWSE_PAGE_CSS,
         detail=html_escape(BROWSE_HANDOFF_DETAIL.get(reason, "")),
-        url=json.dumps(url),
+        url=json.dumps(url).replace("<", "\\u003c"),
         reason=json.dumps(reason),
         origin=json.dumps(origin or "*"))
 
@@ -6667,6 +6667,186 @@ def browse_page_headers(sandbox: bool = True) -> dict:
     if sandbox:
         head["Content-Security-Policy"] = BROWSE_SANDBOX
     return head
+
+
+# ---------------------------------------------------------------------------
+# In-app browser: a PDF, which is a plugin's to draw
+# ---------------------------------------------------------------------------
+# Chrome shows a PDF with its viewer, the viewer is a plugin, and a sandboxed
+# frame runs no plugins: a PDF opened in the pane's own flavour comes up as
+# "This page has been blocked by Chrome" and nothing else. The document is fine
+# — it is the frame that cannot draw it.
+#
+# So a PDF the sandboxed frame navigated to is answered with a card that names
+# the document, and the pane decides where it is drawn: the unsandboxed flavour,
+# whose frame is allowed the viewer, or the browser on the computer. That
+# flavour gets the bytes, since it is where the viewer runs — with the type the
+# viewer looks for and without the disposition that would make the browser save
+# the file instead of showing it.
+#
+# A navigation and nothing else. A page that embeds a PDF in an <object>, and a
+# fetch that wants its bytes, are served exactly as they were: a card in place
+# of either would break the page that asked for it.
+
+BROWSE_PDF_TYPES = frozenset({"application/pdf", "application/x-pdf"})
+# Types that say "bytes" rather than what the bytes are, which is how plenty of
+# servers hand a PDF out. Their name is read for a .pdf, and failing that their
+# first bytes are, because %PDF- is the only thing that settles it. Nothing
+# wider than this, because reading the first bytes means holding the headers
+# back until they arrive, and a type that says what it is is believed.
+BROWSE_PDF_VAGUE = frozenset({
+    "", "application/octet-stream", "binary/octet-stream",
+    "application/force-download", "application/download",
+})
+BROWSE_PDF_MAGIC = b"%PDF-"
+# How many chunks of a body are worth joining to find five bytes. A bound on
+# the reads rather than on the length, so a target dribbling a byte at a time
+# cannot hold this request open on the strength of a signature never arriving.
+BROWSE_PDF_PEEK_CHUNKS = 8
+
+_BROWSE_DISP_STAR = re.compile(r";\s*filename\*\s*=\s*([^;]+)", re.I)
+_BROWSE_DISP_NAME = re.compile(r';\s*filename\s*=\s*(?:"([^"]*)"|([^;]+))', re.I)
+_BROWSE_DISP_ATTACH = re.compile(r"^\s*attachment", re.I)
+
+BROWSE_PDF_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>This PDF needs a real viewer</title>
+<style>
+{css}
+body {{ min-height: 100vh; display: flex; align-items: center;
+  justify-content: center; }}
+.card {{ max-width: 30em; padding: 2em 1.5em; text-align: center; }}
+h1 {{ font-size: 1.15rem; font-weight: 600; margin: 0 0 .6em; }}
+p {{ margin: 0 0 1.4em; color: var(--dim); word-break: break-word; }}
+button {{ font: inherit; padding: .5em 1.4em; border-radius: 8px;
+  border: 1px solid var(--line); background: transparent; color: inherit;
+  cursor: pointer; }}
+</style></head>
+<body><div class="card">
+<h1>This PDF needs a real viewer</h1>
+<p>Chrome cannot show PDFs inside the pane's sandbox</p>
+<button id="go">Open the PDF</button>
+</div>
+<script>
+var M = {msg};
+function ask() {{ try {{ parent.postMessage(M, {origin}); }} catch (e) {{}} }}
+ask();
+document.getElementById("go").addEventListener("click", ask);
+</script>
+</body></html>
+"""
+
+
+def browse_disposition_name(value: str) -> str:
+    """The file name a Content-Disposition names, bare of any path.
+
+    Both spellings: the plain parameter, and the RFC 5987 one whose value is
+    charset'language'percent-encoded. A target that writes a path into either
+    gets to name a file and nothing more.
+    """
+    raw = ""
+    m = _BROWSE_DISP_STAR.search(value or "")
+    if m:
+        raw = m.group(1).strip().strip('"')
+        if raw.count("'") >= 2:
+            raw = raw.split("'", 2)[2]
+        raw = urllib.parse.unquote(raw)
+    else:
+        m = _BROWSE_DISP_NAME.search(value or "")
+        if m:
+            raw = (m.group(1) if m.group(1) is not None else m.group(2)).strip()
+    return raw.replace("\\", "/").rsplit("/", 1)[-1].strip()
+
+
+def browse_pdf_name(disposition: str, path: str) -> str:
+    """What to call this document: the target's own name for it, else the path's."""
+    name = browse_disposition_name(disposition)
+    if not name:
+        seg = path.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        name = urllib.parse.unquote(seg).strip()
+    return name or "document.pdf"
+
+
+def browse_is_pdf(base: str, disposition: str) -> bool:
+    """Whether the response headers alone say this body is a PDF."""
+    if base in BROWSE_PDF_TYPES:
+        return True
+    if base in BROWSE_PDF_VAGUE:
+        return browse_disposition_name(disposition).lower().endswith(".pdf")
+    return False
+
+
+def browse_pdf_sniffable(base: str, status: int, encoding: str) -> bool:
+    """Whether this body is worth reading the first bytes of for a signature.
+
+    A whole body only, in the clear, and only where the type said nothing: a 206
+    starts wherever the range does, and a compressed body starts with the
+    compression's own header rather than the document's.
+    """
+    return (status == 200 and base in BROWSE_PDF_VAGUE
+            and encoding.strip().lower() in ("", "identity"))
+
+
+async def browse_pdf_peek(stream) -> tuple:
+    """(the chunks read, whether they begin a PDF), for a body read on.
+
+    The chunks come back so the body can be streamed from where the read
+    stopped: httpx allows one iterator over it, so what was taken off has to be
+    handed to browse_body rather than fetched again.
+    """
+    chunks: list = []
+    head = b""
+    async for chunk in stream:
+        chunks.append(chunk)
+        head += chunk
+        if len(head) >= len(BROWSE_PDF_MAGIC) or \
+                len(chunks) >= BROWSE_PDF_PEEK_CHUNKS:
+            break
+    return chunks, head.startswith(BROWSE_PDF_MAGIC)
+
+
+def browse_pdf_page(url: str, name: str, origin: "str | None") -> str:
+    """The card that names this PDF to the pane."""
+    msg = json.dumps({"type": "pockettui-pdf", "url": url, "name": name})
+    return BROWSE_PDF_PAGE.format(
+        css=BROWSE_PAGE_CSS,
+        # The target's own URL, sitting in a <script> on a page of ours: a `<`
+        # in its query would otherwise be read as the start of a tag.
+        msg=msg.replace("<", "\\u003c"),
+        origin=json.dumps(origin or "*"))
+
+
+def browse_pdf_response(url: str, name: str, rec: "BrowseToken") -> Response:
+    """That card, served like every other page this proxy prints itself."""
+    log(f"browse: PDF at {url[:120]}, offered to the pane as {name}")
+    return Response(browse_pdf_page(url, name, rec.origin),
+                    status_code=200,
+                    media_type="text/html; charset=utf-8",
+                    headers=browse_page_headers(rec.sandbox))
+
+
+def browse_pdf_inline(pairs: list) -> list:
+    """The same headers with the two things Chrome's viewer needs of them.
+
+    The type, because a PDF handed out as a generic stream is a download however
+    the tab got there; and the disposition, because `attachment` is the target
+    saying "save this", which the viewer obeys. Only the leading token is
+    replaced, so a name spelled in the parameters survives as the target wrote
+    it.
+    """
+    out = []
+    typed = False
+    for name, value in pairs:
+        if name == "content-type":
+            value = "application/pdf"
+            typed = True
+        elif name == "content-disposition" and _BROWSE_DISP_ATTACH.match(value):
+            value = _BROWSE_DISP_ATTACH.sub("inline", value, count=1)
+        out.append((name, value))
+    if not typed:
+        out.append(("content-type", "application/pdf"))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -7900,7 +8080,8 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
     # pane is asked to move this tab to the browser on the computer, which has
     # an origin, a cookie jar and an address of its own. Only for the pane's
     # own flavour, and only for a navigation — see browse_is_navigation.
-    navigation = rec.sandbox and browse_is_navigation(request)
+    is_nav = browse_is_navigation(request)
+    navigation = rec.sandbox and is_nav
     if navigation:
         reason = ("login" if browse_handoff_host(host, path)
                   else "google_sorry" if browse_google_sorry(host, path)
@@ -7942,8 +8123,25 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
         if request.method == "HEAD":
             await resp.aclose()
             return browse_response(resp.status_code, pairs)
+        # A PDF the frame navigated to is a plugin's to draw, and the sandbox
+        # runs none: that flavour is answered with the card and this one with
+        # the bytes the viewer wants — see the PDF section above.
+        raw = resp.aiter_raw()
+        peek: list = []
+        disposition = resp.headers.get("content-disposition", "")
+        pdf = is_nav and browse_is_pdf(base, disposition)
+        if is_nav and not pdf and browse_pdf_sniffable(
+                base, resp.status_code,
+                resp.headers.get("content-encoding", "")):
+            peek, pdf = await browse_pdf_peek(raw)
+        if pdf and rec.sandbox:
+            await resp.aclose()
+            return browse_pdf_response(url, browse_pdf_name(disposition, path),
+                                       rec)
+        if pdf:
+            pairs = browse_pdf_inline(pairs)
         return browse_response(resp.status_code, pairs,
-                               stream=browse_body(resp, [], resp.aiter_raw()))
+                               stream=browse_body(resp, peek, raw))
 
     raw = resp.aiter_raw()
     try:
