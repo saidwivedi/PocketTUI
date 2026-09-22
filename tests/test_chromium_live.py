@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -203,6 +204,121 @@ def test_a_quiet_page_gets_a_sharp_frame_without_input(tmp_path, monkeypatch):
         await asyncio.sleep(2.0)
         assert sink.kinds().count("still") == 1, sink.kinds()
         assert tab.info()["stills"] == 1
+
+    live(body, tmp_path)
+
+
+# A result page the way a search engine draws one: blue links, grey text, and
+# a hover colour on every row, so a pointer moving over it makes the page paint.
+RESULTS_PAGE = "data:text/html," + urllib.parse.quote(
+    "<title>results</title><style>body{margin:0;padding:24px;font:16px/1.5 Arial}"
+    "a{color:rgb(26,13,171);display:block;padding:6px}"
+    "a:hover{background:rgb(232,240,254);text-decoration:underline}"
+    "p{color:rgb(84,84,84);margin:0 0 12px}</style>"
+    + "".join(f"<a href='https://example.net/{i}'>Result number {i} about "
+              f"something</a><p>A couple of lines of grey text under result {i}, "
+              f"with enough words in it that the encoder has edges to spend "
+              f"bytes on.</p>" for i in range(1, 13)))
+
+
+async def client_acks(tab, sink, delay):
+    """The client: every frame acknowledged `delay` after it arrived, which is
+    the link's distance plus a decode and a paint."""
+    seen = 0
+    try:
+        while True:
+            while seen < len(sink.frames):
+                header = sink.frames[seen][0]
+                at = sink.arrived[seen]
+                seen += 1
+                wait = at + delay - time.monotonic()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                tab.ack(header["seq"])
+            await asyncio.sleep(0.005)
+    except asyncio.CancelledError:
+        return
+
+
+class TimedSink(Sink):
+    def __init__(self) -> None:
+        super().__init__()
+        self.arrived: list = []
+
+    def put_frame(self, header, body):
+        self.arrived.append(time.monotonic())
+        super().put_frame(header, body)
+
+
+def test_a_quiet_google_like_page_stays_at_level_0_with_60ms_acks(tmp_path, monkeypatch):
+    """The founder's report: a results page on a Retina laptop, a 59 ms link,
+    and the stream at the bottom of the ladder, soft for as long as he looked.
+    A link with 60 ms in it and a pointer moving over the page is no reason to
+    give up a rung, and the page gets its full-resolution picture the moment
+    the pointer stops — and keeps it."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def body(fb):
+        sink = TimedSink()
+        fb.attach_pane("p1", sink)
+        tab = await fb.open("p1", "t1", RESULTS_PAGE, css_w=1200, css_h=800,
+                            dpr=2, zoom=1)
+        await tab.show()
+        acker = asyncio.ensure_future(client_acks(tab, sink, 0.06))
+        try:
+            await wait_frame(sink, "cast")
+            levels = set()
+            end = time.monotonic() + 5.0
+            n = 0
+            while time.monotonic() < end:
+                n += 1
+                y = 30 + (n * 23) % 700
+                tab.note_input("mouseMoved")
+                await tab.session.send("Input.dispatchMouseEvent", {
+                    "type": "mouseMoved", "x": 200 + (n * 17) % 400, "y": y,
+                    "button": "none", "buttons": 0, "modifiers": 0})
+                levels.add(tab._level)
+                await asyncio.sleep(0.03)
+            casts = sink.kinds().count("cast")
+            assert casts >= 20, sink.kinds()
+            assert levels == {0}, (levels, tab.info())
+
+            seen = len(sink.frames)
+            still, _ = await wait_frame(sink, "still", after=seen, timeout=3)
+            assert (still["w"], still["h"]) == (2400, 1600)
+            # And the still is the last thing drawn: its echo is not sent.
+            await asyncio.sleep(1.5)
+            after = [(h["kind"], h["w"]) for h, _ in sink.frames[seen:]]
+            assert after[-1] == ("still", 2400), after
+            assert [k for k, _w in after].count("still") == 1, after
+            assert tab._level == 0
+            info = tab.info()
+            assert info["dpr"] == 2 and info["quality"] == 70
+            assert "overMs" in info and "dropShare" in info
+        finally:
+            acker.cancel()
+
+    live(body, tmp_path)
+
+
+def test_a_tab_forced_to_the_bottom_rung_still_gets_a_2x_still(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def body(fb):
+        sink = Sink()
+        fb.attach_pane("p1", sink)
+        C._LEVEL_MEMORY["p1"] = (len(C.STREAM_LEVELS) - 1, time.monotonic())
+        tab = await fb.open("p1", "t1", RESULTS_PAGE, css_w=600, css_h=400,
+                            dpr=2, zoom=1)
+        assert tab._level == len(C.STREAM_LEVELS) - 1
+        await tab.show()
+        cast, _ = await wait_frame(sink, "cast")
+        # The CSS size: the bottom rung no longer shrinks the viewport.
+        assert (cast["w"], cast["h"]) == (600, 400)
+        still, data = await wait_frame(sink, "still", timeout=3)
+        assert (still["w"], still["h"]) == (1200, 800)
+        assert data[:2] == b"\xff\xd8"
+        C._LEVEL_MEMORY.clear()
 
     live(body, tmp_path)
 
