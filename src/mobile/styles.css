@@ -3982,6 +3982,132 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .bm-chip:hover .bm-del, .bm-chip:focus-within .bm-del { visibility: visible; }
 .bm-del:hover { color: var(--ink); }
 
+/* ---- a tab in full mode ----------------------------------------------------
+   The streamed browser (43-full-browser.js): one canvas filling the frame area,
+   and four small things over it. The canvas is given its CSS size in script —
+   it is the size the computer was told to render, which lags a drag of the seam
+   by one round trip, and a canvas stretched to the wrap in the meantime would
+   show the page distorted rather than a moment behind. So the wrap is the box
+   and the canvas sits in its corner. */
+.fb-wrap {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--paper);
+}
+.fb-canvas {
+  position: absolute;
+  top: 0; left: 0;
+  display: block;
+  /* The page's own pixels, never the browser's idea of a nicer picture: the
+     frames arrive at the device ratio they were rendered at and any smoothing
+     here would be a second resampling of text that is already sharp. */
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+}
+/* Where the keyboard lives. Not display:none and not visibility:hidden —
+   neither can be focused — and inside the wrap so the focus scrolls nothing. */
+.fb-focus {
+  position: absolute;
+  top: 0; left: 0;
+  width: 1px; height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  resize: none;
+  overflow: hidden;
+  /* A 1px field the browser may still try to bring into view; taking it out of
+     the paint order costs nothing and it is never read. */
+  pointer-events: none;
+  white-space: pre;
+}
+/* The context menu, on the zoom panel's recipe (#browser-zoom-menu): the same
+   card, the same hairline and the same shadow, positioned where the press was
+   rather than under a key. */
+.fb-menu {
+  position: absolute;
+  z-index: 60;
+  min-width: 168px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--card);
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
+}
+.fb-menu[hidden] { display: none; }
+.fb-item {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fb-item:disabled { color: var(--tertiary); cursor: default; }
+.fb-item:not(:disabled):hover { background: var(--umber-tint); }
+/* A hairline between the entries that act on the page's history and the ones
+   that act on what is under the pointer. */
+.fb-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--hair);
+}
+/* A [title]'s own tooltip. The page cannot draw one — its pixels are a
+   picture, and the browser it runs in has no pointer in it — so the shell
+   draws it where the pointer is. */
+.fb-tip {
+  position: absolute;
+  z-index: 58;
+  max-width: 280px;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--hair-strong);
+  border-radius: 6px;
+  padding: 4px 7px;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(20, 16, 10, 0.18);
+}
+.fb-tip[hidden] { display: none; }
+/* What went wrong, over the last picture rather than instead of it: the page
+   the user was reading is still the most informative thing on screen. */
+.fb-err {
+  position: absolute;
+  inset: 0;
+  z-index: 62;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--secondary);
+  background: var(--paper);
+}
+.fb-err[hidden] { display: none; }
+.fb-retry {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--hair-strong);
+  border-radius: 10px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+.fb-retry:hover { background: var(--umber-tint); }
+
 /* ============================================================
    EDITOR
    ============================================================ */
