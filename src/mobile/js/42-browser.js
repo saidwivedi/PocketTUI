@@ -248,6 +248,39 @@ function browserFullWanted(url) {
   return cfg.browserStreamAll || browserStreamsHost(url);
 }
 
+// The sign-in pages a streamed page may open a window onto: the same set the
+// backend hands a proxied page off to the stream for (BROWSE_HANDOFF_HOSTS in
+// app.py; keep the two in step). A key starting with a dot is a suffix, and a
+// host with paths counts only under one of them. A login window has to stay in
+// the browser that holds the session of the page that opened it.
+const BROWSER_SIGNIN_HOSTS = {
+  "accounts.google.com": [],
+  "login.microsoftonline.com": [],
+  "login.live.com": [],
+  "github.com": ["/login", "/sessions"],
+  "appleid.apple.com": [],
+  "auth0.com": [],
+  ".auth0.com": [],
+  ".okta.com": [],
+  "login.yahoo.com": [],
+  "id.atlassian.com": [],
+  "auth.openai.com": [],
+  "login.salesforce.com": [],
+};
+
+function browserSignInPage(url) {
+  let u;
+  try { u = new URL(url); } catch (e) { return false; }
+  const name = u.hostname.toLowerCase();
+  const path = u.pathname || "/";
+  for (const key of Object.keys(BROWSER_SIGNIN_HOSTS)) {
+    if (key.startsWith(".") ? !name.endsWith(key) : name !== key) continue;
+    const paths = BROWSER_SIGNIN_HOSTS[key];
+    if (!paths.length || paths.some((p) => path === p || path.startsWith(p + "/"))) return true;
+  }
+  return false;
+}
+
 // The id the computer knows a streamed tab by. Made with the tab and kept in the
 // record a reload reads, because it is also how the page comes back: the backend
 // holds its tabs under (pane, id) and answers a second open for one it already
@@ -1809,10 +1842,24 @@ function browserOpenFrom(tab, raw) {
 // with — browserFid's are `t…`) and the target its page is already on, so the
 // navigation below takes that page over rather than loading it again
 // (browserPointFull).
+//
+// That is only for a window whose site is streamed anyway (a remembered host,
+// the stream-all switch, or a sign-in page the opener's session lives behind).
+// Anything else opens the way a new tab to that address would, in the proxy,
+// where it has sound: the computer's window is closed and the address goes to a
+// new tab of its own. A window opened with no address yet is kept: the page
+// that opened it is streamed and means to write into it or send it somewhere,
+// and a proxy tab has no address to open it on.
 function browserPopup(msg) {
   if (!msg || !msg.tab) return;
   const url = browserNormalize(typeof msg.url === "string" ? msg.url : "");
   const from = browserTabs.find((t) => t.fid === msg.opener);
+  if (url && url !== "about:blank" && !browserFullWanted(url) && !browserSignInPage(url)) {
+    if (fullLink) fullLink.send({ type: "close", tab: msg.tab });
+    if (from) browserOpenFrom(from, url);
+    else if (browserTabs.length < BROWSER_TAB_MAX) browserNavigateIn(browserMakeTab(false), url);
+    return;
+  }
   if (browserTabs.length >= BROWSER_TAB_MAX) {
     // No chip left to put it in. The page is still what was asked for, so the
     // tab it was asked from goes there instead — a browser with no room in its

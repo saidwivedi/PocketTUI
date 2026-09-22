@@ -537,6 +537,31 @@ def test_a_window_a_streamed_page_opens_becomes_a_tab_of_the_pane(doc):
     assert 'fullLink.send({ type: "close", tab: msg.tab });' in doc
 
 
+def test_a_popup_opens_in_the_mode_its_site_would_get(doc):
+    """A window a streamed page opens is adopted streamed only when its own site
+    would be: a remembered host, the stream-all switch, or a sign-in page the
+    opener's session lives behind. Anything else (a YouTube link on a streamed
+    site) is closed on the computer and opened as a proxy tab, where it has
+    sound. The sign-in list mirrors the backend's BROWSE_HANDOFF_HOSTS."""
+    body = doc[doc.index("function browserPopup("):]
+    body = body[:body.index("\n}\n")]
+    assert ('if (url && url !== "about:blank" && !browserFullWanted(url) '
+            "&& !browserSignInPage(url)) {") in body
+    decide = body.index("!browserFullWanted(url)")
+    assert body.index('fullLink.send({ type: "close", tab: msg.tab });') > decide
+    assert "browserOpenFrom(from, url);" in body
+    assert body.index("browserOpenFrom(from, url);") < body.index("tab.fullMode = true;")
+    assert "const BROWSER_SIGNIN_HOSTS = {" in doc
+    assert "BROWSE_HANDOFF_HOSTS in" in doc
+    app = (REPO / "app.py").read_text()
+    block = app[app.index("BROWSE_HANDOFF_HOSTS: dict = {"):]
+    block = block[:block.index("}")]
+    js = doc[doc.index("const BROWSER_SIGNIN_HOSTS = {"):]
+    js = js[:js.index("};")]
+    assert (sorted(re.findall(r'"([^"]+)":', block))
+            == sorted(re.findall(r'"([^"]+)":', js)))
+
+
 def test_what_a_streamed_page_asks_is_answered_by_the_pane(doc):
     """A dialog, an HTTP challenge and a file input each stop the page on the
     computer until an answer goes back over the pane's socket.
