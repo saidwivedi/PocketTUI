@@ -1693,3 +1693,35 @@ def test_browser_status_reports_the_browser_it_would_use(client, monkeypatch,
     assert body["found"] == {"path": "/usr/bin/chromium", "version": "151.0.7000.1"}
     assert body["capMb"] >= 128
     assert client.get("/api/browser/status").status_code == 401
+
+
+def test_ws_browser_mouse_before_open_is_no_tab_error(client, monkeypatch,
+                                                      no_browser_singleton):
+    # A pointer that lands on a pane whose tab has gone — closed under it, lost
+    # with the browser — is a fact the pane has to hear about and recover from,
+    # not a socket that drops. The page it was showing is on screen either way.
+    monkeypatch.setattr(CH, "find_chromium", lambda *a, **kw: A_BROWSER)
+    with browser_socket(client) as ws:
+        ws.send_text(json.dumps({"token": TOKEN, "dev": "phone"}))
+        assert json.loads(ws.receive_text())["type"] == "ready"
+
+        ws.send_text(json.dumps({"type": "mouse", "tab": "t1", "kind": "down",
+                                 "x": 10, "y": 20, "button": "left",
+                                 "buttons": 1, "clicks": 1, "mods": 0}))
+        err = json.loads(ws.receive_text())
+        assert err == {"type": "error", "tab": "t1", "code": "no_tab",
+                       "message": "that tab is not open"}
+
+        # The rest of the input half answers the same way, and the socket is
+        # still there to take the next message after every one of them.
+        for msg in ({"type": "key", "tab": "t1", "kind": "down", "key": "a",
+                     "text": "a"},
+                    {"type": "text", "tab": "t1", "text": "hello"},
+                    {"type": "link", "tab": "t1", "x": 1, "y": 2},
+                    {"type": "hit", "tab": "t1", "x": 1, "y": 2},
+                    {"type": "cursor", "tab": "t1", "x": 1, "y": 2}):
+            ws.send_text(json.dumps(msg))
+            assert json.loads(ws.receive_text())["code"] == "no_tab", msg["type"]
+
+        ws.send_text(json.dumps({"type": "hide", "tab": "t1"}))
+        assert json.loads(ws.receive_text())["code"] == "no_tab"

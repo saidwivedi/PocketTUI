@@ -8672,6 +8672,116 @@ async def browser_op_stop(fb, pane: str, msg: dict) -> None:
     await browser_need(fb, pane, msg).stop()
 
 
+# ---- input ----------------------------------------------------------------
+# The half of the pane that makes a streamed page a page: a pointer that moves
+# in it, a keyboard that types into it, a menu that knows what is under the
+# cursor. Every one of these goes through note_input before it dispatches — the
+# settled picture (PaneTab._arm_settle) is taken a moment after the last input,
+# and an input the tab was never told about is one whose result never arrives as
+# a frame at all.
+#
+# The mapping itself lives in chromium.py as pure functions, because what a
+# `keyCode` of 0 should become and what Cmd means on a Linux host are facts
+# about the protocol rather than about this socket, and they are worth testing
+# without one.
+
+
+async def browser_op_mouse(fb, pane: str, msg: dict) -> None:
+    mod = _chromium_module()
+    pt = browser_need(fb, pane, msg)
+    params = mod.mouse_event_params(msg, pt.zoom)
+    pt.note_input(params["type"])
+    await pt.session.send("Input.dispatchMouseEvent", params)
+
+
+async def browser_op_key(fb, pane: str, msg: dict) -> None:
+    mod = _chromium_module()
+    pt = browser_need(fb, pane, msg)
+    params = mod.key_event_params(msg)
+    pt.note_input(params["type"], params["key"])
+    await pt.session.send("Input.dispatchKeyEvent", params)
+
+
+async def browser_op_text(fb, pane: str, msg: dict) -> None:
+    """A paste, an IME's commit, a dead key's letter: text with no key behind it.
+
+    Input.insertText rather than a string of key events, because that is what
+    the three of them actually are — the client has the finished characters and
+    no key presses to describe them with, and a synthesised keyDown per
+    character would fire the page's own key handlers for a paste.
+    """
+    mod = _chromium_module()
+    pt = browser_need(fb, pane, msg)
+    text = str(msg.get("text") or "")[:mod.INSERT_MAX]
+    if not text:
+        return
+    pt.note_input("insertText")
+    await pt.session.send("Input.insertText", {"text": text})
+
+
+async def browser_probe(pt, js: str, x: float, y: float):
+    """One of chromium.py's page probes on one point, or None.
+
+    A probe that throws in the page — a document that has navigated out from
+    under the pointer, a cross-origin frame at the point — is a question with
+    no answer, not an error worth showing anybody.
+    """
+    mod = _chromium_module()
+    res = await pt.session.send(
+        "Runtime.evaluate",
+        {"expression": mod.probe_call(js, x, y), "returnByValue": True,
+         "awaitPromise": False}, timeout=5)
+    if res.get("exceptionDetails"):
+        return None
+    return (res.get("result") or {}).get("value")
+
+
+async def browser_op_link(fb, pane: str, msg: dict) -> None:
+    """What a middle click or a Ctrl+click was on, asked before anything is sent.
+
+    Those two clicks are the one case where nothing goes to the page at all: a
+    browser opens the link in a new tab and the page it was clicked in does not
+    move, and a page told about the press would follow the link itself.
+    """
+    mod = _chromium_module()
+    pt = browser_need(fb, pane, msg)
+    x, y = mod.viewport_point(msg, pt.zoom)
+    href = await browser_probe(pt, mod.LINK_PROBE_JS, x, y)
+    fb.to_pane(pane, {"type": "link", "tab": pt.tab, "href": str(href or "")})
+
+
+async def browser_op_hit(fb, pane: str, msg: dict) -> None:
+    """Everything the context menu's entries are gated on, in one round trip."""
+    mod = _chromium_module()
+    pt = browser_need(fb, pane, msg)
+    x, y = mod.viewport_point(msg, pt.zoom)
+    got = await browser_probe(pt, mod.HIT_PROBE_JS, x, y) or {}
+    fb.to_pane(pane, {"type": "hit", "tab": pt.tab,
+                      "href": str(got.get("href") or ""),
+                      "selection": pt.selection,
+                      "editable": bool(got.get("editable"))})
+
+
+async def browser_op_cursor(fb, pane: str, msg: dict) -> None:
+    """The pointer's shape and the tooltip under it, as the page decides them.
+
+    Throttled by the client and deduplicated here: a move across a paragraph
+    asks this many times a second and the answer does not change, and a message
+    per ask would be the noisiest thing on the socket.
+    """
+    mod = _chromium_module()
+    pt = browser_need(fb, pane, msg)
+    x, y = mod.viewport_point(msg, pt.zoom)
+    got = await browser_probe(pt, mod.HIT_CURSOR_JS, x, y) or {}
+    cursor = str(got.get("cursor") or "default")
+    title = str(got.get("title") or "")[:mod.TITLE_MAX]
+    if pt.cursor_sent == (cursor, title):
+        return
+    pt.cursor_sent = (cursor, title)
+    fb.to_pane(pane, {"type": "cursor", "tab": pt.tab, "cursor": cursor,
+                      "title": title})
+
+
 async def browser_op_ack(fb, pane: str, msg: dict) -> None:
     pt = fb.tab(pane, browser_tab_id(msg))
     if pt is not None:                      # an ack for a closed tab is not news
@@ -8680,9 +8790,11 @@ async def browser_op_ack(fb, pane: str, msg: dict) -> None:
 
 # Every message type the pane's socket understands, as type -> handler. The
 # handlers take (FullBrowser, pane, message) and raise; browser_dispatch turns
-# whatever they raise into one `error` reply and leaves the socket open. The
-# input half of the pane — mouse, key, text and the hit-testing the link and
-# cursor answers come from — is added here.
+# whatever they raise into one `error` reply and leaves the socket open.
+#
+# `type` names the op, so a mouse or key message spells its own flavour as
+# `kind` — a second `type` in the same object would have to be the one the
+# dispatcher reads.
 BROWSER_OPS = {
     "open": browser_op_open,
     "close": browser_op_close,
@@ -8696,6 +8808,12 @@ BROWSER_OPS = {
     "reload": browser_op_reload,
     "stop": browser_op_stop,
     "ack": browser_op_ack,
+    "mouse": browser_op_mouse,
+    "key": browser_op_key,
+    "text": browser_op_text,
+    "link": browser_op_link,
+    "hit": browser_op_hit,
+    "cursor": browser_op_cursor,
 }
 
 
