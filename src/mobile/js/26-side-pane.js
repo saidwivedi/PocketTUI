@@ -146,16 +146,16 @@ function sideDrop(who) {
 
 // Remembered against the session it was opened in, not against the app: the
 // column is that session's (see fileViews, 09-image-viewer.js), and a reload
-// only puts the rows back when that same session is opened again. `owner` is
-// the top row said again for the record's older shape, which is what the shell
-// still reads back at boot; the browser's page and tabs are the browser's own
-// half of the record (browserRemember, 42-browser.js) and only carry over while
-// it is still one of the rows.
+// only puts the rows back when that same session is opened again. The order is
+// written out with them: the two rows come back one at a time and in whatever
+// order their own opens resolve, and this is what says which way up they were
+// (sideOrder). The browser's page and tabs are the browser's own half of the
+// record (browserRemember, 42-browser.js) and only carry over while it is
+// still one of the rows.
 function sideRemember() {
   if (!sideRows.length) return;
   const prev = cfg.sidePane;
-  const rec = { owner: sideRows[0], rows: sideRows.slice(),
-                session: currentSession || "" };
+  const rec = { rows: sideRows.slice(), session: currentSession || "" };
   if (sideRows.includes("browser") && prev) {
     rec.url = prev.url;
     rec.tabs = prev.tabs;

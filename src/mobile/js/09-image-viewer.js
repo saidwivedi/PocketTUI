@@ -425,6 +425,11 @@ function stashFileView(session, kind) {
   // comes back with the session. With no explorer in any shape there is no
   // folder to keep, and an entry with one would restore a pane nobody opened.
   const view = {};
+  // Which rows the column held and which way up, read before any of them is
+  // given back: each pane below stashes its own half, and the order they are
+  // stacked in is the column's own and would otherwise be gone with them
+  // (sideOrder, 26-side-pane.js).
+  if (sideRows.length) view.side = sideRows.slice();
   if (kind || filesDocked || $("screen-files").classList.contains("active")) {
     view.files = filesStash();
   }
@@ -446,15 +451,22 @@ function stashFileView(session, kind) {
 function restoreFileView(session) {
   const view = fileViews.get(session);
   fileViews.delete(session);
-  // A record a reload left behind names the pane rather than carrying one:
-  // nothing was ever stashed, so the pane opens the way opening it by hand
+  // A record a reload left behind names the rows rather than carrying them:
+  // nothing was ever stashed, so each pane opens the way opening it by hand
   // does — the changes of this session's repo, the explorer at its cwd, the
-  // browser on the tabs that record does carry.
+  // browser on the tabs that record does carry. Which way up they end is not
+  // decided here: the explorer's open is a round trip away (filesFollowSession
+  // hands that promise back), so the column is put in the recorded order once
+  // whatever was asked for is in it.
   if (view.boot) {
     if (!isWideLayout()) return;
-    if (view.boot === "diff") diffSetOpen(true);
-    else if (view.boot === "browser") openBrowser(view.bootUrl, view.bootTabs, view.bootTab);
-    else filesFollowSession();
+    let pending;
+    for (const type of view.boot) {
+      if (type === "diff") diffSetOpen(true);
+      else if (type === "browser") openBrowser(view.bootUrl, view.bootTabs, view.bootTab);
+      else pending = filesFollowSession();
+    }
+    Promise.resolve(pending).then(() => sideOrder(view.boot));
     return;
   }
   if (view.files) {
@@ -472,10 +484,13 @@ function restoreFileView(session) {
       }
     }
   }
-  // The other thing that can hold the slot, back in it against this session's
+  // The other thing that can hold a row, back in it against this session's
   // repo — diffSetOpen's own poll asks for it.
   if (view.diff) diffSetOpen(true);
   if (view.browser) browserRestore(view.browser);
+  // Every row that was put away is back by now, stacked in the order the
+  // restores above happen to run in rather than the order it was left in.
+  if (view.side) sideOrder(view.side);
   if (view.viewer) { viewerRestore(view.viewer); return; }
   if (!view.editor && !view.reader) return;
   // A docked view pushed no entry of its own, so it gets none back — the pane
