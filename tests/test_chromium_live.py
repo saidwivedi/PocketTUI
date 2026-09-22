@@ -208,6 +208,36 @@ def test_a_quiet_page_gets_a_sharp_frame_without_input(tmp_path, monkeypatch):
     live(body, tmp_path)
 
 
+def test_an_adopted_tab_paints_after_the_pane_reconnects(tmp_path, monkeypatch):
+    """A shell reload right after a still: the old socket goes, a new one
+    re-opens the tab by target and shows it. Chrome's first frame of the new
+    stream is the very picture the still was taken over, and it is the only
+    frame a page at rest sends, so it has to reach the new pane."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def body(fb):
+        old = Sink()
+        fb.attach_pane("p1", old)
+        tab = await fb.open("p1", "t1", HI, css_w=400, css_h=300, dpr=1, zoom=1)
+        await tab.show()
+        await wait_frame(old, "cast")
+        seen = len(old.frames)
+        tab.note_input("mouseMoved")
+        await wait_frame(old, "still", after=seen)
+
+        await fb.detach_pane("p1")
+        new = Sink()
+        fb.attach_pane("p1", new)
+        again = await fb.open("p1", "t1", HI, target_id=tab.target_id,
+                              css_w=400, css_h=300, dpr=1, zoom=1)
+        assert again is tab
+        await tab.show()
+        cast, data = await wait_frame(new, "cast", timeout=5)
+        assert (cast["w"], cast["h"]) == (400, 300) and data[:2] == b"\xff\xd8"
+
+    live(body, tmp_path)
+
+
 # A result page the way a search engine draws one: blue links, grey text, and
 # a hover colour on every row, so a pointer moving over it makes the page paint.
 RESULTS_PAGE = "data:text/html," + urllib.parse.quote(
