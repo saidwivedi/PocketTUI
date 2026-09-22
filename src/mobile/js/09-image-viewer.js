@@ -453,8 +453,14 @@ function stashFileView(session, kind) {
   }
   // The third thing that can hold it, and the only one that carries state
   // worth more than a re-fetch: the page on screen and the way back through
-  // the ones before it.
-  if (browserOpen) { view.browser = browserStash(); browserTeardown(); }
+  // the ones before it. Both strips, each under its own name, since the column
+  // can hold two of them and a restore that did not know which was which would
+  // put one back in the other's row (42-browser.js).
+  if (browserAnyOpen()) {
+    view.browser = browserStash("browser");
+    view.browser2 = browserStash("browser#2");
+    browserTeardown();
+  }
   filesTeardown();
   fileViews.set(session, view);
 }
@@ -498,7 +504,7 @@ function restoreFileView(session) {
   // repo — diffSetOpen's own poll asks for it. Each pane that was up, under the
   // name it was up as; what each was showing is its own and never left it.
   if (view.diffs) for (const id of view.diffs) diffSetOpen(true, id);
-  if (view.browser) browserRestore(view.browser);
+  if (view.browser || view.browser2) browserRestore(view.browser, view.browser2);
   // Every row that was put away is back by now, stacked in the order the
   // restores above happen to run in rather than the order it was left in.
   if (view.side) sideOrder(view.side);
@@ -605,8 +611,8 @@ function openTerminal(name, resumed) {
     // it reaches here under the diff's rule. Full screen it is over the rail
     // rather than beside it, and closes where the full-screen explorer above
     // closes — there is no terminal under it that the page belongs to.
-    if (browserOpen && name !== currentSession) {
-      if (browserDocked && currentSession) stashFileView(currentSession, null);
+    if (browserAnyOpen() && name !== currentSession) {
+      if (browserAnyDocked() && currentSession) stashFileView(currentSession, null);
       else browserTeardown();
     }
   }
