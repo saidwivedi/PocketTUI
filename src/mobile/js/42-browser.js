@@ -552,6 +552,19 @@ function browserNewTab() {
     // writes. Per tab, so one portal can have it while the tab beside it does
     // not, and kept in the pane's record so a reload brings it back.
     lan: false,
+    // The document this tab is showing with the other flavour because it is a
+    // PDF, and the answer the key above had before it took it. Chrome draws a
+    // PDF with a plugin and a plugin never runs inside a sandbox, so one
+    // document at a time is fetched as a page in its own right — and when the
+    // tab moves on, the user's own answer is what it goes back to
+    // (browserPdfShow, browserPdfLeave).
+    pdf: "",
+    lanBefore: false,
+    // Whether the card the proxy puts up in a PDF's place has already named it.
+    // Read only where there is nothing here to show a PDF with: the first
+    // message arrives with the card, the second is the user pressing the button
+    // on it, and that one is worth an answer.
+    pdfAsked: false,
     // Whether the proxy has already offered this tab's page to the stream. Only
     // read where there is no browser to stream from: the first offer arrives
     // with the page and is the backend's own reading, the second is the user
@@ -1050,7 +1063,13 @@ function browserRemember() {
     const t = browserTabs[i];
     if (browserIsFull(t)) {
       tabs.push({ url: u, full: true, fid: t.fid, targetId: t.target || "" });
-    } else tabs.push(t.lan ? { url: u, lan: true } : u);
+    } else {
+      // The flavour the user asked for, never the one a PDF took for its own
+      // document: what the record puts back is an address, and that address is
+      // what raises the card and takes the flavour again (browserPdfShow).
+      const lan = t.pdf ? t.lanBefore : t.lan;
+      tabs.push(lan ? { url: u, lan: true } : u);
+    }
   }
   // Written back over the record as it stands rather than as a record of its
   // own: the rows and their order are the column's half of this key, and the
@@ -1088,6 +1107,11 @@ async function browserNavigateIn(tab, raw, push = true) {
   if (!url) return;
   // The bar was about the page this tab is leaving, whatever it goes to next.
   if (tab === browserHintFor) browserHideHint();
+  // And the flavour a PDF took for itself is this tab's own again, since the
+  // tab is leaving that document: the load below is the one that fetches the
+  // page, which is why browserPdfLeave starts none. The same address again is a
+  // reload of the PDF and keeps it.
+  if (tab.pdf && url !== tab.pdf) browserPdfLeave(tab);
   // The first thing asked of a tab settles what kind of tab it is. Not at the
   // load that made it: whether this computer has a browser to stream from is an
   // answer that arrives after the pane's first tab does, and which kind of tab
@@ -1226,10 +1250,14 @@ function syncBrowserLan() {
   if (!btn) return;
   // Not for a streamed tab: its page is fetched by a browser running on the
   // computer, so it is already on the computer's network and there is nothing
-  // this key could add. Hidden here rather than in browserSyncCap, because it
-  // now depends on the tab on screen as well as on the computer's answers.
+  // this key could add. Nor for a tab showing a PDF: that document is fetched
+  // with the other flavour whatever the key says, and the answer the key holds
+  // is the one the tab goes back to when it moves on (browserPdfShow). Hidden
+  // here rather than in browserSyncCap, because it now depends on the tab on
+  // screen as well as on the computer's answers.
   btn.hidden = !hasCapStrict("browse_tab") || browserTabBlocked
-               || browserIsFull(browserTab());
+               || browserIsFull(browserTab())
+               || !!(browserTab() && browserTab().pdf);
   const on = !!(browserTab() && browserTab().lan);
   btn.classList.toggle("on", on);
   btn.setAttribute("aria-pressed", on ? "true" : "false");
@@ -1250,6 +1278,19 @@ function syncBrowserLan() {
 // powers, which is the point — the page is fetched again as the other kind.
 function browserSetLan(tab, on) {
   if (!!tab.lan === !!on) return;
+  browserFlipLan(tab, on);
+  const url = browserUrlIn(tab);
+  // In place rather than as a new entry: this is the page the tab is already
+  // on, fetched with other powers.
+  if (url) browserNavigateIn(tab, url, false);
+}
+
+// The tab's half of that: the flavour flipped and whatever was running under
+// the old powers given up, with nothing said about where the tab then goes. Its
+// own function for browserSwapMode's reason — a navigation that is being made
+// anyway carries the load itself, and a PDF is flipped inside one
+// (browserPdfShow, browserPdfLeave).
+function browserFlipLan(tab, on) {
   tab.lan = !!on;
   if (tab.frame) { tab.frame.remove(); tab.frame = null; }
   tab.primed = false;
@@ -1259,10 +1300,6 @@ function browserSetLan(tab, on) {
   if (tab === browserTab()) syncBrowserLan();
   renderBrowserTabs();
   browserRemember();
-  const url = browserUrlIn(tab);
-  // In place rather than as a new entry: this is the page the tab is already
-  // on, fetched with other powers.
-  if (url) browserNavigateIn(tab, url, false);
 }
 
 // ---- the page, in this device's own browser --------------------------------
@@ -1275,7 +1312,9 @@ function browserSetLan(tab, on) {
 function browserOutThrough(tab) {
   const url = browserUrlIn(tab);
   if (!url) return false;
-  if (tab.lan) return true;
+  // A PDF tab's flavour is that one document's and not the user's answer to the
+  // key, so what is read here is the answer they gave (browserPdfShow).
+  if (tab.pdf ? tab.lanBefore : tab.lan) return true;
   try { return browserAddressIsPrivate(new URL(url).hostname); }
   catch (e) { return false; }
 }
@@ -1437,6 +1476,10 @@ function browserWatchLanding(tab) {
     if (tab.landGen !== gen || !browserAlive(tab, paneGen)) return;
     if (tab.heardAt >= at - BROWSER_LAND_GRACE) return;   // the proxy's own page
     if (browserIsFull(tab)) return;
+    // A PDF says nothing either: what is in the frame is a plugin drawing a
+    // document, not a page this proxy rewrote and put a shim in. The tab is
+    // already in the only mode that can draw it (browserPdfShow).
+    if (tab.pdf) return;
     // A load this pane started and has had no report of yet — including the
     // blank document a fresh frame is made on, whose load event arrives before
     // the address it was made for. Its own report is what will clear this, and
@@ -1483,6 +1526,72 @@ function browserHandOff(tab, d) {
         || "Streaming this page from the computer's Chrome");
   if (!browserIsFull(tab)) browserSwapMode(tab, true);
   browserNavigateIn(tab, url, false);
+}
+
+// ---- a PDF, which is a plugin's to draw ------------------------------------
+
+// Chrome draws a PDF with a plugin, and a plugin never runs inside the sandbox
+// a proxy tab's frame carries: what the founder got for a PDF link was Chrome's
+// own "This page has been blocked". So the backend answers such a document with
+// a card that names the PDF instead (`pockettui-pdf`, browse_pdf_response in
+// app.py), and this is what answers the card.
+//
+// Three answers, in the order of what the computer can offer. The other
+// flavour, which is the same frame without that sandbox and served as a page in
+// its own right — the viewer works there, and it is what the key beside the
+// address field grants, taken here for one document rather than for the tab.
+// Failing that the computer's own Chrome, which has a viewer of its own — for
+// this document only, so the site is not put on the streamed record for the
+// sake of one file. Failing both, the card itself: it carries a button, and the
+// press is the second of these messages, which is the one worth answering.
+function browserPdfShow(tab, d) {
+  const url = browserNormalize(typeof d.url === "string" ? d.url : "");
+  if (!url) return;
+  const name = typeof d.name === "string" ? d.name : "";
+  // The PDF is where this tab is, whatever its frame is showing: the card is
+  // the proxy's way of saying so and not a place, and the address field, the
+  // chip, the record and the arrow all read the tab rather than the frame
+  // (browserOutPress).
+  browserPush(tab, url);
+  if (name) { tab.title = name; tab.titleFor = url; }
+  if (tab === browserTab()) { browserSetField(url); syncBrowserNav(); }
+  renderBrowserTabs();
+  browserRemember();
+  if (browserTabAllowed()) {
+    // Remembered before the flip, because it is what the tab goes back to at
+    // its next address: a user who turned the key on keeps it on, and one who
+    // never touched it gets the sandbox back (browserPdfLeave).
+    tab.lanBefore = tab.lan;
+    tab.pdf = url;
+    browserFlipLan(tab, true);
+    // In place rather than as a new entry: this is the document the tab is
+    // already on, fetched as a page in its own right.
+    browserNavigateIn(tab, url, false);
+    return;
+  }
+  if (hasCapStrict("browser_full")) {
+    toast("PDFs stream from the computer's Chrome");
+    browserSetFull(tab, true);
+    return;
+  }
+  // Nothing here can draw it, so the card stays up with its button. The way out
+  // of the pane is the answer, and the second press is when saying so is an
+  // answer rather than an interruption.
+  if (tab.pdfAsked) {
+    toast("Use the arrow in the address field to open this PDF in your browser");
+  }
+  tab.pdfAsked = true;
+}
+
+// The tab, off the PDF it took the other flavour for. The navigation that asked
+// for this is the one that loads the page, so nothing here starts one — the
+// frame this gives up is made again by that load, with the sandbox the user's
+// own answer says (browserNavigateIn).
+function browserPdfLeave(tab) {
+  const back = !!tab.lanBefore;
+  tab.pdf = "";
+  tab.pdfAsked = false;
+  if (!!tab.lan !== back) browserFlipLan(tab, back);
 }
 
 // ---- the hint bar ----------------------------------------------------------
@@ -2430,6 +2539,13 @@ window.addEventListener("message", (e) => {
   // changes mode under the user rather than leaving them to find the key.
   if (d.type === "pockettui-stream") {
     browserHandOff(tab, d);
+    return;
+  }
+
+  // A PDF, named by the card the proxy puts up where the pane's own sandbox has
+  // no viewer to draw one (browserPdfShow).
+  if (d.type === "pockettui-pdf") {
+    browserPdfShow(tab, d);
     return;
   }
 

@@ -3895,8 +3895,11 @@ html.term-open #dbg-panel { opacity: 0.85; }
 #btn-browser-tab[aria-pressed="true"] { color: var(--umber); }
 #btn-browser-star[hidden] { display: none; }
 /* The network key hides the same way when the computer has no tab flavour to
-   offer (an older server, or a shell served from the computer itself). */
+   offer (an older server, or a shell served from the computer itself), and the
+   monitor key when there is no browser on the computer to stream from. Both are
+   .icon-btn, whose display the attribute alone does not undo. */
 #btn-browser-tab[hidden] { display: none; }
+#btn-browser-full[hidden] { display: none; }
 /* #files-view-scrim's recipe, in the pane rather than over the window:
    #screen-browser is position:fixed, so absolute already means "this pane",
    and docked the live terminal beside it must not dim for a menu in here. */
