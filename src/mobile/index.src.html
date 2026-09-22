@@ -263,6 +263,14 @@
       <path d="M12 7.5v4.5"/>
       <path d="M6.25 16.5V12h11.5v4.5"/>
     </symbol>
+    <!-- A desktop screen on its stand: the key that says this tab is a real
+         browser running on the computer rather than a page fetched through the
+         proxy. Drawn in the same hand as #i-lan beside it. -->
+    <symbol id="i-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="4.5" width="18" height="12" rx="2"/>
+      <path d="M12 16.5v3.5"/>
+      <path d="M8.5 20h7"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -797,6 +805,19 @@
             style="display:none"><svg><use href="#i-logo"/></svg></button>
     <button class="icon-btn" id="btn-browser-back" aria-label="Back"><svg><use href="#i-back"/></svg></button>
     <button class="icon-btn" id="btn-browser-fwd" aria-label="Forward"><svg><use href="#i-forward"/></svg></button>
+    <!-- Which browser this tab is. Pressed — which every tab is, on a computer
+         that has a browser to stream from — the page runs in the computer's own
+         Chrome and what travels is pixels (43-full-browser.js): a real origin,
+         a real profile, the logins and the service workers a site expects, and
+         the computer's own network without asking. Pressed again, the tab steps
+         down to the lightweight proxy beside it, which is the fallback and the
+         phone's mode. Left of the network key because it is the larger choice of
+         the two, and the network key has nothing to offer a tab that is already
+         on the computer's network — syncBrowserLan hides it there. Hidden where
+         no browser was found (syncBrowseCap). -->
+    <button class="icon-btn" id="btn-browser-full" hidden aria-pressed="false"
+            aria-label="Run this tab in the computer's Chrome"
+            title="Run this tab in the computer's Chrome"><svg><use href="#i-monitor"/></svg></button>
     <!-- This tab, on the network the computer is on. Pressed, the page is
          re-fetched and re-drawn in the same frame under a different set of
          powers: it becomes the top window of its own document, its frames are
@@ -1090,6 +1111,23 @@
     <label for="backend-port" class="opt">Port <span>optional</span></label>
     <input id="backend-port" type="text" inputmode="numeric" autocapitalize="off"
            autocorrect="off" spellcheck="false" placeholder="5560">
+    <!-- What the in-app browser's tabs are, and what the computer has to be
+         them with. A tab is the computer's own Chrome by default and the
+         checkbox is the way back to the lightweight proxy — for a slow link, or
+         for a machine whose browser is better left alone. The line under it is
+         the computer's answer about itself (browserSyncSetting, 42-browser.js),
+         read when the sheet is opened: which browser was found, and what it is
+         allowed to use, or the command that installs one. Hidden on a computer
+         that cannot browse at all, and during the first run, where the only
+         question is which computer. -->
+    <div id="browser-setting" hidden>
+      <label>Browser</label>
+      <div class="toggle-row">
+        <label for="browser-proxy-toggle">Prefer the lightweight proxy</label>
+        <input id="browser-proxy-toggle" type="checkbox">
+      </div>
+      <p class="sheet-note" id="browser-status-line"></p>
+    </div>
     <!-- The one destructive thing in the sheet, so it stays out of the footer
          where a thumb aiming at Save would pass over it. -->
     <button type="button" id="btn-settings-forget">Forget</button>

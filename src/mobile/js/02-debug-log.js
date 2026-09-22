@@ -337,17 +337,23 @@ function browserRecClean(v) {
   const want = v && typeof v.tab === "number" && v.tab >= 0 ? Math.trunc(v.tab) : 0;
   const tabs = [];
   let at = 0;
-  // Either shape an entry may have been written in: the address alone, or the
-  // address with the mode that tab was left in (the computer's own network,
-  // 42-browser.js). The pair comes back out of here whichever went in, so the
-  // pane has one shape to read.
+  // Any shape an entry may have been written in: the address alone, or the
+  // address with the mode that tab was left in — the computer's own network, or
+  // the browser on the computer holding its page, which keeps with it the two
+  // ids that get that page back rather than loading it again (42-browser.js).
+  // A record comes back out of here whichever went in, so the pane has one shape
+  // to read.
   for (let i = 0; i < raw.length && tabs.length < 8; i++) {
     const e = raw[i];
     const u = typeof e === "string" ? e.trim()
             : (e && typeof e.url === "string" ? e.url.trim() : "");
     if (!u) continue;
     if (i <= want) at = tabs.length;
-    tabs.push({ url: u, lan: !!(e && e.lan) });
+    tabs.push(e && e.full
+      ? { url: u, full: true,
+          fid: typeof e.fid === "string" ? e.fid : "",
+          targetId: typeof e.targetId === "string" ? e.targetId : "" }
+      : { url: u, lan: !!(e && e.lan) });
   }
   return {
     url: v && typeof v.url === "string" ? v.url : "",
@@ -367,6 +373,14 @@ function browserRecWrite(v) {
     out.tabs = v.tabs.map((t) => {
       if (typeof t === "string") return t || null;
       if (!t || typeof t.url !== "string" || !t.url) return null;
+      // The two ids a streamed tab needs to get its page back, and below them a
+      // bare address wherever there is nothing more to say — which is what a
+      // shell too old to know about the modes reads, and still gets its tabs.
+      if (t.full) {
+        return { url: t.url, full: true,
+                 fid: typeof t.fid === "string" ? t.fid : "",
+                 targetId: typeof t.targetId === "string" ? t.targetId : "" };
+      }
       return t.lan ? { url: t.url, lan: true } : t.url;
     }).filter((t) => t).slice(0, 8);
     out.tab = Math.min(Math.max(0, Math.trunc(v.tab) || 0),
@@ -612,6 +626,18 @@ const cfg = {
   set browserExpanded(v) {
     if (v) localStorage.setItem("pockettui_browser_expanded", "1");
     else localStorage.removeItem("pockettui_browser_expanded");
+  },
+  // Whether the browser pane's new tabs are proxy tabs rather than the
+  // computer's own Chrome. Off: a tab is a real browser on the computer wherever
+  // there is one to stream from (browser_full), and the proxy is the fallback.
+  // On is the way back to it — a link too slow for pixels, or a machine whose
+  // browser is better left alone — and it moves nothing that is already open.
+  get browserPreferProxy() {
+    return localStorage.getItem("pockettui_browser_prefer_proxy") === "1";
+  },
+  set browserPreferProxy(v) {
+    if (v) localStorage.setItem("pockettui_browser_prefer_proxy", "1");
+    else localStorage.removeItem("pockettui_browser_prefer_proxy");
   },
   // How big the browser pane draws a host's pages, as a factor per host: a dev
   // server read at 125% is still at 125% the next time it is opened, which is

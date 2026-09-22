@@ -2169,6 +2169,10 @@ html.term-open, body.term-open {
   accent-color: var(--umber);
   transform: scale(1.1);
 }
+/* What the computer says about the browser its tabs would run in, under the
+   switch that turns them off. A note about the row above it rather than under a
+   field, so it keeps its own spacing instead of .sheet-note's. */
+#browser-status-line { margin: 8px 0 0; }
 /* The Appearance tab. Three words of equal weight and no second line to carry,
    so a segmented row rather than the stacked radios the dictation engines need:
    the whole choice reads at a glance. */
@@ -3995,6 +3999,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   overflow: hidden;
   background: var(--paper);
 }
+/* The streamed tabs that are not on screen, for .browser-frame[hidden]'s
+   reason: the rule above gives this element a position and a size that read as
+   a display of its own at a glance. */
+.fb-wrap[hidden] { display: none; }
 .fb-canvas {
   position: absolute;
   top: 0; left: 0;
