@@ -214,16 +214,6 @@
       <path d="M20 20l-4.8-4.8"/>
       <path d="M7.5 10.5h6M10.5 7.5v6"/>
     </symbol>
-    <!-- The bookmarks star, outline and filled. Two symbols rather than one
-         restyled by a class: a <symbol>'s own fill="none" sits closer to the
-         path than anything a class on the button could inherit down, so the
-         key swaps the href the way the expand key swaps its own. -->
-    <symbol id="i-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 3.6l2.53 5.13 5.66.82-4.1 3.99.97 5.64L12 16.52l-5.06 2.66.97-5.64-4.1-3.99 5.66-.82z"/>
-    </symbol>
-    <symbol id="i-star-fill" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 3.6l2.53 5.13 5.66.82-4.1 3.99.97 5.64L12 16.52l-5.06 2.66.97-5.64-4.1-3.99 5.66-.82z"/>
-    </symbol>
     <symbol id="i-chev-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
       <path d="M5 15l7-7 7 7"/>
     </symbol>
@@ -242,15 +232,6 @@
       <circle cx="12" cy="12" r="8.5"/>
       <ellipse cx="12" cy="12" rx="3.6" ry="8.5"/>
       <path d="M3.5 12h17"/>
-    </symbol>
-    <!-- #i-back, mirrored: the browser pane's forward arrow. -->
-    <symbol id="i-forward" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M9 5l7 7-7 7"/>
-    </symbol>
-    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M9 6.5H5.5a2 2 0 0 0-2 2V18a2 2 0 0 0 2 2h9.5a2 2 0 0 0 2-2v-3.5"/>
-      <path d="M13.5 4.5H19.5V10.5"/>
-      <path d="M19 5l-8.5 8.5"/>
     </symbol>
     <!-- The network glyph every router page and settings panel draws: one node
          above, a trunk down to a bar, two nodes hanging off it. It marks the
@@ -279,6 +260,99 @@
       <path d="M14 4.5h5.5V10"/>
       <path d="M19.5 4.5 12.5 11.5"/>
       <path d="M17 13.5v4.5a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5V8.5A1.5 1.5 0 0 1 6 7h4.5"/>
+    </symbol>
+    <!-- The side panes' own set (the explorer's and the browser's chrome only):
+         SF Symbols proportions, drawn a little heavier than the app's glyphs
+         because they sit at 13-15px in a 38px bar. -->
+    <symbol id="i-m-chev-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2">
+      <path d="M14.5 5.5 8 12l6.5 6.5"/>
+    </symbol>
+    <symbol id="i-m-chev-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2">
+      <path d="M9.5 5.5 16 12l-6.5 6.5"/>
+    </symbol>
+    <symbol id="i-m-chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4">
+      <path d="M6 9.5l6 6 6-6"/>
+    </symbol>
+    <symbol id="i-m-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.0">
+      <path d="M12 5v14M5 12h14"/>
+    </symbol>
+    <symbol id="i-m-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.0">
+      <path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>
+    </symbol>
+    <symbol id="i-m-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
+      <circle cx="12" cy="12" r="8.5"/>
+      <circle cx="8" cy="12" r=".9" fill="currentColor" stroke="none"/>
+      <circle cx="12" cy="12" r=".9" fill="currentColor" stroke="none"/>
+      <circle cx="16" cy="12" r=".9" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-m-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9">
+      <path d="M14 4.5h5.5V10M10 19.5H4.5V14M19.5 4.5 14 10M4.5 19.5 10 14"/>
+    </symbol>
+    <symbol id="i-m-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9">
+      <path d="M20 10h-6V4M4 14h6v6M14 10l5.5-5.5M10 14l-5.5 5.5"/>
+    </symbol>
+    <symbol id="i-m-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
+      <path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>
+    </symbol>
+    <symbol id="i-m-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
+      <path d="M4 11.5 12 5l8 6.5M6.5 10v9h11v-9"/>
+    </symbol>
+    <symbol id="i-m-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
+      <circle cx="7" cy="6" r="2.2"/>
+      <circle cx="7" cy="18" r="2.2"/>
+      <circle cx="17" cy="8" r="2.2"/>
+      <path d="M7 8.2v7.6M17 10.2c0 4-10 2.5-10 5.6"/>
+    </symbol>
+    <!-- Outline and filled as two symbols: a <symbol>'s own fill="none" sits
+         closer to the path than anything a class on the key could inherit
+         down, so the star key swaps the href. -->
+    <symbol id="i-m-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6">
+      <path d="m12 4.5 2.3 4.9 5.2.6-3.9 3.6 1.1 5.2L12 16.2l-4.7 2.6 1.1-5.2-3.9-3.6 5.2-.6z"/>
+    </symbol>
+    <symbol id="i-m-star-fill" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6">
+      <path d="m12 4.5 2.3 4.9 5.2.6-3.9 3.6 1.1 5.2L12 16.2l-4.7 2.6 1.1-5.2-3.9-3.6 5.2-.6z" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-m-reload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9">
+      <path d="M19 12a7 7 0 1 1-2.1-5M19 4.5V9h-4.5"/>
+    </symbol>
+    <symbol id="i-m-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5">
+      <circle cx="12" cy="12" r="8"/>
+      <path d="M4 12h16M12 4c2.7 3 2.7 13 0 16M12 4c-2.7 3-2.7 13 0 16"/>
+    </symbol>
+    <symbol id="i-m-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
+      <rect x="3.5" y="5" width="17" height="11" rx="2"/>
+      <path d="M9 19.5h6M12 16v3.5"/>
+    </symbol>
+    <symbol id="i-m-lan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
+      <rect x="9" y="3.5" width="6" height="5" rx="1.3"/>
+      <rect x="3.5" y="15.5" width="6" height="5" rx="1.3"/>
+      <rect x="14.5" y="15.5" width="6" height="5" rx="1.3"/>
+      <path d="M12 8.5V12M6.5 15.5V12h11v3.5"/>
+    </symbol>
+    <symbol id="i-m-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
+      <rect x="4.5" y="4.5" width="6" height="6" rx="1.3"/>
+      <rect x="13.5" y="4.5" width="6" height="6" rx="1.3"/>
+      <rect x="4.5" y="13.5" width="6" height="6" rx="1.3"/>
+      <rect x="13.5" y="13.5" width="6" height="6" rx="1.3"/>
+    </symbol>
+    <symbol id="i-m-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
+      <path d="M9 6.5h11M9 12h11M9 17.5h11"/>
+      <circle cx="4.8" cy="6.5" r="1.1" fill="currentColor" stroke="none"/>
+      <circle cx="4.8" cy="12" r="1.1" fill="currentColor" stroke="none"/>
+      <circle cx="4.8" cy="17.5" r="1.1" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-m-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
+      <path d="M16.5 4.5l3 3L8 19l-4 1 1-4z"/>
+      <path d="M14.5 6.5l3 3"/>
+    </symbol>
+    <symbol id="i-m-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
+      <path d="M14 4.5h5.5V10"/>
+      <path d="M19.5 4.5 12.5 11.5"/>
+      <path d="M17 13.5v4.5a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5V8.5A1.5 1.5 0 0 1 6 7h4.5"/>
+    </symbol>
+    <symbol id="i-m-zoom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
+      <circle cx="10.5" cy="10.5" r="6"/>
+      <path d="M15 15l4.5 4.5M10.5 8v5M8 10.5h5"/>
     </symbol>
   </defs>
 </svg>
@@ -608,6 +682,11 @@
      ============================================================ -->
 <div class="screen" id="screen-files">
   <div class="topbar files-topbar">
+    <!-- Two rows, Finder's: the tool row (back, the folder's name centred on
+         the bar, then the folder's keys and the pane's own) and the path bar
+         under it (the crumbs, and the branch at its right end). -->
+    <div class="files-toolrow">
+    <span class="files-nav">
     <!-- Out of a deep tree in one tap, where back only climbs a folder at a
          time. First in the bar and held apart from back by a margin (see
          styles.css): leaving the explorer outright is a bigger move than
@@ -618,54 +697,30 @@
          explorer. -->
     <button class="icon-btn" id="btn-files-term" aria-label="Back to the terminal"
             style="display:none"><svg><use href="#i-logo"/></svg></button>
-    <button class="icon-btn" id="btn-files-back" aria-label="Back"><svg><use href="#i-back"/></svg></button>
-    <!-- Wraps crumbs and the address field so only one of the two takes up
-         room at a time — the .editing class (toggled by JS) swaps which one
-         is display:none. -->
-    <div id="files-path-wrap">
-      <!-- Tappable path segments. Scrolls sideways rather than wrapping, pinned
-           to the tail so the current folder is always the segment in view. -->
-      <div id="files-crumbs"></div>
-      <!-- Hidden until btn-files-edit-path is tapped. inputmode="url" and
-           autocapitalize/autocorrect off for the same reason the backend
-           address field in Settings uses them: a path is typed, not composed. -->
-      <input type="text" id="files-path-input" inputmode="url" autocapitalize="off"
-             autocorrect="off" spellcheck="false" autocomplete="off"
-             placeholder="/path/to/folder" aria-label="Go to path">
-    </div>
-    <!-- Which branch the listing is read at. Hidden outside a git repo and on
-         a server too old to answer /api/git/branches, so the bar is unchanged
-         everywhere the question has no answer. Its own button-and-menu rather
-         than a <select> for #btn-files-view's reason, plus one of its own: a
-         branch list is however many branches the repo has, and the OS picker
-         would draw them in the OS's shape while the bar beside it drew the
-         other dropdown in ours. Sits beside the crumbs because it is part of
-         what the path on screen means — which tree it is a path in. -->
-    <div id="files-ref-wrap" hidden>
-      <button type="button" id="btn-files-ref" aria-haspopup="true"
-              aria-expanded="false" aria-label="Branch to browse"></button>
-      <!-- Rows written by syncRefMenu(); .view-row and .view-check are the
-           layout menu's, since these are the same choice in the same panel. -->
-      <div id="files-ref-menu" role="menu"></div>
-    </div>
-    <!-- Nothing at this ref can be written, and the bar says so rather than
-         leaving the user to notice that + and the long-press sheet are gone. -->
-    <span id="files-ref-ro" hidden>read-only</span>
-    <button class="icon-btn" id="btn-files-edit-path" aria-label="Go to path"><svg><use href="#i-pencil"/></svg></button>
-    <button class="icon-btn" id="btn-files-add" aria-label="New file, folder or upload"><svg><use href="#i-plus"/></svg></button>
+    <button class="icon-btn" id="btn-files-back" aria-label="Back"><svg><use href="#i-m-chev-left"/></svg></button>
+    </span>
+    <!-- The folder being listed, centred on the row whatever the keys either
+         side of it add up to (renderCrumbs writes the name). Not a control:
+         the path bar under it is where a folder is picked. -->
+    <div class="files-title" aria-hidden="true"><svg><use href="#i-m-folder"/></svg><span class="files-title-name"></span></div>
+    <span class="files-tools">
+    <!-- Hidden docked, where the more menu's "Go to path…" row presses it; the
+         phone has no more menu and keeps the key. -->
+    <button class="icon-btn" id="btn-files-edit-path" aria-label="Go to path"
+            data-more="Go to path…"><svg><use href="#i-m-pencil"/></svg></button>
+    <button class="icon-btn" id="btn-files-add" aria-label="New file, folder or upload"><svg><use href="#i-m-plus"/></svg></button>
     <!-- How the folder is drawn and in what order, both remembered across
          reloads (cfg.filesView, cfg.filesSort) and both used for every folder.
-         Last in the bar: the two buttons before it act on the folder, this one
+         Last of the folder's keys: the two before it act on the folder, this one
          only changes how it is read. Its own menu rather than a <select>: a
          phone answers one of those with the OS's full-screen picker, drawn in
          the OS's colors and shape, for a choice between a few words. The panel
          below is #files-suggest's instead — the same floating layer this bar
-         already drops. One button for both groups rather than two side by side:
-         a second dropdown wearing "Newest" leaves the crumbs about 40px on a
-         375px phone, which is not a path any more. -->
+         already drops. One button for both groups rather than two side by side,
+         so the row keeps its room for the folder's name. -->
     <div id="files-view-wrap">
       <button type="button" id="btn-files-view" aria-label="Folder layout and order"
-              aria-haspopup="true" aria-expanded="false">View</button>
+              aria-haspopup="true" aria-expanded="false"><svg><use href="#i-m-grid"/></svg><svg class="pop-chev"><use href="#i-m-chev-down"/></svg></button>
       <!-- menuitemradio, not menuitem: the tick is a painted glyph, and this is
            what says which row it is on to anything not looking at the screen —
            the one thing the <select> gave for free. Two radio groups, each
@@ -692,26 +747,63 @@
         </div>
       </div>
     </div>
-    <!-- The docked pane's own two controls, shown only while the explorer is
-         beside the terminal rather than over it (28-file-explorer.js): the
-         size it is read at, and the way out. Last in the bar, in that order,
-         because the cross is the one that ends the pane and the outermost
-         control is where a window's close always sits. Expand swaps its face
-         for #i-collapse while the pane is filling the main area. -->
-    <!-- The split key and the menu it drops, the diff head's pair
-         (26-side-pane.js). -->
+    <!-- The docked pane's own controls, shown only while the explorer is beside
+         the terminal rather than over it (28-file-explorer.js): the more menu
+         (another pane in the column, go to a path, move this pane), then after
+         a short rule the size it is read at and the way out. The cross is
+         outermost because that is where a window's close always sits. Expand
+         swaps its face for #i-m-collapse while the pane is filling the main
+         area. The more key is the diff head's split key and menu
+         (26-side-pane.js), with this pane's rows added under it. -->
     <div class="dock-split-wrap dock-only">
       <button type="button" class="icon-btn dock-split"
               aria-haspopup="menu" aria-expanded="false"
-              aria-label="Open another pane in this column"><svg><use href="#i-split"/></svg></button>
+              aria-label="More"><svg><use href="#i-m-more"/></svg></button>
       <div class="dock-split-menu" role="menu"></div>
     </div>
-    <button class="icon-btn dock-swap" type="button"
+    <button class="icon-btn dock-swap" type="button" data-more
             aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
+    <span class="m-rule dock-only" aria-hidden="true"></span>
     <button class="icon-btn dock-only dock-expand" id="btn-files-expand"
-            aria-label="Expand the file pane"><svg><use href="#i-expand"/></svg></button>
+            aria-label="Expand the file pane"><svg><use href="#i-m-expand"/></svg></button>
     <button class="icon-btn dock-only dock-close" id="btn-files-close"
-            aria-label="Close the file pane"><svg><use href="#i-close"/></svg></button>
+            aria-label="Close the file pane"><svg><use href="#i-m-x"/></svg></button>
+    </span>
+    </div>
+    <div class="files-pathbar">
+    <!-- Wraps crumbs and the address field so only one of the two takes up
+         room at a time — the .editing class (toggled by JS) swaps which one
+         is display:none. -->
+    <div id="files-path-wrap">
+      <!-- Tappable path segments. Scrolls sideways rather than wrapping, pinned
+           to the tail so the current folder is always the segment in view. -->
+      <div id="files-crumbs"></div>
+      <!-- Hidden until btn-files-edit-path is tapped. inputmode="url" and
+           autocapitalize/autocorrect off for the same reason the backend
+           address field in Settings uses them: a path is typed, not composed. -->
+      <input type="text" id="files-path-input" inputmode="url" autocapitalize="off"
+             autocorrect="off" spellcheck="false" autocomplete="off"
+             placeholder="/path/to/folder" aria-label="Go to path">
+    </div>
+    <!-- Which branch the listing is read at. Hidden outside a git repo and on
+         a server too old to answer /api/git/branches, so the bar is unchanged
+         everywhere the question has no answer. Its own button-and-menu rather
+         than a <select> for #btn-files-view's reason, plus one of its own: a
+         branch list is however many branches the repo has, and the OS picker
+         would draw them in the OS's shape while the bar beside it drew the
+         other dropdown in ours. At the path bar's right end because it is part
+         of what the path means — which tree it is a path in. -->
+    <div id="files-ref-wrap" hidden>
+      <button type="button" id="btn-files-ref" aria-haspopup="true"
+              aria-expanded="false" aria-label="Branch to browse"></button>
+      <!-- Rows written by syncRefMenu(); .view-row and .view-check are the
+           layout menu's, since these are the same choice in the same panel. -->
+      <div id="files-ref-menu" role="menu"></div>
+    </div>
+    <!-- Nothing at this ref can be written, and the bar says so rather than
+         leaving the user to notice that + and the long-press sheet are gone. -->
+    <span id="files-ref-ro" hidden>read-only</span>
+    </div>
     <!-- Matching entries for the path segment being typed in files-path-input.
          A child of the topbar rather than files-path-wrap so it can span the
          bar's full width; position:sticky on .topbar still anchors it the
@@ -744,84 +836,52 @@
      IN-APP BROWSER
      ============================================================ -->
 <div class="screen" id="screen-browser">
-  <!-- The tabs, where a browser puts them: the pane's top edge, above the
-       address row rather than under it, on the same paper as the row below,
-       with the active tab a filled segment. Always drawn, the lone tab
-       included: a window with one tab still shows it, and a strip that
-       appeared at the second tab would move the page under the reader. -->
-  <div id="browser-tabs">
-    <!-- The tabs scroll; the key after them does not. A strip of eight at the
-         docked width is wider than the pane, and a new-tab key that scrolled
-         off with the row would be the one control nobody could reach. -->
-    <div id="browser-tab-row"></div>
-    <button class="icon-btn" id="btn-browser-newtab" aria-label="New tab"
-            title="New tab"><svg><use href="#i-plus"/></svg></button>
-    <!-- The window controls, where a browser window keeps them: the same row
-         as the tabs, at its other end. Bookmark, zoom, and the docked pane's
-         own pair — every one of them acts on the window or on the page as a
-         whole, which is what the top row is for, and the address row below is
-         left to the address and the keys that move it. -->
-    <div id="browser-tab-actions">
-      <!-- Keep this page, or stop keeping it: one press either way, since the
-           bar below says which it was. Hidden on a server with no route to save
-           to (syncBrowseCap). -->
-      <button class="icon-btn" id="btn-browser-star" aria-label="Bookmark this page"
-              hidden><svg><use href="#i-star"/></svg></button>
-      <!-- Zoom, in both shapes rather than dock-only: a phone framing an
-           intranet page built for a desktop is the case that needs it most. One
-           key and a panel rather than two keys — the docked bar is 360px wide
-           and the pair were two of its few slots, and neither of them ever said
-           what the page was at. The panel's buttons scale the frame element
-           itself (browserApplyZoom) rather than the document inside it, which is
-           cross-origin anyway. -->
-      <div id="browser-zoom-wrap">
-        <button class="icon-btn" id="btn-browser-zoom" aria-label="Zoom"
-                aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-zoom-in"/></svg></button>
-        <div id="browser-zoom-menu" role="menu">
-          <button type="button" class="icon-btn" id="browser-zoom-minus"
-                  aria-label="Zoom out"><svg><use href="#i-zoom-out"/></svg></button>
-          <button type="button" id="browser-zoom-pct"
-                  aria-label="Back to 100%">100%</button>
-          <button type="button" class="icon-btn" id="browser-zoom-plus"
-                  aria-label="Zoom in"><svg><use href="#i-zoom-in"/></svg></button>
-        </div>
-      </div>
-      <!-- The docked pane's own two controls, shown only while the browser is
-           beside the terminal rather than over it — files-expand/close's pair. -->
-      <!-- The split key and the menu it drops, the diff head's pair
-           (26-side-pane.js). -->
-      <div class="dock-split-wrap dock-only">
-        <button type="button" class="icon-btn dock-split"
-                aria-haspopup="menu" aria-expanded="false"
-                aria-label="Open another pane in this column"><svg><use href="#i-split"/></svg></button>
-        <div class="dock-split-menu" role="menu"></div>
-      </div>
-      <button class="icon-btn dock-swap" type="button"
-              aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
-      <button class="icon-btn dock-only" id="btn-browser-expand"
-              aria-label="Expand the browser pane"><svg><use href="#i-expand"/></svg></button>
-      <button class="icon-btn dock-only" id="btn-browser-close"
-              aria-label="Close the browser pane"><svg><use href="#i-close"/></svg></button>
-    </div>
-  </div>
+  <!-- Three rows, Safari's: the tool row (back and forward, the address
+       centred on the bar, then the page's keys and the pane's own), the tabs
+       under it, and the bookmarks under those. -->
   <div class="topbar browser-topbar">
+    <span class="browser-nav">
     <!-- Same button, same reason: hidden until openBrowser sees the terminal
          behind the pane. -->
     <button class="icon-btn" id="btn-browser-term" aria-label="Back to the terminal"
             style="display:none"><svg><use href="#i-logo"/></svg></button>
-    <button class="icon-btn" id="btn-browser-back" aria-label="Back"><svg><use href="#i-back"/></svg></button>
-    <button class="icon-btn" id="btn-browser-fwd" aria-label="Forward"><svg><use href="#i-forward"/></svg></button>
-    <!-- Which browser this site is. Pressed, the page runs in the computer's own
-         Chrome and what travels is pixels (43-full-browser.js): a real origin,
-         a real profile, the logins and the service workers a site expects, and
-         the computer's own network without asking. That is what the pages the
-         proxy cannot serve need, and the press is remembered against the host,
-         so the next tab opened there starts streamed. Pressed again, the tab
-         steps back to the lightweight proxy beside it — quicker, with this
-         device's own sound and video — and the host comes off the record. Left
-         of the network key because it is the larger choice of the two, and the
-         network key has nothing to offer a tab that is already on the computer's
-         network — syncBrowserLan hides it there. Hidden where no browser was
+    <button class="icon-btn" id="btn-browser-back" aria-label="Back"><svg><use href="#i-m-chev-left"/></svg></button>
+    <button class="icon-btn" id="btn-browser-fwd" aria-label="Forward"><svg><use href="#i-m-chev-right"/></svg></button>
+    </span>
+    <!-- The address capsule, centred on the row: the page-mode key at its left,
+         the address, and reload at its right. -->
+    <div id="browser-url-wrap">
+      <!-- Which browser this tab is, as a glyph (globe for the proxy, monitor
+           for a streamed tab, the network glyph for a tab on the computer's
+           network), and the menu that changes it. Its rows press the two mode
+           keys below, which keep all the logic (syncBrowserMode). It borrows
+           the split menu's open and close (showSplitMenu, 26-side-pane.js). -->
+      <div class="dock-split-wrap browser-mode-wrap">
+        <button type="button" class="dock-split browser-mode" aria-haspopup="menu"
+                aria-expanded="false" aria-label="Page mode"
+                title="Page mode"><svg><use href="#i-m-globe"/></svg></button>
+        <div class="dock-split-menu" role="menu"></div>
+      </div>
+      <!-- inputmode="url" and autocapitalize/autocorrect off for the same
+           reason the backend address field in Settings uses them: an address is
+           typed, not composed — and a search term types fine with them too.
+           Shows the host while it is not focused and the whole address while
+           it is (browserSetField). -->
+      <input type="text" id="browser-url" inputmode="url" autocapitalize="off"
+             autocorrect="off" autocomplete="off" spellcheck="false"
+             placeholder="Search or type an address" aria-label="Address">
+      <button class="icon-btn" id="btn-browser-reload" aria-label="Reload"><svg><use href="#i-m-reload"/></svg></button>
+    </div>
+    <!-- The two mode keys, never drawn: the capsule's page-mode menu presses
+         them, and they keep the state and the syncs.
+         Pressed, the first runs the page in the computer's own Chrome and what
+         travels is pixels (43-full-browser.js): a real origin, a real profile,
+         the logins and the service workers a site expects, and the computer's
+         own network without asking. That is what the pages the proxy cannot
+         serve need, and the press is remembered against the host, so the next
+         tab opened there starts streamed. Pressed again, the tab steps back to
+         the lightweight proxy — quicker, with this device's own sound and
+         video — and the host comes off the record. Hidden where no browser was
          found (syncBrowseCap). -->
     <button class="icon-btn" id="btn-browser-full" hidden aria-pressed="false"
             aria-label="Stream this site from the computer's Chrome"
@@ -832,38 +892,73 @@
          its own to reach, and the storage and cookies a real visit would have
          are there — which is what an intranet portal that writes its own
          views needs, and what a tab in the ordinary mode cannot give it. A
-         toggle, and the active tab's own: lit for the tab whose page is in
-         this mode, pressed again to put that tab back. Left of reload, with
-         the keys that act on the page rather than on the address. Hidden
-         where it cannot be granted (syncBrowseCap). -->
+         toggle, and the active tab's own: pressed for the tab whose page is in
+         this mode, pressed again to put that tab back. Hidden where it cannot
+         be granted (syncBrowseCap). -->
     <button class="icon-btn" id="btn-browser-tab" hidden aria-pressed="false"
             aria-label="Use the computer's network for this tab"
             title="Use the computer's network for this tab"><svg><use href="#i-lan"/></svg></button>
-    <button class="icon-btn" id="btn-browser-reload" aria-label="Reload"><svg><use href="#i-reload"/></svg></button>
-    <!-- Flexes to fill everything the arrows leave, which since the window
-         controls moved up to the tab row is the whole rest of the bar —
-         files-path-wrap's job, minus the crumbs; the pane has only ever the
-         one field. -->
-    <div id="browser-url-wrap">
-      <!-- inputmode="url" and autocapitalize/autocorrect off for the same
-           reason the backend address field in Settings uses them: an address is
-           typed, not composed — and a search term types fine with them too. -->
-      <input type="text" id="browser-url" inputmode="url" autocapitalize="off"
-             autocorrect="off" autocomplete="off" spellcheck="false"
-             placeholder="Search or type an address" aria-label="Address">
-      <!-- The way out, inside the address field (founder, 2026-09-22): this
-           page in the browser this device runs, rather than in the pane. Over
-           the right padding the field keeps for it, so the address never runs
-           under the glyph, and in the field rather than on the row because what
-           it acts on is the address and not the page. An address this device
-           cannot reach on its own goes out as the computer's own copy of the
-           page, which is what the old tapped-localhost relay did for it
-           (browserOutPress, 42-browser.js). Hidden until the tab is on
-           something: a new tab has no address to hand anywhere. -->
+    <span class="browser-tools">
+      <!-- Keep this page, or stop keeping it: one press either way, since the
+           bar below says which it was. Hidden on a server with no route to save
+           to (syncBrowseCap). -->
+      <button class="icon-btn" id="btn-browser-star" aria-label="Bookmark this page"
+              hidden><svg><use href="#i-m-star"/></svg></button>
+      <!-- Zoom, as one key and a panel on the phone; docked the key is hidden
+           and the more menu's zoom rows press the panel's buttons. The panel's
+           buttons scale the frame element itself (browserApplyZoom) rather than
+           the document inside it, which is cross-origin anyway. -->
+      <div id="browser-zoom-wrap">
+        <button class="icon-btn" id="btn-browser-zoom" aria-label="Zoom"
+                aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-m-zoom"/></svg></button>
+        <div id="browser-zoom-menu" role="menu">
+          <button type="button" class="icon-btn" id="browser-zoom-minus"
+                  aria-label="Zoom out" data-more="Zoom out" data-more-at="2"><svg><use href="#i-zoom-out"/></svg></button>
+          <button type="button" id="browser-zoom-pct"
+                  aria-label="Back to 100%" data-more="Actual size" data-more-at="3"
+                  data-more-note>100%</button>
+          <button type="button" class="icon-btn" id="browser-zoom-plus"
+                  aria-label="Zoom in" data-more="Zoom in" data-more-at="1"><svg><use href="#i-zoom-in"/></svg></button>
+        </div>
+      </div>
+      <!-- This page in the browser this device runs, rather than in the pane
+           (founder, 2026-09-22). An address this device cannot reach on its own
+           goes out as the computer's own copy of the page, which is what the
+           old tapped-localhost relay did for it (browserOutPress,
+           42-browser.js). Hidden until the tab is on something: a new tab has
+           no address to hand anywhere. Docked it is a row of the more menu. -->
       <button class="icon-btn" id="btn-browser-out" hidden
               aria-label="Open this page in your browser"
-              title="Open this page in your browser"><svg><use href="#i-external"/></svg></button>
-    </div>
+              title="Open this page in your browser"
+              data-more="Open in your browser" data-more-at="4"><svg><use href="#i-m-external"/></svg></button>
+      <!-- The docked pane's own controls, files-expand/close's set: the more
+           menu (another pane in the column, zoom, open outside, move this
+           pane), a short rule, expand and close. -->
+      <div class="dock-split-wrap dock-only">
+        <button type="button" class="icon-btn dock-split"
+                aria-haspopup="menu" aria-expanded="false"
+                aria-label="More"><svg><use href="#i-m-more"/></svg></button>
+        <div class="dock-split-menu" role="menu"></div>
+      </div>
+      <button class="icon-btn dock-swap" type="button" data-more data-more-at="5"
+              aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
+      <span class="m-rule dock-only" aria-hidden="true"></span>
+      <button class="icon-btn dock-only" id="btn-browser-expand"
+              aria-label="Expand the browser pane"><svg><use href="#i-m-expand"/></svg></button>
+      <button class="icon-btn dock-only" id="btn-browser-close"
+              aria-label="Close the browser pane"><svg><use href="#i-m-x"/></svg></button>
+    </span>
+  </div>
+  <!-- The tabs, under the tool row as Safari draws them: a band the tabs share
+       equally, the active one a card on it. Always drawn, the lone tab
+       included: a window with one tab still shows it, and a strip that
+       appeared at the second tab would move the page under the reader. -->
+  <div id="browser-tabs">
+    <!-- The tabs shrink to share the row rather than scrolling, so the key
+         after them always has its slot at the end. -->
+    <div id="browser-tab-row"></div>
+    <button class="icon-btn" id="btn-browser-newtab" aria-label="New tab"
+            title="New tab"><svg><use href="#i-m-plus"/></svg></button>
   </div>
   <!-- The zoom panel's scrim, #files-view-scrim's job: take the tap that
        closes the panel, and dim only what the panel floats over. Inside the
@@ -871,12 +966,9 @@
        position:fixed — docked, the terminal beside it is live and must not be
        dimmed by a menu in here. -->
   <div id="browser-menu-scrim"></div>
-  <!-- The bookmarks bar, where a browser puts one: under the address row and
-       above the page. Drawn as links rather than as cards, so that the two
-       rows the pane now has above the page — tabs at the top, bookmarks here —
-       are never mistaken for each other. Absent rather than empty while
-       nothing is bookmarked, so a pane nobody has used this on looks exactly
-       as it did. -->
+  <!-- The bookmarks bar, where a browser puts one: under the tabs and above
+       the page. Absent rather than empty while nothing is bookmarked, so a
+       pane nobody has used this on looks exactly as it did. -->
   <div id="browser-bookmarks" hidden></div>
   <div class="browser-wrap" id="browser-wrap">
     <!-- The hint bar: a strip across the top of the page, where a browser puts
@@ -885,8 +977,8 @@
          failure page, a wall the site answered with, a boot that threw, a
          document that came out empty — because the key that fixes it is one
          press away and nothing on the page says so. The monitor glyph is in
-         the bar so that the key is recognised the next time, on the row.
-         Inside the wrap so it never covers the address row; a class rather
+         the bar because the address capsule wears it for a streamed tab.
+         Inside the wrap so it never covers the tool row; a class rather
          than an id because the second pane is a copy of this markup, and
          browserMakeAt keeps this element when it empties the wrap for it. -->
     <div class="browser-hint" hidden>
@@ -1161,7 +1253,7 @@
          and the one with the device's own sound and video; the checkbox makes
          every new tab a streamed one instead, for a machine whose browser is
          wanted for everything. Under it are the sites that are streamed anyway —
-         put there by the key on the address row, or by the proxy handing over a
+         put there by the page-mode menu in the address, or by the proxy handing over a
          page it cannot serve — each with a cross that takes it off the list. The
          line between them is the computer's answer about itself
          (browserSyncSetting, 42-browser.js), read when the sheet is opened:
