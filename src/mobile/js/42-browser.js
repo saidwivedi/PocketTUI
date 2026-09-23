@@ -181,8 +181,8 @@ async function browserSaveMarks() {
 // a search page that wants a real browser.
 //
 // Which pages those are is not a guess anybody should have to make twice, so it
-// is remembered per host, the way the zoom is: the key on the address row puts a
-// site on the stream and takes it off again, the proxy hands a page over by
+// is remembered per host, the way the zoom is: the page-mode menu in the address
+// capsule puts a site on the stream and takes it off again, the proxy hands a page over by
 // itself where it knows it cannot serve it (browserHandOff), and every tab
 // opened on a remembered host is streamed from the first navigation.
 
@@ -242,7 +242,7 @@ browserMigrateStreamHosts();
 // capability the shell sends *to* the computer: a server too old for the route
 // has no socket to open, and a tab waiting on one would be a tab with nothing in
 // it. Without an address it answers for a tab with nothing in it yet, which is
-// what the key on the row is drawn from before anything has been opened.
+// what the page-mode key is drawn from before anything has been opened.
 function browserFullWanted(url) {
   if (!hasCapStrict("browser_full")) return false;
   return cfg.browserStreamAll || browserStreamsHost(url);
@@ -907,9 +907,27 @@ async function browserEnsureTabToken() {
   return browserTabToken;
 }
 
+// The address the field stands for. Every write goes through browserSetField,
+// which shows the whole of it while the field has the focus and only the host
+// while it does not; the focus and blur handlers swap between the two.
+let browserFieldUrl = "";
+
+// What the field shows while it is not being typed in: the host, with its port
+// when it is not the scheme's own. An address that is not a web page shows as
+// it is.
+function browserHostOf(url) {
+  if (!url) return "";
+  try {
+    const u = new URL(url);
+    if ((u.protocol === "http:" || u.protocol === "https:") && u.host) return u.host;
+  } catch (e) { /* not an address: shown as typed */ }
+  return url;
+}
+
 function browserSetField(url) {
+  browserFieldUrl = url || "";
   const f = q("browser-url");
-  if (f) f.value = url || "";
+  if (f) f.value = document.activeElement === f ? browserFieldUrl : browserHostOf(browserFieldUrl);
 }
 
 // A tab's own frame, cut from the template the markup keeps so that every one
@@ -981,7 +999,7 @@ function browserDropLink() {
 
 // Whether this tab is the streamed kind. A tab that has not been sent anywhere
 // has no mode of its own yet and reads as whatever its first navigation would
-// give it, so the key on the row says what it would do rather than nothing.
+// give it, so the page-mode key says what it would do rather than nothing.
 function browserIsFull(tab) {
   if (!tab) return false;
   return tab.fullMode === null ? browserFullWanted() : tab.fullMode;
@@ -1011,7 +1029,7 @@ function browserFullView(tab) {
     openTab: (href) => browserOpenFrom(tab, href),
     retry: () => { const u = browserUrlIn(tab); if (u) browserNavigateIn(tab, u, false); },
     // Out of the pane altogether: this page in this device's own browser, which
-    // is the shell's to open and not the computer's (the key in the field).
+    // is the shell's to open and not the computer's (#btn-browser-out).
     openExternal: () => browserOutPress(tab),
     onError: (msg) => browserFullFailed(tab, msg),
     onTab: (msg) => browserFullTab(tab, msg),
@@ -1077,12 +1095,13 @@ function syncBrowserNav() {
   if (back) back.disabled = full ? !tab.canBack : tab.idx <= 0;
   if (fwd) fwd.disabled = full ? !tab.canFwd
                                : (tab.idx < 0 || tab.idx >= tab.stack.length - 1);
-  // The way out of the pane, in the field. Drawn from the same thing the arrows
-  // are — the address the tab on screen is on — which is the whole of what it
-  // needs: a tab with nothing in it yet has no page to hand anywhere, and a page
-  // in either mode is a page this device's browser can be sent to. The token for
-  // the addresses that need the computer is asked for here rather than at the
-  // press, so the press has nothing to wait for (browserOutPress).
+  // The way out of the pane (a key on the phone, a more-menu row docked). Drawn
+  // from the same thing the arrows are — the address the tab on screen is on —
+  // which is the whole of what it needs: a tab with nothing in it yet has no
+  // page to hand anywhere, and a page in either mode is a page this device's
+  // browser can be sent to. The token for the addresses that need the computer
+  // is asked for here rather than at the press, so the press has nothing to
+  // wait for (browserOutPress).
   const out = q("btn-browser-out");
   if (out) {
     out.hidden = !browserUrlIn(tab);
@@ -1330,6 +1349,7 @@ function syncBrowserLan() {
   // pressing it would do — and, once it is pressed, what it did. The tooltip
   // and the label are the same words: a reader who hovers and a reader who
   // listens are being told the same thing.
+  syncBrowserMode();
   const said = full ? "Use the local-network proxy for this tab"
              : on ? "This tab uses the computer's network"
                   : "Use the computer's network for this tab";
@@ -1397,7 +1417,7 @@ function browserOutTarget(tab, rec) {
   return browserEnterUrl(browserProxied(url, rec), rec) || url;
 }
 
-// The press, from the key in the field or from the streamed tab's own menu. The
+// The press, from #btn-browser-out or from the streamed tab's own menu. The
 // tab is left exactly as it is either way — the page it is on keeps loading, or
 // keeps streaming; what this opens is a second copy of it somewhere else.
 //
@@ -1457,6 +1477,27 @@ function syncBrowserFull() {
       + (host ? " (remembered for " + host + ")" : "");
   btn.setAttribute("aria-label", said);
   btn.setAttribute("title", said);
+  syncBrowserMode();
+}
+
+// The capsule's page-mode key: which of the two keys above is in force, as the
+// glyph (the globe for the proxy), and nothing to open where neither key is
+// offered.
+function syncBrowserMode() {
+  const key = root.querySelector(".browser-mode");
+  if (!key) return;
+  const tab = browserTab();
+  const full = browserIsFull(tab);
+  const lan = !full && !!(tab && tab.lan);
+  key.querySelector("use").setAttribute("href",
+    full ? "#i-m-monitor" : lan ? "#i-m-lan" : "#i-m-globe");
+  key.classList.toggle("on", full || lan);
+  const said = full ? "Page mode: streamed from the computer's Chrome"
+             : lan ? "Page mode: on the computer's network"
+                   : "Page mode: through the proxy";
+  key.setAttribute("aria-label", said);
+  key.setAttribute("title", said);
+  key.disabled = q("btn-browser-full").hidden && q("btn-browser-tab").hidden;
 }
 
 // Move one tab between the two kinds. Whatever the tab was showing goes — a
@@ -1686,14 +1727,13 @@ function browserPdfLeave(tab) {
 // told why. The rest of what the proxy cannot serve is quieter than that: a
 // wall the site answered with, a boot that threw its way out, a page that came
 // out blank. The tab stays where it is in those cases — nothing here knows the
-// stream would do better — and what the pane can do is name the key that
-// would: a bar over the page, with the key's own glyph in it, so the next time
-// the press is on the row.
+// stream would do better — and what the pane can do is name the menu that
+// would: a bar over the page, with the streamed tab's glyph in it.
 const BROWSER_HINT_SAID =
   "Not working here? Stream this site from the computer's Chrome";
 // The first proxy page this device opens, told once what the key is for.
 const BROWSER_HINT_TIP = "Sites that need a real browser can stream from the "
-  + "computer's Chrome: press the monitor key";
+  + "computer's Chrome: pick it from the globe in the address";
 const BROWSER_HINT_TIP_MS = 8000;
 const BROWSER_HINT_SEEN_KEY = "pockettui_browser_hint_seen";
 
@@ -2050,7 +2090,7 @@ function renderBrowserMarks() {
 function syncBrowserStar() {
   const btn = q("btn-browser-star");
   const on = browserMarkAt(browserCurrentUrl()) >= 0;
-  btn.querySelector("use").setAttribute("href", on ? "#i-star-fill" : "#i-star");
+  btn.querySelector("use").setAttribute("href", on ? "#i-m-star-fill" : "#i-m-star");
   btn.setAttribute("aria-label", on ? "Remove this bookmark" : "Bookmark this page");
   btn.classList.toggle("on", on);
 }
@@ -2097,7 +2137,7 @@ function renderBrowserTabs() {
       const shut = el("button", {
         type: "button", class: "tab-del", "aria-label": "Close this tab",
         onclick: (e) => { e.stopPropagation(); browserCloseTab(browserTabs.indexOf(tab)); },
-      }, svgIcon("i-close"));
+      }, svgIcon("i-m-x"));
       tab.chip = el("div", { class: "tab-chip" }, open, shut);
     }
     const open = tab.chip.firstElementChild;
@@ -2376,7 +2416,7 @@ function syncBrowserExpand() {
   sideSetFull(id, on);
   const btn = q("btn-browser-expand");
   if (!btn) return;
-  btn.querySelector("use").setAttribute("href", on ? "#i-collapse" : "#i-expand");
+  btn.querySelector("use").setAttribute("href", on ? "#i-m-collapse" : "#i-m-expand");
   btn.setAttribute("aria-label", on ? "Shrink the browser pane" : "Expand the browser pane");
 }
 
@@ -2827,6 +2867,27 @@ q("btn-browser-tab").addEventListener("click", async () => {
 // Inside the click and not after it wherever the address can go out as it
 // stands, which is what a popup blocker asks of it.
 q("btn-browser-out").addEventListener("click", () => { browserOutPress(); });
+// The page-mode menu's two rows, written at open (showSplitMenu,
+// 26-side-pane.js): a check row per mode key that is offered, whose press is
+// that key's press.
+const browserModeWrap = root.querySelector(".browser-mode-wrap");
+browserModeWrap.menuRows = (menu) => {
+  const rows = [[q("btn-browser-full"), "Stream this site from the computer's Chrome"],
+                [q("btn-browser-tab"), "Use the computer's network for this tab"]];
+  for (const [key, label] of rows) {
+    if (key.hidden) continue;
+    const on = key.getAttribute("aria-pressed") === "true";
+    const row = el("button", {
+      type: "button", class: "view-row" + (on ? " on" : ""),
+      role: "menuitemcheckbox", "aria-checked": on ? "true" : "false",
+    }, el("span", { class: "view-check", "aria-hidden": "true" }, "\u2713"), el("span", {}, label));
+    row.addEventListener("click", () => {
+      showSplitMenu(browserModeWrap, false);
+      key.click();
+    });
+    menu.appendChild(row);
+  }
+};
 // Another tab in the pane, at the end of the strip where a browser keeps it.
 q("btn-browser-newtab").addEventListener("click", () => browserAddTab());
 q("btn-browser-expand").addEventListener("click", () => {
@@ -2836,11 +2897,32 @@ q("btn-browser-expand").addEventListener("click", () => {
 q("btn-browser-close").addEventListener("click", () => closeDockedBrowser());
 q("btn-browser-term").addEventListener("click", () => history.back());
 
+// Focused, the field holds the whole address with all of it selected, so a
+// press starts a new one; left, it goes back to the host. The mouseup after the
+// focusing press would put a caret where it landed and drop the selection, so
+// that one is swallowed.
+let browserFieldFresh = false;
+q("browser-url").addEventListener("focus", () => {
+  const f = q("browser-url");
+  f.value = browserFieldUrl;
+  f.select();
+  browserFieldFresh = true;
+});
+q("browser-url").addEventListener("mouseup", (e) => {
+  if (browserFieldFresh) e.preventDefault();
+  browserFieldFresh = false;
+});
+q("browser-url").addEventListener("blur", () => {
+  browserFieldFresh = false;
+  q("browser-url").value = browserHostOf(browserFieldUrl);
+});
 q("browser-url").addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     const v = q("browser-url").value.trim();
-    if (v) browserNavigate(browserTyped(v));
+    // The field says where it is going from the moment it is left, rather than
+    // showing the old host until the page lands.
+    if (v) { browserSetField(browserTyped(v)); browserNavigate(browserTyped(v)); }
     // Blurred either way: on a phone the address bar is what the keyboard is
     // up for, and the page underneath is what the tap was about. A new tab's
     // recovery goes with it — this blur is the user's own, and taking the field
@@ -3086,9 +3168,9 @@ return api;
 // the only one that is ever the whole window.
 makeBrowserPane("browser", $("screen-browser"));
 
-// The second one, made out of the first: the copy is the whole shape — the tab
-// strip with its window controls, the address row, the bookmarks bar and the
-// wrap the frames go in — with the ids inside it duplicated, which is why the
+// The second one, made out of the first: the copy is the whole shape — the tool
+// row with the address capsule, the tabs, the bookmarks bar and the wrap the
+// frames go in — with the ids inside it duplicated, which is why the
 // factory reaches them through its own root rather than through the document.
 // What does not come over is what belonged to the pane it was copied from: its
 // chips, its frames, its bookmarks, the address in its field and the classes the
@@ -3122,10 +3204,11 @@ function browserMakeAt(id) {
   clone.querySelector("#browser-menu-scrim").classList.remove("show");
   clone.querySelector("#btn-browser-zoom").setAttribute("aria-expanded", "false");
   clone.querySelector("#btn-browser-term").style.display = "none";
-  const split = clone.querySelector(".dock-split-wrap");
-  split.classList.remove("open");
-  split.querySelector(".dock-split").setAttribute("aria-expanded", "false");
-  split.querySelector(".dock-split-menu").textContent = "";
+  for (const split of clone.querySelectorAll(".dock-split-wrap")) {
+    split.classList.remove("open");
+    split.querySelector(".dock-split").setAttribute("aria-expanded", "false");
+    split.querySelector(".dock-split-menu").textContent = "";
+  }
   src.after(clone);
   sideWireBar(clone);
   const pane = makeBrowserPane(id, clone);

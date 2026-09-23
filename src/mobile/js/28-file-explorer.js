@@ -630,7 +630,11 @@ function syncFilesExpand() {
   // the reader's and the viewer's while a file of its own is open in one.
   for (const box of filesEls()) {
     for (const btn of box.querySelectorAll(".dock-expand")) {
-      btn.querySelector("use").setAttribute("href", on ? "#i-collapse" : "#i-expand");
+      // The explorer's own bar draws the side panes' glyph set (#i-m-*); the
+      // file views seated in its row keep the app's.
+      const use = btn.querySelector("use");
+      const m = use.getAttribute("href").startsWith("#i-m-") ? "m-" : "";
+      use.setAttribute("href", "#i-" + m + (on ? "collapse" : "expand"));
       btn.setAttribute("aria-label", on ? "Shrink the file pane" : "Expand the file pane");
     }
   }
@@ -1191,12 +1195,18 @@ function renderCrumbs(path) {
     parts = path.split("/").filter(Boolean);
     prefix = ""; rootLabel = "/";
   }
-  wrap.appendChild(crumbBtn(rootLabel, prefix || "/", parts.length === 0));
+  const home = crumbBtn(rootLabel === "~" ? svgIcon("i-m-home") : rootLabel,
+                        prefix || "/", parts.length === 0);
+  if (rootLabel === "~") home.setAttribute("aria-label", "Home");
+  wrap.appendChild(home);
   parts.forEach((seg, i) => {
     prefix += "/" + seg;
-    wrap.appendChild(el("span", { class: "crumb-sep" }, "›"));
+    wrap.appendChild(el("span", { class: "crumb-sep" }, svgIcon("i-m-chev-right")));
     wrap.appendChild(crumbBtn(seg, prefix, i === parts.length - 1));
   });
+  // The tool row's title is the folder the crumbs end on.
+  root.querySelector(".files-title-name").textContent =
+    parts.length ? parts[parts.length - 1] : rootLabel;
   // The tail is the current folder — that is the segment to keep in view.
   wrap.scrollLeft = wrap.scrollWidth;
 }
@@ -1711,7 +1721,9 @@ function syncRefBar() {
   if (!repo) { showRefMenu(false); return; }
   const live = repo.current || "HEAD";
   const btn = q("btn-files-ref");
-  btn.textContent = filesRef || live;
+  btn.textContent = "";
+  btn.append(svgIcon("i-m-branch"), el("span", { class: "ref-label" }, filesRef || live),
+             svgIcon("i-m-chev-down"));
   btn.classList.toggle("on", !!filesRef);
   btn.setAttribute("aria-label", filesRef
     ? "Reading " + filesRef + ", read-only. Change branch"

@@ -152,7 +152,7 @@ def test_the_browser_pane_carries_one_zoom_key_and_a_star(doc):
         assert f'id="{ident}"' in doc, ident
     # The panel still draws the pair's glyphs, so the sprite keeps them.
     assert 'id="i-zoom-out"' in doc and 'id="i-zoom-in"' in doc
-    assert 'id="i-star"' in doc and 'id="i-star-fill"' in doc
+    assert 'id="i-m-star"' in doc and 'id="i-m-star-fill"' in doc
 
 
 def test_the_topbar_toggles_a_tab_onto_the_computers_own_network(doc):
@@ -194,9 +194,9 @@ def test_the_topbar_toggles_a_tab_onto_the_computers_own_network(doc):
     assert "target = tab.primed ? proxied : browserEnterUrl(proxied, rec);" in doc
 
 
-def test_the_address_field_carries_the_way_out_of_the_pane(doc):
-    """The founder's arrow, inside the address field: this page in the browser
-    the device runs, rather than in the pane. A tester had asked where the
+def test_the_pane_carries_the_way_out_of_the_pane(doc):
+    """The founder's arrow: this page in the browser the device runs, rather
+    than in the pane. A tester had asked where the
     address a webapp printed went — before the pane it opened on their own
     machine, and since the pane it opens in the pane. The key is the way back
     to that, and an address the device cannot reach on its own goes out as the
@@ -205,15 +205,13 @@ def test_the_address_field_carries_the_way_out_of_the_pane(doc):
     assert 'id="btn-browser-out" hidden' in doc
     said = "Open this page in your browser"
     assert f'aria-label="{said}"' in doc and f'title="{said}"' in doc
-    # An arrow leaving its box, drawn once in the sheet every other key uses.
-    assert 'id="i-external"' in doc and 'href="#i-external"' in doc
-    # In the field, not after it: inside the wrap, and over the padding the
-    # field keeps clear for it so no address ever runs under the glyph.
-    at = {name: doc.index(f'id="{name}"')
-          for name in ("browser-url-wrap", "browser-url", "btn-browser-out")}
-    assert at["browser-url-wrap"] < at["browser-url"] < at["btn-browser-out"]
-    assert "#browser-url-wrap { flex: 1; min-width: 0; display: flex; position: relative; }" in doc
-    assert "padding: 0 32px 0 11px;" in doc
+    # An arrow leaving its box, from the side panes' glyph set.
+    assert 'id="i-m-external"' in doc and 'href="#i-m-external"' in doc
+    # A key on the phone's tool row; docked it is hidden and the more menu's
+    # row presses it, so the row exists exactly when the key would show.
+    assert 'data-more="Open in your browser"' in doc
+    assert ':is(#screen-browser, #screen-browser-2).docked :is(#browser-zoom-wrap, #btn-browser-out) { display: none; }' in doc
+    assert 'const keys = [...pane.querySelectorAll("[data-more]")].filter((k) => !k.hidden' in doc
     assert "#btn-browser-out[hidden] { display: none; }" in doc
     # Nothing to hand over is the one state it is not in: a tab with no address
     # yet, which is what a new tab is until it lands somewhere.
@@ -363,19 +361,24 @@ def _js_chunk(doc, head):
     return doc[at:end]
 
 
-def test_the_toggles_order_in_the_address_row(doc):
-    """Left of reload, where a browser keeps the keys that act on the page
-    rather than on the address — and all of them before the field, which now
-    has the whole rest of the row to itself. Which browser the tab is comes
-    before which network it is on: it is the larger of the two choices, and it
-    is the one that decides whether the other is offered at all."""
+def test_the_address_capsule_holds_the_page_mode_and_reload(doc):
+    """Safari's capsule: the page-mode key at its left, the address, reload at
+    its right. The two mode keys are never drawn; the page-mode menu's rows
+    press them, so their logic and syncs stay theirs. Which browser the tab is
+    comes before which network it is on."""
     at = {name: doc.index(f'id="{name}"')
-          for name in ("btn-browser-back", "btn-browser-fwd", "btn-browser-full",
-                       "btn-browser-tab", "btn-browser-reload",
-                       "browser-url-wrap", "browser-url")}
-    assert (at["btn-browser-back"] < at["btn-browser-fwd"] < at["btn-browser-full"]
-            < at["btn-browser-tab"] < at["btn-browser-reload"]
-            < at["browser-url-wrap"] < at["browser-url"])
+          for name in ("btn-browser-back", "btn-browser-fwd", "browser-url-wrap",
+                       "browser-url", "btn-browser-reload",
+                       "btn-browser-full", "btn-browser-tab")}
+    mode = doc.index('class="dock-split browser-mode"')
+    assert (at["btn-browser-back"] < at["btn-browser-fwd"] < at["browser-url-wrap"]
+            < mode < at["browser-url"] < at["btn-browser-reload"]
+            < at["btn-browser-full"] < at["btn-browser-tab"])
+    assert ":is(#screen-browser, #screen-browser-2) :is(#btn-browser-full, #btn-browser-tab) { display: none; }" in doc
+    assert 'const rows = [[q("btn-browser-full"), "Stream this site from the computer\'s Chrome"],' in doc
+    assert 'full ? "#i-m-monitor" : lan ? "#i-m-lan" : "#i-m-globe");' in doc
+    # Unfocused, the field shows the host; focused, the whole address.
+    assert "f.value = document.activeElement === f ? browserFieldUrl : browserHostOf(browserFieldUrl);" in doc
 
 
 def test_a_tab_is_a_proxy_tab_unless_its_host_is_remembered(doc):
@@ -624,7 +627,7 @@ def test_a_chip_carries_its_pages_icon_and_says_when_it_was_given_up(doc):
     assert 'icon = el("img", { class: "tab-icon", alt: "" });' in doc
     assert 'tab.chip.classList.toggle("dim", !!tab.discarded);' in doc
     css = (SRC / "styles.css").read_text(encoding="utf-8")
-    assert re.search(r"\.tab-icon \{[^}]*width: 16px;", css)
+    assert re.search(r"\.tab-icon \{[^}]*width: 14px;", css)
     # The browser swapped under its tabs to stay inside the cap is a line, not
     # an overlay: the tab each pane was showing is already coming back.
     assert 'if (msg.code === "restarted")' in doc
@@ -650,34 +653,26 @@ def test_a_folded_row_stops_streaming_and_the_profile_can_be_cleared(doc):
     assert 'toast("Browser profile cleared");' in doc
 
 
-def test_the_window_controls_sit_in_the_tab_row(doc):
-    """A browser window's top row: tabs at one end, the window's own controls
-    at the other. Bookmark, zoom, and docked the pane's expand and close all
-    act on the window or on the page as a whole, so they belong up there rather
-    than on the address row, which is left to the address and the keys that
-    move it."""
+def test_the_window_controls_sit_on_the_tool_row(doc):
+    """Safari's tool row: the address in the middle, the page's and the pane's
+    keys at its right end (star, zoom, the more menu, then expand and close
+    after a short rule), and the tabs in a band of their own under it."""
     at = {name: doc.index(f'id="{name}"')
-          for name in ("browser-tabs", "browser-tab-row", "btn-browser-newtab",
-                       "browser-tab-actions", "btn-browser-star",
+          for name in ("browser-url-wrap", "btn-browser-star",
                        "browser-zoom-wrap", "btn-browser-zoom",
-                       "btn-browser-expand", "btn-browser-close")}
+                       "btn-browser-expand", "btn-browser-close",
+                       "browser-tabs", "browser-tab-row", "btn-browser-newtab")}
     bar = doc.index('class="topbar browser-topbar"')
-    # Every one of them inside the group, the group inside the tab row, and the
-    # whole of it above the address row.
-    assert (at["browser-tabs"] < at["browser-tab-row"] < at["btn-browser-newtab"]
-            < at["browser-tab-actions"] < at["btn-browser-star"]
+    tools = doc.index('<span class="browser-tools">')
+    assert (bar < at["browser-url-wrap"] < tools < at["btn-browser-star"]
             < at["browser-zoom-wrap"] < at["btn-browser-zoom"]
-            < at["btn-browser-expand"] < at["btn-browser-close"] < bar)
-    # The group is flush right on the band by a margin, not by a spacer: the
-    # tabs and the "+" stay together at the left and a strip too wide for the
-    # pane scrolls inside its own box rather than pushing the keys off.
+            < at["btn-browser-expand"] < at["btn-browser-close"]
+            < at["browser-tabs"] < at["browser-tab-row"] < at["btn-browser-newtab"])
+    assert 'id="browser-tab-actions"' not in doc
+    # Tabs share the band equally and shrink rather than scroll, eight included.
     css = (SRC / "styles.css").read_text(encoding="utf-8")
-    rule = re.search(r"#browser-tab-actions \{[^}]*\}", css).group(0)
-    assert "margin-left: auto;" in rule
-    # The panel hangs off a key in the tab row now, so that row has to out-stack
-    # the address row below it and the scrim that dims the page for it.
-    band = re.search(r"#browser-tabs \{[^}]*\}", css).group(0)
-    assert "position: relative;" in band and "z-index: 55;" in band
+    chip = re.search(r"\.tab-chip \{[^}]*\}", css).group(0)
+    assert "flex: 1 1 0;" in chip and "min-width: 0;" in chip
 
 
 def test_the_bookmarks_bar_is_a_row_of_links_not_a_second_row_of_tabs(doc):
@@ -694,10 +689,10 @@ def test_the_bookmarks_bar_is_a_row_of_links_not_a_second_row_of_tabs(doc):
     assert "border: 1px solid" not in body and "var(--card-2)" not in body
 
 
-def test_the_tab_strip_sits_above_the_address_row(doc):
-    """Where every desktop browser puts it: the pane's top edge, then the
-    address row, then the bookmarks, then the page."""
-    assert (doc.index('id="browser-tabs"') < doc.index('class="topbar browser-topbar"')
+def test_the_tab_strip_sits_under_the_tool_row(doc):
+    """Where Safari puts it: the tool row, then the tabs, then the bookmarks,
+    then the page."""
+    assert (doc.index('class="topbar browser-topbar"') < doc.index('id="browser-tabs"')
             < doc.index('id="browser-bookmarks"') < doc.index('id="browser-wrap"'))
 
 
@@ -716,8 +711,7 @@ def test_the_pane_has_tabs_of_its_own(doc):
     assert 'title="New tab"' in doc
     # A "+" again: the network glyph moved to the key it now names, and a new
     # tab is the one thing a "+" has always meant.
-    assert ('title="New tab"><svg><use href="#i-plus"/></svg>' in doc
-            or 'title="New tab"><svg><use href="#i-plus"/>' in doc)
+    assert 'title="New tab"><svg><use href="#i-m-plus"/></svg>' in doc
     assert 'id="browser-frame-tpl"' in doc
     assert "function browserNewTab(" in doc and "function browserTab(" in doc
     assert "function browserShowTab(" in doc and "function browserCloseTab(" in doc
