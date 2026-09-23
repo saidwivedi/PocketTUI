@@ -207,10 +207,15 @@ def test_the_pane_carries_the_way_out_of_the_pane(doc):
     assert f'aria-label="{said}"' in doc and f'title="{said}"' in doc
     # An arrow leaving its box, from the side panes' glyph set.
     assert 'id="i-m-external"' in doc and 'href="#i-m-external"' in doc
-    # A key on the phone's tool row; docked it is hidden and the more menu's
-    # row presses it, so the row exists exactly when the key would show.
-    assert 'data-more="Open in your browser"' in doc
-    assert ':is(#screen-browser, #screen-browser-2).docked :is(#browser-zoom-wrap, #btn-browser-out) { display: none; }' in doc
+    # A key inside the address capsule, left of reload, on the phone and
+    # docked alike (founder, v0.9.170 follow-up): docked it is not hidden and
+    # the more menu carries no row for it.
+    wrap = doc[doc.index('<div id="browser-url-wrap">'):]
+    wrap = wrap[:wrap.index("</div>")]
+    assert wrap.index('id="browser-url"') < wrap.index('id="btn-browser-out"') < wrap.index('id="btn-browser-reload"')
+    assert 'data-more="Open in your browser"' not in doc
+    assert ':is(#screen-browser, #screen-browser-2).docked #browser-zoom-wrap { display: none; }' in doc
+    assert ':is(#screen-browser, #screen-browser-2).docked :is(#browser-zoom-wrap, #btn-browser-out) { display: none; }' not in doc
     assert 'const keys = [...pane.querySelectorAll("[data-more]")].filter((k) => !k.hidden' in doc
     assert "#btn-browser-out[hidden] { display: none; }" in doc
     # Nothing to hand over is the one state it is not in: a tab with no address

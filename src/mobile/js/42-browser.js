@@ -1095,7 +1095,7 @@ function syncBrowserNav() {
   if (back) back.disabled = full ? !tab.canBack : tab.idx <= 0;
   if (fwd) fwd.disabled = full ? !tab.canFwd
                                : (tab.idx < 0 || tab.idx >= tab.stack.length - 1);
-  // The way out of the pane (a key on the phone, a more-menu row docked). Drawn
+  // The way out of the pane (a key in the address capsule). Drawn
   // from the same thing the arrows are — the address the tab on screen is on —
   // which is the whole of what it needs: a tab with nothing in it yet has no
   // page to hand anywhere, and a page in either mode is a page this device's
