@@ -161,6 +161,7 @@ async function loadSessions(spin=false, quiet=false) {
     $("list-error").style.display = "none";
     sessionsEverLoaded = true;
     syncReportEntry();
+    featuresFirstListHint();
     // The fetched list rides back to callers with a session to verify
     // (openSessionByName); everyone else ignores it.
     return data.sessions || [];

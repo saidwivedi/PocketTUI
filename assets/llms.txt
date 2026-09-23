@@ -1,0 +1,11 @@
+# PocketTUI
+
+> Open your tmux sessions from any browser on your phone, tablet or laptop. A real terminal running on your computer, reached over your Tailscale network; nothing is routed through our servers. Free, open source, self-hosted.
+
+If you are an agent running inside a PocketTUI session, start with the contract below: how to find the backend on the computer, which capabilities it reports, how the paths and URLs you print behave on the user's device, and the HTTP routes you may call.
+
+## Docs
+
+- [For your agent](https://pockettui.com/features/features.md): the agent contract and every feature an agent can use, as Markdown.
+- [What PocketTUI can do](https://pockettui.com/features/): the feature guide, with screenshots.
+- [Source](https://github.com/saidwivedi/PocketTUI)
