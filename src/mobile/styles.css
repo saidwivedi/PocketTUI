@@ -3748,7 +3748,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   :is(#screen-files, #screen-files-2).docked .files-toolrow,
   :is(#screen-browser, #screen-browser-2).docked .browser-topbar { height: 38px; }
-  :is(#screen-browser, #screen-browser-2).docked #browser-url-wrap { margin: 0; }
+  /* Wide enough on each side for the larger group (the right one, about
+     125px), so the capsule stays centred and clear of the mode keys. */
+  :is(#screen-browser, #screen-browser-2).docked { --m-side: 138px; }
+  :is(#screen-browser, #screen-browser-2).docked #browser-url-wrap { margin: 0 4px; }
   /* Keys the more menu presses while docked (26-side-pane.js), and the swap,
      which is a row of it. */
   :is(#screen-files, #screen-files-2).docked #btn-files-edit-path,
@@ -3866,6 +3869,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .browser-topbar {
   position: relative;
   z-index: 50;
+  /* A size container, so the capsule's glyph can give way on a narrow pane
+     (#screen-list .topbar's recipe). */
+  container-type: inline-size;
   flex: 0 0 auto;
   display: flex; align-items: center;
   height: 46px;
@@ -3960,7 +3966,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
    rounded field. */
 #browser-url-wrap {
   flex: 0 1 clamp(200px, calc(100% - 2 * var(--m-side)), 420px);
-  min-width: 120px;
+  min-width: 88px;
   margin: 0 6px;
   position: relative;
   display: flex; align-items: center;
@@ -3989,8 +3995,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 #browser-url:focus { text-align: left; }
 #browser-url::placeholder { color: var(--m-g2); }
-/* The capsule's two keys, smaller and quieter than the row's. */
-.browser-mode-wrap { position: relative; flex: 0 0 auto; display: flex; }
+/* The capsule's glyph and reload key, smaller and quieter than the row's. */
 .browser-mode,
 .browser-topbar #btn-browser-reload {
   flex: 0 0 auto;
@@ -4003,18 +4008,30 @@ html.term-open #dbg-panel { opacity: 0.85; }
   color: var(--m-g2);
   cursor: pointer;
 }
-.browser-mode { margin-left: 3px; }
+/* The glyph says which mode the tab is in; the keys beside the arrows change
+   it, so it takes no pointer. On a bar too narrow for both the keys and a
+   readable address it goes, since the keys say the same thing. */
+.browser-mode { margin-left: 3px; pointer-events: none; cursor: default; }
+@container (max-width: 420px) { .browser-mode { display: none; } }
 .browser-topbar #btn-browser-reload { margin-right: 3px; }
 :is(.browser-mode, .browser-topbar #btn-browser-reload) svg { width: 13px; height: 13px; }
-.browser-mode.on { color: var(--ink); }
-:is(.browser-mode, .browser-topbar #btn-browser-reload):is(:hover, [aria-expanded="true"]) {
+.browser-topbar #btn-browser-reload:hover {
   color: var(--ink);
   background: var(--m-fill2);
 }
-.browser-mode:disabled { cursor: default; background: transparent; color: var(--m-g2); }
-.browser-mode-wrap .dock-split-menu { left: 0; right: auto; }
-/* The two mode keys are never drawn: the page-mode menu presses them. */
-:is(#screen-browser, #screen-browser-2) :is(#btn-browser-full, #btn-browser-tab) { display: none; }
+/* The two mode keys after the arrows, 10px from them and 2px apart (the
+   group's gap). On, a key wears the accent over the pressed fill, so it reads
+   on beside one that is off. */
+#btn-browser-fwd + #btn-browser-full,
+#btn-browser-fwd + #btn-browser-full[hidden] + #btn-browser-tab { margin-left: 8px; }
+.browser-topbar :is(#btn-browser-full, #btn-browser-tab)[aria-pressed="true"] {
+  color: var(--umber);
+  background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
+}
+.browser-topbar :is(#btn-browser-full, #btn-browser-tab)[aria-pressed="true"]:hover {
+  background: linear-gradient(var(--umber-soft), var(--umber-soft)),
+              linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
+}
 /* .icon-btn is display:inline-flex, which a bare [hidden] does not outrank. */
 #btn-browser-out[hidden] { display: none; }
 /* The zoom key's panel, on the file bar's dropdown recipe (#files-view-menu):

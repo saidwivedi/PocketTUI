@@ -1351,7 +1351,7 @@ function syncBrowserLan() {
   // listens are being told the same thing.
   syncBrowserMode();
   const said = full ? "Use the local-network proxy for this tab"
-             : on ? "This tab uses the computer's network"
+             : on ? "This tab uses the computer's network — press to switch it off"
                   : "Use the computer's network for this tab";
   btn.setAttribute("aria-label", said);
   btn.setAttribute("title", said);
@@ -1472,7 +1472,7 @@ function syncBrowserFull() {
   // words in the tooltip and in the label, as the key beside it does.
   const host = browserStreamHost(browserUrlIn(browserTab()));
   const said = on
-    ? "This site streams from the computer's Chrome; press to use the lightweight proxy"
+    ? "Streaming from the computer's Chrome — press to go back to the proxy"
     : "Stream this site from the computer's Chrome"
       + (host ? " (remembered for " + host + ")" : "");
   btn.setAttribute("aria-label", said);
@@ -1480,24 +1480,15 @@ function syncBrowserFull() {
   syncBrowserMode();
 }
 
-// The capsule's page-mode key: which of the two keys above is in force, as the
-// glyph (the globe for the proxy), and nothing to open where neither key is
-// offered.
+// The capsule's page-mode glyph: which of the two keys beside the arrows is in
+// force (the globe for the proxy). A hint only; the keys are the controls.
 function syncBrowserMode() {
-  const key = root.querySelector(".browser-mode");
-  if (!key) return;
+  const glyph = root.querySelector(".browser-mode use");
+  if (!glyph) return;
   const tab = browserTab();
   const full = browserIsFull(tab);
   const lan = !full && !!(tab && tab.lan);
-  key.querySelector("use").setAttribute("href",
-    full ? "#i-m-monitor" : lan ? "#i-m-lan" : "#i-m-globe");
-  key.classList.toggle("on", full || lan);
-  const said = full ? "Page mode: streamed from the computer's Chrome"
-             : lan ? "Page mode: on the computer's network"
-                   : "Page mode: through the proxy";
-  key.setAttribute("aria-label", said);
-  key.setAttribute("title", said);
-  key.disabled = q("btn-browser-full").hidden && q("btn-browser-tab").hidden;
+  glyph.setAttribute("href", full ? "#i-m-monitor" : lan ? "#i-m-lan" : "#i-m-globe");
 }
 
 // Move one tab between the two kinds. Whatever the tab was showing goes — a
@@ -1733,7 +1724,7 @@ const BROWSER_HINT_SAID =
   "Not working here? Stream this site from the computer's Chrome";
 // The first proxy page this device opens, told once what the key is for.
 const BROWSER_HINT_TIP = "Sites that need a real browser can stream from the "
-  + "computer's Chrome: pick it from the globe in the address";
+  + "computer's Chrome: press the monitor key beside the arrows";
 const BROWSER_HINT_TIP_MS = 8000;
 const BROWSER_HINT_SEEN_KEY = "pockettui_browser_hint_seen";
 
@@ -2867,27 +2858,6 @@ q("btn-browser-tab").addEventListener("click", async () => {
 // Inside the click and not after it wherever the address can go out as it
 // stands, which is what a popup blocker asks of it.
 q("btn-browser-out").addEventListener("click", () => { browserOutPress(); });
-// The page-mode menu's two rows, written at open (showSplitMenu,
-// 26-side-pane.js): a check row per mode key that is offered, whose press is
-// that key's press.
-const browserModeWrap = root.querySelector(".browser-mode-wrap");
-browserModeWrap.menuRows = (menu) => {
-  const rows = [[q("btn-browser-full"), "Stream this site from the computer's Chrome"],
-                [q("btn-browser-tab"), "Use the computer's network for this tab"]];
-  for (const [key, label] of rows) {
-    if (key.hidden) continue;
-    const on = key.getAttribute("aria-pressed") === "true";
-    const row = el("button", {
-      type: "button", class: "view-row" + (on ? " on" : ""),
-      role: "menuitemcheckbox", "aria-checked": on ? "true" : "false",
-    }, el("span", { class: "view-check", "aria-hidden": "true" }, "\u2713"), el("span", {}, label));
-    row.addEventListener("click", () => {
-      showSplitMenu(browserModeWrap, false);
-      key.click();
-    });
-    menu.appendChild(row);
-  }
-};
 // Another tab in the pane, at the end of the strip where a browser keeps it.
 q("btn-browser-newtab").addEventListener("click", () => browserAddTab());
 q("btn-browser-expand").addEventListener("click", () => {
