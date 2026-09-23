@@ -1,0 +1,361 @@
+{
+ "rail-states": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "sessions.list",
+   "sessions.row-title",
+   "notify.state-badges",
+   "notify.unread",
+   "notify.bell-toggle",
+   "sessions.refresh",
+   "sessions.multi-device",
+   "sessions.jump-shortcut"
+  ],
+  "caption": "The session sidebar: every session with its program and folder, Running, Needs input and Done badges, an unread session in bold, and a bell per row."
+ },
+ "rail-shortcuts": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "keys.shortcut-list",
+   "terminal.shift-enter",
+   "terminal.ctrl-c-copy",
+   "terminal.drag-select",
+   "terminal.copy-shortcut",
+   "terminal.right-click-copy"
+  ],
+  "caption": "The Shortcuts card in the sidebar lists the keyboard shortcuts: copy on release, paste, interrupt or copy, newline, new session, changes and search."
+ },
+ "new-session": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "sessions.new"
+  ],
+  "caption": "Starting a new session: the name field shows the name it will get if left empty."
+ },
+ "new-session-key": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "sessions.new-shortcut"
+  ],
+  "caption": "Ctrl+Shift+L made a new session with a dated name and opened it."
+ },
+ "session-sheet": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "sessions.rename-alias",
+   "sessions.kill"
+  ],
+  "caption": "The rename sheet for a session: a display name, the tmux name, and Kill."
+ },
+ "search": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "sessions.scrollback-search"
+  ],
+  "caption": "Searching the terminal's history with Ctrl+Shift+F: matches are highlighted and counted."
+ },
+ "key-pill": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "links.paths",
+   "links.urls"
+  ],
+  "caption": "A path printed in the terminal becomes a link under the pointer; the key pill at the top right holds the mic, files, browser and report keys."
+ },
+ "prompt-chips": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "notify.prompt-chips"
+  ],
+  "caption": "A session waiting on a yes/no question: one-tap answer chips appear above the terminal."
+ },
+ "settings-connection": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "connect.add-computer",
+   "connect.switch-computer",
+   "connect.pairing-code",
+   "connect.rename-computer",
+   "connect.device-name",
+   "connect.port-field",
+   "connect.forget-computer"
+  ],
+  "caption": "Settings, Connection: the computer chooser open with two computers and Add another computer, above the address, pairing code and names."
+ },
+ "settings-pair": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "connect.pair-qr"
+  ],
+  "caption": "Settings, Connection: the QR code another phone or laptop scans to pair with this computer."
+ },
+ "settings-browser": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "browser.stream-all",
+   "browser.clear-data"
+  ],
+  "caption": "Settings, Connection, Browser: stream every tab from the computer's Chrome, and clear its browsing data."
+ },
+ "settings-dictation": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "dictation.engine",
+   "dictation.learned",
+   "dictation.phone-dictation",
+   "dictation.auto-fallback"
+  ],
+  "caption": "Settings, Dictation: the speech engine choice and the corrections dictation has learned."
+ },
+ "settings-keys": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "keys.text-size",
+   "keys.shortcut-list"
+  ],
+  "caption": "Settings, Keys: text size buttons for the terminal and sidebar, and every keyboard shortcut."
+ },
+ "settings-appearance": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "theme.palettes",
+   "theme.import",
+   "theme.min-contrast",
+   "theme.app-theme"
+  ],
+  "caption": "Settings, Appearance: app theme, terminal colour schemes and the box to paste your own."
+ },
+ "settings-about": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "connect.version",
+   "connect.update",
+   "hood.about",
+   "hood.debug-log",
+   "hood.report"
+  ],
+  "caption": "Settings, About: the app and server versions, the Update server button, the debug log switch and Report a problem."
+ },
+ "update-failed": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "connect.type-it",
+   "connect.update-resume"
+  ],
+  "caption": "After an update that did not take, Settings, About offers Type it for me to put the retry command in a terminal."
+ },
+ "theme-menu": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "theme.app-theme"
+  ],
+  "caption": "The theme button in the header: light, dark or follow the system."
+ },
+ "report": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "hood.report",
+   "hood.report-diagnostics"
+  ],
+  "caption": "Report a problem, with the diagnostics that will be sent shown before sending."
+ },
+ "first-run": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "connect.first-run",
+   "connect.install-tailscale"
+  ],
+  "caption": "First run: step one is the command to run on the computer, with the Tailscale steps above it."
+ },
+ "explorer": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "files.explorer",
+   "panes.side-column",
+   "files.follow-cwd"
+  ],
+  "caption": "The file browser docked beside the terminal, opened on the session's own folder."
+ },
+ "explorer-grid": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "files.thumbnails",
+   "files.view-sort"
+  ],
+  "caption": "Grid view in the file browser, with picture previews for images."
+ },
+ "explorer-view-menu": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "files.view-sort"
+  ],
+  "caption": "The layout pop-up: list or grid, sorted by name, date or size."
+ },
+ "explorer-branch": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "files.branch-browse"
+  ],
+  "caption": "The branch pop-up in the path bar: read another branch's files without checking it out."
+ },
+ "explorer-path": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "files.path-bar"
+  ],
+  "caption": "Typing a path in the file browser's path bar, with folder suggestions."
+ },
+ "explorer-more": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "panes.more-menu",
+   "panes.two-stacked",
+   "panes.same-type-twice"
+  ],
+  "caption": "The More menu in a docked pane: open another pane in this column, including a second of the same kind."
+ },
+ "explorer-actions": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "files.rename",
+   "files.delete",
+   "files.download",
+   "files.download-folder"
+  ],
+  "caption": "Right-clicking a folder in the file browser: Download, Rename and Delete."
+ },
+ "explorer-add": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "files.new",
+   "files.upload"
+  ],
+  "caption": "The + menu in the file browser: new file, new folder, upload."
+ },
+ "explorer-drag": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "files.drag-move"
+  ],
+  "caption": "Dragging a file onto a folder in the file browser to move it there."
+ },
+ "editor": {
+  "width": 2880,
+  "height": 1600,
+  "features": [
+   "files.editor",
+   "files.docked-views",
+   "files.wrap",
+   "editor.vim",
+   "files.save-conflict"
+  ],
+  "caption": "A file open in the editor beside the terminal, with Wrap, Vim and Save in its bar."
+ },
+ "markdown": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "files.markdown"
+  ],
+  "caption": "A Markdown file in the reader: formatted text, a formula and a task list."
+ },
+ "viewer": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "files.media-viewer"
+  ],
+  "caption": "A picture opened from the file browser, with the viewer expanded over the terminal; pinch, drag or double-tap to zoom."
+ },
+ "diff": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "git.pane",
+   "git.block-actions",
+   "git.stage-file",
+   "git.discard-file",
+   "git.resize-list"
+  ],
+  "caption": "The Changes pane (Ctrl+Shift+G): changed files with stage and discard buttons, and the diff with a keep or undo control on each block."
+ },
+ "diff-untracked": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "git.tracked-untracked"
+  ],
+  "caption": "The Untracked tab of the Changes pane: files git has never seen, listed apart from tracked changes."
+ },
+ "browser": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "browser.open",
+   "browser.tabs",
+   "browser.bookmarks",
+   "browser.address-search",
+   "links.wide-to-pane",
+   "browser.open-outside",
+   "browser.stream",
+   "browser.local-network"
+  ],
+  "caption": "The browser pane showing a dev server on the computer: tabs, the address field, bookmarks bar, and the stream and network keys."
+ },
+ "browser-more": {
+  "width": 2320,
+  "height": 1240,
+  "features": [
+   "browser.zoom"
+  ],
+  "caption": "The browser pane's More menu: another pane in this column, and zoom in, out or actual size."
+ },
+ "two-panes": {
+  "width": 2880,
+  "height": 1600,
+  "features": [
+   "panes.two-stacked",
+   "panes.resize-rows",
+   "panes.swap",
+   "panes.resize-column"
+  ],
+  "caption": "Two tools stacked beside the terminal: the file browser above the browser, with the seam between them."
+ },
+ "two-explorers": {
+  "width": 2880,
+  "height": 1600,
+  "features": [
+   "panes.same-type-twice",
+   "files.two-explorers-sync"
+  ],
+  "caption": "Two file browsers in one column, each on its own folder."
+ }
+}

@@ -2365,7 +2365,7 @@ html.term-open, body.term-open {
      pill. */
   #alt-row { display: none; }
 }
-#btn-report, #btn-update-server, #btn-update-type {
+#btn-report, #btn-features-about, #btn-update-server, #btn-update-type {
   flex-shrink: 0;
   font-family: var(--sans);
   font-size: 12px;
@@ -2378,6 +2378,7 @@ html.term-open, body.term-open {
   cursor: pointer;
 }
 #btn-report:active,
+#btn-features-about:active,
 #btn-update-server:active,
 #btn-update-type:active { transform: scale(0.96); }
 /* Three stacked rows rather than a segmented control: the names are words of
@@ -5184,6 +5185,50 @@ html.term-open #dbg-panel { opacity: 0.85; }
     cursor: pointer;
   }
   #btn-rail-keys-all:hover { text-decoration: underline; }
+}
+
+/* ============================================================
+   FEATURES GUIDE
+   ============================================================ */
+/* The row into the guide: a text link in the register of the card's "All
+   shortcuts", since it is a pointer to something to read rather than a control.
+   On the phone it follows the last session row at the list's 22px gutter. */
+#btn-features {
+  display: block;
+  margin: 0 22px;
+  padding: 6px 0;
+  background: transparent; border: none;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--umber);
+  text-align: left;
+  cursor: pointer;
+}
+#btn-features:hover { text-decoration: underline; }
+@media (min-width: 768px) and (min-height: 500px) {
+  /* Held out of the rail's scroll under the shortcuts card, and inset to line
+     up with the card's own text. */
+  #btn-features {
+    flex: 0 0 auto;
+    margin: -2px 14px 10px;
+    padding: 0 11px;
+    font-size: calc(var(--rail-title) * 10.5 / 14);
+  }
+}
+/* The guide itself, over everything: the hosted page in a frame that fills the
+   window. A frame's own env() insets are zero, so the notch and the home
+   indicator are kept clear out here, on the app's paper. */
+#features-overlay {
+  position: fixed; inset: 0;
+  z-index: 450;
+  padding: var(--safe-top) env(safe-area-inset-right) var(--safe-bot) env(safe-area-inset-left);
+  background: var(--paper);
+}
+#features-frame {
+  display: block;
+  width: 100%; height: 100%;
+  border: 0;
+  background: var(--paper);
 }
 
 /* ============================================================

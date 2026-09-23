@@ -1,0 +1,2989 @@
+[
+ {
+  "id": "sessions.list",
+  "group": "Stay attached to your work",
+  "title": "See every running session",
+  "outcome": "Every tmux session on your computer appears as a row with its program, folder and whether it is working, waiting or done.",
+  "where": "Session list (home screen on a phone; the sidebar on a laptop)",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": {
+   "kind": "http",
+   "text": "Read the list with the pairing token to see every session's title, cwd and watcher state (active, waiting, ready, idle). It is read-only: nothing changes on the user's device.",
+   "contract": "GET /api/sessions  -  -> {sessions:[{name,created,attached,windows,command,title,cwd,alias,notify,state,last_activity}]}"
+  },
+  "sources": [
+   "src/mobile/js/06-session-list.js:134-347",
+   "app.py:1521-1523",
+   "app.py:702-731"
+  ],
+  "shot": "rail-states",
+  "show": false
+ },
+ {
+  "id": "sessions.row-title",
+  "group": "Stay attached to your work",
+  "title": "See what each session is doing",
+  "outcome": "A session's row shows the program's own window title, such as an agent's current task.",
+  "where": "Automatic",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": {
+   "kind": "convention",
+   "text": "Set your pane title with an OSC 2 (or OSC 0) escape, e.g. printf '\\033]2;%s\\033\\\\' 'Refactoring auth'; the row shows it on the next list refresh with leading symbols stripped. A title shaped like user@host: /path, or equal to the hostname, is ignored and the row shows the folder name instead.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/06-session-list.js:250-263",
+   "app.py:711-716"
+  ],
+  "shot": "rail-states",
+  "show": true
+ },
+ {
+  "id": "sessions.refresh",
+  "group": "Stay attached to your work",
+  "title": "Refresh the session list",
+  "outcome": "Pull the list down, or press reload, to fetch the latest sessions and their states.",
+  "where": "Pull down on the session list, or the reload button in its header",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/06-session-list.js:539-555",
+   "src/mobile/js/06-session-list.js:134-183,537"
+  ],
+  "shot": "rail-states",
+  "show": false
+ },
+ {
+  "id": "sessions.new",
+  "group": "Stay attached to your work",
+  "title": "Start a new session",
+  "outcome": "Create a fresh terminal session on your computer and open it; leave the name blank and one is made up for you.",
+  "where": "Session list > + New session",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": {
+   "kind": "http",
+   "text": "Creates a detached tmux session (name required, max 60 chars, no '.' or ':'; dir defaults to ~). It appears in the user's list on the next refresh but does not open on their screen; the sess-MMDD-HHMM default name is the app's, not the route's.",
+   "contract": "POST /api/session  {name, dir?}  -> {session}"
+  },
+  "sources": [
+   "src/mobile/js/06-session-list.js:450-535",
+   "app.py:3133-3169"
+  ],
+  "shot": "new-session",
+  "show": false
+ },
+ {
+  "id": "sessions.new-shortcut",
+  "group": "Stay attached to your work",
+  "title": "New session from the keyboard",
+  "outcome": "One key press creates a session with a default name and opens it, without the naming dialog.",
+  "where": "Ctrl+Shift+L",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/31-wide-layout.js:340-357",
+   "src/mobile/index.src.html:1399-1401"
+  ],
+  "shot": "new-session-key",
+  "show": true
+ },
+ {
+  "id": "sessions.jump-shortcut",
+  "group": "Stay attached to your work",
+  "title": "Jump to a session by number",
+  "outcome": "Switch straight to the first to ninth session in the sidebar with one key combination.",
+  "where": "Ctrl+Shift+1 to 9",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/31-wide-layout.js:358-372",
+   "src/mobile/index.src.html:1396-1398"
+  ],
+  "shot": "rail-states",
+  "show": true
+ },
+ {
+  "id": "sessions.rename-alias",
+  "group": "Stay attached to your work",
+  "title": "Rename a session",
+  "outcome": "Give a session a display name every device shows, or change its real tmux name.",
+  "where": "Pencil icon on a session row > Display name / tmux name > Save",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": {
+   "kind": "http",
+   "text": "Sets the display name every device shows without renaming the session (an empty alias clears it), same as tmux set-option -t <session> @alias '<text>'. POST /api/session/rename {session, name} instead changes the real tmux name and drops every device's view of it, so use that only when asked.",
+   "contract": "POST /api/alias  {session, alias}  -> {session, alias}"
+  },
+  "sources": [
+   "src/mobile/js/06-session-list.js:359-411",
+   "app.py:1578-1601",
+   "app.py:1631-1680"
+  ],
+  "shot": "session-sheet",
+  "show": true
+ },
+ {
+  "id": "sessions.kill",
+  "group": "Stay attached to your work",
+  "title": "Close a session",
+  "outcome": "End a session after a confirmation, on every device that has it open.",
+  "where": "Trash icon on a session row, or Kill in the rename sheet",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": {
+   "kind": "http",
+   "text": "Only on the user's explicit request: kills the session and every device view grouped onto it, with no undo. A plain tmux kill-session on the base session would leave the device views alive.",
+   "contract": "POST /api/session/kill  {session}  -> {killed}"
+  },
+  "sources": [
+   "src/mobile/js/06-session-list.js:4-20,413-444",
+   "app.py:1604-1628"
+  ],
+  "shot": "session-sheet",
+  "show": true
+ },
+ {
+  "id": "sessions.multi-device",
+  "group": "Stay attached to your work",
+  "title": "Use one session from several devices",
+  "outcome": "A phone, tablet and laptop can watch one session at once, each at its own screen size.",
+  "where": "Automatic",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": {
+   "kind": "convention",
+   "text": "Sessions named <device>-<session> (or <device>-<session>-2..9, or ptui-<session>) grouped onto a user's session are PocketTUI's per-device views; tmux ls lists them as grouped. Do not attach to, rename or kill them: they are recreated on every connect and swept when stale.",
+   "contract": null
+  },
+  "sources": [
+   "app.py:1-17",
+   "app.py:984-1010",
+   "app.py:9811-9847"
+  ],
+  "shot": "rail-states",
+  "show": true
+ },
+ {
+  "id": "sessions.reconnect",
+  "group": "Stay attached to your work",
+  "title": "Pick up after a dropped connection",
+  "outcome": "When the phone sleeps or the network drops, reopening the app returns you to the same screen without a redraw or lost terminal modes.",
+  "where": "Automatic",
+  "surface": "both",
+  "gates": [],
+  "needs": "ping",
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/09-image-viewer.js:520-536,761-959",
+   "src/mobile/js/09-image-viewer.js:790-813",
+   "app.py:9864-9870",
+   "app.py:9887-9950"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "sessions.pane-memory",
+  "group": "Stay attached to your work",
+  "title": "Each session keeps its side panes",
+  "outcome": "Files, browser tabs or changes open beside a session come back when you return to it.",
+  "where": "Automatic (switch sessions in the sidebar)",
+  "surface": "wide",
+  "gates": [],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/09-image-viewer.js:348-520",
+   "src/mobile/js/26-side-pane.js:243",
+   "src/mobile/js/26-side-pane.js:260"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "sessions.scrollback-search",
+  "group": "Stay attached to your work",
+  "title": "Search the whole terminal history",
+  "outcome": "Find text anywhere in a session's scrollback, step between matches and see them highlighted in the terminal.",
+  "where": "Ctrl+Shift+F",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": "search",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/38-scrollback-search.js:1-196",
+   "src/mobile/js/31-wide-layout.js:318-323",
+   "app.py:5142-5192"
+  ],
+  "shot": "search",
+  "show": true
+ },
+ {
+  "id": "keys.key-bar",
+  "group": "Type and talk from a phone",
+  "title": "Terminal keys on a phone",
+  "outcome": "Esc, Tab, Ctrl, Shift and arrow keys sit above the phone keyboard for driving terminal programs.",
+  "where": "Key bar above the keyboard on the terminal screen; the arrows key expands the arrow row",
+  "surface": "phone",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/17-key-bar.js:1-89"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "keys.swipe-alternates",
+  "group": "Type and talk from a phone",
+  "title": "Extra symbols by swiping keys",
+  "outcome": "Swipe up on a key-bar key for its second character: pipe, tilde, backtick, Delete, Home or Page Up.",
+  "where": "Swipe up on a key-bar key",
+  "surface": "phone",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/17-key-bar.js:14-73"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "compose.composer",
+  "group": "Type and talk from a phone",
+  "title": "Write a message before sending",
+  "outcome": "Type or dictate a longer message in a box, edit it, then send it in one piece.",
+  "where": "Message box under the terminal (always shown on touch; the mic key toggles it on a laptop) > Send",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": {
+   "kind": "convention",
+   "text": "Text the user sends from the box arrives in your pane as one bracketed paste followed by Enter, so a multi-line message is a single submission, never line by line.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/17-key-bar.js:91-386"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "compose.paste-routing",
+  "group": "Type and talk from a phone",
+  "title": "Paste lands where you meant",
+  "outcome": "A paste goes into the terminal or the message box depending on which paste control you used.",
+  "where": "Long-press Paste (terminal), + attach (message box), Ctrl+V (wherever the cursor is)",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/17-key-bar.js:124-137"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "paste.image",
+  "group": "Type and talk from a phone",
+  "title": "Paste a screenshot for an agent",
+  "outcome": "Pasting an image saves it on your computer and types its path for agents like Claude Code to read.",
+  "where": "Ctrl+V over the terminal or message box with an image copied; long-press Paste on touch",
+  "surface": "both",
+  "gates": [],
+  "needs": "image_paste",
+  "hidden": 2,
+  "agent": {
+   "kind": "file",
+   "text": "A pasted image is saved as ~/.pockettui/images/paste-<stamp>-<hex>.<ext> (type sniffed from the bytes, newest 30 kept) and that absolute path is typed at the user's cursor; read the file at that path to see the image.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/32-image-paste.js:1-90,144-190",
+   "app.py:8660-8661",
+   "app.py:8705-8755"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "paste.attach-file",
+  "group": "Type and talk from a phone",
+  "title": "Attach any file from the phone",
+  "outcome": "Pick photos or documents on the phone and their paths on the computer go into your message, in order.",
+  "where": "Message box > + > photo or file picker",
+  "surface": "both",
+  "gates": [],
+  "needs": "upload",
+  "hidden": 2,
+  "agent": {
+   "kind": "file",
+   "text": "An attached file is saved as ~/.pockettui/uploads/<name>-<stamp>-<hex>.<ext> (newest 30 kept) and its absolute path is typed into the user's message; images go through the image-paste path instead.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/32-image-paste.js:192-317",
+   "app.py:8766-8837"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "paste.desktop-files",
+  "group": "Type and talk from a phone",
+  "title": "Paste files copied on a laptop",
+  "outcome": "Paste files copied in Finder or Explorer to upload them and insert their paths.",
+  "where": "Ctrl+V or Cmd+V with files on the clipboard",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": "upload",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/32-image-paste.js:136-190"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "gestures.edge-swipe-back",
+  "group": "Type and talk from a phone",
+  "title": "Swipe back to the list",
+  "outcome": "Swipe right from the left edge of the terminal to go back to the session list.",
+  "where": "Swipe right from the left screen edge",
+  "surface": "phone",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/20-edge-swipe.js:1-57"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "gestures.flick-scroll",
+  "group": "Type and talk from a phone",
+  "title": "Scroll back with a flick",
+  "outcome": "Drag or flick the terminal to scroll through its history, with momentum like a normal list.",
+  "where": "Drag or flick up and down on the terminal",
+  "surface": "phone",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/22-drag-scroll.js:1-178"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "gestures.long-press-select",
+  "group": "Type and talk from a phone",
+  "title": "Select and copy text by touch",
+  "outcome": "Hold on a word to select it, drag the handles to adjust, then tap Copy.",
+  "where": "Long-press the terminal",
+  "surface": "phone",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/23-long-press-select.js:1-398"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "gestures.long-press-paste",
+  "group": "Type and talk from a phone",
+  "title": "Paste into the terminal by touch",
+  "outcome": "Hold on empty space or the line you are typing on to get a one-tap Paste button.",
+  "where": "Long-press blank terminal space or the prompt line",
+  "surface": "phone",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/23-long-press-select.js:296-317,356-370"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "gestures.pinch-font",
+  "group": "Type and talk from a phone",
+  "title": "Pinch to resize terminal text",
+  "outcome": "Pinch the terminal to make its text bigger or smaller; the size is remembered.",
+  "where": "Two-finger pinch on the terminal",
+  "surface": "phone",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/24-pinch-zoom.js:1-95",
+   "src/mobile/js/07-terminal.js:103-127"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "terminal.shift-enter",
+  "group": "Type and talk from a phone",
+  "title": "New line without sending",
+  "outcome": "Shift+Enter adds a line break in an agent's input box instead of submitting it.",
+  "where": "Shift+Enter",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/07-terminal.js:129-147"
+  ],
+  "shot": "rail-shortcuts",
+  "show": true
+ },
+ {
+  "id": "terminal.copy-shortcut",
+  "group": "Type and talk from a phone",
+  "title": "Copy with a keyboard shortcut",
+  "outcome": "Copy the highlighted terminal text to your clipboard.",
+  "where": "Ctrl+Shift+C or Cmd+Shift+C (Cmd+C on a Mac)",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/07-terminal.js:169-192"
+  ],
+  "shot": "rail-shortcuts",
+  "show": false
+ },
+ {
+  "id": "terminal.ctrl-c-copy",
+  "group": "Type and talk from a phone",
+  "title": "Ctrl+C copies, then interrupts",
+  "outcome": "Off a Mac, Ctrl+C copies highlighted text; with nothing highlighted it stops the running program as usual.",
+  "where": "Ctrl+C with text highlighted",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/07-terminal.js:169-192"
+  ],
+  "shot": "rail-shortcuts",
+  "show": false
+ },
+ {
+  "id": "terminal.drag-select",
+  "group": "Type and talk from a phone",
+  "title": "Select text with the mouse",
+  "outcome": "Hold Shift (Option on a Mac) and drag to select terminal text; it is copied when you let go.",
+  "where": "Shift+drag, or Option+drag on a Mac",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/07-terminal.js:248-310"
+  ],
+  "shot": "rail-shortcuts",
+  "show": false
+ },
+ {
+  "id": "terminal.right-click-copy",
+  "group": "Type and talk from a phone",
+  "title": "Right-click to copy",
+  "outcome": "The browser's right-click Copy works on a terminal selection even when the program uses the mouse.",
+  "where": "Right-click a selection",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/07-terminal.js:289-309"
+  ],
+  "shot": "rail-shortcuts",
+  "show": false
+ },
+ {
+  "id": "terminal.keyboard-fit",
+  "group": "Type and talk from a phone",
+  "title": "Terminal stays above the keyboard",
+  "outcome": "When the phone keyboard opens, the terminal shrinks to fit so the prompt line and keys are never hidden.",
+  "where": "Automatic",
+  "surface": "phone",
+  "gates": [
+   "iOS",
+   "Android"
+  ],
+  "needs": null,
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/25-keyboard-geometry.js:1-315"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "dictation.dictate",
+  "group": "Type and talk from a phone",
+  "title": "Dictate into the terminal",
+  "outcome": "Tap the mic and speak; your own computer turns it into text, with no cloud service involved.",
+  "where": "Mic key in the message box (phone key bar, laptop key pill)",
+  "surface": "both",
+  "gates": [],
+  "needs": "voice",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "app.py:2833-2933",
+   "src/mobile/js/19-voice-capture.js",
+   "src/mobile/js/17-key-bar.js:44-45"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "dictation.resolver",
+  "group": "Type and talk from a phone",
+  "title": "Code words spelled correctly",
+  "outcome": "Dictated file names, commands and flags are fixed from your screen and folder, so \"pie test\" becomes pytest.",
+  "where": "Automatic",
+  "surface": "both",
+  "gates": [],
+  "needs": "voice",
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "resolver.py:1-20",
+   "app.py:2873-2933"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "dictation.engine",
+  "group": "Type and talk from a phone",
+  "title": "Choose the speech engine",
+  "outcome": "Pick between the phone's own dictation and the Parakeet or Whisper engines running on your computer.",
+  "where": "Settings > Dictation > Engine",
+  "surface": "both",
+  "gates": [],
+  "needs": "voice",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/05-settings.js:297-324,480-584",
+   "src/mobile/index.src.html:1289-1313",
+   "app.py:2834-2847"
+  ],
+  "shot": "settings-dictation",
+  "show": false
+ },
+ {
+  "id": "dictation.learned",
+  "group": "Type and talk from a phone",
+  "title": "Dictation learns your corrections",
+  "outcome": "Fix a dictated word before sending and the fix is applied next time; review or delete what it learned.",
+  "where": "Automatic; review in Settings > Dictation > Learned corrections",
+  "surface": "both",
+  "gates": [],
+  "needs": "learned",
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/19-voice-capture.js:190-204",
+   "src/mobile/js/17-key-bar.js:280-286",
+   "src/mobile/js/05-settings.js:619-679",
+   "app.py:3078-3130"
+  ],
+  "shot": "settings-dictation",
+  "show": true
+ },
+ {
+  "id": "dictation.phone-dictation",
+  "group": "Type and talk from a phone",
+  "title": "Use the phone's own dictation",
+  "outcome": "With the Phone engine chosen, or no computer paired, the mic uses the browser's built-in speech recognition.",
+  "where": "Settings > Dictation > Engine > Phone, then the mic key",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/18-speech-recognition.js:1-127"
+  ],
+  "shot": "settings-dictation",
+  "show": false
+ },
+ {
+  "id": "dictation.auto-fallback",
+  "group": "Type and talk from a phone",
+  "title": "Dictation survives engine failures",
+  "outcome": "If the computer's engine fails, the rest of the session switches to phone dictation and a dot on the mic says so.",
+  "where": "Automatic; tap the engine's row in Settings > Dictation to retry it",
+  "surface": "both",
+  "gates": [],
+  "needs": "voice",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/19-voice-capture.js:122-127,373-403,432-442",
+   "src/mobile/js/05-settings.js:519-539"
+  ],
+  "shot": "settings-dictation",
+  "show": false
+ },
+ {
+  "id": "dictation.retry",
+  "group": "Type and talk from a phone",
+  "title": "Resend a failed recording",
+  "outcome": "A recording that failed to upload or was cut off is kept, and one tap sends it again instead of re-recording.",
+  "where": "Retry bar under the message box after a failed take",
+  "surface": "both",
+  "gates": [],
+  "needs": "voice",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/19-voice-capture.js:1192-1226,1293-1361"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "dictation.level",
+  "group": "Type and talk from a phone",
+  "title": "See that the mic hears you",
+  "outcome": "A live level bar while recording shows right away if the microphone is picking up nothing.",
+  "where": "Automatic while recording",
+  "surface": "both",
+  "gates": [],
+  "needs": "voice",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/19-voice-capture.js:206-230,469-531"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "dictation.wake-lock",
+  "group": "Type and talk from a phone",
+  "title": "Screen stays on while recording",
+  "outcome": "The phone does not auto-lock in the middle of a long dictation.",
+  "where": "Automatic while recording",
+  "surface": "phone",
+  "gates": [],
+  "needs": "voice",
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/19-voice-capture.js:236-290"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "dictation.stop-watchdog",
+  "group": "Type and talk from a phone",
+  "title": "Recordings never get stuck",
+  "outcome": "If the browser fails to finish a recording, the app finishes it itself instead of hanging on Transcribing.",
+  "where": "Automatic",
+  "surface": "both",
+  "gates": [
+   "iOS",
+   "Safari"
+  ],
+  "needs": "voice",
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/19-voice-capture.js:975-1012"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "dictation.setup-engines",
+  "group": "Type and talk from a phone",
+  "title": "Install speech engines on the computer",
+  "outcome": "Download the Parakeet or Whisper speech engine onto your computer so dictation runs there.",
+  "where": "On the computer: ./setup_voice.sh (or the voice question the installer asks)",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": {
+   "kind": "cli",
+   "text": "Run bash ~/pockettui/setup_voice.sh --parakeet, --whisper or --all (no prompts; piped with no flag it installs both). Nothing leaves the machine; the phone's Settings > Dictation rows turn available once /api/voice_status reports the engine.",
+   "contract": null
+  },
+  "sources": [
+   "setup_voice.sh:1-60",
+   "install.sh:1928-2143"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "files.explorer",
+  "group": "Files and code",
+  "title": "Browse your computer's files",
+  "outcome": "Browse your computer's folders, starting at home or at the folder your terminal is in.",
+  "where": "Folder button on the session list (home), or the folder key in the key bar (session's folder)",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:2610",
+   "src/mobile/js/17-key-bar.js:46-50",
+   "app.py:3682-3729"
+  ],
+  "shot": "explorer",
+  "show": true
+ },
+ {
+  "id": "links.paths",
+  "group": "Files and code",
+  "title": "Tap printed file paths",
+  "outcome": "Paths printed in the terminal become links that open the file or folder in the right viewer.",
+  "where": "Tap or click a path printed in the terminal",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 3,
+  "agent": {
+   "kind": "convention",
+   "text": "Print absolute or ~/ paths (e.g. /home/u/out/report.md) and the user can tap them; printing does not open anything. The path must start at line start or after whitespace, a quote, ( [ { < = : or a comma, and stops at whitespace, quotes, brackets, : ; , so file.py:42 links only file.py; wrapped lines are stitched back together.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/08-links.js:1-266",
+   "src/mobile/js/28-file-explorer.js:979-1070",
+   "src/mobile/js/28-file-explorer.js:1840-1866"
+  ],
+  "shot": "key-pill",
+  "show": true
+ },
+ {
+  "id": "links.media-paths",
+  "group": "Files and code",
+  "title": "View printed images and videos",
+  "outcome": "When the terminal prints the path of a picture or video, tapping it opens it full-screen with no copying step.",
+  "where": "Tap or click a printed .png/.jpg/.gif/.webp/.svg/.bmp/.mp4/.webm/.mov path",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 2,
+  "agent": {
+   "kind": "convention",
+   "text": "Print the absolute path of an image or video you produced (png, jpg, jpeg, gif, webp, svg, bmp, mp4, webm, mov); the user taps it to view it full-screen. A printed .pdf path opens the PDF view, .md the rendered reader, .html a sandboxed page in a new tab, and anything else the editor.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/08-links.js:240-254,410-534",
+   "src/mobile/js/28-file-explorer.js:33",
+   "app.py:4178-4207"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "files.media-viewer",
+  "group": "Files and code",
+  "title": "Zoom into pictures and videos",
+  "outcome": "Images and videos open in a viewer with pinch and double-tap zoom, panning and download.",
+  "where": "Tap an image or video in the file browser or terminal; pinch, drag or double-tap inside the viewer",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/09-image-viewer.js:1-160",
+   "src/mobile/js/08-links.js:410-616"
+  ],
+  "shot": "viewer",
+  "show": true
+ },
+ {
+  "id": "files.pdf",
+  "group": "Files and code",
+  "title": "Read PDFs",
+  "outcome": "PDFs open beside the terminal on a laptop and in a new browser tab on a phone.",
+  "where": "Tap a .pdf in the file browser or terminal",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:1917",
+   "src/mobile/js/08-links.js:416-420"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "files.follow-cwd",
+  "group": "Files and code",
+  "title": "File browser follows the terminal",
+  "outcome": "The docked file browser keeps showing whatever folder the terminal beside it has moved into.",
+  "where": "Automatic (docked file browser still on the terminal's folder)",
+  "surface": "wide",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 3,
+  "agent": {
+   "kind": "convention",
+   "text": "The pane follows tmux's pane_current_path, which is the cwd of the pane's foreground process: a cd typed at the shell moves it, but a cd inside an agent's own subprocess does not. Print the folder's absolute path instead so the user can tap it.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/31-wide-layout.js:114-126",
+   "src/mobile/js/28-file-explorer.js:852",
+   "app.py:1526-1540",
+   "app.py:786-829"
+  ],
+  "shot": "explorer",
+  "show": true
+ },
+ {
+  "id": "files.remote-cwd",
+  "group": "Files and code",
+  "title": "Follow a folder over ssh",
+  "outcome": "When the terminal is logged into another machine over ssh, the file browser opens the same folder if your computer mounts it too.",
+  "where": "Automatic (docked file browser, ssh pane)",
+  "surface": "wide",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 5,
+  "agent": {
+   "kind": "convention",
+   "text": "Only for a pane whose foreground command is ssh: the remote shell must set its title to user@host: /absolute/path before any TUI takes over (tmux keeps the last such title in the pane option @ptui_remote_cwd). The path is used only if it exists locally, directly or through POCKETTUI_PATH_REWRITES; ~ paths are refused.",
+   "contract": null
+  },
+  "sources": [
+   "app.py:741-775",
+   "app.py:778-829",
+   "app.py:3305-3323"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "files.view-sort",
+  "group": "Files and code",
+  "title": "List or grid, sorted your way",
+  "outcome": "Show files as a list or a grid of icons, sorted by name, newest, oldest or size.",
+  "where": "File browser > layout pop-up (grid glyph)",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "src/mobile/index.src.html:716-738",
+   "src/mobile/js/28-file-explorer.js:1635-1660"
+  ],
+  "shot": "explorer-view-menu",
+  "show": false
+ },
+ {
+  "id": "files.thumbnails",
+  "group": "Files and code",
+  "title": "Picture previews in the grid",
+  "outcome": "In grid view, images, videos and PDFs show a small preview instead of a generic icon.",
+  "where": "Automatic in grid view",
+  "surface": "both",
+  "gates": [
+   "needs ffmpeg"
+  ],
+  "needs": "thumbs",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "app.py:4370-4500",
+   "app.py:1378-1462"
+  ],
+  "shot": "explorer-grid",
+  "show": true
+ },
+ {
+  "id": "files.branch-browse",
+  "group": "Files and code",
+  "title": "Read another git branch",
+  "outcome": "Look through the files of any branch of a repository without switching your working copy to it.",
+  "where": "File browser > branch pop-up at the right of the path bar (inside a repo)",
+  "surface": "both",
+  "gates": [],
+  "needs": "git_ref",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:1683-1800",
+   "app.py:3682-3729",
+   "app.py:4778-4843"
+  ],
+  "shot": "explorer-branch",
+  "show": true
+ },
+ {
+  "id": "files.path-bar",
+  "group": "Files and code",
+  "title": "Type a path to jump there",
+  "outcome": "Type a folder path with suggestions as you go, like tab completion in a shell.",
+  "where": "File browser > edit-path button beside the path bar",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:1215-1400"
+  ],
+  "shot": "explorer-path",
+  "show": false
+ },
+ {
+  "id": "files.new",
+  "group": "Files and code",
+  "title": "Create a file or folder",
+  "outcome": "Make a new empty file, which opens in the editor, or a new folder.",
+  "where": "File browser > + > New file / New folder",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:2618-2619",
+   "app.py:3816-3831"
+  ],
+  "shot": "explorer-add",
+  "show": true
+ },
+ {
+  "id": "files.rename",
+  "group": "Files and code",
+  "title": "Rename a file or folder",
+  "outcome": "Give a file or folder a new name in place.",
+  "where": "Long-press (or right-click) a file > Rename",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "app.py:3832-3854"
+  ],
+  "shot": "explorer-actions",
+  "show": true
+ },
+ {
+  "id": "files.delete",
+  "group": "Files and code",
+  "title": "Delete a file",
+  "outcome": "Delete a file or an empty folder after confirming.",
+  "where": "Long-press (or right-click) a file > Delete",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "app.py:3855-3882"
+  ],
+  "shot": "explorer-actions",
+  "show": false
+ },
+ {
+  "id": "files.upload",
+  "group": "Files and code",
+  "title": "Upload files to the computer",
+  "outcome": "Send files from your device into the folder on screen, with a prompt before replacing one.",
+  "where": "File browser > + > Upload",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:2620",
+   "app.py:3883-3920"
+  ],
+  "shot": "explorer-add",
+  "show": true
+ },
+ {
+  "id": "files.drop-upload",
+  "group": "Files and code",
+  "title": "Drag files in to upload",
+  "outcome": "Drag files from your desktop onto the file browser to upload them to that folder.",
+  "where": "Drag files from the desktop onto the file list",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": "fs",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "app.py:3883-3920"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "files.drag-move",
+  "group": "Files and code",
+  "title": "Drag to move files",
+  "outcome": "Drag a file onto a folder, tile or breadcrumb to move it, even between two file browsers.",
+  "where": "Drag a row onto a folder, tile or breadcrumb",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": "fs",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "app.py:3832-3854"
+  ],
+  "shot": "explorer-drag",
+  "show": true
+ },
+ {
+  "id": "files.download",
+  "group": "Files and code",
+  "title": "Download a file to your device",
+  "outcome": "Save a file from your computer onto the device in your hand.",
+  "where": "Long-press a file > Download, or the download icon in the editor, reader or viewer",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "app.py:4056-4177"
+  ],
+  "shot": "explorer-actions",
+  "show": false
+ },
+ {
+  "id": "files.download-folder",
+  "group": "Files and code",
+  "title": "Download a whole folder",
+  "outcome": "Download a folder as one zip file, built as it downloads.",
+  "where": "Long-press a folder > Download",
+  "surface": "both",
+  "gates": [],
+  "needs": "zip_dir",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "app.py:4056-4098",
+   "app.py:1378-1462"
+  ],
+  "shot": "explorer-actions",
+  "show": true
+ },
+ {
+  "id": "files.pull-refresh",
+  "group": "Files and code",
+  "title": "Refresh a folder",
+  "outcome": "Pull down at the top of a folder listing to reload it.",
+  "where": "Pull down on the file list",
+  "surface": "phone",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:2370-2382"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "files.swipe-back",
+  "group": "Files and code",
+  "title": "Swipe back a folder",
+  "outcome": "Swipe from the left edge to go up to the previous folder.",
+  "where": "Swipe right from the left screen edge in the file browser",
+  "surface": "phone",
+  "gates": [
+   "iOS",
+   "Android"
+  ],
+  "needs": "fs",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:284"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "files.two-explorers-sync",
+  "group": "Files and code",
+  "title": "Two file browsers stay in sync",
+  "outcome": "A change made in one docked file browser shows up at once in another showing the same folder.",
+  "where": "Automatic with two file browsers open",
+  "surface": "wide",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:2441"
+  ],
+  "shot": "two-explorers",
+  "show": false
+ },
+ {
+  "id": "files.editor",
+  "group": "Files and code",
+  "title": "Edit files with highlighting",
+  "outcome": "Open any text file in a code editor with syntax colours and save it back to your computer.",
+  "where": "Tap a text file in the file browser, or Edit in its action sheet",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/29-editor.js:244",
+   "app.py:3730-3815"
+  ],
+  "shot": "editor",
+  "show": true
+ },
+ {
+  "id": "files.save-conflict",
+  "group": "Files and code",
+  "title": "No overwriting others' changes",
+  "outcome": "If the file changed on disk while you edited it, Save asks whether to overwrite it or reload the new version.",
+  "where": "Automatic on Save",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 3,
+  "agent": {
+   "kind": "convention",
+   "text": "If you write a file the user has open in the editor, their next Save gets a conflict prompt (Overwrite or Reload) instead of silently replacing your change; nothing is shown to them until they press Save.",
+   "contract": null
+  },
+  "sources": [
+   "app.py:3770-3815"
+  ],
+  "shot": "editor",
+  "show": false
+ },
+ {
+  "id": "files.wrap",
+  "group": "Files and code",
+  "title": "Wrap long lines",
+  "outcome": "Turn line wrapping on for code files; text and Markdown always wrap.",
+  "where": "Editor > Wrap",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/29-editor.js:490-494"
+  ],
+  "shot": "editor",
+  "show": false
+ },
+ {
+  "id": "files.markdown",
+  "group": "Files and code",
+  "title": "Read Markdown nicely formatted",
+  "outcome": "Markdown files open formatted, with tables, task lists and maths, and one tap switches to editing.",
+  "where": "Tap a .md file; Edit in the reader's bar",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 2,
+  "agent": {
+   "kind": "convention",
+   "text": "Write a .md file (tables, task lists, $...$ and $$...$$ maths, images by relative path) and print its absolute path; the user taps it and reads it rendered. The file's content can never run script in the reader.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/33-md-reader.js:538",
+   "src/mobile/js/33-md-reader.js:285-313,488-534",
+   "src/mobile/js/33-md-reader.js:624-632"
+  ],
+  "shot": "markdown",
+  "show": true
+ },
+ {
+  "id": "files.docked-views",
+  "group": "Files and code",
+  "title": "Open files beside the terminal",
+  "outcome": "On a laptop, files open inside the side pane next to the live terminal instead of covering it.",
+  "where": "Automatic (open a file from the docked file browser)",
+  "surface": "wide",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:406"
+  ],
+  "shot": "editor",
+  "show": false
+ },
+ {
+  "id": "git.pane",
+  "group": "Files and code",
+  "title": "Review your code changes",
+  "outcome": "See the uncommitted and staged changes of the repository your terminal is in, beside the terminal.",
+  "where": "Ctrl+Shift+G, or the pane More menu > Changes",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": "git",
+  "hidden": 3,
+  "agent": {
+   "kind": "convention",
+   "text": "The pane lists the repository that contains the session pane's cwd, so edits you make there show up for the user to stage or revert per block; it refreshes by polling, you do not need to signal it.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/37-git-diff.js",
+   "src/mobile/js/31-wide-layout.js:325-338",
+   "app.py:4739-4777",
+   "app.py:4844-4931"
+  ],
+  "shot": "diff",
+  "show": true
+ },
+ {
+  "id": "git.tracked-untracked",
+  "group": "Files and code",
+  "title": "Tracked and new files separately",
+  "outcome": "Switch between changes to files git already tracks and brand-new files, so a slow folder does not hold up the first list.",
+  "where": "Changes pane > Tracked / Untracked",
+  "surface": "wide",
+  "gates": [],
+  "needs": "git",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "app.py:4739-4777"
+  ],
+  "shot": "diff-untracked",
+  "show": false
+ },
+ {
+  "id": "git.stage-file",
+  "group": "Files and code",
+  "title": "Stage or unstage a file",
+  "outcome": "Add a file's changes to the next commit, or take them back out.",
+  "where": "Tick or curved arrow beside a file in the Changes pane",
+  "surface": "wide",
+  "gates": [],
+  "needs": "git",
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "app.py:4932-5000"
+  ],
+  "shot": "diff",
+  "show": false
+ },
+ {
+  "id": "git.discard-file",
+  "group": "Files and code",
+  "title": "Throw away a file's changes",
+  "outcome": "Undo all changes to a file, or delete a new file, after a confirmation.",
+  "where": "Red cross beside a file in the Changes pane",
+  "surface": "wide",
+  "gates": [],
+  "needs": "git",
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "app.py:4932-5000"
+  ],
+  "shot": "diff",
+  "show": false
+ },
+ {
+  "id": "git.block-actions",
+  "group": "Files and code",
+  "title": "Keep or undo one change",
+  "outcome": "Stage, revert or unstage a single block of changed lines rather than the whole file.",
+  "where": "Hover or tap a changed block > its tick, cross or curved arrow",
+  "surface": "wide",
+  "gates": [],
+  "needs": "git",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/37-git-diff.js:133",
+   "app.py:4932-5000"
+  ],
+  "shot": "diff",
+  "show": true
+ },
+ {
+  "id": "git.undo-revert",
+  "group": "Files and code",
+  "title": "Undo a reverted block",
+  "outcome": "Right after reverting a block, an Undo button puts the change back.",
+  "where": "Undo in the toast shown for 6 seconds after a revert",
+  "surface": "wide",
+  "gates": [],
+  "needs": "git",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/37-git-diff.js:793-798"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "git.resize-list",
+  "group": "Files and code",
+  "title": "Resize the changes list",
+  "outcome": "Drag the divider in the Changes pane to give more room to the file list or the diff.",
+  "where": "Drag the divider inside the Changes pane",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": "git",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/37-git-diff.js:350"
+  ],
+  "shot": "diff",
+  "show": false
+ },
+ {
+  "id": "panes.side-column",
+  "group": "Files and code",
+  "title": "Keep tools beside the terminal",
+  "outcome": "On a laptop the file browser, browser and changes view sit beside the live terminal, not over it.",
+  "where": "Folder key, globe key or Ctrl+Shift+G on a wide screen; each pane's cross closes it",
+  "surface": "wide",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/31-wide-layout.js:14",
+   "src/mobile/js/26-side-pane.js:13"
+  ],
+  "shot": "explorer",
+  "show": true
+ },
+ {
+  "id": "panes.two-stacked",
+  "group": "Files and code",
+  "title": "Two tools at once",
+  "outcome": "Stack two panes beside the terminal, for example files above a browser.",
+  "where": "Pane bar > More > another pane's name",
+  "surface": "wide",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/26-side-pane.js:178"
+  ],
+  "shot": "two-panes",
+  "show": true
+ },
+ {
+  "id": "panes.same-type-twice",
+  "group": "Files and code",
+  "title": "Two of the same tool",
+  "outcome": "Open a second file browser, browser or changes view, each with its own folder, tabs or tab choice.",
+  "where": "Pane bar > More > the same pane's name",
+  "surface": "wide",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/26-side-pane.js:374",
+   "src/mobile/js/28-file-explorer.js:2441",
+   "src/mobile/js/42-browser.js:3182",
+   "src/mobile/js/37-git-diff.js:1000"
+  ],
+  "shot": "two-explorers",
+  "show": false
+ },
+ {
+  "id": "panes.resize-column",
+  "group": "Files and code",
+  "title": "Resize the side pane",
+  "outcome": "Drag the edge between the terminal and the side pane to make the pane wider or narrower; the width is kept.",
+  "where": "Drag the divider between terminal and pane",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": null,
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/26-side-pane.js:493"
+  ],
+  "shot": "two-panes",
+  "show": false
+ },
+ {
+  "id": "panes.resize-rows",
+  "group": "Files and code",
+  "title": "Resize two stacked panes",
+  "outcome": "Drag the line between two stacked panes to share the height differently.",
+  "where": "Drag the divider between two stacked panes",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/26-side-pane.js:522"
+  ],
+  "shot": "two-panes",
+  "show": false
+ },
+ {
+  "id": "panes.swap",
+  "group": "Files and code",
+  "title": "Swap the two panes",
+  "outcome": "Move the top pane to the bottom and the bottom one to the top.",
+  "where": "Swap chevron in a pane's bar, or More > move pane",
+  "surface": "wide",
+  "gates": [],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/26-side-pane.js:273"
+  ],
+  "shot": "two-panes",
+  "show": false
+ },
+ {
+  "id": "panes.expand",
+  "group": "Files and code",
+  "title": "Expand a pane",
+  "outcome": "Let one pane fill the whole window for a while, then shrink it back beside the terminal.",
+  "where": "Expand icon in a pane's bar",
+  "surface": "wide",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/26-side-pane.js:301",
+   "src/mobile/js/28-file-explorer.js:648"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "panes.more-menu",
+  "group": "Files and code",
+  "title": "More pane options",
+  "outcome": "A menu in each pane's bar opens other panes and holds the buttons a narrow bar has no room for.",
+  "where": "More key in a docked pane's bar",
+  "surface": "wide",
+  "gates": [],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/26-side-pane.js:391",
+   "src/mobile/js/26-side-pane.js:445"
+  ],
+  "shot": "explorer-more",
+  "show": false
+ },
+ {
+  "id": "panes.focused-toggle",
+  "group": "Files and code",
+  "title": "Keys follow your last pane",
+  "outcome": "With two panes of the same kind open, its key closes the one you last worked in.",
+  "where": "Automatic (click into a pane, then use its key)",
+  "surface": "wide",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/26-side-pane.js:100",
+   "src/mobile/js/26-side-pane.js:110"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "links.urls",
+  "group": "Preview and browse",
+  "title": "Tap printed web links",
+  "outcome": "Web addresses printed in the terminal are links; on a phone they open in your browser.",
+  "where": "Tap or click an http(s) address printed in the terminal",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": {
+   "kind": "convention",
+   "text": "Print full http:// or https:// URLs; trailing punctuation and unbalanced closing brackets are trimmed. Printing does not open anything; the user taps it.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/08-links.js:15-18,182-238",
+   "src/mobile/js/08-links.js:396-408"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "links.localhost-relay",
+  "group": "Preview and browse",
+  "title": "Open dev servers on your phone",
+  "outcome": "Tap a localhost address a dev server prints and it opens on your phone, no port forwarding needed.",
+  "where": "Tap a http://localhost:PORT (or 127.0.0.1, 0.0.0.0, [::1]) link printed in the terminal",
+  "surface": "phone",
+  "gates": [],
+  "needs": "relay",
+  "hidden": 5,
+  "agent": {
+   "kind": "convention",
+   "text": "Print http://localhost:PORT (or 127.0.0.1 / 0.0.0.0) for a server listening on loopback. On tap the phone rewrites the host to the computer's address and asks the backend (POST /api/relay {host, port}) to relay that port number to your loopback listener; printing alone opens and binds nothing, and nothing is relayed until the server is actually listening.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/08-links.js:342-408",
+   "app.py:5350-5452"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "links.wide-to-pane",
+  "group": "Preview and browse",
+  "title": "Terminal links open beside it",
+  "outcome": "On a laptop, any web link tapped in the terminal opens in the built-in browser pane, since it came from your computer.",
+  "where": "Click an http(s) link printed in the terminal",
+  "surface": "wide",
+  "gates": [
+   "needs httpx"
+  ],
+  "needs": "browse",
+  "hidden": 4,
+  "agent": {
+   "kind": "convention",
+   "text": "On a wide layout every http(s) URL you print opens in the in-app browser pane, fetched by the computer, so http://localhost:PORT works there directly with no relay.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/08-links.js:240-248,320-340"
+  ],
+  "shot": "browser",
+  "show": false
+ },
+ {
+  "id": "preview.html-file",
+  "group": "Preview and browse",
+  "title": "Open an HTML report",
+  "outcome": "HTML files open as real pages in a new tab, isolated so they cannot reach your pairing code.",
+  "where": "Tap an .html file in the file browser or a printed .html path",
+  "surface": "both",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 2,
+  "agent": {
+   "kind": "convention",
+   "text": "Write a self-contained .html report and print its absolute path; tapping opens it rendered in a new tab from a signed, sandboxed address, and relative links to sibling files resolve.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:98,1864",
+   "app.py:4502-4560"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "browser.open",
+  "group": "Preview and browse",
+  "title": "Browse pages your computer can reach",
+  "outcome": "A browser pane shows what your computer can reach, such as dev servers and intranet pages.",
+  "where": "Globe key in the laptop key pill",
+  "surface": "wide",
+  "gates": [
+   "needs httpx"
+  ],
+  "needs": "browse",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/17-key-bar.js:51-55",
+   "src/mobile/js/42-browser.js:3240-3272",
+   "app.py:7871-7960",
+   "app.py:8181-8395"
+  ],
+  "shot": "browser",
+  "show": true
+ },
+ {
+  "id": "browser.stream",
+  "group": "Preview and browse",
+  "title": "Real Chrome for difficult sites",
+  "outcome": "Sites that need a real login or break in the pane run in your computer's Chrome, streamed to you.",
+  "where": "Browser address field > page-mode key > Stream this site from the computer's Chrome",
+  "surface": "wide",
+  "gates": [
+   "needs Chromium"
+  ],
+  "needs": "browser_full",
+  "hidden": 3,
+  "agent": {
+   "kind": "cli",
+   "text": "If the user wants streamed pages, run pockettui browser install (then pockettui browser check / status) on the computer; the pane offers the mode once the server reports browser_full, which is frozen at server start, so the service must restart.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/43-full-browser.js",
+   "src/mobile/js/42-browser.js:324",
+   "app.py:9727",
+   "chromium.py"
+  ],
+  "shot": "browser",
+  "show": true
+ },
+ {
+  "id": "browser.local-network",
+  "group": "Preview and browse",
+  "title": "Run top-window intranet apps",
+  "outcome": "Load a page without the sandbox for apps that refuse to run inside a frame, such as some company portals.",
+  "where": "Browser address field > page-mode key > Use the computer's network for this tab",
+  "surface": "wide",
+  "gates": [],
+  "needs": "browse_tab",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "app.py:7871-7899"
+  ],
+  "shot": "browser",
+  "show": false
+ },
+ {
+  "id": "browser.tabs",
+  "group": "Preview and browse",
+  "title": "Several pages in tabs",
+  "outcome": "Keep up to eight pages open as tabs, each with its own history and zoom.",
+  "where": "+ after the browser's tab strip; links that open new windows add tabs",
+  "surface": "wide",
+  "gates": [
+   "needs httpx"
+  ],
+  "needs": "browse",
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/42-browser.js"
+  ],
+  "shot": "browser",
+  "show": false
+ },
+ {
+  "id": "browser.bookmarks",
+  "group": "Preview and browse",
+  "title": "Bookmarks shared across devices",
+  "outcome": "Star a page and it shows in the bookmarks bar on every device paired with that computer.",
+  "where": "Star in the browser's tool row; bookmarks bar under the tabs",
+  "surface": "wide",
+  "gates": [],
+  "needs": "bookmarks",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "app.py:8031-8063"
+  ],
+  "shot": "browser",
+  "show": false
+ },
+ {
+  "id": "browser.zoom",
+  "group": "Preview and browse",
+  "title": "Zoom pages per site",
+  "outcome": "Set a zoom level from 50 to 200 percent, remembered for each site.",
+  "where": "Browser > zoom key (or More > zoom in / out / actual size when docked)",
+  "surface": "wide",
+  "gates": [
+   "needs httpx"
+  ],
+  "needs": "browse",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/42-browser.js:1932-2045"
+  ],
+  "shot": "browser-more",
+  "show": false
+ },
+ {
+  "id": "browser.open-outside",
+  "group": "Preview and browse",
+  "title": "Open pages in your own browser",
+  "outcome": "Send the current page to your device's normal browser; addresses only your computer can reach open through the computer.",
+  "where": "Arrow in the address field, or More > Open in your browser when docked",
+  "surface": "wide",
+  "gates": [
+   "needs httpx"
+  ],
+  "needs": "browse",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/42-browser.js:1420-1460",
+   "app.py:8396-8450"
+  ],
+  "shot": "browser",
+  "show": false
+ },
+ {
+  "id": "browser.address-search",
+  "group": "Preview and browse",
+  "title": "Search or type an address",
+  "outcome": "Type a web address or plain words; words search DuckDuckGo, and a missing http or https is guessed and retried.",
+  "where": "Browser address field > Enter",
+  "surface": "wide",
+  "gates": [
+   "needs httpx"
+  ],
+  "needs": "browse",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/42-browser.js:733",
+   "src/mobile/js/42-browser.js:755",
+   "src/mobile/js/42-browser.js:1626"
+  ],
+  "shot": "browser",
+  "show": false
+ },
+ {
+  "id": "browser.hint-bar",
+  "group": "Preview and browse",
+  "title": "Suggestion when a page fails",
+  "outcome": "When a site blocks the pane, a bar offers to open it in the computer's Chrome instead.",
+  "where": "Hint bar under a failing page",
+  "surface": "wide",
+  "gates": [
+   "needs Chromium"
+  ],
+  "needs": "browser_full",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/42-browser.js"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "browser.auto-handoff",
+  "group": "Preview and browse",
+  "title": "Sign-in pages switch automatically",
+  "outcome": "Pages the pane can never show, like Google or GitHub sign-in, switch to the computer's Chrome on their own.",
+  "where": "Automatic",
+  "surface": "wide",
+  "gates": [
+   "needs Chromium"
+  ],
+  "needs": "browser_full",
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/42-browser.js:1642",
+   "app.py:7871-8400"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "browser.pdf",
+  "group": "Preview and browse",
+  "title": "PDF links in the browser",
+  "outcome": "A PDF link inside a page opens in a mode that can show it, or offers to open it in your own browser.",
+  "where": "Tap a PDF link inside a page",
+  "surface": "wide",
+  "gates": [
+   "needs httpx"
+  ],
+  "needs": "browse",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/42-browser.js:1674",
+   "src/mobile/js/42-browser.js:1692-1720"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "browser.stream-copy-paste",
+  "group": "Preview and browse",
+  "title": "Copy and paste in streamed pages",
+  "outcome": "Right-click a streamed page for Copy, Copy link, Open link in new tab and Paste.",
+  "where": "Right-click a streamed tab",
+  "surface": "wide",
+  "gates": [
+   "needs Chromium"
+  ],
+  "needs": "browser_full",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/43-full-browser.js:934-991"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "browser.stream-dialogs",
+  "group": "Preview and browse",
+  "title": "Page pop-ups and logins shown",
+  "outcome": "Alerts, confirmations and password prompts from a streamed page appear as the app's own dialogs, and Escape still reaches the page.",
+  "where": "Automatic",
+  "surface": "wide",
+  "gates": [
+   "needs Chromium"
+  ],
+  "needs": "browser_full",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/43-full-browser.js:1085",
+   "src/mobile/js/42-browser.js:2958"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "browser.stream-upload",
+  "group": "Preview and browse",
+  "title": "Upload files to streamed pages",
+  "outcome": "A page's file button opens your device's own file picker and hands the file to the page.",
+  "where": "Tap a file button on a streamed page",
+  "surface": "wide",
+  "gates": [
+   "needs Chromium"
+  ],
+  "needs": "browser_full",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/43-full-browser.js:1186-1254",
+   "app.py:8163-8180"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "browser.stream-downloads",
+  "group": "Preview and browse",
+  "title": "Get downloads from streamed pages",
+  "outcome": "Files a streamed page downloads are saved on the computer and then offered to your device, automatically under 200 MB.",
+  "where": "Automatic when a streamed page downloads a file",
+  "surface": "wide",
+  "gates": [
+   "needs Chromium"
+  ],
+  "needs": "browser_full",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/42-browser.js:405"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "browser.stream-all",
+  "group": "Preview and browse",
+  "title": "Stream every new tab",
+  "outcome": "Make every new browser tab open in the computer's Chrome instead of the lighter proxied mode.",
+  "where": "Settings > Connection > Browser > Stream every tab from the computer's Chrome",
+  "surface": "both",
+  "gates": [
+   "needs Chromium"
+  ],
+  "needs": "browser_full",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/index.src.html:1257-1264",
+   "src/mobile/js/05-settings.js:602-604",
+   "src/mobile/js/42-browser.js:305-330"
+  ],
+  "shot": "settings-browser",
+  "show": false
+ },
+ {
+  "id": "browser.clear-data",
+  "group": "Preview and browse",
+  "title": "Clear the computer's browsing data",
+  "outcome": "Delete every cookie and login the computer's Chrome has kept, after a confirmation; refused while a streamed tab is open.",
+  "where": "Settings > Connection > Browser > Clear browsing data",
+  "surface": "both",
+  "gates": [
+   "needs Chromium"
+  ],
+  "needs": "browser_full",
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/index.src.html:1271",
+   "src/mobile/js/05-settings.js:605-614",
+   "src/mobile/js/42-browser.js:320",
+   "app.py:8092-8125"
+  ],
+  "shot": "settings-browser",
+  "show": false
+ },
+ {
+  "id": "connect.first-run",
+  "group": "Connect computers and devices",
+  "title": "Guided first-time setup",
+  "outcome": "A two-step guide walks a new device through installing on the computer and entering its address and code, with copy buttons and a short FAQ.",
+  "where": "Opens automatically on a device that is not paired yet",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/05-settings.js:171-233,350-363",
+   "src/mobile/index.src.html:1158-1201"
+  ],
+  "shot": "first-run",
+  "show": false
+ },
+ {
+  "id": "connect.install-tailscale",
+  "group": "Connect computers and devices",
+  "title": "Reach your computer from anywhere",
+  "outcome": "The installer finds Tailscale, prints the command that puts PocketTUI on your private network, and shows the address.",
+  "where": "On the computer: curl -fsSL https://pockettui.com/install.sh | bash",
+  "surface": "both",
+  "gates": [
+   "Tailscale install"
+  ],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "install.sh:2264-2331",
+   "install.sh:2494-2531"
+  ],
+  "shot": "first-run",
+  "show": true
+ },
+ {
+  "id": "connect.install-lan",
+  "group": "Connect computers and devices",
+  "title": "Connect on the same network",
+  "outcome": "Without Tailscale, the installer prints your computer's local network address for devices on the same Wi-Fi.",
+  "where": "On the computer: the installer, when Tailscale is absent",
+  "surface": "both",
+  "gates": [
+   "LAN install"
+  ],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "install.sh:2345-2400"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "connect.pairing-code",
+  "group": "Connect computers and devices",
+  "title": "Pair with a one-time code",
+  "outcome": "A short code printed by the installer is typed once on each device and guards every connection; wrong guesses are slowed down.",
+  "where": "Settings > Connection > Pairing code",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": {
+   "kind": "file",
+   "text": "The code lives in ~/pockettui/.token (mode 0600, readable by the user the service runs as). Send it as the X-PocketTUI-Token header on /api/* calls; never print it into the terminal, since every device attached to the session would see it.",
+   "contract": null
+  },
+  "sources": [
+   "app.py:76",
+   "app.py:144-197",
+   "app.py:296-368",
+   "app.py:507-539",
+   "install.sh:1265-1298"
+  ],
+  "shot": "settings-connection",
+  "show": false
+ },
+ {
+  "id": "connect.code-forgiving",
+  "group": "Connect computers and devices",
+  "title": "Pairing code typos forgiven",
+  "outcome": "The code field ignores dashes, spaces and case and reads 0 and 1 as O and I.",
+  "where": "Settings > Connection > Pairing code (typing or pasting)",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/05-settings.js:85-104,683-707",
+   "app.py:173-186"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "connect.port-field",
+  "group": "Connect computers and devices",
+  "title": "Pair using a custom port",
+  "outcome": "Enter a port separately when your computer's address has none.",
+  "where": "Settings > Connection > Port",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/05-settings.js:61-76",
+   "src/mobile/index.src.html:1242-1244"
+  ],
+  "shot": "settings-connection",
+  "show": false
+ },
+ {
+  "id": "connect.pair-qr",
+  "group": "Connect computers and devices",
+  "title": "Pair another device by QR code",
+  "outcome": "An already paired device shows a QR code a second device scans, without going back to the computer.",
+  "where": "Settings > Connection > Pair another device (scan with the new device)",
+  "surface": "both",
+  "gates": [],
+  "needs": "pair_qr",
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/05-settings.js:240-285",
+   "src/mobile/index.src.html:1279-1286",
+   "app.py:1491-1518",
+   "src/mobile/js/40-profiles.js:305-322"
+  ],
+  "shot": "settings-pair",
+  "show": true
+ },
+ {
+  "id": "connect.add-computer",
+  "group": "Connect computers and devices",
+  "title": "Connect another computer",
+  "outcome": "Pair one device with several computers and keep each one's address and code under its own name.",
+  "where": "Settings > Connection > Computer > Add another computer",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/40-profiles.js:14-17,87-133,169-174",
+   "src/mobile/index.src.html:1217-1224"
+  ],
+  "shot": "settings-connection",
+  "show": true
+ },
+ {
+  "id": "connect.switch-computer",
+  "group": "Connect computers and devices",
+  "title": "Switch between computers",
+  "outcome": "Jump to another paired computer and see its sessions; each is listed by name with its address underneath.",
+  "where": "Computer pill on the session list (2+ computers), or Settings > Connection > Computer",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/40-profiles.js:243-274,195-220",
+   "src/mobile/js/40-profiles.js:87-121,269-271"
+  ],
+  "shot": "settings-connection",
+  "show": false
+ },
+ {
+  "id": "connect.rename-computer",
+  "group": "Connect computers and devices",
+  "title": "Name a computer",
+  "outcome": "Replace a computer's automatic name with your own label, shown everywhere it is named.",
+  "where": "Settings > Connection > Computer name > Save",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/index.src.html:1236-1238",
+   "src/mobile/js/05-settings.js:389,404,419"
+  ],
+  "shot": "settings-connection",
+  "show": false
+ },
+ {
+  "id": "connect.forget-computer",
+  "group": "Connect computers and devices",
+  "title": "Forget a computer",
+  "outcome": "Remove a computer's address and code from this device, after a confirmation.",
+  "where": "Settings > Connection > Forget, or the trash icon on a row of the Computer chooser",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/05-settings.js:364-369",
+   "src/mobile/js/40-profiles.js:60-81,283-303"
+  ],
+  "shot": "settings-connection",
+  "show": false
+ },
+ {
+  "id": "connect.device-name",
+  "group": "Connect computers and devices",
+  "title": "Name this device",
+  "outcome": "Give this phone or browser a name so two devices watching the same session each keep their own view.",
+  "where": "Settings > Connection > Device name",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/index.src.html:1239-1241",
+   "src/mobile/js/02-debug-log.js:457-466"
+  ],
+  "shot": "settings-connection",
+  "show": false
+ },
+ {
+  "id": "connect.version",
+  "group": "Connect computers and devices",
+  "title": "See which version is running",
+  "outcome": "Settings shows the app's version next to the computer's server version and flags when they differ.",
+  "where": "Settings > About > App vX · Server vY",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": {
+   "kind": "cli",
+   "text": "Run pockettui version (or pockettui status) on the computer; GET /api/version returns the same server version with the capability map.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/36-server-version.js:80-113,204-237",
+   "app.py:1463-1490"
+  ],
+  "shot": "settings-about",
+  "show": false
+ },
+ {
+  "id": "connect.update",
+  "group": "Connect computers and devices",
+  "title": "Update the computer from your phone",
+  "outcome": "Start the server update from your device and watch it finish; older servers show the command instead.",
+  "where": "Settings > About > Update server, or the Update pill on the session list",
+  "surface": "both",
+  "gates": [],
+  "needs": "update",
+  "hidden": 3,
+  "agent": {
+   "kind": "cli",
+   "text": "Run pockettui update on the computer (--allow-downgrade to go back). The service restarts but tmux sessions survive; from the app the same update runs in a tmux session named pockettui-update, and GET /api/update_status reports {state, session_alive}.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/36-server-version.js:229-328,377-418",
+   "src/mobile/index.src.html:418,1493-1498",
+   "app.py:3225-3300"
+  ],
+  "shot": "settings-about",
+  "show": true
+ },
+ {
+  "id": "connect.update-resume",
+  "group": "Connect computers and devices",
+  "title": "Update progress survives a reload",
+  "outcome": "If the app reloads while the computer updates, it picks up the progress instead of losing track.",
+  "where": "Automatic",
+  "surface": "both",
+  "gates": [],
+  "needs": "update_status",
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/36-server-version.js:340-372,420-442",
+   "app.py:3277-3300"
+  ],
+  "shot": "update-failed",
+  "show": false
+ },
+ {
+  "id": "connect.type-it",
+  "group": "Connect computers and devices",
+  "title": "Get fix commands typed for you",
+  "outcome": "When a command would fix a problem, the app types it at your prompt; you press Enter.",
+  "where": "Type it for me on the connection-error card, or Settings > About after a failed update",
+  "surface": "both",
+  "gates": [],
+  "needs": "type",
+  "hidden": 4,
+  "agent": {
+   "kind": "http",
+   "text": "Types literal text at the prompt of a named session's active pane; every \\r and \\n is stripped so it never runs, and the user must press Enter. Use it to stage a command for the user in another session (max 4096 chars); it does not create a session and does not switch the user's screen.",
+   "contract": "POST /api/session/type  {name, dev?, text}  -> {session, chars}"
+  },
+  "sources": [
+   "src/mobile/js/39-type-command.js:1-64",
+   "src/mobile/js/06-session-list.js:185-203",
+   "app.py:3172-3222"
+  ],
+  "shot": "update-failed",
+  "show": true
+ },
+ {
+  "id": "connect.cli",
+  "group": "Connect computers and devices",
+  "title": "Manage PocketTUI from the command line",
+  "outcome": "A pockettui command on the computer updates, reports status and version, and installs the browser.",
+  "where": "On the computer: pockettui update | version | status | browser",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": {
+   "kind": "cli",
+   "text": "Commands: pockettui update [--allow-downgrade], pockettui version, pockettui status, pockettui browser install|check|status. Installed at ~/.local/bin/pockettui; none of them touch the user's device directly.",
+   "contract": null
+  },
+  "sources": [
+   "install.sh:1026-1145",
+   "install.sh:960-980"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "connect.service",
+  "group": "Connect computers and devices",
+  "title": "Keeps running in the background",
+  "outcome": "PocketTUI runs as a background service that restarts on its own, and updates restart it without closing your sessions.",
+  "where": "Automatic (installer offers to set it up)",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 4,
+  "agent": {
+   "kind": "cli",
+   "text": "Linux: systemctl --user status pockettui and journalctl --user -u pockettui; macOS: the launchd agent logs to ~/pockettui/pockettui.log. Restarting the service keeps tmux sessions alive (KillMode=process).",
+   "contract": null
+  },
+  "sources": [
+   "pockettui.service:22-28",
+   "install.sh:1370-1412",
+   "install.sh:1588-1593"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "notify.state-badges",
+  "group": "Know when it needs you",
+  "title": "See which session needs you",
+  "outcome": "Each session shows whether it is working, waiting for an answer, ready for your next message, or idle.",
+  "where": "Automatic (badge on each session row)",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": {
+   "kind": "convention",
+   "text": "State is read from your pane after output stops for 6 s: a y/n or yes/no question, 'do you want / would you like / proceed? / continue? / are you sure', two or more numbered options (1. 2.), or one ❯-marked choice over another line reads as waiting; an empty ❯ or > composer reads as ready; anything else is idle. There is no route to set it; end a question with a clear '(y/n)' or a numbered list and then stop printing.",
+   "contract": null
+  },
+  "sources": [
+   "app.py:10170-10250",
+   "app.py:10359-10491",
+   "app.py:10605-10780",
+   "src/mobile/js/06-session-list.js:134-347"
+  ],
+  "shot": "rail-states",
+  "show": true
+ },
+ {
+  "id": "notify.prompt-chips",
+  "group": "Know when it needs you",
+  "title": "Answer a prompt with one tap",
+  "outcome": "When a program asks yes/no or offers numbered choices, buttons for each answer appear above the keys.",
+  "where": "Automatic chips row above the terminal; tap a chip",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": {
+   "kind": "convention",
+   "text": "A detected y/n question gets y and n chips, a numbered menu gets its first four digits, and an unnumbered chooser or trailing question gets only Enter and Esc (always added). A tap sends just that key to your pane, with no Enter after a digit or letter; the chips go away as soon as the pane prints again.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/30-notify.js:130-154",
+   "src/mobile/js/09-image-viewer.js:909-912",
+   "app.py:10700-10725"
+  ],
+  "shot": "prompt-chips",
+  "show": true
+ },
+ {
+  "id": "notify.unread",
+  "group": "Know when it needs you",
+  "title": "Unread marks on sessions",
+  "outcome": "A session that starts waiting while you are looking elsewhere keeps a dot until you open it.",
+  "where": "Automatic (dot on the session row)",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/06-session-list.js:38-123"
+  ],
+  "shot": "rail-states",
+  "show": true
+ },
+ {
+  "id": "notify.bell-toggle",
+  "group": "Know when it needs you",
+  "title": "Get notified by a session",
+  "outcome": "Turn on sound or silent alerts per session, so your phone tells you when it needs input or finishes.",
+  "where": "Bell icon on a session row (cycles off, sound, silent)",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": {
+   "kind": "http",
+   "text": "This only stores the session's notification preference (tmux option @notify: off, on or quiet), like tmux set-option -t <session> @notify on; it sends nothing. Change it only when the user asks.",
+   "contract": "POST /api/notify  {session, mode: off|on|quiet}  -> {session, notify}"
+  },
+  "sources": [
+   "src/mobile/js/06-session-list.js:22-36,317-324",
+   "src/mobile/js/30-notify.js:82-115",
+   "app.py:11130-11158"
+  ],
+  "shot": "rail-states",
+  "show": true
+ },
+ {
+  "id": "notify.push",
+  "group": "Know when it needs you",
+  "title": "Alerts on a locked phone",
+  "outcome": "Alerts reach your phone with the app closed when a session asks a question, finishes or rings the bell.",
+  "where": "Turning on the first session's bell asks for permission",
+  "surface": "both",
+  "gates": [],
+  "needs": "push",
+  "hidden": 4,
+  "agent": {
+   "kind": "convention",
+   "text": "A push fires only for sessions whose @notify is on or quiet, at most once per 30 s per session: when a question is detected, when an agent returns to an empty composer after at least 30 s of work, when a command of 10 s or more finishes back at the shell, or at once when the pane rings the terminal bell (printf '\\a', subject to tmux flagging the bell). No route sends one.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/30-notify.js:10-80",
+   "app.py:10565-10602",
+   "app.py:10640-10645",
+   "app.py:11059-11127"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "notify.ntfy",
+  "group": "Know when it needs you",
+  "title": "Send alerts to ntfy",
+  "outcome": "Notifications can also go to an ntfy topic, for phones where browser push is not available.",
+  "where": "On the computer: set POCKETTUI_NTFY_URL in the service environment",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": {
+   "kind": "file",
+   "text": "Set POCKETTUI_NTFY_URL (and optionally POCKETTUI_APP_URL for the tap-through link) in the service's environment and restart it; the same notifications as push go to that topic, lower priority in quiet mode.",
+   "contract": null
+  },
+  "sources": [
+   "app.py:11020-11040",
+   "app.py:11079"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "notify.deep-link",
+  "group": "Know when it needs you",
+  "title": "Alerts open the right session",
+  "outcome": "Tapping a notification opens the app straight on the session it was about, even if the phone had closed the app.",
+  "where": "Tap a push or ntfy notification",
+  "surface": "both",
+  "gates": [],
+  "needs": "push",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/30-notify.js:156-253"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "notify.a2hs-hint",
+  "group": "Know when it needs you",
+  "title": "iPhone alerts need Home Screen",
+  "outcome": "On an iPhone browser tab, turning on alerts explains that the app must be added to the Home Screen first.",
+  "where": "Automatic message on the first bell tap",
+  "surface": "phone",
+  "gates": [
+   "iOS",
+   "Safari"
+  ],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/30-notify.js:88-96",
+   "src/mobile/js/03-a2hs-hint.js:8-17"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "theme.app-theme",
+  "group": "Make it yours",
+  "title": "Light, dark or automatic",
+  "outcome": "Choose a light or dark look for the whole app, or follow your device's setting.",
+  "where": "Theme button in the header, or Settings > Appearance > App theme",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/04-theme.js:4-77",
+   "src/mobile/index.src.html:1332-1337"
+  ],
+  "shot": "theme-menu",
+  "show": false
+ },
+ {
+  "id": "theme.palettes",
+  "group": "Make it yours",
+  "title": "Pick terminal colour schemes",
+  "outcome": "Pick one of twelve colour schemes for light mode and one for dark; the whole app follows them.",
+  "where": "Settings > Appearance > Terminal palette (and Reset)",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/41-appearance.js:22-282,324-363,509-536,580-583",
+   "src/mobile/js/07-terminal.js:1-98"
+  ],
+  "shot": "settings-appearance",
+  "show": true
+ },
+ {
+  "id": "theme.import",
+  "group": "Make it yours",
+  "title": "Import your own colour scheme",
+  "outcome": "Paste or upload a scheme from iTerm2, Windows Terminal or xterm, and remove it later if you want.",
+  "where": "Settings > Appearance > Paste a scheme / Choose file > Use scheme; x beside Custom to remove",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/41-appearance.js:384-469,517-529,562-567,585-623",
+   "src/mobile/index.src.html:1350-1360"
+  ],
+  "shot": "settings-appearance",
+  "show": true
+ },
+ {
+  "id": "theme.min-contrast",
+  "group": "Make it yours",
+  "title": "Readable colours on any theme",
+  "outcome": "Text colours are adjusted so every character stays readable against its background, even on a light theme.",
+  "where": "Automatic",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/07-terminal.js:204-210"
+  ],
+  "shot": "settings-appearance",
+  "show": false
+ },
+ {
+  "id": "keys.text-size",
+  "group": "Make it yours",
+  "title": "Change text size with buttons",
+  "outcome": "Plus and minus buttons set the terminal's text size and the sidebar's separately.",
+  "where": "Settings > Keys > Text size",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/34-shortcuts.js:1-49",
+   "src/mobile/index.src.html:1371-1393"
+  ],
+  "shot": "settings-keys",
+  "show": false
+ },
+ {
+  "id": "keys.alt-toggle",
+  "group": "Make it yours",
+  "title": "Add an Alt key",
+  "outcome": "Put an Alt key on the phone's key bar for programs that need it.",
+  "where": "Settings > Keys > Alt key",
+  "surface": "phone",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/05-settings.js:591-597",
+   "src/mobile/index.src.html:1367-1370"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "keys.shortcut-list",
+  "group": "Make it yours",
+  "title": "See every keyboard shortcut",
+  "outcome": "A list of every shortcut the app understands, with a short version in the sidebar.",
+  "where": "Settings > Keys, or the Shortcuts card in the sidebar",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/index.src.html:1394-1452,444-466",
+   "src/mobile/js/34-shortcuts.js:51-104"
+  ],
+  "shot": "rail-shortcuts",
+  "show": true
+ },
+ {
+  "id": "editor.vim",
+  "group": "Make it yours",
+  "title": "Edit with Vim keys",
+  "outcome": "Turn on Vim keys in the editor; your .vimrc settings and mappings apply, and :w, :q, :wq work.",
+  "where": "Editor > Vim",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": "fs",
+  "hidden": 4,
+  "agent": {
+   "kind": "file",
+   "text": "The editor reads ~/.vimrc when Vim mode is switched on and applies the set options and map/noremap lines it can translate; edits you make to ~/.vimrc apply the next time the user turns Vim mode on (plugins and functions are skipped).",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/29-editor.js:186-200"
+  ],
+  "shot": "editor",
+  "show": true
+ },
+ {
+  "id": "hood.privacy-direct",
+  "group": "Under the hood",
+  "title": "Your terminal stays between your devices",
+  "outcome": "Your device talks straight to your computer; sessions, keystrokes and files never pass through PocketTUI's servers.",
+  "where": "Automatic",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "app.py:1-17",
+   "app.py:545-548",
+   "functions/api/report.js:1-11"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "hood.capabilities",
+  "group": "Under the hood",
+  "title": "App adapts to older servers",
+  "outcome": "The app asks the computer what it supports and only shows buttons that will work there.",
+  "where": "Automatic",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": {
+   "kind": "http",
+   "text": "Read the capability map to learn which features this server has (a missing or false flag means absent): fs, image_paste, upload, voice, learned, push, dbg, git, git_ref, search, ping, update, pair_qr, update_status, type, relay, browse, browse_tab, bookmarks, zip_dir, thumbs, browser_full, pdf_thumbs. It is frozen at server start.",
+   "contract": "GET /api/version  -  -> {version, host, capabilities:{<flag>: bool}}"
+  },
+  "sources": [
+   "app.py:1378-1462",
+   "app.py:1463-1490"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "hood.well-known",
+  "group": "Under the hood",
+  "title": "Check a PocketTUI server answers",
+  "outcome": "A public check tells the app, or a script, whether PocketTUI is running at an address and which version.",
+  "where": "Automatic when the code fails or nothing answers",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": {
+   "kind": "http",
+   "text": "No token needed; answers only product and version, no hostname, paths or capabilities. Use it to confirm the local backend (default http://127.0.0.1:5560) is up before an authenticated call.",
+   "contract": "GET /.well-known/pockettui  (no token)  -> {product:\"pockettui\", version}"
+  },
+  "sources": [
+   "app.py:1268-1283"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "hood.debug-log",
+  "group": "Under the hood",
+  "title": "On-screen debug log",
+  "outcome": "Show the app's internal log on screen, like a browser console on a phone.",
+  "where": "Settings > About > Debug log",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/02-debug-log.js:1-40,82-120",
+   "src/mobile/index.src.html:1471-1472"
+  ],
+  "shot": "settings-about",
+  "show": false
+ },
+ {
+  "id": "hood.debug-mirror",
+  "group": "Under the hood",
+  "title": "Device logs reach the computer",
+  "outcome": "While the debug log is on, the device's log lines are also written to the computer's server log.",
+  "where": "Automatic while Settings > About > Debug log is on",
+  "surface": "both",
+  "gates": [],
+  "needs": "dbg",
+  "hidden": 5,
+  "agent": {
+   "kind": "file",
+   "text": "Read them as lines 'dbg[<device>] <text>' in journalctl --user -u pockettui (Linux) or ~/pockettui/pockettui.log (macOS); nothing is stored elsewhere and nothing arrives unless the user has switched Debug log on.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/02-debug-log.js:42-80",
+   "app.py:8847-8866"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "hood.sw-click-log",
+  "group": "Under the hood",
+  "title": "Notification taps in the debug log",
+  "outcome": "With debug on, the last twenty notification taps are written to the debug log to diagnose alerts that open the wrong place.",
+  "where": "Automatic at start-up when Debug log is on",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/30-notify.js:234-248"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "hood.report",
+  "group": "Under the hood",
+  "title": "Report a problem",
+  "outcome": "Send a bug report with optional diagnostics straight to the PocketTUI team, even when your computer is unreachable.",
+  "where": "Settings > About > Report a problem, or the report key in the laptop key pill",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/35-report.js:1-49,155-216",
+   "functions/api/report.js:1-90",
+   "src/mobile/js/17-key-bar.js:66-71"
+  ],
+  "shot": "report",
+  "show": true
+ },
+ {
+  "id": "hood.report-diagnostics",
+  "group": "Under the hood",
+  "title": "See diagnostics before sending",
+  "outcome": "The report shows exactly which device details it would send, and you can leave them out.",
+  "where": "Report sheet > include diagnostics",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/35-report.js:88-148"
+  ],
+  "shot": "report",
+  "show": false
+ },
+ {
+  "id": "hood.about",
+  "group": "Under the hood",
+  "title": "What PocketTUI is",
+  "outcome": "A short description, privacy statement and links to the website, source code and support email.",
+  "where": "Settings > About",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 1,
+  "agent": null,
+  "sources": [
+   "src/mobile/index.src.html:1461-1468"
+  ],
+  "shot": "settings-about",
+  "show": false
+ },
+ {
+  "id": "hood.demo",
+  "group": "Under the hood",
+  "title": "Try it without a computer",
+  "outcome": "A pretend terminal lets you try the app before installing anything.",
+  "where": "Try demo on the session list when unpaired, or pockettui.com/demo",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/10-demo-shell.js:1-50",
+   "src/mobile/js/06-session-list.js:224-236",
+   "cloudflare_build/_redirects:1"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "hood.pwa",
+  "group": "Under the hood",
+  "title": "Install as a home-screen app",
+  "outcome": "Add the app to your home screen to run it full-screen like a native app.",
+  "where": "Share > Add to Home Screen (iPhone) or Menu > Install app (Android); reminder on setup step 2",
+  "surface": "phone",
+  "gates": [
+   "iOS",
+   "Android"
+  ],
+  "needs": null,
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "app.py:1284-1324",
+   "app.py:104-106",
+   "src/mobile/js/03-a2hs-hint.js:1-17",
+   "src/mobile/js/05-settings.js:160-168"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "hood.self-served",
+  "group": "Under the hood",
+  "title": "Use the app without pockettui.com",
+  "outcome": "Your computer serves its own copy of the app, and you can build a single HTML file with your address built in.",
+  "where": "Open http://<computer>:5560/ directly, or run build_mobile.py --backend URL",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "app.py:1252-1263",
+   "build_mobile.py"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "hood.webgl",
+  "group": "Under the hood",
+  "title": "Smooth terminal drawing",
+  "outcome": "The terminal uses graphics acceleration for smooth scrolling and falls back quietly when it is unavailable.",
+  "where": "Automatic",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/07-terminal.js:235-246"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
+  "id": "hood.voice-corpus",
+  "group": "Under the hood",
+  "title": "Keep recordings for testing",
+  "outcome": "An operator setting keeps the latest voice recordings on the computer to test dictation accuracy; off by default.",
+  "where": "On the computer: POCKETTUI_VOICE_KEEP=<n> in the service environment",
+  "surface": "both",
+  "gates": [],
+  "needs": null,
+  "hidden": 5,
+  "agent": {
+   "kind": "file",
+   "text": "With POCKETTUI_VOICE_KEEP=<n> set, the newest n takes are kept in ~/pockettui/.voice_takes/<stem>.{orig,wav,json}; nothing in the app reads them back.",
+   "contract": null
+  },
+  "sources": [
+   "app.py:1739-1745",
+   "app.py:2727-2769"
+  ],
+  "shot": null,
+  "show": false
+ }
+]
