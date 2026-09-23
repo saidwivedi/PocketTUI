@@ -920,13 +920,13 @@
               aria-label="Close the browser pane"><svg><use href="#i-m-x"/></svg></button>
     </span>
   </div>
-  <!-- The tabs, under the tool row as Safari draws them: a band the tabs share
-       equally, the active one a card on it. Always drawn, the lone tab
+  <!-- The tabs, under the tool row as Safari draws them: a band of tabs each
+       as wide as its name, the active one a card on it. Always drawn, the lone tab
        included: a window with one tab still shows it, and a strip that
        appeared at the second tab would move the page under the reader. -->
   <div id="browser-tabs">
-    <!-- The tabs shrink to share the row rather than scrolling, so the key
-         after them always has its slot at the end. -->
+    <!-- The row is as wide as its tabs, so the key follows the last one; a row
+         too wide for the pane scrolls inside itself and the key stays put. -->
     <div id="browser-tab-row"></div>
     <button class="icon-btn" id="btn-browser-newtab" aria-label="New tab"
             title="New tab"><svg><use href="#i-m-plus"/></svg></button>
