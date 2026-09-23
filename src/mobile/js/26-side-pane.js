@@ -399,9 +399,6 @@ function showSplitMenu(wrap, on) {
   const from = sideIdAt(btn);
   const menu = wrap.querySelector(".dock-split-menu");
   menu.textContent = "";
-  // A menu that borrows this open and close for rows of its own (the browser's
-  // page-mode menu) writes them itself.
-  if (wrap.menuRows) { wrap.menuRows(menu); return; }
   // In the explorer's and the browser's bars this is the more key, so the pane
   // rows get a caption saying what they do.
   const pane = wrap.closest("#screen-files, #screen-files-2, #screen-browser, #screen-browser-2");

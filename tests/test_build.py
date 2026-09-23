@@ -168,7 +168,7 @@ def test_the_topbar_toggles_a_tab_onto_the_computers_own_network(doc):
     # what pressing it would do, and once pressed what it did — the tooltip and
     # the label carrying the same words either way (syncBrowserLan).
     off = "Use the computer's network for this tab"
-    on = "This tab uses the computer's network"
+    on = "This tab uses the computer's network — press to switch it off"
     assert f'aria-label="{off}"' in doc and f'title="{off}"' in doc
     assert f'"{on}"' in doc
     assert 'btn.setAttribute("aria-label", said);' in doc
@@ -362,21 +362,28 @@ def _js_chunk(doc, head):
 
 
 def test_the_address_capsule_holds_the_page_mode_and_reload(doc):
-    """Safari's capsule: the page-mode key at its left, the address, reload at
-    its right. The two mode keys are never drawn; the page-mode menu's rows
-    press them, so their logic and syncs stay theirs. Which browser the tab is
-    comes before which network it is on."""
+    """Back, forward, then the two mode keys on the row (founder: visible, lit
+    while on, a tooltip saying what they do), then Safari's capsule: a glyph
+    at its left that only mirrors the tab's mode, the address, reload at its
+    right. One control per mode: the capsule glyph opens no menu. Which browser
+    the tab is comes before which network it is on."""
     at = {name: doc.index(f'id="{name}"')
           for name in ("btn-browser-back", "btn-browser-fwd", "browser-url-wrap",
                        "browser-url", "btn-browser-reload",
                        "btn-browser-full", "btn-browser-tab")}
-    mode = doc.index('class="dock-split browser-mode"')
-    assert (at["btn-browser-back"] < at["btn-browser-fwd"] < at["browser-url-wrap"]
-            < mode < at["browser-url"] < at["btn-browser-reload"]
-            < at["btn-browser-full"] < at["btn-browser-tab"])
-    assert ":is(#screen-browser, #screen-browser-2) :is(#btn-browser-full, #btn-browser-tab) { display: none; }" in doc
-    assert 'const rows = [[q("btn-browser-full"), "Stream this site from the computer\'s Chrome"],' in doc
-    assert 'full ? "#i-m-monitor" : lan ? "#i-m-lan" : "#i-m-globe");' in doc
+    mode = doc.index('<span class="browser-mode" aria-hidden="true">')
+    assert (at["btn-browser-back"] < at["btn-browser-fwd"]
+            < at["btn-browser-full"] < at["btn-browser-tab"]
+            < at["browser-url-wrap"] < mode < at["browser-url"]
+            < at["btn-browser-reload"])
+    assert "browser-mode-wrap" not in doc and "menuRows" not in doc
+    assert ":is(#btn-browser-full, #btn-browser-tab) { display: none; }" not in doc
+    assert ".browser-mode { margin-left: 3px; pointer-events: none; cursor: default; }" in doc
+    assert 'glyph.setAttribute("href", full ? "#i-m-monitor" : lan ? "#i-m-lan" : "#i-m-globe");' in doc
+    # On is the accent over the pressed fill, not only the fill every hover has.
+    assert ('.browser-topbar :is(#btn-browser-full, #btn-browser-tab)[aria-pressed="true"] {\n'
+            "  color: var(--umber);\n"
+            "  background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);") in doc
     # Unfocused, the field shows the host; focused, the whole address.
     assert "f.value = document.activeElement === f ? browserFieldUrl : browserHostOf(browserFieldUrl);" in doc
 
@@ -394,8 +401,7 @@ def test_a_tab_is_a_proxy_tab_unless_its_host_is_remembered(doc):
     already."""
     assert 'id="btn-browser-full" hidden' in doc
     off = "Stream this site from the computer's Chrome"
-    on = ("This site streams from the computer's Chrome; press to use the"
-          " lightweight proxy")
+    on = "Streaming from the computer's Chrome — press to go back to the proxy"
     assert f'aria-label="{off}"' in doc and f'title="{off}"' in doc
     assert f'"{on}"' in doc
     assert '+ (host ? " (remembered for " + host + ")" : "");' in doc
@@ -743,7 +749,7 @@ def test_the_pane_offers_the_stream_where_a_proxied_page_did_not_work(doc):
     assert 'class="browser-hint" hidden' in doc
     assert doc.index('class="browser-hint" hidden') > doc.index('id="browser-wrap"')
     assert doc.index('class="browser-hint" hidden') < doc.index('id="browser-frame-tpl"')
-    assert 'class="browser-hint-glyph" aria-hidden="true"><use href="#i-monitor"/>' in doc
+    assert 'class="browser-hint-glyph" aria-hidden="true"><use href="#i-m-monitor"/>' in doc
     assert ">Stream</button>" in doc
     assert 'class="browser-hint-x"' in doc
     assert "Not working here? Stream this site from the computer's Chrome" in doc
