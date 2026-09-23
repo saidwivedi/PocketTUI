@@ -852,7 +852,8 @@
             title="Use the computer's network for this tab"><svg><use href="#i-m-lan"/></svg></button>
     </span>
     <!-- The address capsule, centred on the row: the page-mode glyph at its
-         left, the address, and reload at its right. -->
+         left, the address, then the way out to this device's browser and
+         reload at its right. -->
     <div id="browser-url-wrap">
       <!-- Which browser this tab is, as a glyph only (globe for the proxy,
            monitor for a streamed tab, the network glyph for a tab on the
@@ -867,6 +868,15 @@
       <input type="text" id="browser-url" inputmode="url" autocapitalize="off"
              autocorrect="off" autocomplete="off" spellcheck="false"
              placeholder="Search or type an address" aria-label="Address">
+      <!-- This page in the browser this device runs, rather than in the pane
+           (founder, 2026-09-22). An address this device cannot reach on its own
+           goes out as the computer's own copy of the page, which is what the
+           old tapped-localhost relay did for it (browserOutPress,
+           42-browser.js). Hidden until the tab is on something: a new tab has
+           no address to hand anywhere. -->
+      <button class="icon-btn" id="btn-browser-out" hidden
+              aria-label="Open this page in your browser"
+              title="Open this page in your browser"><svg><use href="#i-m-external"/></svg></button>
       <button class="icon-btn" id="btn-browser-reload" aria-label="Reload"><svg><use href="#i-m-reload"/></svg></button>
     </div>
     <span class="browser-tools">
@@ -892,18 +902,8 @@
                   aria-label="Zoom in" data-more="Zoom in" data-more-at="1"><svg><use href="#i-zoom-in"/></svg></button>
         </div>
       </div>
-      <!-- This page in the browser this device runs, rather than in the pane
-           (founder, 2026-09-22). An address this device cannot reach on its own
-           goes out as the computer's own copy of the page, which is what the
-           old tapped-localhost relay did for it (browserOutPress,
-           42-browser.js). Hidden until the tab is on something: a new tab has
-           no address to hand anywhere. Docked it is a row of the more menu. -->
-      <button class="icon-btn" id="btn-browser-out" hidden
-              aria-label="Open this page in your browser"
-              title="Open this page in your browser"
-              data-more="Open in your browser" data-more-at="4"><svg><use href="#i-m-external"/></svg></button>
       <!-- The docked pane's own controls, files-expand/close's set: the more
-           menu (another pane in the column, zoom, open outside, move this
+           menu (another pane in the column, zoom, move this
            pane), a short rule, expand and close. -->
       <div class="dock-split-wrap dock-only">
         <button type="button" class="icon-btn dock-split"
