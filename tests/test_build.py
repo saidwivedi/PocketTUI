@@ -680,10 +680,16 @@ def test_the_window_controls_sit_on_the_tool_row(doc):
             < at["btn-browser-expand"] < at["btn-browser-close"]
             < at["browser-tabs"] < at["browser-tab-row"] < at["btn-browser-newtab"])
     assert 'id="browser-tab-actions"' not in doc
-    # Tabs share the band equally and shrink rather than scroll, eight included.
+    # Tabs are as wide as their names, capped, and shrink only when the row
+    # would overflow; the row is as wide as its tabs, so the "+" follows the
+    # last one, and a row too wide for the pane scrolls inside itself.
     css = (SRC / "styles.css").read_text(encoding="utf-8")
     chip = re.search(r"\.tab-chip \{[^}]*\}", css).group(0)
-    assert "flex: 1 1 0;" in chip and "min-width: 0;" in chip
+    assert "flex: 0 1 auto;" in chip and "min-width: 56px;" in chip and "max-width: 180px;" in chip
+    row = re.search(r"#browser-tab-row \{[^}]*\}", css).group(0)
+    assert "flex: 0 1 auto;" in row and "overflow-x: auto;" in row
+    plus = re.search(r"#btn-browser-newtab \{[^}]*\}", css).group(0)
+    assert "margin-left: 4px;" in plus and "flex: 0 0 26px;" in plus
 
 
 def test_the_bookmarks_bar_is_a_row_of_links_not_a_second_row_of_tabs(doc):
