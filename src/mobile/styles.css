@@ -2979,8 +2979,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
    own button groups sit at: everything else in this bar moves within the
    explorer, and this one leaves it. */
 #btn-files-term { margin-right: 10px; }
-/* The path bar between back and +. Mono because it is a path, scrolled rather
-   than wrapped so a deep tree never buries the controls beside it. */
+/* The path bar between back and +. In the bar's own sans face rather than
+   mono, so the path and the buttons beside it read as one line of type; scrolled
+   rather than wrapped so a deep tree never buries the controls beside it. */
 #files-crumbs {
   flex: 1;
   min-width: 0;
@@ -2995,35 +2996,37 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .crumb {
   flex: 0 0 auto;
   background: transparent; border: none;
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: 13px;
   color: var(--secondary);
-  padding: 8px 3px;
+  padding: 6px 4px;
   cursor: pointer;
 }
-.crumb.current { color: var(--ink); font-weight: 600; }
-.crumb-sep { flex: 0 0 auto; color: var(--whisper); font-size: 12px; }
+.crumb.current { color: var(--ink); font-weight: 500; }
+.crumb-sep { flex: 0 0 auto; color: var(--whisper); font-size: 11px; }
 
 #files-path-wrap { flex: 1; min-width: 0; display: flex; }
-/* Same field as the sheet inputs, compacted for the topbar row; hidden until
-   btn-files-edit-path swaps it in for #files-crumbs. */
+/* A recessed field the height of the row, in the crumbs' face, with no edge
+   until it has the focus; hidden until btn-files-edit-path swaps it in for
+   #files-crumbs. */
 #files-path-input {
   display: none;
   width: 100%;
-  font-family: var(--mono);
+  height: 30px;
+  font-family: var(--sans);
   font-size: 13px;
   color: var(--ink);
   background: var(--paper-rec);
-  border: 1px solid var(--hair);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0 10px;
 }
 #files-path-input:focus { border-color: var(--umber); outline: none; }
 #files-path-wrap.editing #files-crumbs { display: none; }
 #files-path-wrap.editing #files-path-input { display: block; }
-/* The layout-and-order menu's button, in the path field's own quiet register —
-   a hairline field sized to the one word it holds, so it sits beside the bar's
-   icon buttons without competing with them. */
+/* The layout-and-order menu's button: a word and a chevron with no outline, the
+   icon buttons' hover wash and nothing at rest, so it sits in the bar as text
+   rather than as a second kind of button. */
 #files-view-wrap {
   position: relative;
   flex: 0 0 auto;
@@ -3031,26 +3034,33 @@ html.term-open #dbg-panel { opacity: 0.85; }
   margin-left: 4px;
 }
 #btn-files-view {
-  display: flex; align-items: center; gap: 5px;
+  display: flex; align-items: center; gap: 4px;
   font-family: var(--sans);
   font-size: 12.5px;
   color: var(--secondary);
   background: transparent;
-  border: 1px solid var(--hair);
-  border-radius: 10px;
-  padding: 6px 9px;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 7px;
   cursor: pointer;
+  transition: color 0.18s var(--ease-out), background 0.18s var(--ease-out);
 }
-#btn-files-view:active { background: var(--umber-tint); }
-/* The chevron a <select> would have drawn for itself, at the app's size and
-   color rather than the OS's, in the same typographic idiom as .crumb-sep's
-   "›". Flips while the menu is open, so the button says which way it goes. */
-#btn-files-view::after {
-  content: "▾";
-  color: var(--tertiary);
-  font-size: 10px;
+#btn-files-view:hover, #btn-files-view:active { color: var(--ink); background: var(--umber-tint); }
+/* The chevron a <select> would have drawn for itself, as a stroked glyph masked
+   onto the tertiary ink. A pseudo-element rather than a sprite <use>, because
+   syncRefBar writes the branch button's label with textContent and would wipe a
+   child. Turns over while the menu is open, so the button says which way it goes. */
+#btn-files-view::after, #btn-files-ref::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 10px; height: 10px;
+  background: var(--tertiary);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  transition: transform 0.18s var(--ease-out);
 }
-#files-view-wrap.open #btn-files-view::after { content: "▴"; }
+#files-view-wrap.open #btn-files-view::after,
+#files-ref-wrap.open #btn-files-ref::after { transform: rotate(180deg); }
 /* The menu itself, on #files-suggest's floating-panel recipe below (--card,
    --hair-strong, that shadow, z-index 60): the bar's two dropdowns are one
    layer, not two ideas. Anchored under the button rather than spanning the bar
@@ -3114,10 +3124,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 .view-row.on .view-check { visibility: visible; }
 /* The branch picker, on #btn-files-view's recipe: the bar's two dropdowns are
-   one control drawn twice, so only what differs is set here. Mono, because
-   what it holds is a ref name and those are read like paths, and capped so a
-   long branch name shrinks the crumbs by a fixed amount rather than by its
-   own length. */
+   one control drawn twice, so only what differs is set here. Capped so a long
+   branch name shrinks the crumbs by a fixed amount rather than by its own
+   length. */
 #files-ref-wrap {
   position: relative;
   flex: 0 0 auto;
@@ -3126,35 +3135,30 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 #files-ref-wrap[hidden] { display: none; }
 #btn-files-ref {
-  display: flex; align-items: center; gap: 5px;
+  display: flex; align-items: center; gap: 4px;
   max-width: 108px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: 12.5px;
   color: var(--secondary);
   background: transparent;
-  border: 1px solid var(--hair);
-  border-radius: 10px;
-  padding: 6px 9px;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 7px;
   cursor: pointer;
+  transition: color 0.18s var(--ease-out), background 0.18s var(--ease-out);
 }
-#btn-files-ref::after {
-  content: "▾";
-  color: var(--tertiary);
-  font-size: 10px;
-}
-#files-ref-wrap.open #btn-files-ref::after { content: "▴"; }
-#btn-files-ref:active { background: var(--umber-tint); }
+#btn-files-ref:hover, #btn-files-ref:active { color: var(--ink); background: var(--umber-tint); }
 /* Off the working tree: the one state where what the explorer is showing is
    not what is on the disk, so the control that put it there wears the accent
    for as long as it lasts. */
 #btn-files-ref.on {
   color: var(--umber);
-  border-color: var(--umber);
-  background: var(--umber-tint);
+  background: var(--umber-soft);
 }
+#btn-files-ref.on::after { background: var(--umber); }
 #files-ref-ro {
   flex: 0 0 auto;
   margin-left: 6px;
@@ -3631,7 +3635,40 @@ html.term-open #dbg-panel { opacity: 0.85; }
     top: 0;
     flex: 0 0 auto;
     gap: 2px;
-    padding: 10px 8px 8px 12px;
+    min-height: 40px;
+    padding: 6px 8px 5px 10px;
+    /* The pane's own paper and grain show through, so the bar and the rows under
+       it are one surface, and a single hairline marks where the chrome ends. */
+    background: transparent;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border-bottom: 1px solid var(--hair);
+  }
+  :is(#screen-browser, #screen-browser-2).docked .topbar { padding: 4px 10px 5px 10px; }
+  /* Controls are grouped by space rather than by borders: 2px inside a group,
+     10px (the bar's 2px gap plus 8px) between groups. The explorer's groups are
+     [back] [crumbs] [branch] [edit, add, view] [window controls]; the address
+     row's are [back, forward] [monitor, network, reload] [address] (the
+     terminal key is never shown docked). Margins sit on controls that are
+     always shown, so a hidden key never leaves a gap of its own. */
+  :is(#screen-files, #screen-files-2).docked #btn-files-back { margin-right: 8px; }
+  :is(#screen-files, #screen-files-2).docked #files-ref-wrap { margin-left: 8px; }
+  :is(#screen-files, #screen-files-2).docked #btn-files-edit-path { margin-left: 8px; }
+  :is(#screen-files, #screen-files-2).docked #files-view-wrap { margin-left: 0; }
+  :is(#screen-browser, #screen-browser-2).docked #btn-browser-fwd { margin-right: 8px; }
+  :is(#screen-browser, #screen-browser-2).docked #browser-url-wrap { margin-left: 8px; }
+  /* A short upright rule before the window controls (split, swap, expand,
+     close), which act on the pane rather than on what is in it. Drawn by the
+     split key's wrap, which is the first of them and is dock-only, so the rule
+     comes and goes with the group. */
+  :is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2) .dock-split-wrap {
+    margin-left: 6px;
+  }
+  :is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2) .dock-split-wrap::before {
+    content: "";
+    width: 1px; height: 16px;
+    margin-right: 8px;
+    background: var(--hair-strong);
   }
   :is(#screen-files, #screen-files-2).docked .files-wrap {
     flex: 1;
@@ -3641,19 +3678,17 @@ html.term-open #dbg-panel { opacity: 0.85; }
     padding: 0 12px 24px;
   }
   /* The rail's own compaction, for the same reason: eight controls and a path
-     across 340px, where the phone's bar had the whole window. */
+     across 340px, where the phone's bar had the whole window. 28px keys with an
+     18px glyph and a 7px corner. */
   :is(#screen-files, #screen-files-2).docked .icon-btn,
   :is(#screen-browser, #screen-browser-2).docked .icon-btn,
   #screen-editor.docked .icon-btn,
-  #screen-reader.docked .icon-btn { padding: 6px; }
+  #screen-reader.docked .icon-btn { padding: 5px; border-radius: 7px; }
   :is(#screen-files, #screen-files-2).docked .icon-btn svg,
   :is(#screen-browser, #screen-browser-2).docked .icon-btn svg,
   #screen-editor.docked .icon-btn svg,
-  #screen-reader.docked .icon-btn svg { width: 17px; height: 17px; }
-  :is(#screen-files, #screen-files-2).docked #btn-files-view { padding: 5px 8px; font-size: 12px; }
-  :is(#screen-files, #screen-files-2).docked #btn-files-ref {
-    padding: 5px 8px; font-size: 12px; max-width: 92px;
-  }
+  #screen-reader.docked .icon-btn svg { width: 18px; height: 18px; }
+  :is(#screen-files, #screen-files-2).docked #btn-files-ref { max-width: 92px; }
   /* The two dropdown scrims belong to the pane, not to the window: the
      terminal beside it is live, and a layout menu in here must not dim it.
      The pane is position:fixed, so absolute already means "this pane". */
@@ -3836,20 +3871,31 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* Positioned, because the key that opens this page outside the app sits inside
    the field rather than after it. */
 #browser-url-wrap { flex: 1; min-width: 0; display: flex; position: relative; }
-/* Same field as #files-path-input, compacted for the topbar row. The right
-   padding is the key's slot: a field that ended where its box does would scroll
-   a long address under the glyph. */
+/* Same field as #files-path-input: recessed, edgeless until focused, in the
+   bar's sans face. The right padding is the key's slot: a field that ended where
+   its box does would scroll a long address under the glyph. */
 #browser-url {
   width: 100%;
-  font-family: var(--mono);
+  height: 30px;
+  font-family: var(--sans);
   font-size: 13px;
-  color: var(--ink);
+  line-height: 28px;
+  color: var(--ink-2);
   background: var(--paper-rec);
-  border: 1px solid var(--hair);
-  border-radius: 10px;
-  padding: 8px 34px 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0 32px 0 11px;
 }
-#browser-url:focus { border-color: var(--umber); outline: none; }
+#browser-url:focus {
+  border-color: var(--umber);
+  box-shadow: 0 0 0 3px var(--umber-soft);
+  outline: none;
+}
+/* In a dark palette --paper-rec is within a shade of --paper, so the edgeless
+   fields and the active tab take --card-2 there to stay visible. */
+:root[data-theme="dark"] :is(#browser-url, #files-path-input, .tab-chip.on) {
+  background: var(--card-2);
+}
 /* In the field, at its right end: smaller than the keys on the row and drawn in
    the secondary ink, because it belongs to the address it sits on rather than to
    the bar. */
@@ -3857,10 +3903,11 @@ html.term-open #dbg-panel { opacity: 0.85; }
   position: absolute;
   top: 50%; right: 3px;
   transform: translateY(-50%);
-  padding: 4px;
-  border-radius: 8px;
+  color: var(--tertiary);
 }
-#btn-browser-out svg { width: 16px; height: 16px; }
+/* Named through the screen so these outweigh the docked bar's key size. */
+:is(#screen-browser, #screen-browser-2) #btn-browser-out { padding: 5px; border-radius: 6px; }
+:is(#screen-browser, #screen-browser-2) #btn-browser-out svg { width: 14px; height: 14px; }
 /* .icon-btn is display:inline-flex, which a bare [hidden] does not outrank. */
 #btn-browser-out[hidden] { display: none; }
 #btn-browser-out:active { transform: translateY(-50%) scale(0.94); }
@@ -3911,6 +3958,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
    is drawn from as well so the two can never disagree. */
 #btn-browser-zoom.on, #btn-browser-star.on, #btn-browser-tab.on,
 #btn-browser-tab[aria-pressed="true"] { color: var(--umber); }
+/* The two mode toggles on the address row also fill while pressed, so a key
+   that is on reads as held down and not only as recoloured. */
+#btn-browser-full[aria-pressed="true"],
+#btn-browser-tab[aria-pressed="true"] { color: var(--umber); background: var(--umber-soft); }
 #btn-browser-star[hidden] { display: none; }
 /* The network key hides the same way when the computer has no tab flavour to
    offer (an older server, or a shell served from the computer itself), and the
@@ -3932,19 +3983,19 @@ html.term-open #dbg-panel { opacity: 0.85; }
 #browser-menu-scrim.show { opacity: 1; pointer-events: auto; }
 /* The tab strip, at the pane's top edge where a browser keeps it: one row that
    scrolls sideways with no bar of its own rather than wrapping, because the
-   height of this pane belongs to the page. The band behind it is a shade
-   darker than the paper; the active tab is drawn in the paper itself and
-   bottoms out against the address row below with nothing between them, which
-   is the whole of what an active tab says. Always drawn while the pane is
-   open, the lone tab included — a window with one tab still shows it, and a
-   strip that appeared at the second tab would move the page under the reader. */
+   height of this pane belongs to the page. On the pane's own paper, with no
+   band: the tabs, the address row and the bookmarks are one surface, and the
+   active tab is a filled segment rather than a card. Always drawn while the
+   pane is open, the lone tab included — a window with one tab still shows it,
+   and a strip that appeared at the second tab would move the page under the
+   reader. */
 #browser-tabs {
   flex: 0 0 auto;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 2px;
-  padding: 5px 8px 0;
-  background: var(--card-2);
+  height: 36px;
+  padding: 6px 8px 0 10px;
   /* The zoom panel hangs off a key in this row now, so the row has to be able
      to out-stack the address row it hangs over (50) and the scrim that dims
      the page for it (45) — the bar a panel comes out of is never the thing the
@@ -3961,32 +4012,30 @@ html.term-open #dbg-panel { opacity: 0.85; }
   flex: 0 1 auto;
   min-width: 0;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 2px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
 }
 #browser-tab-row::-webkit-scrollbar { display: none; }
-/* A card only once it is the one being read. The rest are words on the band:
-   a strip of eight outlined cards is a row of buttons, and the one thing this
-   row has to say is which of them the page below belongs to. */
+/* Flat segments: the rest are words on the paper, and only the one being read
+   is filled. A strip of eight outlined cards is a row of buttons, and the one
+   thing this row has to say is which of them the page below belongs to. A row
+   short of room first narrows the other tabs down to a few letters each, as
+   Safari does, and only then scrolls, so a tab is not left cut off at the edge. */
 .tab-chip {
-  flex: 0 0 auto;
+  position: relative;
+  flex: 0 1 auto;
   display: flex; align-items: center;
+  min-width: 64px;
   max-width: 160px;
+  height: 26px;
   background: transparent;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 9px 9px 0 0;
+  border-radius: 7px;
 }
-/* The tab whose page is on screen, drawn on the paper the address row and the
-   page below it are drawn on and open at the bottom, so the three read as one
-   surface — a browser's own active tab and nothing more. */
-.tab-chip.on {
-  background: var(--paper);
-  border-color: var(--hair);
-}
+/* The tab whose page is on screen: a recessed fill, no edge, and its whole name. */
+.tab-chip.on { flex-shrink: 0; background: var(--paper-rec); }
 .tab-chip:not(.on):hover { background: var(--umber-tint); }
 /* A tab on the computer's own network, for the tabs the key above is not
    speaking for. A dot rather than a glyph: it sits inside a name that is
@@ -4007,14 +4056,16 @@ html.term-open #dbg-panel { opacity: 0.85; }
   white-space: nowrap;
   text-overflow: ellipsis;
   font-family: var(--sans);
-  font-size: 12px;
-  color: var(--tertiary);
+  font-size: 12.5px;
+  line-height: 26px;
+  color: var(--secondary);
   background: transparent;
   border: none;
-  padding: 6px 2px 7px 10px;
+  padding: 0 0 0 10px;
   cursor: pointer;
 }
 .tab-chip.on .tab-name, .tab-chip:hover .tab-name { color: var(--ink); }
+.tab-chip.on .tab-name { font-weight: 500; }
 /* The page's own mark, where the computer could read one (chromium.py's
    FAVICON_JS): a browser's chip carries its site's icon, and a strip of eight
    hosts reads at a glance with them and as a list of words without. Rounded,
@@ -4046,64 +4097,71 @@ html.term-open #dbg-panel { opacity: 0.85; }
    and its place — it is still a tab to come back to, and coming back loads it
    again — and it is drawn as what it is: a page that is not there at the moment. */
 .tab-chip.dim .tab-name { color: var(--tertiary); font-style: italic; }
-/* Kept in its slot rather than hidden out of it, .bm-del's reason: a chip that
-   grows under the pointer moves every chip after it. Always readable on the
-   active tab, which is the one anybody closes.  */
+/* In its own slot on the active tab, which is the one anybody closes. On the
+   others it floats over the end of the name and the name fades out under it,
+   so a hover changes no chip's width and a resting tab has no blank slot after
+   its name. */
 .tab-del {
   flex: 0 0 auto;
   visibility: hidden;
-  padding: 0 7px 0 3px;
+  display: flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px;
+  margin: 0 3px 0 1px;
+  padding: 0;
   border: none;
+  border-radius: 50%;
   background: transparent;
   color: var(--tertiary);
-  font-size: 14px;
-  line-height: 1;
   cursor: pointer;
 }
+.tab-del svg { width: 12px; height: 12px; }
 .tab-chip.on .tab-del,
 .tab-chip:hover .tab-del, .tab-chip:focus-within .tab-del { visibility: visible; }
 .tab-del:hover { color: var(--ink); }
-/* The new tab, a small round key after the last of them where a browser keeps
-   it — outside the scrolling row on purpose, so a strip too wide for a 360px
-   pane carries its tabs off sideways and never this. Dimmed rather than
-   disabled at the cap: a press that cannot open a ninth tab should say why, and
-   a disabled button takes its own click away. */
-#btn-browser-newtab {
+.tab-chip:not(.on) .tab-name { padding-right: 10px; }
+.tab-chip:not(.on) .tab-del { position: absolute; top: 4px; right: 3px; margin: 0; }
+.tab-chip:not(.on):is(:hover, :focus-within) .tab-name {
+  -webkit-mask-image: linear-gradient(to left, transparent 22px, #000 32px);
+  mask-image: linear-gradient(to left, transparent 22px, #000 32px);
+}
+/* The new tab, a key the height of a tab after the last of them where a
+   browser keeps it — outside the scrolling row on purpose, so a strip too wide
+   for a 360px pane carries its tabs off sideways and never this. Dimmed rather
+   than disabled at the cap: a press that cannot open a ninth tab should say why,
+   and a disabled button takes its own click away. Named through the screen so
+   the docked bar's key size does not outweigh it. */
+:is(#screen-browser, #screen-browser-2) #btn-browser-newtab {
   flex: 0 0 auto;
   padding: 0;
-  width: 22px; height: 22px;
-  margin: 0 2px 4px;
-  border-radius: 50%;
+  width: 26px; height: 26px;
+  margin-left: 4px;
+  border-radius: 7px;
 }
-#btn-browser-newtab svg { width: 14px; height: 14px; }
+:is(#screen-browser, #screen-browser-2) #btn-browser-newtab svg { width: 14px; height: 14px; }
 #btn-browser-newtab.off { opacity: 0.4; }
 /* A window's controls, at the other end of the row its tabs are in: bookmark,
    zoom, and docked the pane's own expand and close. Pushed flush right by the
    margin rather than by a spacer, so the tabs and the "+" stay together at the
    left and a strip too wide for the pane scrolls inside #browser-tab-row
-   instead of pushing these off the edge. Centred on the band and clear of its
-   bottom edge, because the line the tabs bottom out against belongs to the
-   active tab's card — these sit on the band, not on it. */
+   instead of pushing these off the edge. Centred on the tabs' own line. */
 #browser-tab-actions {
   flex: 0 0 auto;
   margin-left: auto;
   display: flex;
   align-items: center;
   gap: 2px;
-  padding-bottom: 3px;
 }
 /* The bookmarks bar, in the order they were added the way a browser's own is.
    Scrolls sideways with no bar of its own (.keybar's recipe) rather than
    wrapping to a second row: the pane is a pane, and the page below it is what
-   the height is for. Links, not cards: the tab strip above the address row is
-   the pane's one row of cards, and two rows of the same shape a few pixels
-   apart would be read as one thing twice. */
+   the height is for. Plain links with no fill, so the row is never mistaken
+   for the tab strip above the address row, whose active tab is filled. */
 #browser-bookmarks {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 4px 10px 5px;
+  padding: 3px 10px 5px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
@@ -4116,26 +4174,23 @@ html.term-open #dbg-panel { opacity: 0.85; }
   display: flex; align-items: center;
   border-radius: 6px;
 }
-/* The one the page is on, said in the ink rather than with a box: this bar is
-   a row of links and the mark has to be one a link can carry. */
-.bm-chip.on .bm-open { color: var(--umber); }
-/* The star before the title is what a favicon is in a desktop browser — the
-   thing that makes a row of words read as a row of saved pages. This proxy has
-   no favicons to fetch, so every one of them wears the key that saved it. */
+/* The one the page is on, said in the ink and the weight rather than with a
+   box: this bar is a row of links and the mark has to be one a link can carry. */
+.bm-chip.on .bm-open { color: var(--ink); font-weight: 500; }
+/* Names only: the bar's place under the address row is what says these are
+   saved pages. */
 .bm-open {
   display: flex;
   align-items: center;
-  gap: 5px;
   font-family: var(--sans);
   font-size: 12px;
   color: var(--secondary);
   background: transparent;
   border: none;
-  border-radius: 6px;
-  padding: 3px 5px;
+  border-radius: 5px;
+  padding: 3px 7px;
   cursor: pointer;
 }
-.bm-open svg { flex: 0 0 auto; width: 11px; height: 11px; }
 /* One line whatever the page called itself: a title is as long as its author
    made it, and a bar of full titles would hold three of them. */
 .bm-name {

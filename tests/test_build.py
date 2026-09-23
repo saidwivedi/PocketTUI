@@ -213,7 +213,7 @@ def test_the_address_field_carries_the_way_out_of_the_pane(doc):
           for name in ("browser-url-wrap", "browser-url", "btn-browser-out")}
     assert at["browser-url-wrap"] < at["browser-url"] < at["btn-browser-out"]
     assert "#browser-url-wrap { flex: 1; min-width: 0; display: flex; position: relative; }" in doc
-    assert "padding: 8px 34px 8px 10px;" in doc
+    assert "padding: 0 32px 0 11px;" in doc
     assert "#btn-browser-out[hidden] { display: none; }" in doc
     # Nothing to hand over is the one state it is not in: a tab with no address
     # yet, which is what a new tab is until it lands somewhere.
@@ -682,12 +682,12 @@ def test_the_window_controls_sit_in_the_tab_row(doc):
 
 def test_the_bookmarks_bar_is_a_row_of_links_not_a_second_row_of_tabs(doc):
     """Two rows of cards a few pixels apart read as one thing twice. The strip
-    above the address row is the pane's cards; this one is links, each with the
-    star that saved it where a desktop browser would put a favicon — there are
-    none to fetch through a proxy."""
-    assert 'svgIcon("i-star"), el("span", { class: "bm-name" }' in doc
-    # The title alone is what is capped and ellipsised; the star and the link's
-    # own padding sit outside it.
+    above the address row is the pane's tabs; this one is links, each one only
+    the name of the page it saves — no star glyph before it."""
+    assert 'el("span", { class: "bm-name" }, b.title || browserMarkName(url))' in doc
+    assert 'svgIcon("i-star"), el("span", { class: "bm-name" }' not in doc
+    # The title alone is what is capped and ellipsised; the link's own padding
+    # sits outside it.
     assert ".bm-name {" in doc and "text-overflow: ellipsis;" in doc
     # No card: the border and the filled background the chips used are gone.
     body = doc[doc.index(".bm-chip {"):doc.index(".bm-del {")]
