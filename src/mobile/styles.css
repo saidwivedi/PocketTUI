@@ -4134,28 +4134,39 @@ html.term-open #dbg-panel { opacity: 0.85; }
   z-index: 45;
 }
 #browser-menu-scrim.show { opacity: 1; pointer-events: auto; }
-/* The tabs, Safari's way: a band in the ink at 5%, the tabs sharing it equally
-   (shrinking rather than scrolling, eight included), the inactive ones parted by
-   short rules and the active one a paper card inset on the band. */
+/* The tabs on a band in the ink at 5%, each as wide as its name (capped, and
+   shrinking only when the row would overflow), the inactive ones parted by
+   short rules and the active one a paper card inset on the band. The rest of
+   the band stays empty. */
 #browser-tabs {
   flex: 0 0 auto;
   display: flex;
   align-items: stretch;
   height: 28px;
+  /* Keeps a "+" pushed to the band's end by a full row off the pane's edge. */
+  padding-right: 4px;
   background: var(--m-fill);
   border-bottom: 1px solid var(--m-sep);
 }
 #browser-tab-row {
-  flex: 1 1 auto;
+  /* Only as wide as the tabs it holds, so the "+" follows the last one — and
+     shrinking, so a row too wide for the pane (eight tabs at their floor on a
+     narrow pane) scrolls inside itself with the "+" still beside it. */
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: stretch;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
 }
+#browser-tab-row::-webkit-scrollbar { display: none; }
 .tab-chip {
   position: relative;
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 0 1 auto;
+  min-width: 56px;
+  max-width: 180px;
   display: flex; align-items: center;
 }
 .tab-chip + .tab-chip::before {
@@ -4187,8 +4198,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
   border-radius: 50%;
   background: var(--umber);
 }
-/* The name, centred in the tab with room kept either side for the close mark,
-   so a name is centred whether or not the mark is showing. */
+/* The name, with the close mark's slot kept at its left on every tab, so a tab
+   is the same width whether or not the mark is showing. */
 .tab-name {
   flex: 1;
   display: block;
@@ -4196,19 +4207,17 @@ html.term-open #dbg-panel { opacity: 0.85; }
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  text-align: center;
+  text-align: left;
   font-family: var(--sans);
   font-size: 12px;
   line-height: 20px;
   color: var(--m-g1);
   background: transparent;
   border: none;
-  padding: 0 22px;
+  padding: 0 12px 0 24px;
   cursor: pointer;
 }
 .tab-chip.on .tab-name, .tab-chip:hover .tab-name { color: var(--ink); }
-/* An inactive tab at rest has no close mark, so its name gets the width. */
-.tab-chip:not(.on):not(:hover):not(:focus-within) .tab-name { padding: 0 8px; }
 /* The page's own mark, where the computer could read one (chromium.py's
    FAVICON_JS): a browser's chip carries its site's icon, and a strip of eight
    hosts reads at a glance with them and as a list of words without. Rounded,
@@ -4260,15 +4269,17 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .tab-chip.on .tab-del,
 .tab-chip:hover .tab-del, .tab-chip:focus-within .tab-del { visibility: visible; }
 .tab-del:hover { color: var(--ink); background: var(--m-fill2); }
-/* The new tab, a fixed slot at the band's end. Dimmed rather than disabled at
+/* The new tab, 4px after the last tab rather than at the band's end. Dimmed rather than disabled at
    the cap: a press that cannot open a ninth tab should say why, and a disabled
    button takes its own click away. Named through the screen to outweigh
    .icon-btn's own size. */
 :is(#screen-browser, #screen-browser-2) #btn-browser-newtab {
-  flex: 0 0 30px;
-  width: 30px; height: auto;
+  flex: 0 0 26px;
+  align-self: center;
+  width: 26px; height: 26px;
+  margin-left: 4px;
   padding: 0;
-  border-radius: 0;
+  border-radius: 5px;
   color: var(--m-g1);
 }
 :is(#screen-browser, #screen-browser-2) #btn-browser-newtab svg { width: 12px; height: 12px; }
