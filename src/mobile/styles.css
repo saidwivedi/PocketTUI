@@ -304,7 +304,9 @@ body {
    SESSION LIST
    ============================================================ */
 .list-wrap {
-  padding: 0 22px 40px;
+  /* No bottom padding: the features guide card follows the list, and the
+     screen's own bottom padding is the scroll slack under it. */
+  padding: 0 22px;
   animation: fade-in 0.32s var(--ease-out);
   /* A size container so the pill row below can ask how wide the list really
      is — the rail is dragged to any width between its bounds, which no media
@@ -5190,29 +5192,76 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* ============================================================
    FEATURES GUIDE
    ============================================================ */
-/* The row into the guide: a text link in the register of the card's "All
-   shortcuts", since it is a pointer to something to read rather than a control.
-   On the phone it follows the last session row at the list's 22px gutter. */
+/* The way into the guide: a card in the session rows' idiom — .item's surface,
+   corner and padding, the row title's serif and a sans meta line under it —
+   with the shortcuts card's fold chevron turned to point on. Its own rules
+   rather than .item's class, which the list's scripts count rows by. On the
+   phone it follows the last session row at the list's 22px gutter; the last
+   row's own 14px margin is the gap above the eyebrow, the same 14px the
+   Sessions eyebrow has above it. */
+#features-guide { margin: 0 22px; }
 #btn-features {
-  display: block;
-  margin: 0 22px;
-  padding: 6px 0;
-  background: transparent; border: none;
-  font-family: var(--sans);
-  font-size: 13px;
-  color: var(--umber);
+  display: flex; align-items: center; gap: 12px;
+  width: 100%;
+  padding: 18px 20px 16px;
+  background: var(--card);
+  border: 1px solid var(--hair);
+  border-radius: 16px;
+  color: inherit;
+  font: inherit;
   text-align: left;
   cursor: pointer;
+  transition: border-color 0.18s var(--ease-out), background 0.18s var(--ease-out),
+              transform 0.14s var(--ease-out);
 }
-#btn-features:hover { text-decoration: underline; }
+#btn-features:hover { border-color: var(--hair-strong); }
+#btn-features:active { transform: scale(0.985); background: var(--card-2); }
+#btn-features .fg-text { flex: 1; min-width: 0; display: block; }
+#btn-features .fg-title {
+  display: block;
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.012em;
+  line-height: 1.32;
+  color: var(--ink);
+}
+#btn-features .fg-meta {
+  display: block;
+  margin-top: 5px;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  color: var(--tertiary);
+}
+#btn-features svg {
+  flex: 0 0 auto;
+  width: 13px; height: 13px;
+  transform: rotate(180deg);
+  color: var(--tertiary);
+  transition: color 0.18s var(--ease-out);
+}
+#btn-features:hover svg { color: var(--ink); }
 @media (min-width: 768px) and (min-height: 500px) {
-  /* Held out of the rail's scroll under the shortcuts card, and inset to line
-     up with the card's own text. */
-  #btn-features {
+  /* Held out of the rail's scroll above the shortcuts card, at the list's
+     14px gutter, in the rail rows' compact sizes. With no shortcuts card
+     (a touch tablet) it is the foot on its own, with the same 10px under it. */
+  #features-guide {
     flex: 0 0 auto;
-    margin: -2px 14px 10px;
-    padding: 0 11px;
-    font-size: calc(var(--rail-title) * 10.5 / 14);
+    margin: 0 14px 10px;
+  }
+  #btn-features {
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+  }
+  #btn-features .fg-title {
+    font-size: var(--rail-title);
+    line-height: 1.3;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #btn-features .fg-meta {
+    margin-top: 1px;
+    font-size: calc(var(--rail-title) * 10 / 14);
   }
 }
 /* The guide itself, over everything: the hosted page in a frame that fills the
