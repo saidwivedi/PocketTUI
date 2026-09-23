@@ -399,12 +399,39 @@ function showSplitMenu(wrap, on) {
   const from = sideIdAt(btn);
   const menu = wrap.querySelector(".dock-split-menu");
   menu.textContent = "";
+  // A menu that borrows this open and close for rows of its own (the browser's
+  // page-mode menu) writes them itself.
+  if (wrap.menuRows) { wrap.menuRows(menu); return; }
+  // In the explorer's and the browser's bars this is the more key, so the pane
+  // rows get a caption saying what they do.
+  const pane = wrap.closest("#screen-files, #screen-files-2, #screen-browser, #screen-browser-2");
+  if (pane) menu.appendChild(el("div", { class: "view-cap" }, "Open in this column"));
   for (const type of sideSplitTypes()) {
     const row = el("button", { type: "button", class: "view-row", role: "menuitem" },
                    el("span", {}, SIDE_LABEL[type]));
     row.addEventListener("click", () => {
       showSplitMenu(wrap, false);
       sideMenuPick(from, type);
+    });
+    menu.appendChild(row);
+  }
+  if (!pane) return;
+  // Then, under a rule, the keys the pane's bar hides while it is docked: each
+  // row presses the key that carries its data-more label, so every handler
+  // stays the key's own. A hidden key has no row, and the swap has one only
+  // while there are two rows to swap.
+  const keys = [...pane.querySelectorAll("[data-more]")].filter((k) => !k.hidden
+    && (!k.classList.contains("dock-swap") || (sideRows.length === 2 && !sideFull)))
+    .sort((a, b) => (+a.dataset.moreAt || 0) - (+b.dataset.moreAt || 0));
+  if (!keys.length) return;
+  menu.appendChild(el("div", { class: "menu-rule", role: "separator" }));
+  for (const k of keys) {
+    const row = el("button", { type: "button", class: "view-row", role: "menuitem" },
+                   el("span", {}, k.dataset.more || k.getAttribute("aria-label")),
+                   "moreNote" in k.dataset ? el("span", { class: "more-note" }, k.textContent) : null);
+    row.addEventListener("click", () => {
+      showSplitMenu(wrap, false);
+      k.click();
     });
     menu.appendChild(row);
   }

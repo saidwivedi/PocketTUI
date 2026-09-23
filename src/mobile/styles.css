@@ -2979,88 +2979,164 @@ html.term-open #dbg-panel { opacity: 0.85; }
    own button groups sit at: everything else in this bar moves within the
    explorer, and this one leaves it. */
 #btn-files-term { margin-right: 10px; }
-/* The path bar between back and +. In the bar's own sans face rather than
-   mono, so the path and the buttons beside it read as one line of type; scrolled
-   rather than wrapped so a deep tree never buries the controls beside it. */
+/* The explorer's and the browser's chrome, after macOS Finder and Safari. The
+   greys are the ink at fixed strengths, so a dark or user palette carries them
+   with no tokens of their own. --m-side is about as wide as a bar's right-hand
+   group, which the title and the address capsule leave clear on both sides so
+   they sit centred on the row. */
+:is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2) {
+  --m-g1: color-mix(in srgb, var(--ink) 62%, transparent);
+  --m-g2: color-mix(in srgb, var(--ink) 45%, transparent);
+  --m-g3: color-mix(in srgb, var(--ink) 30%, transparent);
+  --m-fill: color-mix(in srgb, var(--ink) 5%, transparent);
+  --m-fill2: color-mix(in srgb, var(--ink) 8%, transparent);
+  --m-sep: color-mix(in srgb, var(--ink) 10%, transparent);
+  --m-side: 124px;
+  --m-key-w: 34px;
+  --m-key-h: 32px;
+}
+/* The keys: a 15px glyph (13px for the arrows, expand and the cross) in the
+   ink at 62%, and the ink at 8% under the pointer, while pressed or while on.
+   34 by 32 on a phone, 26 by 24 docked (below). */
+:is(.files-toolrow, .browser-topbar) .icon-btn {
+  flex: 0 0 auto;
+  width: var(--m-key-w); height: var(--m-key-h);
+  padding: 0;
+  border-radius: 5px;
+  color: var(--m-g1);
+}
+:is(.files-toolrow, .browser-topbar) .icon-btn svg { width: 15px; height: 15px; }
+:is(.files-toolrow, .browser-topbar)
+  :is(#btn-files-back, #btn-browser-back, #btn-browser-fwd, #btn-files-expand,
+      #btn-browser-expand, #btn-files-close, #btn-browser-close) svg { width: 13px; height: 13px; }
+:is(.files-toolrow, .browser-topbar) .icon-btn:is(:hover, :active, [aria-expanded="true"], .on) {
+  color: var(--ink);
+  background: var(--m-fill2);
+}
+:is(.files-toolrow, .browser-topbar) .icon-btn:active { transform: none; }
+:is(.files-toolrow, .browser-topbar) .icon-btn:disabled { color: var(--m-g3); background: transparent; }
+/* The short upright rule before expand and close, which act on the pane rather
+   than on what is in it. */
+.m-rule {
+  flex: 0 0 auto;
+  width: 1px; height: 14px;
+  margin: 0 6px;
+  background: var(--m-sep);
+}
+/* Two rows: the tool row, then the path bar. */
+.files-topbar {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 0;
+}
+/* Three groups: the arrows and the right-hand keys grow from nothing in equal
+   shares, so the title between them sits on the row's centre whenever both
+   fit beside it, and the title gives way (to an ellipsis) before either group
+   does. */
+.files-toolrow {
+  display: flex; align-items: center;
+  height: 46px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--m-sep);
+}
+.files-nav, .files-tools {
+  flex: 1 1 0;
+  display: flex; align-items: center; gap: 2px;
+}
+.files-tools { justify-content: flex-end; }
+.files-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 0 8px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  pointer-events: none;
+}
+.files-title svg { flex: 0 0 auto; width: 15px; height: 15px; color: var(--m-g2); }
+.files-title-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The path bar: the crumbs, and at its right end the branch. */
+.files-pathbar {
+  display: flex; align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--m-sep);
+}
+/* Scrolled rather than wrapped so a deep tree never pushes the branch off the
+   bar, and pinned to the tail by renderCrumbs. */
 #files-crumbs {
   flex: 1;
   min-width: 0;
-  display: flex; align-items: center; gap: 2px;
+  display: flex; align-items: center;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
   white-space: nowrap;
-  padding: 0 2px;
 }
 #files-crumbs::-webkit-scrollbar { display: none; }
 .crumb {
   flex: 0 0 auto;
+  display: inline-flex; align-items: center;
+  height: 20px;
   background: transparent; border: none;
+  border-radius: 4px;
   font-family: var(--sans);
-  font-size: 13px;
-  color: var(--secondary);
-  padding: 6px 4px;
+  font-size: 11px;
+  color: var(--m-g1);
+  padding: 0 2px;
   cursor: pointer;
 }
-.crumb.current { color: var(--ink); font-weight: 500; }
-.crumb-sep { flex: 0 0 auto; color: var(--whisper); font-size: 11px; }
+.crumb svg { width: 12px; height: 12px; color: var(--m-g3); }
+.crumb:not(.current):hover { color: var(--ink); }
+.crumb.current { color: var(--ink); }
+.crumb-sep { flex: 0 0 auto; display: inline-flex; margin: 0 3px; color: var(--m-g3); }
+.crumb-sep svg { width: 9px; height: 9px; }
 
-#files-path-wrap { flex: 1; min-width: 0; display: flex; }
-/* A recessed field the height of the row, in the crumbs' face, with no edge
-   until it has the focus; hidden until btn-files-edit-path swaps it in for
-   #files-crumbs. */
+#files-path-wrap { flex: 1; min-width: 0; display: flex; align-items: center; }
+/* The path field, swapped in for #files-crumbs by btn-files-edit-path. */
 #files-path-input {
   display: none;
   width: 100%;
-  height: 30px;
+  height: 22px;
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: 12px;
   color: var(--ink);
-  background: var(--paper-rec);
+  background: var(--m-fill);
   border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 0 10px;
+  border-radius: 5px;
+  padding: 0 7px;
 }
 #files-path-input:focus { border-color: var(--umber); outline: none; }
 #files-path-wrap.editing #files-crumbs { display: none; }
 #files-path-wrap.editing #files-path-input { display: block; }
-/* The layout-and-order menu's button: a word and a chevron with no outline, the
-   icon buttons' hover wash and nothing at rest, so it sits in the bar as text
-   rather than as a second kind of button. */
+/* The layout-and-order pop-up: the grid glyph and a small chevron, keyed like
+   the buttons beside it. */
 #files-view-wrap {
   position: relative;
   flex: 0 0 auto;
   display: flex; align-items: center;
-  margin-left: 4px;
 }
 #btn-files-view {
-  display: flex; align-items: center; gap: 4px;
-  font-family: var(--sans);
-  font-size: 12.5px;
-  color: var(--secondary);
+  display: flex; align-items: center; gap: 3px;
+  height: var(--m-key-h);
+  padding: 0 6px 0 7px;
+  color: var(--m-g1);
   background: transparent;
   border: none;
-  border-radius: 6px;
-  padding: 5px 7px;
+  border-radius: 5px;
   cursor: pointer;
-  transition: color 0.18s var(--ease-out), background 0.18s var(--ease-out);
 }
-#btn-files-view:hover, #btn-files-view:active { color: var(--ink); background: var(--umber-tint); }
-/* The chevron a <select> would have drawn for itself, as a stroked glyph masked
-   onto the tertiary ink. A pseudo-element rather than a sprite <use>, because
-   syncRefBar writes the branch button's label with textContent and would wipe a
-   child. Turns over while the menu is open, so the button says which way it goes. */
-#btn-files-view::after, #btn-files-ref::after {
-  content: "";
-  flex: 0 0 auto;
-  width: 10px; height: 10px;
-  background: var(--tertiary);
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
-  transition: transform 0.18s var(--ease-out);
-}
-#files-view-wrap.open #btn-files-view::after,
-#files-ref-wrap.open #btn-files-ref::after { transform: rotate(180deg); }
+#btn-files-view svg { width: 15px; height: 15px; }
+#btn-files-view .pop-chev { width: 9px; height: 9px; color: var(--m-g2); }
+#btn-files-view:is(:hover, :active, [aria-expanded="true"]) { color: var(--ink); background: var(--m-fill2); }
 /* The menu itself, on #files-suggest's floating-panel recipe below (--card,
    --hair-strong, that shadow, z-index 60): the bar's two dropdowns are one
    layer, not two ideas. Anchored under the button rather than spanning the bar
@@ -3123,42 +3199,43 @@ html.term-open #dbg-panel { opacity: 0.85; }
   visibility: hidden;
 }
 .view-row.on .view-check { visibility: visible; }
-/* The branch picker, on #btn-files-view's recipe: the bar's two dropdowns are
-   one control drawn twice, so only what differs is set here. Capped so a long
-   branch name shrinks the crumbs by a fixed amount rather than by its own
-   length. */
+/* The branch pop-up at the path bar's right end: branch glyph, name, chevron,
+   in the path bar's size. Capped so a long branch name takes a fixed bite out
+   of the crumbs rather than one its own length. */
 #files-ref-wrap {
   position: relative;
   flex: 0 0 auto;
   display: flex; align-items: center;
-  margin-left: 4px;
+  margin-left: auto;
+  padding-left: 8px;
 }
 #files-ref-wrap[hidden] { display: none; }
 #btn-files-ref {
   display: flex; align-items: center; gap: 4px;
-  max-width: 108px;
-  overflow: hidden;
+  max-width: 150px;
+  height: 20px;
   white-space: nowrap;
-  text-overflow: ellipsis;
   font-family: var(--sans);
-  font-size: 12.5px;
-  color: var(--secondary);
+  font-size: 11px;
+  color: var(--m-g1);
   background: transparent;
   border: none;
-  border-radius: 6px;
-  padding: 5px 7px;
+  border-radius: 4px;
+  padding: 0 4px;
   cursor: pointer;
-  transition: color 0.18s var(--ease-out), background 0.18s var(--ease-out);
 }
-#btn-files-ref:hover, #btn-files-ref:active { color: var(--ink); background: var(--umber-tint); }
+#btn-files-ref svg { flex: 0 0 auto; width: 11px; height: 11px; }
+#btn-files-ref svg:last-child { width: 9px; height: 9px; color: var(--m-g2); }
+#btn-files-ref .ref-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#btn-files-ref:is(:hover, :active, [aria-expanded="true"]) { color: var(--ink); background: var(--m-fill2); }
 /* Off the working tree: the one state where what the explorer is showing is
    not what is on the disk, so the control that put it there wears the accent
    for as long as it lasts. */
-#btn-files-ref.on {
+#btn-files-ref.on,
+#btn-files-ref.on svg:last-child {
   color: var(--umber);
-  background: var(--umber-soft);
 }
-#btn-files-ref.on::after { background: var(--umber); }
+#btn-files-ref.on { background: var(--umber-soft); }
 #files-ref-ro {
   flex: 0 0 auto;
   margin-left: 6px;
@@ -3175,7 +3252,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
 #files-ref-menu {
   display: none;
   position: absolute;
-  top: 100%; left: 0;
+  top: 100%; right: 0;
   margin-top: 6px;
   min-width: 200px;
   max-height: 60vh;
@@ -3208,7 +3285,6 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 /* The address field wants every pixel of the bar it can get, and behind its
    scrim there is no listing to lay out either way. */
-#files-path-wrap.editing ~ #files-view-wrap,
 #files-path-wrap.editing ~ #files-ref-wrap,
 #files-path-wrap.editing ~ #files-ref-ro { display: none; }
 /* .topbar is position:sticky, which (like position:relative) is itself a
@@ -3519,6 +3595,32 @@ html.term-open #dbg-panel { opacity: 0.85; }
   z-index: 60;
 }
 .dock-split-wrap.open .dock-split-menu { display: block; }
+/* The explorer's and the browser's menus, docked, are a desktop's: compact
+   rows on one line each with no rules between them, and a hairline before the
+   pane's own rows (26-side-pane.js). */
+:is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2).docked .dock-split-menu {
+  padding: 4px 0;
+  min-width: 190px;
+}
+:is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2).docked .dock-split-menu .view-row {
+  height: 30px;
+  font-size: 13px;
+  border-bottom: none;
+}
+:is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2) .dock-split-menu :is(.view-row, .view-cap) {
+  white-space: nowrap;
+}
+:is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2) .dock-split-menu .view-cap {
+  padding: 6px 14px 4px 11px;
+}
+.menu-rule { height: 1px; margin: 4px 0; background: var(--hair); }
+/* What a row's key says now, at the row's right end (the zoom level). */
+.more-note {
+  margin-left: auto;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--tertiary);
+}
 /* #theme-scrim's recipe with the tint taken out, and layered between the
    terminal and the panes rather than over everything: the menu drops out of a
    bar inside a pane, and a scrim above the panes would be a scrim above the menu
@@ -3634,42 +3736,23 @@ html.term-open #dbg-panel { opacity: 0.85; }
     position: relative;
     top: 0;
     flex: 0 0 auto;
-    gap: 2px;
-    min-height: 40px;
-    padding: 6px 8px 5px 10px;
-    /* The pane's own paper and grain show through, so the bar and the rows under
-       it are one surface, and a single hairline marks where the chrome ends. */
     background: transparent;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
-    border-bottom: 1px solid var(--hair);
   }
-  :is(#screen-browser, #screen-browser-2).docked .topbar { padding: 4px 10px 5px 10px; }
-  /* Controls are grouped by space rather than by borders: 2px inside a group,
-     10px (the bar's 2px gap plus 8px) between groups. The explorer's groups are
-     [back] [crumbs] [branch] [edit, add, view] [window controls]; the address
-     row's are [back, forward] [monitor, network, reload] [address] (the
-     terminal key is never shown docked). Margins sit on controls that are
-     always shown, so a hidden key never leaves a gap of its own. */
-  :is(#screen-files, #screen-files-2).docked #btn-files-back { margin-right: 8px; }
-  :is(#screen-files, #screen-files-2).docked #files-ref-wrap { margin-left: 8px; }
-  :is(#screen-files, #screen-files-2).docked #btn-files-edit-path { margin-left: 8px; }
-  :is(#screen-files, #screen-files-2).docked #files-view-wrap { margin-left: 0; }
-  :is(#screen-browser, #screen-browser-2).docked #btn-browser-fwd { margin-right: 8px; }
-  :is(#screen-browser, #screen-browser-2).docked #browser-url-wrap { margin-left: 8px; }
-  /* A short upright rule before the window controls (split, swap, expand,
-     close), which act on the pane rather than on what is in it. Drawn by the
-     split key's wrap, which is the first of them and is dock-only, so the rule
-     comes and goes with the group. */
-  :is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2) .dock-split-wrap {
-    margin-left: 6px;
+  /* Docked, the bars are the desktop's: 38px rows and 26 by 24 keys. */
+  :is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2).docked {
+    --m-side: 128px;
+    --m-key-w: 26px;
+    --m-key-h: 24px;
   }
-  :is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2) .dock-split-wrap::before {
-    content: "";
-    width: 1px; height: 16px;
-    margin-right: 8px;
-    background: var(--hair-strong);
-  }
+  :is(#screen-files, #screen-files-2).docked .files-toolrow,
+  :is(#screen-browser, #screen-browser-2).docked .browser-topbar { height: 38px; }
+  :is(#screen-browser, #screen-browser-2).docked #browser-url-wrap { margin: 0; }
+  /* Keys the more menu presses while docked (26-side-pane.js), and the swap,
+     which is a row of it. */
+  :is(#screen-files, #screen-files-2).docked #btn-files-edit-path,
+  :is(#screen-browser, #screen-browser-2).docked :is(#browser-zoom-wrap, #btn-browser-out) { display: none; }
   :is(#screen-files, #screen-files-2).docked .files-wrap {
     flex: 1;
     min-height: 0;
@@ -3677,18 +3760,12 @@ html.term-open #dbg-panel { opacity: 0.85; }
     overscroll-behavior: contain;
     padding: 0 12px 24px;
   }
-  /* The rail's own compaction, for the same reason: eight controls and a path
-     across 340px, where the phone's bar had the whole window. 28px keys with an
-     18px glyph and a 7px corner. */
-  :is(#screen-files, #screen-files-2).docked .icon-btn,
-  :is(#screen-browser, #screen-browser-2).docked .icon-btn,
+  /* The docked editor's and reader's bars, compacted the rail's way: 28px keys
+     with an 18px glyph and a 7px corner. */
   #screen-editor.docked .icon-btn,
   #screen-reader.docked .icon-btn { padding: 5px; border-radius: 7px; }
-  :is(#screen-files, #screen-files-2).docked .icon-btn svg,
-  :is(#screen-browser, #screen-browser-2).docked .icon-btn svg,
   #screen-editor.docked .icon-btn svg,
   #screen-reader.docked .icon-btn svg { width: 18px; height: 18px; }
-  :is(#screen-files, #screen-files-2).docked #btn-files-ref { max-width: 92px; }
   /* The two dropdown scrims belong to the pane, not to the window: the
      terminal beside it is live, and a layout menu in here must not dim it.
      The pane is position:fixed, so absolute already means "this pane". */
@@ -3730,7 +3807,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* The key that trades the rows, in every bar a row can wear one in. Two rows
      and neither of them expanded is the whole of when it has anything to do. */
   #screen-term.side-two:not(.side-full) > :is(#diff-pane, #diff-pane-2) .dock-swap,
-  #screen-term.side-two:not(.side-full).active ~ .docked .dock-swap {
+  #screen-term.side-two:not(.side-full).active
+    ~ .docked:not(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2) .dock-swap {
     display: inline-flex;
   }
   /* The split key's wrap in the diff's head. The .dock-only rule at the top of
@@ -3781,17 +3859,27 @@ html.term-open #dbg-panel { opacity: 0.85; }
 :is(#screen-browser, #screen-browser-2).active { display: flex; }
 /* The list screens scroll the page under a sticky topbar; this one is a fixed
    column, so its bar just sits in the flow, the editor bar's arrangement —
-   relative rather than static only so it can be given a layer, which is what
-   keeps the zoom panel's scrim off the address row — the panel itself hangs
-   off a key in the tab row above and out-stacks this at 55 (the file bar's
-   sticky topbar gets the same 50 for the same reason). */
+   relative rather than static only so it can be given a layer, which keeps the
+   menus it drops above the zoom panel's scrim and the rows under it. The groups
+   share the row as the explorer's do (.files-nav), so the address capsule sits
+   on the row's centre whenever there is room for it there. */
 .browser-topbar {
   position: relative;
   z-index: 50;
   flex: 0 0 auto;
-  gap: 4px;
-  padding: 8px 12px;
+  display: flex; align-items: center;
+  height: 46px;
+  padding: 0 8px;
+  background: var(--paper);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-bottom: 1px solid var(--m-sep);
 }
+.browser-nav, .browser-tools {
+  flex: 1 1 0;
+  display: flex; align-items: center; gap: 2px;
+}
+.browser-tools { justify-content: flex-end; }
 .browser-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 /* Absolute against the wrap rather than sized to its own content — the iOS
    iframe-height fix. */
@@ -3868,49 +3956,67 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 .browser-hint-x svg { width: 16px; height: 16px; }
 .browser-hint-go:active, .browser-hint-x:active { transform: scale(0.96); }
-/* Positioned, because the key that opens this page outside the app sits inside
-   the field rather than after it. */
-#browser-url-wrap { flex: 1; min-width: 0; display: flex; position: relative; }
-/* Same field as #files-path-input: recessed, edgeless until focused, in the
-   bar's sans face. The right padding is the key's slot: a field that ended where
-   its box does would scroll a long address under the glyph. */
+/* The address capsule: the page-mode key, the address and reload in one
+   rounded field. */
+#browser-url-wrap {
+  flex: 0 1 clamp(200px, calc(100% - 2 * var(--m-side)), 420px);
+  min-width: 120px;
+  margin: 0 6px;
+  position: relative;
+  display: flex; align-items: center;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--m-fill);
+}
+#browser-url-wrap:has(#browser-url:focus) {
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--umber), 0 0 0 4px var(--umber-soft);
+}
+/* The host, centred, until the field has the focus; then the whole address from
+   the left (browserSetField). */
 #browser-url {
-  width: 100%;
-  height: 30px;
+  flex: 1;
+  min-width: 0;
+  height: 28px;
   font-family: var(--sans);
   font-size: 13px;
-  line-height: 28px;
-  color: var(--ink-2);
-  background: var(--paper-rec);
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 0 32px 0 11px;
-}
-#browser-url:focus {
-  border-color: var(--umber);
-  box-shadow: 0 0 0 3px var(--umber-soft);
+  color: var(--ink);
+  background: transparent;
+  border: none;
   outline: none;
+  padding: 0 4px;
+  text-align: center;
 }
-/* In a dark palette --paper-rec is within a shade of --paper, so the edgeless
-   fields and the active tab take --card-2 there to stay visible. */
-:root[data-theme="dark"] :is(#browser-url, #files-path-input, .tab-chip.on) {
-  background: var(--card-2);
+#browser-url:focus { text-align: left; }
+#browser-url::placeholder { color: var(--m-g2); }
+/* The capsule's two keys, smaller and quieter than the row's. */
+.browser-mode-wrap { position: relative; flex: 0 0 auto; display: flex; }
+.browser-mode,
+.browser-topbar #btn-browser-reload {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--m-g2);
+  cursor: pointer;
 }
-/* In the field, at its right end: smaller than the keys on the row and drawn in
-   the secondary ink, because it belongs to the address it sits on rather than to
-   the bar. */
-#btn-browser-out {
-  position: absolute;
-  top: 50%; right: 3px;
-  transform: translateY(-50%);
-  color: var(--tertiary);
+.browser-mode { margin-left: 3px; }
+.browser-topbar #btn-browser-reload { margin-right: 3px; }
+:is(.browser-mode, .browser-topbar #btn-browser-reload) svg { width: 13px; height: 13px; }
+.browser-mode.on { color: var(--ink); }
+:is(.browser-mode, .browser-topbar #btn-browser-reload):is(:hover, [aria-expanded="true"]) {
+  color: var(--ink);
+  background: var(--m-fill2);
 }
-/* Named through the screen so these outweigh the docked bar's key size. */
-:is(#screen-browser, #screen-browser-2) #btn-browser-out { padding: 5px; border-radius: 6px; }
-:is(#screen-browser, #screen-browser-2) #btn-browser-out svg { width: 14px; height: 14px; }
+.browser-mode:disabled { cursor: default; background: transparent; color: var(--m-g2); }
+.browser-mode-wrap .dock-split-menu { left: 0; right: auto; }
+/* The two mode keys are never drawn: the page-mode menu presses them. */
+:is(#screen-browser, #screen-browser-2) :is(#btn-browser-full, #btn-browser-tab) { display: none; }
 /* .icon-btn is display:inline-flex, which a bare [hidden] does not outrank. */
 #btn-browser-out[hidden] { display: none; }
-#btn-browser-out:active { transform: translateY(-50%) scale(0.94); }
 /* The zoom key's panel, on the file bar's dropdown recipe (#files-view-menu):
    a class on the wrap opens it, a scrim inside the pane closes it. Anchored on
    the edge it shares with its button rather than the left, because the key
@@ -3951,17 +4057,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
   cursor: pointer;
 }
 #browser-zoom-pct:hover { color: var(--ink); background: var(--umber-tint); }
-/* A host left at anything but its own size, a page already kept, and a tab put
-   on the computer's own network: all three are states that outlive the press
-   that made them, and the key is the only thing on screen that can say so.
-   aria-pressed carries the same state for a reader who cannot see the tint, and
-   is drawn from as well so the two can never disagree. */
-#btn-browser-zoom.on, #btn-browser-star.on, #btn-browser-tab.on,
-#btn-browser-tab[aria-pressed="true"] { color: var(--umber); }
-/* The two mode toggles on the address row also fill while pressed, so a key
-   that is on reads as held down and not only as recoloured. */
-#btn-browser-full[aria-pressed="true"],
-#btn-browser-tab[aria-pressed="true"] { color: var(--umber); background: var(--umber-soft); }
+/* A host left at anything but its own size: the zoom key is the only thing on
+   screen that can say so. */
+#btn-browser-zoom.on { color: var(--umber); }
 #btn-browser-star[hidden] { display: none; }
 /* The network key hides the same way when the computer has no tab flavour to
    offer (an older server, or a shell served from the computer itself), and the
@@ -3981,65 +4079,50 @@ html.term-open #dbg-panel { opacity: 0.85; }
   z-index: 45;
 }
 #browser-menu-scrim.show { opacity: 1; pointer-events: auto; }
-/* The tab strip, at the pane's top edge where a browser keeps it: one row that
-   scrolls sideways with no bar of its own rather than wrapping, because the
-   height of this pane belongs to the page. On the pane's own paper, with no
-   band: the tabs, the address row and the bookmarks are one surface, and the
-   active tab is a filled segment rather than a card. Always drawn while the
-   pane is open, the lone tab included — a window with one tab still shows it,
-   and a strip that appeared at the second tab would move the page under the
-   reader. */
+/* The tabs, Safari's way: a band in the ink at 5%, the tabs sharing it equally
+   (shrinking rather than scrolling, eight included), the inactive ones parted by
+   short rules and the active one a paper card inset on the band. */
 #browser-tabs {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  gap: 2px;
-  height: 36px;
-  padding: 6px 8px 0 10px;
-  /* The zoom panel hangs off a key in this row now, so the row has to be able
-     to out-stack the address row it hangs over (50) and the scrim that dims
-     the page for it (45) — the bar a panel comes out of is never the thing the
-     panel dims, which is the reason .browser-topbar carries a layer too. */
-  position: relative;
-  z-index: 55;
+  align-items: stretch;
+  height: 28px;
+  background: var(--m-fill);
+  border-bottom: 1px solid var(--m-sep);
 }
-/* The chips alone scroll: the button beside them keeps its place at the end of
-   the row, where a strip too wide for the pane would otherwise carry it off. */
 #browser-tab-row {
-  /* Only as wide as the tabs it holds, so the key follows the last one rather
-     than sitting off at the pane's edge — and shrinking, so a row too wide for
-     the pane scrolls inside itself instead of pushing it out. */
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 2px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
+  align-items: stretch;
+  overflow: hidden;
 }
-#browser-tab-row::-webkit-scrollbar { display: none; }
-/* Flat segments: the rest are words on the paper, and only the one being read
-   is filled. A strip of eight outlined cards is a row of buttons, and the one
-   thing this row has to say is which of them the page below belongs to. A row
-   short of room first narrows the other tabs down to a few letters each, as
-   Safari does, and only then scrolls, so a tab is not left cut off at the edge. */
 .tab-chip {
   position: relative;
-  flex: 0 1 auto;
+  flex: 1 1 0;
+  min-width: 0;
   display: flex; align-items: center;
-  min-width: 64px;
-  max-width: 160px;
-  height: 26px;
-  background: transparent;
-  border-radius: 7px;
 }
-/* The tab whose page is on screen: a recessed fill, no edge, and its whole name. */
-.tab-chip.on { flex-shrink: 0; background: var(--paper-rec); }
-.tab-chip:not(.on):hover { background: var(--umber-tint); }
-/* A tab on the computer's own network, for the tabs the key above is not
-   speaking for. A dot rather than a glyph: it sits inside a name that is
-   already being ellipsised, and at this size a mark is all that reads. */
+.tab-chip + .tab-chip::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 7px; bottom: 7px;
+  width: 1px;
+  background: var(--m-sep);
+}
+.tab-chip.on::before, .tab-chip.on + .tab-chip::before { display: none; }
+.tab-chip:not(.on):hover { background: var(--m-fill); }
+.tab-chip.on {
+  margin: 3px;
+  border-radius: 5px;
+  background: var(--paper);
+  box-shadow: 0 0 0 0.5px var(--m-sep);
+}
+/* In a dark palette the active tab is lighter than the band, as Safari's is. */
+:root[data-theme="dark"] .tab-chip.on { background: color-mix(in srgb, var(--ink) 13%, var(--paper)); }
+/* A tab on the computer's own network, for the tabs the page-mode key is not
+   speaking for. A dot rather than a glyph: at this size a mark is all that
+   reads. */
 .tab-chip.lan .tab-name::before {
   content: "";
   display: inline-block;
@@ -4049,29 +4132,34 @@ html.term-open #dbg-panel { opacity: 0.85; }
   border-radius: 50%;
   background: var(--umber);
 }
+/* The name, centred in the tab with room kept either side for the close mark,
+   so a name is centred whether or not the mark is showing. */
 .tab-name {
+  flex: 1;
   display: block;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  text-align: center;
   font-family: var(--sans);
-  font-size: 12.5px;
-  line-height: 26px;
-  color: var(--secondary);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--m-g1);
   background: transparent;
   border: none;
-  padding: 0 0 0 10px;
+  padding: 0 22px;
   cursor: pointer;
 }
 .tab-chip.on .tab-name, .tab-chip:hover .tab-name { color: var(--ink); }
-.tab-chip.on .tab-name { font-weight: 500; }
+/* An inactive tab at rest has no close mark, so its name gets the width. */
+.tab-chip:not(.on):not(:hover):not(:focus-within) .tab-name { padding: 0 8px; }
 /* The page's own mark, where the computer could read one (chromium.py's
    FAVICON_JS): a browser's chip carries its site's icon, and a strip of eight
    hosts reads at a glance with them and as a list of words without. Rounded,
    because a good many of them are square logos that were drawn rounded. */
 .tab-icon {
-  width: 16px; height: 16px;
+  width: 14px; height: 14px;
   margin-right: 5px;
   vertical-align: -3px;
   border-radius: 3px;
@@ -4096,99 +4184,76 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* A tab the computer gave up to stay inside its memory cap. It keeps its name
    and its place — it is still a tab to come back to, and coming back loads it
    again — and it is drawn as what it is: a page that is not there at the moment. */
-.tab-chip.dim .tab-name { color: var(--tertiary); font-style: italic; }
-/* In its own slot on the active tab, which is the one anybody closes. On the
-   others it floats over the end of the name and the name fades out under it,
-   so a hover changes no chip's width and a resting tab has no blank slot after
-   its name. */
+.tab-chip.dim .tab-name { color: var(--m-g3); font-style: italic; }
+/* The close mark, at the tab's left inside it: on the active tab, and on any
+   other under the pointer. */
 .tab-del {
-  flex: 0 0 auto;
+  position: absolute;
+  left: 5px; top: 50%;
+  transform: translateY(-50%);
   visibility: hidden;
   display: flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px;
-  margin: 0 3px 0 1px;
+  width: 16px; height: 16px;
   padding: 0;
   border: none;
-  border-radius: 50%;
+  border-radius: 4px;
   background: transparent;
-  color: var(--tertiary);
+  color: var(--m-g2);
   cursor: pointer;
 }
 .tab-del svg { width: 12px; height: 12px; }
 .tab-chip.on .tab-del,
 .tab-chip:hover .tab-del, .tab-chip:focus-within .tab-del { visibility: visible; }
-.tab-del:hover { color: var(--ink); }
-.tab-chip:not(.on) .tab-name { padding-right: 10px; }
-.tab-chip:not(.on) .tab-del { position: absolute; top: 4px; right: 3px; margin: 0; }
-.tab-chip:not(.on):is(:hover, :focus-within) .tab-name {
-  -webkit-mask-image: linear-gradient(to left, transparent 22px, #000 32px);
-  mask-image: linear-gradient(to left, transparent 22px, #000 32px);
-}
-/* The new tab, a key the height of a tab after the last of them where a
-   browser keeps it — outside the scrolling row on purpose, so a strip too wide
-   for a 360px pane carries its tabs off sideways and never this. Dimmed rather
-   than disabled at the cap: a press that cannot open a ninth tab should say why,
-   and a disabled button takes its own click away. Named through the screen so
-   the docked bar's key size does not outweigh it. */
+.tab-del:hover { color: var(--ink); background: var(--m-fill2); }
+/* The new tab, a fixed slot at the band's end. Dimmed rather than disabled at
+   the cap: a press that cannot open a ninth tab should say why, and a disabled
+   button takes its own click away. Named through the screen to outweigh
+   .icon-btn's own size. */
 :is(#screen-browser, #screen-browser-2) #btn-browser-newtab {
-  flex: 0 0 auto;
+  flex: 0 0 30px;
+  width: 30px; height: auto;
   padding: 0;
-  width: 26px; height: 26px;
-  margin-left: 4px;
-  border-radius: 7px;
+  border-radius: 0;
+  color: var(--m-g1);
 }
-:is(#screen-browser, #screen-browser-2) #btn-browser-newtab svg { width: 14px; height: 14px; }
+:is(#screen-browser, #screen-browser-2) #btn-browser-newtab svg { width: 12px; height: 12px; }
+:is(#screen-browser, #screen-browser-2) #btn-browser-newtab:hover { color: var(--ink); background: var(--m-fill); }
+:is(#screen-browser, #screen-browser-2) #btn-browser-newtab:active { transform: none; }
 #btn-browser-newtab.off { opacity: 0.4; }
-/* A window's controls, at the other end of the row its tabs are in: bookmark,
-   zoom, and docked the pane's own expand and close. Pushed flush right by the
-   margin rather than by a spacer, so the tabs and the "+" stay together at the
-   left and a strip too wide for the pane scrolls inside #browser-tab-row
-   instead of pushing these off the edge. Centred on the tabs' own line. */
-#browser-tab-actions {
-  flex: 0 0 auto;
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
 /* The bookmarks bar, in the order they were added the way a browser's own is.
    Scrolls sideways with no bar of its own (.keybar's recipe) rather than
-   wrapping to a second row: the pane is a pane, and the page below it is what
-   the height is for. Plain links with no fill, so the row is never mistaken
-   for the tab strip above the address row, whose active tab is filled. */
+   wrapping to a second row: the page below it is what the height is for. */
 #browser-bookmarks {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 3px 10px 5px;
+  height: 24px;
+  padding: 0 8px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
-  border-bottom: 1px solid var(--hair);
+  border-bottom: 1px solid var(--m-sep);
 }
 #browser-bookmarks[hidden] { display: none; }
 #browser-bookmarks::-webkit-scrollbar { display: none; }
 .bm-chip {
   flex: 0 0 auto;
   display: flex; align-items: center;
-  border-radius: 6px;
+  border-radius: 4px;
 }
-/* The one the page is on, said in the ink and the weight rather than with a
-   box: this bar is a row of links and the mark has to be one a link can carry. */
-.bm-chip.on .bm-open { color: var(--ink); font-weight: 500; }
-/* Names only: the bar's place under the address row is what says these are
-   saved pages. */
+/* The one the page is on carries the band's fill. */
+.bm-chip.on { background: var(--m-fill); }
 .bm-open {
   display: flex;
   align-items: center;
   font-family: var(--sans);
-  font-size: 12px;
-  color: var(--secondary);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--m-g1);
   background: transparent;
   border: none;
-  border-radius: 5px;
-  padding: 3px 7px;
+  padding: 2px 0 2px 7px;
   cursor: pointer;
 }
 /* One line whatever the page called itself: a title is as long as its author
@@ -4200,19 +4265,20 @@ html.term-open #dbg-panel { opacity: 0.85; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.bm-chip:hover .bm-open { color: var(--ink); background: var(--umber-tint); }
-/* The way to drop one, kept in its slot rather than hidden out of it: the pane
-   is wide-layout only so hover exists, but a chip that grows under the pointer
-   moves every chip after it. Visible on a keyboard focus too, which is the
-   only other way to reach the button. */
+.bm-chip:hover { background: var(--m-fill); }
+.bm-chip:hover .bm-open { color: var(--ink); }
+/* The way to drop one, kept in its slot rather than hidden out of it: a chip
+   that grows under the pointer moves every chip after it. Visible on a keyboard
+   focus too, which is the only other way to reach the button. */
 .bm-del {
   flex: 0 0 auto;
   visibility: hidden;
-  padding: 0 4px 0 1px;
+  width: 14px;
+  padding: 0;
   border: none;
   background: transparent;
-  color: var(--tertiary);
-  font-size: 14px;
+  color: var(--m-g2);
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
 }
