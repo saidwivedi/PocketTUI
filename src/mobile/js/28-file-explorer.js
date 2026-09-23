@@ -1212,11 +1212,12 @@ function renderCrumbs(path) {
 }
 
 // ---- address bar ------------------------------------------------------------
-// Tapping btn-files-edit-path swaps files-crumbs for files-path-input, an
-// editable field pre-filled with the current path. Typing filters the parent
-// directory's listing down to entries whose name starts with the segment
-// after the last "/" (auto-roll: completing a directory appends "/" and
-// starts filtering the next segment, exactly like tab-completion in a shell).
+// Tapping btn-files-edit-path (or the path bar's empty stretch) swaps
+// files-crumbs for files-path-input, an editable field pre-filled with the
+// current path. Typing filters the parent directory's listing down to entries
+// whose name starts with the segment after the last "/" (auto-roll: completing
+// a directory appends "/" and starts filtering the next segment, exactly like
+// tab-completion in a shell).
 // Escape, the back button/edge-swipe and tapping away all close it without
 // navigating; only a suggestion tap or Enter does.
 
@@ -1381,6 +1382,15 @@ async function submitPathEdit() {
 q("btn-files-edit-path").addEventListener("click", () => {
   if (q("files-path-wrap").classList.contains("editing")) closePathEdit();
   else openPathEdit();
+});
+// The bar is the field too: a click on its empty stretch (past the last crumb,
+// between two, on a separator) opens it the way the pencil does. A crumb, the
+// branch pop-up and the read-only tag keep their own jobs, and a click inside
+// the open field is typing.
+root.querySelector(".files-pathbar").addEventListener("click", (e) => {
+  if (e.target.closest(".crumb, #files-ref-wrap, #files-ref-ro, #btn-files-edit-path")) return;
+  if (q("files-path-wrap").classList.contains("editing")) return;
+  openPathEdit();
 });
 // Same as Escape: close without navigating, whether the tap landed on the
 // dimmed file list or on empty space below a short one.

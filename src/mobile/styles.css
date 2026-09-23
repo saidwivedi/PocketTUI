@@ -2988,6 +2988,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   --m-g1: color-mix(in srgb, var(--ink) 62%, transparent);
   --m-g2: color-mix(in srgb, var(--ink) 45%, transparent);
   --m-g3: color-mix(in srgb, var(--ink) 30%, transparent);
+  --m-fill0: color-mix(in srgb, var(--ink) 3%, transparent);
   --m-fill: color-mix(in srgb, var(--ink) 5%, transparent);
   --m-fill2: color-mix(in srgb, var(--ink) 8%, transparent);
   --m-sep: color-mix(in srgb, var(--ink) 10%, transparent);
@@ -3063,12 +3064,16 @@ html.term-open #dbg-panel { opacity: 0.85; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-/* The path bar: the crumbs, and at its right end the branch. */
+/* The path bar: the crumbs and the pencil, and at its right end the branch.
+   The bar is also the path field's way in (a click on its empty stretch opens
+   it), so between the crumbs it takes a text cursor, and under a pointer the
+   crumbs' stretch fills faintly the way an edgeless field does. */
 .files-pathbar {
   display: flex; align-items: center;
   height: 24px;
   padding: 0 10px;
   border-bottom: 1px solid var(--m-sep);
+  cursor: text;
 }
 /* Scrolled rather than wrapped so a deep tree never pushes the branch off the
    bar, and pinned to the tail by renderCrumbs. */
@@ -3100,7 +3105,28 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .crumb-sep { flex: 0 0 auto; display: inline-flex; margin: 0 3px; color: var(--m-g3); }
 .crumb-sep svg { width: 9px; height: 9px; }
 
-#files-path-wrap { flex: 1; min-width: 0; display: flex; align-items: center; }
+/* Pulled 4px left and padded back so the hover fill and the open field both
+   start a little before the first crumb, which stays where it was. */
+#files-path-wrap {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center;
+  height: 22px;
+  margin-left: -4px;
+  border-radius: 5px;
+}
+#files-crumbs { padding-left: 4px; }
+#files-path-wrap:not(.editing):hover { background: var(--m-fill0); }
+#btn-files-edit-path {
+  flex: 0 0 auto;
+  width: 20px; height: 18px;
+  margin-left: 2px;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--m-g2);
+}
+#btn-files-edit-path svg { width: 12px; height: 12px; }
+#btn-files-edit-path:is(:hover, :active) { color: var(--m-g1); background: transparent; }
+#btn-files-edit-path:active { transform: none; }
 /* The path field, swapped in for #files-crumbs by btn-files-edit-path. */
 #files-path-input {
   display: none;
@@ -3285,8 +3311,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 /* The address field wants every pixel of the bar it can get, and behind its
    scrim there is no listing to lay out either way. */
-#files-path-wrap.editing ~ #files-ref-wrap,
-#files-path-wrap.editing ~ #files-ref-ro { display: none; }
+#files-path-wrap.editing ~ :is(#files-ref-wrap, #files-ref-ro, #btn-files-edit-path) { display: none; }
 /* .topbar is position:sticky, which (like position:relative) is itself a
    positioned element — enough of a containing block to anchor this without
    a dedicated wrapper. Full width of the bar rather than just the input, so
@@ -3751,7 +3776,6 @@ html.term-open #dbg-panel { opacity: 0.85; }
   :is(#screen-browser, #screen-browser-2).docked #browser-url-wrap { margin: 0; }
   /* Keys the more menu presses while docked (26-side-pane.js), and the swap,
      which is a row of it. */
-  :is(#screen-files, #screen-files-2).docked #btn-files-edit-path,
   :is(#screen-browser, #screen-browser-2).docked :is(#browser-zoom-wrap, #btn-browser-out) { display: none; }
   :is(#screen-files, #screen-files-2).docked .files-wrap {
     flex: 1;
