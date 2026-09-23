@@ -2023,15 +2023,10 @@ function renderBrowserMarks() {
   for (const b of browserMarks) {
     if (!b || typeof b.url !== "string") continue;
     const url = b.url;
-    // The star before the title does what a favicon does on a desktop
-    // browser's own bar: it is what makes a row of words read as a row of
-    // saved pages rather than as more tabs. There are no favicons to fetch
-    // through this proxy, so every one of them wears the key that saved it.
     const open = el("button", {
       type: "button", class: "bm-open", title: browserMarkHost(url),
       onclick: () => browserNavigate(url),
-    }, svgIcon("i-star"), el("span", { class: "bm-name" },
-                             b.title || browserMarkName(url)));
+    }, el("span", { class: "bm-name" }, b.title || browserMarkName(url)));
     const drop = el("button", {
       type: "button", class: "bm-del", "aria-label": "Remove this bookmark",
       onclick: () => {
@@ -2102,7 +2097,7 @@ function renderBrowserTabs() {
       const shut = el("button", {
         type: "button", class: "tab-del", "aria-label": "Close this tab",
         onclick: (e) => { e.stopPropagation(); browserCloseTab(browserTabs.indexOf(tab)); },
-      }, "×");
+      }, svgIcon("i-close"));
       tab.chip = el("div", { class: "tab-chip" }, open, shut);
     }
     const open = tab.chip.firstElementChild;
