@@ -3779,7 +3779,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   :is(#screen-browser, #screen-browser-2).docked #browser-url-wrap { margin: 0 4px; }
   /* Keys the more menu presses while docked (26-side-pane.js), and the swap,
      which is a row of it. */
-  :is(#screen-browser, #screen-browser-2).docked :is(#browser-zoom-wrap, #btn-browser-out) { display: none; }
+  :is(#screen-browser, #screen-browser-2).docked #browser-zoom-wrap { display: none; }
   :is(#screen-files, #screen-files-2).docked .files-wrap {
     flex: 1;
     min-height: 0;
@@ -4043,6 +4043,20 @@ html.term-open #dbg-panel { opacity: 0.85; }
   color: var(--ink);
   background: var(--m-fill2);
 }
+/* The way out, left of reload in the same grey: an arrow leaving its box. */
+.browser-topbar #btn-browser-out {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--m-g2);
+  cursor: pointer;
+}
+.browser-topbar #btn-browser-out svg { width: 13px; height: 13px; }
+.browser-topbar #btn-browser-out:hover { color: var(--m-g1); background: var(--m-fill2); }
 /* The two mode keys after the arrows, 10px from them and 2px apart (the
    group's gap). On, a key wears the accent over the pressed fill, so it reads
    on beside one that is off. */
