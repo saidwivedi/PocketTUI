@@ -446,6 +446,10 @@
       <button type="button" id="btn-rail-keys-all">All shortcuts</button>
     </div>
   </div>
+  <!-- The way into the features guide, one element for both layouts: pinned
+       under the shortcuts card at the rail's foot, and after the last row of
+       the phone's list, where the list is the page (44-features-guide.js). -->
+  <button type="button" id="btn-features">What PocketTUI can do</button>
 </div>
 
 <!-- The split menu's scrim, and outside every screen rather than inside one:
@@ -1456,6 +1460,12 @@
       <label>Report a problem</label>
       <button type="button" id="btn-report">Open</button>
     </div>
+    <!-- The session list's way into the features guide, again here because
+         About is where "what does this do" is asked (44-features-guide.js). -->
+    <div class="toggle-row">
+      <label>What PocketTUI can do</label>
+      <button type="button" id="btn-features-about">Open</button>
+    </div>
     <!-- Which builds the shell and the computer are running. Last here because
          it is the answer to "why is this button missing" rather than anything to
          set, and it is the only place the shell mentions the update at all — the
@@ -1628,6 +1638,13 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- The features guide: the hosted page at pockettui.com/features/, framed over
+     the whole app. The src is set on first open, so a session that never asks
+     for the guide never fetches it (44-features-guide.js). -->
+<div id="features-overlay" hidden>
+  <iframe id="features-frame" title="What PocketTUI can do"></iframe>
+</div>
 
 <!-- Offered after a long press. Copy and Paste both have to run inside the tap
      itself — iOS grants the clipboard only from a user gesture. Only ever one of

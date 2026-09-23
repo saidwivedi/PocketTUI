@@ -13,6 +13,9 @@ cloudflare_build/
 node_modules/
 .wrangler/
 assets/landing_assets*/
+# The features guide's screenshots, written by feature_shots.mjs: regenerated
+# from the app like the landing's, not versioned.
+assets/feature_shots/
 # Composed from the landing screenshots by make_og_image.py.
 assets/og-image.png
 assets/landing.html
