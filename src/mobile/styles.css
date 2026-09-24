@@ -5357,6 +5357,31 @@ html.term-open #dbg-panel { opacity: 0.85; }
   border: 0;
   background: var(--paper);
 }
+/* On the wide layout the guide is a dialog rather than a screen: the frame in
+   a centred card at 80% of the window, over #theme-scrim's tint, so the window
+   around it says a click out there closes it (44-features-guide.js), as the
+   page's cross and Escape do. The card takes the centred sheet's shadow; the
+   frame is the card, its corners clipping the page. */
+@media (min-width: 768px) and (min-height: 500px) {
+  #features-overlay:not([hidden]) {
+    display: flex; align-items: center; justify-content: center;
+    padding: 0;
+    background: rgba(20, 16, 10, 0.16);
+    animation: features-scrim-in 0.12s var(--ease-out);
+  }
+  #features-frame {
+    width: clamp(min(640px, 100% - 32px), 80%, 1320px);
+    height: 80%;
+    border: 1px solid var(--hair-strong);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(20, 16, 10, 0.16);
+  }
+}
+@keyframes features-scrim-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  #features-overlay:not([hidden]) { animation: none; }
+}
 
 /* ============================================================
    GIT DIFF PANE
