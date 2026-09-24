@@ -328,7 +328,7 @@
    "browser.stream",
    "browser.local-network"
   ],
-  "caption": "The browser pane showing a dev server on the computer: tabs, the address field, bookmarks bar, and the stream and network keys."
+  "caption": "The browser pane showing a dev server on the computer: tabs, the address field, bookmarks bar, and the stream key."
  },
  "browser-more": {
   "width": 2320,

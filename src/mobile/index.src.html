@@ -843,8 +843,8 @@
      IN-APP BROWSER
      ============================================================ -->
 <div class="screen" id="screen-browser">
-  <!-- Three rows, Safari's: the tool row (back and forward, the two mode
-       keys, the address centred on the bar, then the page's keys and the
+  <!-- Three rows, Safari's: the tool row (back and forward, the mode key,
+       the address centred on the bar, then the page's keys and the
        pane's own), the tabs under it, and the bookmarks under those. -->
   <div class="topbar browser-topbar">
     <span class="browser-nav">
@@ -854,9 +854,8 @@
             style="display:none"><svg><use href="#i-logo"/></svg></button>
     <button class="icon-btn" id="btn-browser-back" aria-label="Back"><svg><use href="#i-m-chev-left"/></svg></button>
     <button class="icon-btn" id="btn-browser-fwd" aria-label="Forward"><svg><use href="#i-m-chev-right"/></svg></button>
-    <!-- The two mode keys, beside the arrows: each is on while its mode is the
-         tab's, and its tooltip says what it does and whether it is on.
-         Pressed, the first runs the page in the computer's own Chrome and what
+    <!-- The mode key, beside the arrows: on while the tab is streamed, and its
+         tooltip says what it does and whether it is on. Pressed, it runs the page in the computer's own Chrome and what
          travels is pixels (43-full-browser.js): a real origin, a real profile,
          the logins and the service workers a site expects, and the computer's
          own network without asking. That is what the pages the proxy cannot
@@ -868,27 +867,15 @@
     <button class="icon-btn" id="btn-browser-full" hidden aria-pressed="false"
             aria-label="Stream this site from the computer's Chrome"
             title="Stream this site from the computer's Chrome"><svg><use href="#i-m-monitor"/></svg></button>
-    <!-- This tab, on the network the computer is on. Pressed, the page is
-         re-fetched and re-drawn in the same frame under a different set of
-         powers: it becomes the top window of its own document, its frames are
-         its own to reach, and the storage and cookies a real visit would have
-         are there — which is what an intranet portal that writes its own
-         views needs, and what a tab in the ordinary mode cannot give it. A
-         toggle, and the active tab's own: pressed for the tab whose page is in
-         this mode, pressed again to put that tab back. Hidden where it cannot
-         be granted (syncBrowseCap). -->
-    <button class="icon-btn" id="btn-browser-tab" hidden aria-pressed="false"
-            aria-label="Use the computer's network for this tab"
-            title="Use the computer's network for this tab"><svg><use href="#i-m-lan"/></svg></button>
     </span>
     <!-- The address capsule, centred on the row: the page-mode glyph at its
          left, the address, then the way out to this device's browser and
          reload at its right. -->
     <div id="browser-url-wrap">
       <!-- Which browser this tab is, as a glyph only (globe for the proxy,
-           monitor for a streamed tab, the network glyph for a tab on the
-           computer's network); the keys beside the arrows change it
-           (syncBrowserMode). -->
+           monitor for a streamed tab, the network glyph for a tab the landing
+           ladder moved onto the computer's network); the key beside the arrows
+           and that ladder change it (syncBrowserMode, browserLanRetry). -->
       <span class="browser-mode" aria-hidden="true"><svg><use href="#i-m-globe"/></svg></span>
       <!-- inputmode="url" and autocapitalize/autocorrect off for the same
            reason the backend address field in Settings uses them: an address is

@@ -619,7 +619,9 @@ function browserNewTab() {
     // their own right rather than as something shown inside the app, so each
     // one is the top window of its own document and may reach the views it
     // writes. Per tab, so one portal can have it while the tab beside it does
-    // not, and kept in the pane's record so a reload brings it back.
+    // not. Nothing sets it by hand: it is the landing ladder's first step for a
+    // page the proxy did not make work (browserLandFailed), and it lasts until
+    // the tab is sent to another host (browserNavigateIn).
     lan: false,
     // The document this tab is showing with the other flavour because it is a
     // PDF, and the answer the key above had before it took it. Chrome draws a
@@ -651,6 +653,19 @@ function browserNewTab() {
     // after is a page that leaves on every load (browserWatchLanding).
     escapes: 0,
     escapedAt: null,
+    // How many navigations this tab has been sent on, and whether a retry on the
+    // computer's network is waiting for its token. The retry reads the count
+    // before and after that wait, so a navigation the user started in between
+    // is the one that wins; the flag keeps a landing's other reports from
+    // starting a second retry while the first is waiting (browserLanRetry).
+    navs: 0,
+    lanTrying: false,
+    // Whether the ladder that put this tab on the computer's network was started
+    // by a page leaving the proxy twice. That ladder ends in the stream rather
+    // than in the bar, the way the watchdog always handed such a page over;
+    // every other ladder ends in the bar (browserLandFailed). Cleared with the
+    // flavour, so it is this landing's and no later one's.
+    lanEscaped: false,
   };
 }
 
@@ -904,8 +919,9 @@ async function browserEnsureTabToken() {
     if (rec.error === "same_origin") {
       // The shell came off this same computer, so a page fetched as a page in
       // its own right would land on the origin the pairing lives on, and the
-      // computer refuses to allow it. Only this key is affected: every other
-      // tab works on every install.
+      // computer refuses to allow it. Only the flavour is affected: the pane's
+      // own tabs work on every install, and the landing ladder goes straight to
+      // its offer of the stream (browserLandFailed).
       browserTabBlocked = true;
       syncBrowseCap();
       toast("The local network needs the app from pockettui.com");
@@ -954,14 +970,29 @@ function browserFrame(tab) {
   const tpl = q("browser-frame-tpl");
   if (!tpl) return null;
   tab.frame = tpl.content.firstElementChild.cloneNode(true);
-  // A tab on the computer's own network is this list's absence and nothing
-  // else. The sandbox is what gives a proxied document an origin of its own,
-  // and an origin of its own is exactly what stops a page being the top window
-  // its scripts look for or reaching the views it wrote. Taken off the element
-  // before it is in the document, because the attribute is read when a frame
-  // loads: a frame that has already loaded cannot change its mind, which is
-  // why browserSetLan replaces the element rather than editing it.
-  if (tab.lan) tab.frame.removeAttribute("sandbox");
+  // A tab on the computer's own network is this list with allow-same-origin
+  // added and nothing else. Without that token a sandboxed document sits on an
+  // opaque origin of its own, and that is exactly what stops a page being the
+  // top window its scripts look for or reaching the views it wrote.
+  // The rest of the list stays, and with it the one power the sandbox is kept
+  // back for: there is no allow-top-navigation, so a page that breaks out of
+  // frames (top.location = self.location, from a strict script the shim cannot
+  // point at a top of its own) throws inside the frame instead of taking the
+  // whole app away. Nobody presses anything to put a tab in this mode any more,
+  // the landing ladder does it (browserLanRetry), so a page the user never chose
+  // to trust must not be able to do that. Scripts and same-origin together let a
+  // page take its own sandbox off only from a parent on its own origin, and the
+  // mint refuses this flavour to a shell served from that origin
+  // (browse_tab_allowed in app.py). A PDF's frame has no list at all: Chrome's
+  // viewer is a plugin, and a plugin never runs in a sandboxed frame whatever
+  // the list allows (browserPdfShow). Set on the element before it is in the
+  // document, because the attribute is read when a frame loads: a frame that
+  // has already loaded cannot change its mind, which is why browserFlipLan
+  // replaces the element rather than editing it.
+  if (tab.lan && tab.pdf) tab.frame.removeAttribute("sandbox");
+  else if (tab.lan) {
+    tab.frame.setAttribute("sandbox", tab.frame.getAttribute("sandbox") + " allow-same-origin");
+  }
   // Every document the proxy serves says so, and a landing in this frame that
   // says nothing is a document the proxy did not serve: the watchdog is what
   // notices (browserWatchLanding). On the element rather than inside it — the
@@ -1157,11 +1188,11 @@ function browserRemember() {
     if (browserIsFull(t)) {
       tabs.push({ url: u, full: true, fid: t.fid, targetId: t.target || "" });
     } else {
-      // The flavour the user asked for, never the one a PDF took for its own
-      // document: what the record puts back is an address, and that address is
-      // what raises the card and takes the flavour again (browserPdfShow).
-      const lan = t.pdf ? t.lanBefore : t.lan;
-      tabs.push(lan ? { url: u, lan: true } : u);
+      // The flavour is left out: it is the landing ladder's answer to the page
+      // the tab was on, and the ladder writes nothing down (browserLandFailed).
+      // A reload starts the tab on the proxy, and the ladder runs again if the
+      // page still needs it.
+      tabs.push(u);
     }
   }
   // Written back over the record as it stands rather than as a record of its
@@ -1205,6 +1236,16 @@ async function browserNavigateIn(tab, raw, push = true) {
   // page, which is why browserPdfLeave starts none. The same address again is a
   // reload of the PDF and keeps it.
   if (tab.pdf && url !== tab.pdf) browserPdfLeave(tab);
+  // The computer's network was this tab's answer to the page it landed on, not
+  // to the tab: a new destination on another host starts on the proxy again,
+  // and gets a ladder of its own if it needs one (browserLandFailed). Back,
+  // forward, a reload and another page on the same host keep the flavour that
+  // landed.
+  if (push && tab.lan && !tab.pdf
+      && browserHostOf(url) !== browserHostOf(browserUrlIn(tab))) {
+    browserFlipLan(tab, false);
+  }
+  tab.navs++;
   // The first thing asked of a tab settles what kind of tab it is. Not at the
   // load that made it: whether this computer has a browser to stream from is an
   // answer that arrives after the pane's first tab does, and which kind of tab
@@ -1220,7 +1261,8 @@ async function browserNavigateIn(tab, raw, push = true) {
     // this navigation rather than after it, so the address is fetched once, in
     // the browser it was going to have to be fetched in. The other way round is
     // not automatic — a streamed tab sent somewhere unremembered stays streamed,
-    // since stepping it down mid-session is the key's business or a new tab's.
+    // since stepping it down mid-session is the monitor key's business or a new
+    // tab's.
     browserSwapMode(tab, true);
   }
   // A scheme this pane picked is a guess this navigation may have to take
@@ -1349,37 +1391,6 @@ function browserNavigate(raw, push = true) {
 
 // ---- the computer's own network --------------------------------------------
 
-// The key's own state, read off the tab on screen — which is what makes the
-// mode a tab's rather than the pane's: a switch re-reads it here, and a tab
-// that was never turned round is dark beside one that was.
-function syncBrowserLan() {
-  const btn = q("btn-browser-tab");
-  if (!btn) return;
-  // Shown wherever the computer has the flavour to give, on a streamed tab as
-  // well: there a press is the way from the stream to a proxy tab that is on
-  // the computer's network, which is what most pages that were streamed for
-  // want. Not for a tab showing a PDF: that document is fetched with the other
-  // flavour whatever the key says, and the answer the key holds is the one the
-  // tab goes back to when it moves on (browserPdfShow). Hidden here rather than
-  // in browserSyncCap, because it depends on the tab on screen as well as on
-  // the computer's answers.
-  btn.hidden = !browserTabAllowed() || !!(browserTab() && browserTab().pdf);
-  const full = browserIsFull(browserTab());
-  const on = !full && !!(browserTab() && browserTab().lan);
-  btn.classList.toggle("on", on);
-  btn.setAttribute("aria-pressed", on ? "true" : "false");
-  // A glyph nobody has met before says nothing on its own, so the key says what
-  // pressing it would do — and, once it is pressed, what it did. The tooltip
-  // and the label are the same words: a reader who hovers and a reader who
-  // listens are being told the same thing.
-  syncBrowserMode();
-  const said = full ? "Use the local-network proxy for this tab"
-             : on ? "This tab uses the computer's network — press to switch it off"
-                  : "Use the computer's network for this tab";
-  btn.setAttribute("aria-label", said);
-  btn.setAttribute("title", said);
-}
-
 // Turn one tab round, or back. The frame is replaced rather than edited: what
 // the mode comes down to is one attribute on it, and that attribute is read
 // when a frame loads, so a frame already running cannot change its mind. The
@@ -1401,12 +1412,13 @@ function browserSetLan(tab, on) {
 // (browserPdfShow, browserPdfLeave).
 function browserFlipLan(tab, on) {
   tab.lan = !!on;
+  if (!on) tab.lanEscaped = false;
   if (tab.frame) { tab.frame.remove(); tab.frame = null; }
   tab.primed = false;
   tab.loaded = "";
   tab.navigating = false;
   tab.reminted = false;
-  if (tab === browserTab()) syncBrowserLan();
+  if (tab === browserTab()) syncBrowserMode();
   renderBrowserTabs();
   browserRemember();
 }
@@ -1415,14 +1427,14 @@ function browserFlipLan(tab, on) {
 
 // Whether this tab's page has to leave as the computer's own copy rather than as
 // its own address. Either the address is one this device cannot reach, or the tab
-// is already being fetched by the computer because its page asked to be
-// (browserSetLan) — a streamed tab never carries that permission, since
+// is already being fetched by the computer because its page needed it
+// (browserLanRetry); a streamed tab never carries that permission, since
 // browserNavigateIn drops it for one.
 function browserOutThrough(tab) {
   const url = browserUrlIn(tab);
   if (!url) return false;
-  // A PDF tab's flavour is that one document's and not the user's answer to the
-  // key, so what is read here is the answer they gave (browserPdfShow).
+  // A PDF tab's flavour is that one document's and not the tab's own, so what
+  // is read here is the flavour the tab goes back to (browserPdfShow).
   if (tab.pdf ? tab.lanBefore : tab.lan) return true;
   try { return browserAddressIsPrivate(new URL(url).hostname); }
   catch (e) { return false; }
@@ -1482,8 +1494,8 @@ async function browserOutPress(tab = browserTab()) {
 
 // ---- which browser this tab is ---------------------------------------------
 
-// The key's own state, the network key's rule: read off the tab on screen, so a
-// tab put on the stream is lit beside a tab that was left on the proxy. What it
+// The key's own state, read off the tab on screen, so a tab put on the stream
+// is lit beside a tab that was left on the proxy. What it
 // says is the whole of the bargain — a press is about this site and not only
 // about this tab, since the host it names is what the record keeps.
 function syncBrowserFull() {
@@ -1493,7 +1505,8 @@ function syncBrowserFull() {
   btn.classList.toggle("on", on);
   btn.setAttribute("aria-pressed", on ? "true" : "false");
   // What pressing it would do, and once it is pressed what it did — the same
-  // words in the tooltip and in the label, as the key beside it does.
+  // words in the tooltip and in the label, so a reader who hovers and a reader
+  // who listens are told the same thing.
   const host = browserStreamHost(browserUrlIn(browserTab()));
   const said = on
     ? "Streaming from the computer's Chrome — press to go back to the proxy"
@@ -1504,8 +1517,10 @@ function syncBrowserFull() {
   syncBrowserMode();
 }
 
-// The capsule's page-mode glyph: which of the two keys beside the arrows is in
-// force (the globe for the proxy). A hint only; the keys are the controls.
+// The capsule's page-mode glyph: the globe for the proxy, the monitor for a
+// streamed tab, and the network glyph for a tab the landing ladder moved onto
+// the computer's network (browserLanRetry). A hint only; the key beside the
+// arrows is the control.
 function syncBrowserMode() {
   const glyph = root.querySelector(".browser-mode use");
   if (!glyph) return;
@@ -1542,12 +1557,13 @@ function browserSwapMode(tab, on) {
     tab.primed = false;
     tab.reminted = false;
     // The streamed tab is on the computer's own network already, so the
-    // permission the key beside this one grants has nothing left to grant.
+    // permission the landing ladder grants a proxy tab has nothing left to
+    // grant.
     tab.lan = false;
   } else browserDropFull(tab);
   tab.loaded = "";
   tab.navigating = false;
-  if (tab === browserTab()) { syncBrowserFull(); syncBrowserLan(); }
+  if (tab === browserTab()) syncBrowserFull();
   renderBrowserTabs();
 }
 
@@ -1591,9 +1607,11 @@ const BROWSER_ESCAPE_AGAIN = 10000;
 // proxy, in the same tab and without a word: YouTube leaves this way on some of
 // its own navigations and plays fine in the proxy once it is back. Only a page
 // that leaves again on the load that put it back (a second unserved landing
-// within BROWSER_ESCAPE_AGAIN) is streamed from the computer's Chrome, and for
-// this tab only: nothing goes on the host record, which is the key's and the
-// proxy's own hand-off's to write (browserHandOff).
+// within BROWSER_ESCAPE_AGAIN) is a landing that did not work, and that goes to
+// the ladder every other failure goes to (browserLandFailed): this tab on the
+// computer's network first, then the offer of the stream. Nothing goes on the
+// host record, which is the monitor key's and the proxy's own hand-off's to
+// write (browserHandOff).
 function browserWatchLanding(tab) {
   // The demo's pages are written here and never go through the proxy, so
   // they never report in, and that is not a page escaping.
@@ -1632,13 +1650,103 @@ function browserWatchLanding(tab) {
       browserNavigateIn(tab, url, false);
       return;
     }
-    // Nowhere to hand it to: loading it again would only leave again, and the
-    // frame is still showing whatever it landed on.
-    if (!hasCapStrict("browser_full")) return;
+    // Loading it again the same way would only leave again, and the frame is
+    // still showing whatever it landed on.
+    browserLandFailed(tab, "left the proxy twice", true);
+  }, BROWSER_LAND_WAIT);
+}
+
+// ---- the landing ladder ----------------------------------------------------
+
+// A page that did not work in this tab, whatever noticed it: the watchdog above,
+// a wall the site answered with, an error the proxy could not get past, a boot
+// that threw or came out blank, a page that tried to take the top window. What
+// the pane does about it is a ladder of two steps, and only the first is
+// silent. A proxy tab is loaded again on the computer's network, the flavour
+// served as a page in its own right, where an app written to be the top window
+// finds itself there (browserLanRetry). A tab that is on that network already,
+// or a computer that cannot give it, gets the offer of the stream instead
+// (browserHint). The sign-in and search pages the proxy hands to the stream by
+// itself never come here (browserHandOff).
+//
+// Nothing is written down on either step. The retry is this tab's and this
+// landing's: it is not remembered for the host, not given to the tabs this one
+// opens, not kept in the pane's record, and the next navigation to another host
+// starts on the proxy again (browserNavigateIn). An earlier watchdog that kept
+// its escalation per site turned a one-off failure into a permanent downgrade.
+//
+// A page that leaves the proxy twice (`escaped`, from the watchdog) has a third
+// rung the others do not: where the computer's network did not keep it either,
+// or cannot be had, the tab is streamed from the computer's Chrome, for this
+// tab only and with the toast the watchdog always said it with. The same holds
+// for any failure of a tab whose ladder an escape started, since that page has
+// already shown it will not stay in a frame. On a computer with no browser to
+// stream from, it is the bar after all.
+function browserLandFailed(tab, reason, escaped = false) {
+  if (!tab || browserTabs.indexOf(tab) < 0 || browserIsFull(tab)) return;
+  // A retry waiting for its token is this landing's answer already: the second
+  // report of the same page (the shim reports a landing twice) must not start
+  // another one, nor raise the bar the retry may make unnecessary.
+  if (tab.lanTrying) return;
+  if (browserLanNext(tab)) browserLanRetry(tab, reason, escaped);
+  else browserLandLast(tab, reason, escaped);
+}
+
+// The ladder's last rung: the stream for a page that escaped, the bar for
+// everything else (browserLandFailed).
+function browserLandLast(tab, reason, escaped) {
+  const url = browserUrlIn(tab);
+  if ((escaped || tab.lanEscaped) && url && hasCapStrict("browser_full")) {
+    dbg("browser: streaming after the ladder for", browserStreamHost(url), reason);
     toast("This page left the proxy twice; streaming it from the computer");
+    // The swap takes the flavour off without going through browserFlipLan, so
+    // the mark goes here: a tab stepped back down later starts a ladder afresh.
+    tab.lanEscaped = false;
     browserSwapMode(tab, true);
     browserNavigateIn(tab, url, false);
-  }, BROWSER_LAND_WAIT);
+    return;
+  }
+  browserHint(tab, reason);
+}
+
+// Whether the ladder's next step for this tab is the computer's network: a
+// proxy tab not showing a PDF (whose frame is already the other flavour, or
+// has nothing to change), on a computer that can give the flavour. Read by the
+// error page's toast too, which says nothing when the retry is about to.
+function browserLanNext(tab) {
+  return !demoMode && !tab.lan && !tab.pdf && !browserIsFull(tab) && browserTabAllowed();
+}
+
+// The first step: the same address in the same tab, fetched as a page in its
+// own right. The frame is replaced (browserSetLan), so whatever the failed
+// landing still has in flight is given up with it: its frame's messages no
+// longer match the tab's frame, and the landing count is moved on so the
+// watchdog timer that landing started finds itself stale.
+//
+// The token is usually in hand already, warmed at the pane's open, and then
+// all of this happens in the same turn as the report that asked for it. When it
+// is not, the wait is a round trip, and the tab may be closed, the pane taken
+// down, or the tab sent somewhere else in it: each of those is checked after
+// the wait, and a navigation of the user's own always wins over the retry. No
+// token means no retry, and the ladder's second step is taken instead.
+async function browserLanRetry(tab, reason, escaped) {
+  const gen = browserGen;
+  const navs = tab.navs;
+  tab.lanTrying = true;
+  const rec = browserTabTokenFresh() || await browserEnsureTabToken();
+  tab.lanTrying = false;
+  if (!browserAlive(tab, gen) || tab.navs !== navs) return;
+  if (tab.lan || tab.pdf || browserIsFull(tab)) return;
+  // No token is no second rung to stand on, so the ladder goes on to its last.
+  if (!rec) { browserLandLast(tab, reason, escaped); return; }
+  dbg("browser: retry on the computer's network for",
+      browserStreamHost(browserUrlIn(tab)), reason);
+  tab.escapes = 0;
+  tab.escapedAt = null;
+  tab.landGen++;
+  browserSetLan(tab, true);
+  // After the flip, which clears it only when a tab leaves the flavour.
+  tab.lanEscaped = !!escaped;
 }
 
 // Why the proxy gave a page up, in the words the person reading it needs: what
@@ -1683,8 +1791,8 @@ function browserHandOff(tab, d) {
 //
 // Three answers, in the order of what the computer can offer. The other
 // flavour, which is the same frame without that sandbox and served as a page in
-// its own right — the viewer works there, and it is what the key beside the
-// address field grants, taken here for one document rather than for the tab.
+// its own right. The viewer works there, and it is what the landing ladder
+// gives a page that did not work (browserLanRetry), taken here for one document.
 // Failing that the computer's own Chrome, which has a viewer of its own — for
 // this document only, so the site is not put on the streamed record for the
 // sake of one file. Failing both, the card itself: it carries a button, and the
@@ -1704,8 +1812,9 @@ function browserPdfShow(tab, d) {
   browserRemember();
   if (browserTabAllowed()) {
     // Remembered before the flip, because it is what the tab goes back to at
-    // its next address: a user who turned the key on keeps it on, and one who
-    // never touched it gets the sandbox back (browserPdfLeave).
+    // its next address: a tab the landing ladder had put on the computer's
+    // network stays there, and any other gets the pane's sandbox back
+    // (browserPdfLeave).
     tab.lanBefore = tab.lan;
     tab.pdf = url;
     browserFlipLan(tab, true);
@@ -1736,7 +1845,12 @@ function browserPdfLeave(tab) {
   const back = !!tab.lanBefore;
   tab.pdf = "";
   tab.pdfAsked = false;
-  if (!!tab.lan !== back) browserFlipLan(tab, back);
+  // The frame is given up even when the flavour stays: it was made for the PDF
+  // with no sandbox at all, and the page coming next must not inherit a frame
+  // that lets it take the top window (browserFrame).
+  if (!!tab.lan !== back || (tab.frame && !tab.frame.hasAttribute("sandbox"))) {
+    browserFlipLan(tab, back);
+  }
 }
 
 // ---- the hint bar ----------------------------------------------------------
@@ -1744,9 +1858,10 @@ function browserPdfLeave(tab) {
 // Where the proxy hands a page over by itself, the tab moves and the user is
 // told why. The rest of what the proxy cannot serve is quieter than that: a
 // wall the site answered with, a boot that threw its way out, a page that came
-// out blank. The tab stays where it is in those cases — nothing here knows the
-// stream would do better — and what the pane can do is name the menu that
-// would: a bar over the page, with the streamed tab's glyph in it.
+// out blank. The tab is not handed over in those cases, since nothing here knows
+// the stream would do better, and once the computer's network has been tried
+// (browserLanRetry) what the pane can do is name the key that would: a bar
+// over the page, with the streamed tab's glyph in it.
 const BROWSER_HINT_SAID =
   "Not working here? Stream this site from the computer's Chrome";
 // The first proxy page this device opens, told once what the key is for.
@@ -1801,8 +1916,9 @@ function browserShowHint(tab, said, ms) {
   }, ms);
 }
 
-// One page that did not work, whatever noticed it. The first check is what
-// keeps a landing the pane has already dealt with out of here: a tab handed to
+// One page that did not work, as the landing ladder's second step
+// (browserLandFailed). The first check is what keeps a landing the pane has
+// already dealt with out of here: a tab handed to
 // the stream has nothing left to be offered, which is what a health report
 // arriving seconds after that hand-off would otherwise find. `reason` is for
 // the log and nowhere else; the bar says the same thing however the page
@@ -1888,7 +2004,7 @@ function browserOpenFrom(tab, raw) {
   const url = browserNormalize(typeof raw === "string" ? raw : "");
   if (!url) return;
   if (browserTabs.length >= BROWSER_TAB_MAX) { browserNavigateIn(tab, url); return; }
-  browserNavigateIn(browserMakeTab(tab.lan), url);
+  browserNavigateIn(browserMakeTab(), url);
 }
 
 // A window a streamed page opened for itself: window.open, or a link with
@@ -1915,7 +2031,7 @@ function browserPopup(msg) {
   if (url && url !== "about:blank" && !browserFullWanted(url) && !browserSignInPage(url)) {
     if (fullLink) fullLink.send({ type: "close", tab: msg.tab });
     if (from) browserOpenFrom(from, url);
-    else if (browserTabs.length < BROWSER_TAB_MAX) browserNavigateIn(browserMakeTab(false), url);
+    else if (browserTabs.length < BROWSER_TAB_MAX) browserNavigateIn(browserMakeTab(), url);
     return;
   }
   if (browserTabs.length >= BROWSER_TAB_MAX) {
@@ -1927,7 +2043,7 @@ function browserPopup(msg) {
     if (from && url) browserNavigateIn(from, url);
     return;
   }
-  const tab = browserMakeTab(false);
+  const tab = browserMakeTab();
   // Streamed whatever a new tab would otherwise be here: the page is already
   // open in the computer's browser, and the preference for the proxy has nothing
   // to say about a window that exists.
@@ -2181,9 +2297,9 @@ function renderBrowserTabs() {
     // (43-full-browser.js, and chromium.py's watchdog).
     tab.chip.classList.toggle("ask", !!(tab.full && tab.full.asking()));
     tab.chip.classList.toggle("dim", !!tab.discarded);
-    // Which tabs are on the computer's own network. The key above says it for
-    // the tab on screen; this says it for the rest, so a strip of eight still
-    // reads at a glance.
+    // Which tabs are on the computer's own network. The capsule's glyph says it
+    // for the tab on screen (syncBrowserMode); this says it for the rest, so a
+    // strip of eight still reads at a glance.
     tab.chip.classList.toggle("lan", !!tab.lan);
     if (bar.children[i] !== tab.chip) bar.insertBefore(tab.chip, bar.children[i] || null);
     // A strip wider than the pane can leave the tab being switched to off the
@@ -2243,7 +2359,6 @@ function browserShowTab(i) {
   browserSetField(url);
   syncBrowserNav();
   syncBrowserFull();
-  syncBrowserLan();
   renderBrowserTabs();
   // Which chip carries the page on screen has just changed, and the star with
   // it: both are about the page this tab is on.
@@ -2265,15 +2380,14 @@ function browserShowTab(i) {
 // page that asked for a window of its own both start here, and what they do
 // differs only in where the tab is sent and whether the address field is
 // waiting for it. The caller navigates.
-function browserMakeTab(lan) {
+function browserMakeTab() {
   browserCancelGrab();
   const tab = browserNewTab();
   // Which kind of tab it is waits for the address it is opened on: a new tab is
   // a proxy tab, and the hosts that are not are known by their host
-  // (browserNavigateIn settles it). The network the tab it was opened from was
-  // on is inherited meanwhile, and dropped there if the tab turns out to be a
-  // streamed one, which is on the computer's network already.
-  tab.lan = !!lan;
+  // (browserNavigateIn settles it). Not the network the tab it was opened from
+  // is on: that was the landing ladder's answer to one page in that tab, and a
+  // new tab that needs it gets there by its own ladder (browserLandFailed).
   browserTabs.push(tab);
   browserActive = browserTabs.length - 1;
   for (const t of browserTabs) {
@@ -2284,7 +2398,6 @@ function browserMakeTab(lan) {
   browserSetField("");
   syncBrowserNav();
   syncBrowserFull();
-  syncBrowserLan();
   renderBrowserTabs();
   renderBrowserMarks();
   return tab;
@@ -2297,7 +2410,7 @@ function browserAddTab() {
     toast("Eight tabs is as many as this pane holds");
     return;
   }
-  browserHomeTab(browserMakeTab(false));
+  browserHomeTab(browserMakeTab());
 }
 
 // A tab sent to the home page with the address field waiting on it. The "+"
@@ -2568,7 +2681,6 @@ function openBrowser(url, tabs, at, opts) {
   // from the record (browserSeedTabs) never goes through browserShowTab, so
   // this is where a tab put back in either mode lights its own key.
   syncBrowserFull();
-  syncBrowserLan();
   // A streamed page stopped when the pane was closed (browserHideFulls); the tab
   // on screen asks for it again. Before the navigation below rather than instead
   // of it: a tab whose page is still on the computer needs nothing else, and one
@@ -2678,7 +2790,7 @@ window.addEventListener("message", (e) => {
     // worth saying (browse_wall in app.py): a wall is a page a browser with a
     // profile and an origin of its own is often let past, and this one is not.
     if (BROWSE_WALL_CODES[d.status]) {
-      browserHint(tab, "status " + d.status + (d.wall ? " " + d.wall : ""));
+      browserLandFailed(tab, "status " + d.status + (d.wall ? " " + d.wall : ""));
     }
     return;
   }
@@ -2747,14 +2859,19 @@ window.addEventListener("message", (e) => {
         return;
       }
     }
+    // And the ladder, for the failures the other flavour or the computer's own
+    // Chrome might not have had: a refusal the target made, a status this proxy
+    // could not use. The ones they would fail at too get the toast and nothing
+    // more.
+    const ladder = !BROWSE_HINT_SKIP[code];
     // Only for the tab being read: a toast names no tab, and one raised by a
     // page loading out of sight would be about something the user is not
-    // looking at.
-    if (live) toast(BROWSE_ERRORS[code] || "That page could not be loaded");
-    // And the offer, for the failures the computer's own Chrome might not have
-    // had: a refusal the target made, a status this proxy could not use. The
-    // ones it would fail at too get the toast and nothing more.
-    if (!BROWSE_HINT_SKIP[code]) browserHint(tab, "error " + (code || "?"));
+    // looking at. Not for a page the ladder is loading again on the computer's
+    // network either, or about to, since that retry is meant to be silent.
+    if (live && !(ladder && (tab.lanTrying || browserLanNext(tab)))) {
+      toast(BROWSE_ERRORS[code] || "That page could not be loaded");
+    }
+    if (ladder) browserLandFailed(tab, "error " + (code || "?"));
     return;
   }
 
@@ -2763,11 +2880,16 @@ window.addEventListener("message", (e) => {
   // shim counts and measures, and reports once (BROWSE_SHIM in app.py). It
   // reports seconds after its landing, so the page it is about may be one this
   // tab has already left — a load in flight is what says so.
+  // A page that tried to take the top window is one of these too: the frame's
+  // sandbox has no allow-top-navigation in either flavour, so the attempt throws
+  // inside the page and the shim says so (`busted`), and a page that expected to
+  // be the top window is not going to work where it is.
   if (d.type === "pockettui-health") {
     if (tab.navigating) return;
-    if (d.empty) browserHint(tab, "empty page");
+    if (d.busted) browserLandFailed(tab, "top navigation blocked");
+    else if (d.empty) browserLandFailed(tab, "empty page");
     else if (typeof d.errors === "number" && d.errors) {
-      browserHint(tab, d.errors + " script errors");
+      browserLandFailed(tab, d.errors + " script errors");
     }
     return;
   }
@@ -2854,40 +2976,6 @@ if (browserHintEl) {
   browserHintEl.querySelector(".browser-hint-x")
     .addEventListener("click", () => browserHideHint());
 }
-// This tab, on the computer's own network: the same address in the same frame,
-// fetched this time as a page in its own right. An app written to be the top
-// window then works — top is the page itself, the views it writes are its own
-// to reach, and the storage and cookies a real visit would have are there —
-// none of which is true of a tab in the ordinary mode. A second press puts the
-// tab back, and the tab beside it is unaffected either way.
-q("btn-browser-tab").addEventListener("click", async () => {
-  const tab = browserTab();
-  if (tab.lan) { browserSetLan(tab, false); return; }
-  if (!browserUrlIn(tab)) return;
-  // Asked before anything changes: without the computer's permission there is
-  // nothing to turn the page round with, and a tab left in a mode that was
-  // refused is a tab with nothing in it.
-  if (!await browserEnsureTabToken()) {
-    if (!browserTabBlocked) toast("Couldn't reach the computer");
-    return;
-  }
-  // The ask is a round trip, and the strip may have moved on inside it.
-  if (tab !== browserTab()) return;
-  if (browserIsFull(tab)) {
-    // Off the stream and onto the flavour in one load: the mode and the flavour
-    // are both flipped before the one navigation that fetches the page. The
-    // host comes off the record first, as the monitor key's step down does, or
-    // the navigation would read it back and put the tab straight up again.
-    const url = browserUrlIn(tab);
-    browserRememberStream(url, false);
-    browserSwapMode(tab, false);
-    browserFlipLan(tab, true);
-    if (url) browserNavigateIn(tab, url, false);
-    else syncBrowserNav();
-    return;
-  }
-  browserSetLan(tab, true);
-});
 // This page, in the browser this device runs: the arrow in the address field.
 // Inside the click and not after it wherever the address can go out as it
 // stands, which is what a popup blocker asks of it.
@@ -3064,7 +3152,6 @@ function browserRestore(s) {
   browserActive = Math.min(Math.max(0, s.active | 0), browserTabs.length - 1);
   renderBrowserTabs();
   syncBrowserFull();
-  syncBrowserLan();
   if (!s.docked) { syncBrowserNav(); return; }
   openDockedBrowser();
   // The tab that was on screen, and it alone: the rest load when a chip asks
@@ -3094,7 +3181,6 @@ function browserReset() {
   browserActive = 0;
   renderBrowserTabs();
   syncBrowserFull();
-  syncBrowserLan();
   showBrowserZoomMenu(false);
   // Nothing is blanked through a frame's location any more: browserDropPages
   // takes the elements out of the document, which discards their browsing
@@ -3137,26 +3223,18 @@ function browserSyncCap() {
   // save with a 404 the user only learns about after tapping the star.
   // Shown in the demo too, which has no list to keep: the star says so.
   q("btn-browser-star").hidden = !hasCapStrict("bookmarks") && !demoMode;
-  // Strictly checked too, and with the computer's own refusal on top of it: a
-  // server too old for the mode answers with the pane's own permission, and a
-  // tab turned round on that is a tab that cannot do the one thing it was
-  // turned round for.
   // Opening another tab is not gated: it is a frame in here, which every
   // computer that can show a page at all can serve.
   //
-  // Both of the mode keys are set from the tab on screen as well as from the
-  // computer's answers, so both go through their own sync rather than being
-  // written here: this key is hidden for a PDF, and the one beside it is
-  // hidden on a computer with no browser to stream from.
+  // The mode key is hidden on a computer with no browser to stream from, and
+  // lit from the tab on screen, which its own sync reads.
   q("btn-browser-full").hidden = !hasCapStrict("browser_full");
   syncBrowserFull();
-  syncBrowserLan();
 }
 
 renderBrowserTabs();
 syncBrowserNav();
 syncBrowserFull();
-syncBrowserLan();
 
 // What the column and the rest of the app can ask of this pane. Everything else
 // in the body above is the pane's own and stays in the closure.

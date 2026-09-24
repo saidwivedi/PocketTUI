@@ -6316,7 +6316,10 @@ P(function(){document.addEventListener("click",function(e){
  if(!a)return;
  var t=(a.getAttribute("target")||"").toLowerCase(),n=t&&t!=="_self";
  // A tab is a window in its own right and its browser knows where to put one.
- if(n&&!C.sandbox)return;
+ // Not _top or _parent from inside the pane's frame, though: that frame's
+ // sandbox refuses a page the top window in this flavour too, so those two are
+ // this frame's to follow, as they are in the pane's own flavour below.
+ if(n&&!C.sandbox&&(window.parent===window||(t!=="_top"&&t!=="_parent")))return;
  var h=a.href;
  if(!/^https?:/i.test(h))return;
  e.preventDefault();
@@ -6476,14 +6479,24 @@ P(function(){["DOMContentLoaded","load","popstate","hashchange"].forEach(functio
 // from a frame, since a tab of the device's own browser has nobody to tell.
 // The clocks start at the load, so a page that is merely slow is not read as an
 // empty one; the counting starts at parse, because a boot throws before then.
+// A third shape is a page that tried to take the top window: the pane's frame
+// has no allow-top-navigation in either flavour, so the attempt throws a
+// SecurityError here instead of moving the app (browserFrame, 42-browser.js).
+// That one is said at the load rather than when it throws, because a
+// frame-breaking script runs while the page is still parsing, and the pane is
+// still waiting for this landing's own report then.
 P(function(){
  if(window.parent===window)return;
- var errs=0,said=false;
- addEventListener("error",function(){errs++});
+ var errs=0,said=false,busted=false,up=false;
+ addEventListener("error",function(e){errs++;
+  if(e&&e.error&&e.error.name==="SecurityError"&&/navigat/i.test(e.message||"")){
+   busted=true;if(up)tell({type:"pockettui-health",busted:true})}});
  addEventListener("unhandledrejection",function(){errs++});
  function tell(m){if(said)return;said=true;
   P(function(){parent.postMessage(m,C.origin||"*")})}
  function watch(){
+  up=true;
+  if(busted){tell({type:"pockettui-health",busted:true});return}
   setTimeout(function(){P(function(){
    var b=document.body;
    if(!b||(b.innerText||"").trim().length>=20||document.images.length)return;
@@ -6503,6 +6516,20 @@ if(!C.sandbox){
  // Set before the walk so that it is there whatever the walk does — the
  // rewriter has already pointed this page's scripts at it (browse_wrap_js).
  window.__pt={top:window,parent:window};
+ P(function(){
+  // The pane's frame is sandboxed with allow-same-origin in this flavour, and a
+  // sandboxed document may not set document.domain: the assignment throws,
+  // where in a window of its own it would relax the domain, or in a browser
+  // that keys pages by origin do nothing. Every host this proxy serves is on
+  // the one origin already, so there is nothing for relaxing to reach, and in
+  // the frame the setter does nothing. A tab of the device's own browser keeps
+  // the real one.
+  if(window.parent===window)return;
+  var d=Object.getOwnPropertyDescriptor(Document.prototype,"domain");
+  if(!d||!d.get||!d.configurable)return;
+  Object.defineProperty(Document.prototype,"domain",{configurable:true,
+   enumerable:d.enumerable,get:d.get,set:function(){}});
+ });
  P(function(){
   function ok(w){try{void w.location.href;return true}catch(e){return false}}
   var T=window;
