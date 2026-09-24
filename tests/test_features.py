@@ -82,3 +82,12 @@ def test_render_writes_page_and_markdown(tmp_path):
     for r in with_agent:
         assert "### %s\n" % r["title"] in md
     assert "## 4. Documented HTTP routes" in md
+    # The agent tab opens with what the person hands over: the address and the
+    # one-line prompt, and features.md opens with the same intro.
+    url = "https://pockettui.com/features/features.md"
+    prompt = "Read %s and follow it when you work in this terminal." % url
+    agent = page[page.index('id="p-agent"'):]
+    assert url in agent and prompt in agent
+    assert agent.index("Give this to your agent") < agent.index("Full reference")
+    assert md.startswith("# Give this to your agent\n\nAddress: %s\n\nPaste into your agent: `%s`" % (url, prompt))
+    assert md.index("## What your agent gains") < md.index("# How to work with PocketTUI")
