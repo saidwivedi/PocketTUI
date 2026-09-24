@@ -155,36 +155,38 @@ def test_the_browser_pane_carries_one_zoom_key_and_a_star(doc):
     assert 'id="i-m-star"' in doc and 'id="i-m-star-fill"' in doc
 
 
-def test_the_topbar_toggles_a_tab_onto_the_computers_own_network(doc):
+def test_the_computers_network_is_a_frame_that_cannot_take_the_top_window(doc):
     """The way through for a page that cannot run framed: an app written to be
     the top window (a portal reading top.EPCM through its views) is fetched
-    under the computer's other permission and drawn in the same frame without
-    the sandbox, so it is a page in its own right. A toggle per tab, left of
-    reload, and hidden until the computer says it can grant that — like the
-    star. What it is called says nothing about how it is fetched: that is the
-    computer's business, not the reader's."""
-    assert 'id="btn-browser-tab" hidden' in doc
-    # A glyph nobody has met before says nothing on its own, so the key says
-    # what pressing it would do, and once pressed what it did — the tooltip and
-    # the label carrying the same words either way (syncBrowserLan).
-    off = "Use the computer's network for this tab"
-    on = "This tab uses the computer's network — press to switch it off"
-    assert f'aria-label="{off}"' in doc and f'title="{off}"' in doc
-    assert f'"{on}"' in doc
-    assert 'btn.setAttribute("aria-label", said);' in doc
-    assert 'btn.setAttribute("title", said);' in doc
-    # A toggle says so to a reader who cannot see the tint, not only to one
-    # who can.
-    assert 'aria-pressed="false"' in doc
+    under the computer's other permission and drawn in the same frame on the
+    backend's real origin, so it is a page in its own right. There is no key
+    for it any more (founder, 2026-09-24): the landing ladder puts a tab there
+    by itself, so the frame keeps a sandbox that grants its origin back and
+    withholds the top window, and a frame-breaking page throws instead of
+    taking the app away."""
+    assert 'id="btn-browser-tab"' not in doc
+    assert "Use the computer's network for this tab" not in doc
+    assert "function syncBrowserLan(" not in doc
     assert '"browse_tab"' in doc or "hasCapStrict(\"browse_tab\")" in doc
     # No window of the device's own is opened any more — the founder asked for
     # the page in the pane, and nothing here should say otherwise.
     assert "Open in its own window" not in doc
     assert 'window.open("", "_blank")' not in doc
     # The mode is one attribute and the frame is replaced to change it: a
-    # sandbox list is read when a frame loads, not when it is set.
-    assert 'tab.frame.removeAttribute("sandbox")' in doc
-    assert "function browserSetLan(" in doc and "function syncBrowserLan(" in doc
+    # sandbox list is read when a frame loads, not when it is set. The list is
+    # the template's with allow-same-origin added, never one without a sandbox,
+    # except for a PDF, whose viewer is a plugin no sandbox lets run.
+    frame = doc[doc.index("function browserFrame("):]
+    frame = frame[:frame.index("\n}\n")]
+    assert ("  if (tab.lan && tab.pdf) tab.frame.removeAttribute(\"sandbox\");\n"
+            "  else if (tab.lan) {\n"
+            "    tab.frame.setAttribute(\"sandbox\", tab.frame.getAttribute(\"sandbox\")"
+            " + \" allow-same-origin\");\n"
+            "  }") in frame
+    tpl = doc[doc.index('<template id="browser-frame-tpl">'):]
+    tpl = tpl[:tpl.index("</template>")]
+    assert "allow-top-navigation" not in tpl and "allow-same-origin" not in tpl
+    assert "function browserSetLan(" in doc and "function browserFlipLan(" in doc
     # A tab that has loaded nothing yet goes in through the hop that wipes this
     # origin's storage, never straight to the proxied page: the shell may once
     # have been served from this same address, and its pairing token would
@@ -200,8 +202,9 @@ def test_the_pane_carries_the_way_out_of_the_pane(doc):
     address a webapp printed went — before the pane it opened on their own
     machine, and since the pane it opens in the pane. The key is the way back
     to that, and an address the device cannot reach on its own goes out as the
-    computer's own copy of the page (the tab flavour, the one the network key
-    already mints), which is what the relay did for a tapped localhost link."""
+    computer's own copy of the page (the tab flavour, the one the landing
+    ladder already mints), which is what the relay did for a tapped localhost
+    link."""
     assert 'id="btn-browser-out" hidden' in doc
     said = "Open this page in your browser"
     assert f'aria-label="{said}"' in doc and f'title="{said}"' in doc
@@ -229,7 +232,7 @@ def test_the_pane_carries_the_way_out_of_the_pane(doc):
     assert "function browserOutPress(" in doc
     assert 'q("btn-browser-out").addEventListener("click"' in doc
     # A private address goes out as the computer's copy of the page, through
-    # the same mint and the same Clear-Site-Data hop the network key uses.
+    # the same mint and the same Clear-Site-Data hop the landing ladder uses.
     assert "browserEnterUrl(browserProxied(url, rec), rec)" in doc
     assert ("toast(\"This address is only reachable from the computer;\"\n"
             "            + \" update it to open such pages here\");") in doc
@@ -252,9 +255,9 @@ def test_a_pdf_is_drawn_where_a_plugin_can_run(doc):
     # record and the arrow all read the tab.
     assert ("  browserPush(tab, url);\n"
             '  if (name) { tab.title = name; tab.titleFor = url; }') in doc
-    # The other flavour first, taken through the same flip the network key makes
-    # rather than a second way of doing it — for this document, with the answer
-    # the key held remembered so the tab can be given it back.
+    # The other flavour first, taken through the same flip the landing ladder
+    # makes rather than a second way of doing it, for this document, with the
+    # flavour the tab had remembered so the tab can be given it back.
     assert "function browserFlipLan(" in doc
     assert ("    tab.lanBefore = tab.lan;\n"
             "    tab.pdf = url;\n"
@@ -270,12 +273,14 @@ def test_a_pdf_is_drawn_where_a_plugin_can_run(doc):
     # And the tab's own flavour back at its next address, in the navigation that
     # is already being made.
     assert "  if (tab.pdf && url !== tab.pdf) browserPdfLeave(tab);" in doc
-    assert "  if (!!tab.lan !== back) browserFlipLan(tab, back);" in doc
+    # The frame made for the PDF has no sandbox, so it is given up at the next
+    # address even when the flavour stays.
+    assert ("  if (!!tab.lan !== back || (tab.frame && !tab.frame.hasAttribute(\"sandbox\"))) {\n"
+            "    browserFlipLan(tab, back);") in doc
     # A PDF has no shim in it to report its landing, and the arrow reads the
     # answer the user gave rather than the one the document took.
     assert "    if (tab.pdf) return;" in doc
     assert "  if (tab.pdf ? tab.lanBefore : tab.lan) return true;" in doc
-    assert "      const lan = t.pdf ? t.lanBefore : t.lan;" in doc
 
 
 def test_the_monitor_key_is_gone_where_there_is_nothing_to_stream_from(doc):
@@ -283,7 +288,7 @@ def test_the_monitor_key_is_gone_where_there_is_nothing_to_stream_from(doc):
     .icon-btn is display:inline-flex — which the attribute does not undo. A
     computer with no browser to stream from must not draw the key."""
     assert '#btn-browser-full[hidden] { display: none; }' in doc
-    assert '#btn-browser-tab[hidden] { display: none; }' in doc
+    assert '#btn-browser-tab' not in doc
     assert 'id="btn-browser-full" hidden' in doc
     assert 'q("btn-browser-full").hidden = !hasCapStrict("browser_full");' in doc
 
@@ -367,26 +372,26 @@ def _js_chunk(doc, head):
 
 
 def test_the_address_capsule_holds_the_page_mode_and_reload(doc):
-    """Back, forward, then the two mode keys on the row (founder: visible, lit
-    while on, a tooltip saying what they do), then Safari's capsule: a glyph
+    """Back, forward, then the mode key on the row (founder: visible, lit
+    while on, a tooltip saying what it does), then Safari's capsule: a glyph
     at its left that only mirrors the tab's mode, the address, reload at its
-    right. One control per mode: the capsule glyph opens no menu. Which browser
-    the tab is comes before which network it is on."""
+    right. The capsule glyph opens no menu. The network key that sat beside
+    the monitor key is gone (founder, 2026-09-24): the landing ladder puts a
+    tab on the computer's network, and the glyph still says so."""
     at = {name: doc.index(f'id="{name}"')
           for name in ("btn-browser-back", "btn-browser-fwd", "browser-url-wrap",
-                       "browser-url", "btn-browser-reload",
-                       "btn-browser-full", "btn-browser-tab")}
+                       "browser-url", "btn-browser-reload", "btn-browser-full")}
     mode = doc.index('<span class="browser-mode" aria-hidden="true">')
     assert (at["btn-browser-back"] < at["btn-browser-fwd"]
-            < at["btn-browser-full"] < at["btn-browser-tab"]
+            < at["btn-browser-full"]
             < at["browser-url-wrap"] < mode < at["browser-url"]
             < at["btn-browser-reload"])
     assert "browser-mode-wrap" not in doc and "menuRows" not in doc
-    assert ":is(#btn-browser-full, #btn-browser-tab) { display: none; }" not in doc
+    assert "#btn-browser-fwd + #btn-browser-full { margin-left: 8px; }" in doc
     assert ".browser-mode { margin-left: 3px; pointer-events: none; cursor: default; }" in doc
     assert 'glyph.setAttribute("href", full ? "#i-m-monitor" : lan ? "#i-m-lan" : "#i-m-globe");' in doc
     # On is the accent over the pressed fill, not only the fill every hover has.
-    assert ('.browser-topbar :is(#btn-browser-full, #btn-browser-tab)[aria-pressed="true"] {\n'
+    assert ('.browser-topbar #btn-browser-full[aria-pressed="true"] {\n'
             "  color: var(--umber);\n"
             "  background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);") in doc
     # Unfocused, the field shows the host; focused, the whole address.
@@ -400,8 +405,8 @@ def test_a_tab_is_a_proxy_tab_unless_its_host_is_remembered(doc):
     host: the key on the address row puts a site on the stream and takes it off
     again, and every tab opened on a remembered host is streamed from its first
     navigation. The switch in Settings is the other way in, for a machine whose
-    browser is wanted for everything. The key is a toggle per tab like the
-    network key beside it, and it hides that one while it is pressed: a page
+    browser is wanted for everything. The key is a toggle per tab, and a
+    streamed tab is never on the computer's network flavour as well: a page
     fetched by a browser running on the computer is on the computer's network
     already."""
     assert 'id="btn-browser-full" hidden' in doc
@@ -435,16 +440,17 @@ def test_a_tab_is_a_proxy_tab_unless_its_host_is_remembered(doc):
     assert "function browserSyncStreamHosts(" in doc
 
 
-def test_a_landing_the_proxy_did_not_serve_is_put_back_then_streamed(doc):
+def test_a_landing_the_proxy_did_not_serve_is_put_back_then_laddered(doc):
     """A proxied page that sets location.href to a root-relative path leaves the
     proxy's mount: the frame is sandboxed, so there is no hook to catch it, and
     what lands under `tailscale serve` is the front's bare 404 with the pane's
     address bar still showing the site. Everything the proxy does serve reports
     itself with a pockettui-* message, so a landing that says nothing inside the
     watchdog's window is that escape. The first one is loaded again in the proxy,
-    on the address the pane last knew; only a second one soon after streams the
-    tab, for that tab alone — YouTube escapes this way and plays in the proxy,
-    and remembering its host put it on the stream for good."""
+    on the address the pane last knew; only a second one soon after is a landing
+    that did not work, and it goes to the landing ladder like every other
+    failure. YouTube escapes this way and plays in the proxy, and remembering
+    its host put it on the stream for good."""
     assert 'tab.frame.addEventListener("load", () => browserWatchLanding(tab));' in doc
     assert "function browserWatchLanding(" in doc
     assert "const BROWSER_LAND_WAIT = 1200;" in doc
@@ -464,7 +470,7 @@ def test_a_landing_the_proxy_did_not_serve_is_put_back_then_streamed(doc):
             "      tab.escapes = 0;") in doc
     body = doc[doc.index("function browserWatchLanding("):]
     body = body[:body.index("\n}\n")]
-    # First escape: back into the proxy, silently; second: the stream, this tab
+    # First escape: back into the proxy, silently; second: the ladder, this tab
     # only, with nothing remembered.
     assert "tab.escapes = (again ? tab.escapes : 0) + 1;" in body
     assert "tab.escapedAt = { url: url, at: now };" in body
@@ -472,9 +478,8 @@ def test_a_landing_the_proxy_did_not_serve_is_put_back_then_streamed(doc):
             "      browserNavigateIn(tab, url, false);\n"
             "      return;\n"
             "    }") in body
-    assert '    if (!hasCapStrict("browser_full")) return;' in body
-    assert '"This page left the proxy twice; streaming it from the computer"' in body
-    assert "browserSwapMode(tab, true);" in body
+    assert '    browserLandFailed(tab, "left the proxy twice", true);' in body
+    assert "browserSwapMode(tab, true);" not in body
     assert "browserRememberStream" not in body
     assert "This site left the proxy" not in doc
     # The proxy's own hand-off still remembers the host.
@@ -512,25 +517,52 @@ def test_media_sites_the_old_watchdog_streamed_are_taken_off_once(doc):
     assert "\nbrowserMigrateStreamHosts();\n" in doc
 
 
-def test_the_network_key_shows_wherever_the_flavour_is_available(doc):
-    """The LOCAL NETWORK key is shown on proxy and streamed tabs alike wherever
-    the computer can give the unsandboxed flavour, and hidden only while a PDF
-    holds it. On a streamed tab it reads un-pressed and steps the tab down to a
-    proxy tab with the flavour on, in one navigation, forgetting the host."""
-    sync = doc[doc.index("function syncBrowserLan("):]
-    sync = sync[:sync.index("\n}\n")]
-    assert ("btn.hidden = !browserTabAllowed() || !!(browserTab() && browserTab().pdf);"
-            in sync)
-    assert "browserIsFull(browserTab())\n" not in sync.split("btn.hidden")[1].split(";")[0]
-    assert "const on = !full && !!(browserTab() && browserTab().lan);" in sync
-    assert '"Use the local-network proxy for this tab"' in sync
-    press = doc[doc.index('q("btn-browser-tab").addEventListener("click"'):]
-    press = press[:press.index("\n});\n")]
-    assert ("    browserRememberStream(url, false);\n"
-            "    browserSwapMode(tab, false);\n"
-            "    browserFlipLan(tab, true);\n"
-            "    if (url) browserNavigateIn(tab, url, false);") in press
-    assert press.count("browserNavigateIn(") == 1
+def test_a_page_that_did_not_land_is_tried_on_the_computers_network_once(doc):
+    """The landing ladder that replaced the network key (founder, 2026-09-24).
+    Whatever used to raise the hint bar, or stream a page that left the proxy
+    twice, now asks the ladder: a proxy tab is loaded again, silently and once,
+    in the computer's network flavour; a tab already there, or a computer that
+    cannot give it, gets the hint bar as before. Nothing is written for the
+    host, the pane's record or the tabs the page opens, and the flavour lasts
+    until the tab is sent to another host."""
+    fail = _js_chunk(doc, "function browserLandFailed(")
+    assert "  if (tab.lanTrying) return;" in fail
+    assert ("  if (browserLanNext(tab)) browserLanRetry(tab, reason, escaped);\n"
+            "  else browserLandLast(tab, reason, escaped);") in fail
+    nxt = _js_chunk(doc, "function browserLanNext(")
+    assert ("  return !demoMode && !tab.lan && !tab.pdf && !browserIsFull(tab)"
+            " && browserTabAllowed();") in nxt
+    retry = _js_chunk(doc, "async function browserLanRetry(")
+    # The user's own navigation, a closed tab and a torn-down pane all win over
+    # a retry that was waiting for its token; the stale watchdog timer is
+    # retired with the frame.
+    assert "  const rec = browserTabTokenFresh() || await browserEnsureTabToken();" in retry
+    assert "  if (!browserAlive(tab, gen) || tab.navs !== navs) return;" in retry
+    assert "  if (!rec) { browserLandLast(tab, reason, escaped); return; }" in retry
+    assert "  tab.landGen++;\n  browserSetLan(tab, true);" in retry
+    for body in (fail, nxt, retry):
+        assert "browserRememberStream" not in body
+        assert "localStorage" not in body and "cfg." not in body
+    # Every failure the hint bar was raised on goes through the ladder now, and
+    # the hint itself is only ever its last step (browserLandLast).
+    assert doc.count("browserHint(tab, ") == doc.count("browserHint(tab, reason)") == 2
+    assert 'browserLandFailed(tab, "status " + d.status' in doc
+    assert 'if (ladder) browserLandFailed(tab, "error " + (code || "?"));' in doc
+    assert 'if (d.busted) browserLandFailed(tab, "top navigation blocked");' in doc
+    assert 'else if (d.empty) browserLandFailed(tab, "empty page");' in doc
+    # A new host starts on the proxy again; back, forward and reload do not.
+    assert ("  if (push && tab.lan && !tab.pdf\n"
+            "      && browserHostOf(url) !== browserHostOf(browserUrlIn(tab))) {\n"
+            "    browserFlipLan(tab, false);\n"
+            "  }\n"
+            "  tab.navs++;") in doc
+    # No inheritance by the tabs a page opens, and nothing in the record.
+    assert "function browserMakeTab() {" in doc
+    assert "browserMakeTab(tab.lan)" not in doc
+    assert "{ url: u, lan: true }" not in doc
+    # No step from a streamed tab down to the flavour is left anywhere.
+    assert "browserFlipLan(tab, true);" in doc
+    assert doc.count("browserFlipLan(tab, true);") == 1        # the PDF's
 
 
 def test_a_window_a_streamed_page_opens_becomes_a_tab_of_the_pane(doc):
@@ -542,7 +574,7 @@ def test_a_window_a_streamed_page_opens_becomes_a_tab_of_the_pane(doc):
     instead, because spending it beats the click going nowhere."""
     assert 'if (msg.type === "newtab")' in doc
     assert "function browserPopup(" in doc
-    assert "const tab = browserMakeTab(false);" in doc
+    assert "const tab = browserMakeTab();" in doc
     assert "tab.fid = String(msg.tab);" in doc
     assert 'tab.target = String(msg.targetId || "");' in doc
     # The pane's own ids are "t<n><rand>" and the computer's popups are "p<n>",
@@ -796,9 +828,10 @@ def test_the_pane_offers_the_stream_where_a_proxied_page_did_not_work(doc):
     assert ">Stream</button>" in doc
     assert 'class="browser-hint-x"' in doc
     assert "Not working here? Stream this site from the computer's Chrome" in doc
-    # The four ways a page says it did not work, and the one bar they all raise.
+    # The ways a page says it did not work, and the one bar they all raise once
+    # the landing ladder's network step is spent.
     assert "function browserHint(" in doc and "function browserShowHint(" in doc
-    assert "if (!BROWSE_HINT_SKIP[code]) browserHint(tab" in doc
+    assert "const ladder = !BROWSE_HINT_SKIP[code];" in doc
     assert "if (BROWSE_WALL_CODES[d.status]) {" in doc
     assert 'if (d.type === "pockettui-health") {' in doc
     # Never twice for a site, never on a streamed tab, never where there is no
@@ -853,3 +886,26 @@ def test_root_runtime_copy_is_current(doc):
     if not root.exists():
         pytest.skip("no build has been run in this checkout")
     assert root.read_text(encoding="utf-8") == doc
+
+
+def test_a_page_that_escapes_twice_ends_in_the_stream_after_the_network(doc):
+    """The watchdog's old hand-off, kept as the ladder's last rung for a page
+    that leaves the proxy twice: the computer's network first, and where that
+    did not keep it either (or cannot be had), this tab is streamed with the
+    old toast. Every other failure still ends at the bar, and nothing is put
+    on the host record."""
+    assert '    browserLandFailed(tab, "left the proxy twice", true);' in doc
+    last = _js_chunk(doc, "function browserLandLast(")
+    assert ('  if ((escaped || tab.lanEscaped) && url && hasCapStrict("browser_full")) {'
+            in last)
+    assert '"This page left the proxy twice; streaming it from the computer"' in last
+    assert "browserSwapMode(tab, true);" in last
+    assert "browserRememberStream" not in last
+    assert last.rstrip().endswith("browserHint(tab, reason);\n}")
+    retry = _js_chunk(doc, "async function browserLanRetry(")
+    assert "  if (!rec) { browserLandLast(tab, reason, escaped); return; }" in retry
+    assert "  tab.lanEscaped = !!escaped;" in retry
+    # The mark goes with the flavour.
+    flip = _js_chunk(doc, "function browserFlipLan(")
+    assert "  if (!on) tab.lanEscaped = false;" in flip
+
