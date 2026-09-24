@@ -459,11 +459,15 @@ function stashFileView(session, kind) {
   // worth more than a re-fetch: the page on screen and the way back through
   // the ones before it. Both strips, each under its own name, since the column
   // can hold two of them and a restore that did not know which was which would
-  // put one back in the other's row (42-browser.js).
-  if (browserAnyOpen()) {
+  // put one back in the other's row (42-browser.js). A closed strip that still
+  // holds pages goes in too, as a record that restores without opening.
+  if (browserAnyOpen() || browserAnyHeld()) {
     view.browser = browserStash("browser");
     view.browser2 = browserStash("browser#2");
-    browserTeardown();
+    // Both strips are in the entry by now, so both panes can let their tabs go:
+    // what is left is one empty tab each, and the next session's globe opens on
+    // that rather than on this session's pages.
+    browserTeardown(true);
   }
   filesTeardown();
   fileViews.set(session, view);
@@ -615,9 +619,13 @@ function openTerminal(name, resumed) {
     // it reaches here under the diff's rule. Full screen it is over the rail
     // rather than beside it, and closes where the full-screen explorer above
     // closes — there is no terminal under it that the page belongs to.
+    // Closed, it still holds the session's last pages, and those are stashed
+    // the same way, so the tapped session does not open on them.
     if (browserAnyOpen() && name !== currentSession) {
       if (browserAnyDocked() && currentSession) stashFileView(currentSession, null);
       else browserTeardown();
+    } else if (browserAnyHeld() && name !== currentSession && currentSession) {
+      stashFileView(currentSession, null);
     }
   }
   // Whether this open is a switch inside an already-open terminal pane —

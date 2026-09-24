@@ -441,6 +441,15 @@ function browserOpenIds() {
 
 function browserAnyOpen() { return browserOpenIds().length > 0; }
 
+// Whether any pane, open or closed, still holds a page: a tab that has been
+// somewhere, or carries a name. A closed pane keeps its tabs for a reopen in
+// the same session, so at a session switch it has to be stashed with that
+// session like an open one (stashFileView, 09-image-viewer.js), or the next
+// session's globe opens on it.
+function browserAnyHeld() {
+  return Object.values(browserPanes).some((pane) => pane.held());
+}
+
 function browserAnyDocked() {
   return Object.values(browserPanes).some((pane) => pane.isDocked());
 }
@@ -2999,7 +3008,16 @@ function browserStash() {
   };
 }
 
-function browserTeardown() {
+// `fresh` is a session switch's, and only a session switch passes it: the tabs
+// were just stashed for the session being left (browserStash, stashFileView in
+// 09-image-viewer.js), so the strip goes back to one empty tab the way a profile
+// switch leaves it (browserReset). Without it the stacks outlive their frames,
+// and the next session's globe reopens the last session's tabs. Every other
+// teardown keeps them; a pane closed and reopened in the same session is meant
+// to come back on its pages (closeDockedBrowser never gets here). A pane that
+// was closed at the switch is stashed too when it held anything (browserStash
+// below), so its reset loses nothing either.
+function browserTeardown(fresh = false) {
   const wasDocked = browserDocked;
   // Anything still in flight for the tabs being put away belongs to the pane
   // that is going, and must not come back and build a frame in the one that
@@ -3015,6 +3033,14 @@ function browserTeardown() {
   root.classList.remove("docked");
   root.classList.remove("active");
   if (wasDocked) { syncBrowserExpand(); sideDrop(id); }
+  if (fresh) {
+    browserTabs = [browserNewTab()];
+    browserActive = 0;
+    browserSetField("");
+    renderBrowserTabs();
+    syncBrowserNav();
+    syncBrowserFull();
+  }
 }
 
 // Only the docked shape comes back: it is the only one a rail switch can
@@ -3139,6 +3165,7 @@ const api = {
   // hands a pane its navigations instead of a computer (browserNavigateIn).
   navigateHook: null,
   isOpen: () => browserOpen,
+  held: () => browserTabs.some((t) => t.idx >= 0 || !!t.title),
   isDocked: () => browserDocked,
   open: openBrowser,
   closeDocked: closeDockedBrowser,
@@ -3271,9 +3298,12 @@ function toggleBrowserPane() {
 // Each strip under its own name: two rows of pages, and a restore that did not
 // know which was which would put one back in the other's row.
 
+// A closed pane that still holds pages is stashed as well: its record says
+// docked:false, and browserRestore puts such a list back without opening the
+// pane, so the session gets it again at its next globe press.
 function browserStash(id) {
   const pane = browserPanes[id];
-  return pane && pane.isOpen() ? pane.stash() : null;
+  return pane && (pane.isOpen() || pane.held()) ? pane.stash() : null;
 }
 
 function browserRestore(a, b) {
@@ -3284,8 +3314,10 @@ function browserRestore(a, b) {
   }
 }
 
-function browserTeardown() {
-  for (const pane of Object.values(browserPanes)) pane.teardown();
+// `fresh` for a session switch, once every strip has been stashed
+// (stashFileView): each pane is then left holding one empty tab.
+function browserTeardown(fresh = false) {
+  for (const pane of Object.values(browserPanes)) pane.teardown(fresh);
 }
 
 // Everything the panes hold about the computer being left, for a switch to
