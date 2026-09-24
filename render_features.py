@@ -50,7 +50,24 @@ INTROS = {
 FIG_MIN = 900  # px: below this the screenshots are not rendered at all
 
 MD_URL = "https://pockettui.com/features/features.md"
-AGENT_PROMPT = "Read %s and follow it when you work in this terminal." % MD_URL
+AGENT_PROMPT = "Read %s and tell me whether PocketTUI can do this, and how: " % MD_URL
+
+SURFACE_NOTE = {"wide": "Laptop only.", "phone": "Phone only."}
+GATE_WORDS = {
+    "desktop": "Needs a keyboard and mouse.",
+    "iOS+Android": "On iPhone and Android.",
+    "iOS+Safari": "On iPhone Safari.",
+    "Tailscale install": "With the Tailscale install.",
+    "LAN install": "With the same-network install (no Tailscale).",
+}
+
+HOW_TO_ANSWER = (
+    "You are answering a person's question about PocketTUI. Answer from the list below: say whether it can be "
+    "done, name the exact place or key (the Where part), and say when a feature is laptop only or phone only. "
+    "When an entry says it needs a server feature, this computer's server may lack it: the flag must be true in "
+    "the `capabilities` map of `GET /api/version` (section 2 below shows how to call it), and \"needs Chromium\", "
+    "\"needs httpx\" or \"needs ffmpeg\" mean that program must be installed on the computer. If the list does "
+    "not have it, say it is not a feature of PocketTUI; do not guess one.")
 
 CSS = r"""
 :root{
@@ -173,7 +190,13 @@ td code,th code{background:none;padding:0;overflow-wrap:normal}
  white-space:pre-wrap;overflow-wrap:anywhere;user-select:all;-webkit-user-select:all}
 .hbox .btn{flex:none}
 .handover .note{max-width:none}
-.handover .fine{font:12px/1.45 var(--sans);color:var(--tertiary);overflow-wrap:anywhere}
+.handover .ex{font:13px/1.45 var(--sans);color:var(--secondary)}
+.all{display:grid;gap:14px;max-width:68ch}
+.all h2{font-size:24px}
+.all .g h3{font-size:17px;padding-top:6px}
+.all ul{list-style:none;margin:0;padding:0;display:grid}
+.all li{font:14px/1.45 var(--sans);color:var(--ink-2);border-top:1px solid var(--hair);padding:6px 0}
+.all li strong{color:var(--ink);font-weight:600}
 .gains{display:grid;gap:10px;max-width:68ch}
 .gains h2{font-size:24px}
 .gains ul{margin:0;padding-left:1.3em;display:grid;gap:4px}
@@ -537,21 +560,68 @@ def nav_html(groups, suffix):
 
 
 def handover_html():
-    rows = [("ho-url", "Address", MD_URL), ("ho-prompt", "Paste into your agent", AGENT_PROMPT)]
+    rows = [("ho-url", "Address", MD_URL, ""),
+            ("ho-prompt", "Ask your agent", AGENT_PROMPT,
+             "Finish the sentence with your question, for example: open a file on my laptop from my phone.")]
     out = ['<section class="handover" aria-labelledby="ho-h"><h2 id="ho-h">Give this to your agent</h2>']
-    for i, label, text in rows:
+    for i, label, text, ex in rows:
         out.append('<div class="hrow"><label for="%s">%s</label><div class="hbox"><pre id="%s" tabindex="0">%s</pre>'
-                   '<button type="button" class="btn" data-copy="%s">Copy</button></div></div>'
-                   % (i, e(label), i, e(text), e(text)))
-    out.append('<p class="note">Claude Code, Codex and similar assistants running in a PocketTUI session can read the '
-               'address themselves; the page is plain Markdown.</p>'
-               '<p class="fine">Agents also find it through https://pockettui.com/llms.txt.</p></section>')
+                   '<button type="button" class="btn" data-copy="%s">Copy</button></div>%s</div>'
+                   % (i, e(label), i, e(text), e(text), '<p class="ex">%s</p>' % e(ex) if ex else ""))
+    out.append('<p class="note">Claude Code, Codex and similar assistants fetch the address themselves. It is plain '
+               'Markdown, and https://pockettui.com/llms.txt points to it.</p></section>')
     return "".join(out)
 
 
-def intro_md(gains_md):
-    return "\n\n".join(["# Give this to your agent", "Address: %s" % MD_URL,
-                         "Paste into your agent: `%s`" % AGENT_PROMPT, gains_md.strip()])
+def intro_md():
+    return "\n\n".join(["# PocketTUI: what it can do and how", "Address: %s" % MD_URL,
+                         "Ask your agent: `%s`" % AGENT_PROMPT, "## How to answer", HOW_TO_ANSWER])
+
+
+def notes(r):
+    """The trailing notes of an Everything entry: surface, gates in words, server flag."""
+    out = [SURFACE_NOTE[r["surface"]]] if r["surface"] in SURFACE_NOTE else []
+    g = r["gates"]
+    if g:
+        key = "+".join(g)
+        if key in GATE_WORDS:
+            out.append(GATE_WORDS[key])
+        else:
+            out += [x[0].upper() + x[1:] + "." if x.startswith("needs ") else "Applies to %s." % x for x in g]
+    return out
+
+
+def all_md(order, recs):
+    out = ["## Everything PocketTUI can do"]
+    for g in order:
+        lines = []
+        for r in recs:
+            if r["group"] != g:
+                continue
+            t = "- **%s** — %s Where: %s." % (r["title"], r["outcome"], r["where"])
+            rest = notes(r) + (["Needs server feature `%s`." % r["needs"]] if r["needs"] else [])
+            lines.append(" ".join([t] + rest))
+        out.append("### %s\n\n%s" % (g, "\n".join(lines)))
+    return "\n\n".join(out)
+
+
+def all_html(order, recs):
+    out = ['<div class="all"><h2>Everything PocketTUI can do</h2>']
+    for g in order:
+        items = []
+        for r in recs:
+            if r["group"] != g:
+                continue
+            rest = notes(r)
+            tail = " ".join(e(x) for x in rest)
+            if r["needs"]:
+                tail += (" " if tail else "") + "Needs server feature <code>%s</code>." % e(r["needs"])
+            s = search_text(r) + " " + e(" ".join(rest + [r["needs"] or ""]).lower())
+            items.append('<li data-s="%s"><strong>%s</strong> — %s Where: %s.%s</li>' % (
+                s, e(r["title"]), e(r["outcome"]), e(r["where"]), " " + tail if tail else ""))
+        out.append('<section class="g" id="g-%s-all" data-group="%s"><h3>%s</h3><ul>%s</ul></section>' % (
+            slug(g), e(g), e(g), "".join(items)))
+    return "".join(out) + "</div>"
 
 
 def build(recs, contract_md, man, gains_md):
@@ -580,8 +650,9 @@ def build(recs, contract_md, man, gains_md):
             '<div class="cpyrow"><button type="button" class="btn" id="copy-md">Copy the whole reference as Markdown</button>'
             '<span class="note">The same text is at '
             '<a href="features.md" target="_blank" rel="noopener">pockettui.com/features/features.md</a>.</span></div>']
-    agent = ['<div class="guide"><h2>How to work with PocketTUI</h2>%s</div>' % md_html(guide_md, shift=1)]
-    md_out = [intro_md(gains_md), "# How to work with PocketTUI", guide_md]
+    agent = [all_html(order, recs),
+             '<div class="guide"><h2>How to work with PocketTUI</h2>%s</div>' % md_html(guide_md, shift=1)]
+    md_out = [intro_md(), all_md(order, recs), gains_md.strip(), "# How to work with PocketTUI", guide_md]
     agent_groups = []
     for g in order:
         rs = [r for r in by_group[g] if r["agent"]]

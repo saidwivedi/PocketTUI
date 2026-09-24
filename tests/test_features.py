@@ -82,12 +82,24 @@ def test_render_writes_page_and_markdown(tmp_path):
     for r in with_agent:
         assert "### %s\n" % r["title"] in md
     assert "## 4. Documented HTTP routes" in md
-    # The agent tab opens with what the person hands over: the address and the
-    # one-line prompt, and features.md opens with the same intro.
+    # The agent tab opens with what the person hands over: the address and a
+    # question opener they finish, and features.md opens with the same lines.
     url = "https://pockettui.com/features/features.md"
-    prompt = "Read %s and follow it when you work in this terminal." % url
+    prompt = "Read %s and tell me whether PocketTUI can do this, and how: " % url
     agent = page[page.index('id="p-agent"'):]
-    assert url in agent and prompt in agent
+    assert url in agent and "Ask your agent" in agent
+    assert 'data-copy="%s"' % prompt in agent
     assert agent.index("Give this to your agent") < agent.index("Full reference")
-    assert md.startswith("# Give this to your agent\n\nAddress: %s\n\nPaste into your agent: `%s`" % (url, prompt))
+    assert md.startswith("# PocketTUI: what it can do and how\n\nAddress: %s\n\nAsk your agent: `%s`" % (url, prompt))
+    # features.md answers "can PocketTUI do X": every record, shown or not, is in
+    # the Everything list, ahead of the gains and the contract; the page's
+    # reference carries the same list, searchable.
+    everything = md.index("## Everything PocketTUI can do")
+    assert md.index("## How to answer") < everything < md.index("## What your agent gains")
     assert md.index("## What your agent gains") < md.index("# How to work with PocketTUI")
+    listed = md[everything:md.index("## What your agent gains")]
+    for r in catalog():
+        assert "- **%s** — " % r["title"] in listed, r["id"]
+    ref = agent[agent.index("Full reference"):]
+    assert ref.index("Everything PocketTUI can do") < ref.index("How to work with PocketTUI")
+    assert len(re.findall(r'<li data-s="', ref)) == len(catalog())
