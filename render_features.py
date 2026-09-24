@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Render the "What PocketTUI can do" guide from src/features/{catalog,manifest}.json + contract.md.
+"""Render the "What PocketTUI can do" guide from src/features/{catalog,manifest}.json, contract.md
+and agent-intro.md.
 
 Writes two files into --out: index.html, the standalone page (two tabs: the
 gallery for people, the contract for agents), and features.md, the agent tab as
-Markdown. Screenshots are referenced as relative shots/<id>-{light,dark}.webp;
-the deploy copies them there from assets/feature_shots/ (feature_shots.mjs
-regenerates them)."""
+Markdown, opening with the same hand-over intro as the tab. Screenshots are
+referenced as relative shots/<id>-{light,dark}.webp; the deploy copies them
+there from assets/feature_shots/ (feature_shots.mjs regenerates them)."""
 import argparse
 import html
 import json
@@ -47,6 +48,9 @@ INTROS = {
 }
 
 FIG_MIN = 900  # px: below this the screenshots are not rendered at all
+
+MD_URL = "https://pockettui.com/features/features.md"
+AGENT_PROMPT = "Read %s and follow it when you work in this terminal." % MD_URL
 
 CSS = r"""
 :root{
@@ -160,7 +164,24 @@ td code,th code{background:none;padding:0;overflow-wrap:normal}
 .cpyrow{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
 .btn{border:1px solid var(--hair-strong);border-radius:8px;padding:6px 12px;font:14px/1.3 var(--sans);color:var(--umber);background:var(--card)}
 .note{font:13px/1.45 var(--sans);color:var(--secondary);max-width:60ch;flex:1 1 30ch}
+.handover{background:var(--card);border:1px solid var(--hair-strong);border-radius:10px;padding:16px 18px 18px;display:grid;gap:12px}
+.handover h2{font-size:24px}
+.hrow{display:grid;gap:4px}
+.hrow label{font:13px/1.4 var(--sans);color:var(--secondary)}
+.hbox{display:flex;align-items:flex-start;gap:10px}
+.hbox pre{margin:0;flex:1;min-width:0;background:var(--paper-rec);border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.45;
+ white-space:pre-wrap;overflow-wrap:anywhere;user-select:all;-webkit-user-select:all}
+.hbox .btn{flex:none}
+.handover .note{max-width:none}
+.handover .fine{font:12px/1.45 var(--sans);color:var(--tertiary);overflow-wrap:anywhere}
+.gains{display:grid;gap:10px;max-width:68ch}
+.gains h2{font-size:24px}
+.gains ul{margin:0;padding-left:1.3em;display:grid;gap:4px}
 details{border-top:1px solid var(--hair);padding-top:14px}
+details.ref{display:grid;gap:0}
+details.ref>summary{font-size:22px}
+details.ref>.ref-body{display:grid;grid-template-columns:minmax(0,1fr);gap:36px}
+@media (max-width:899px){#p-agent>nav{display:none}}
 summary{font-family:var(--serif);font-size:18px;cursor:pointer}
 details[open] summary{margin-bottom:12px}
 .empty{color:var(--secondary)}
@@ -188,6 +209,9 @@ sizeHdr(); addEventListener('resize', sizeHdr);
 var tabs = [].slice.call(document.querySelectorAll('.tabs button'));
 var toastEl = document.getElementById('toast'), toastT;
 var selected = null;
+var ref = document.getElementById('ref');
+if (ref && matchMedia('(max-width: 899px)').matches) ref.open = false;
+function inRef(el){ if (ref && el && ref.contains(el)) ref.open = true; }
 function toast(msg){ toastEl.textContent = msg; toastEl.hidden = false; clearTimeout(toastT);
   toastT = setTimeout(function(){ toastEl.hidden = true; }, 2000); }
 function panel(name){ return document.getElementById('p-' + name); }
@@ -207,6 +231,7 @@ function go(id, tab){
   var a = art(id, tab); if (!a) return;
   if (current() !== tab) showTab(tab);
   if (a.hidden) { q.value = ''; filter(); }
+  inRef(a);
   select(id);
   a.scrollIntoView({block: 'start', behavior: reduce ? 'auto' : 'smooth'});
 }
@@ -226,8 +251,9 @@ document.addEventListener('click', function(e){
   else { e.preventDefault(); var a = t.closest('.f,.c'); select(a.dataset.for || a.id); }
 });
 function copy(text, pre, btn){
-  var label = btn.textContent;
-  navigator.clipboard.writeText(text).then(function(){
+  var label = btn.textContent, p;
+  try { p = navigator.clipboard.writeText(text); } catch (err) { p = Promise.reject(err); }
+  p.then(function(){
     btn.textContent = 'Copied'; setTimeout(function(){ btn.textContent = label; }, 1500);
   }).catch(function(){
     var r = document.createRange(), s = getSelection();
@@ -239,6 +265,7 @@ function copy(text, pre, btn){
 var q = document.getElementById('q');
 function filter(){
   var terms = q.value.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  if (terms.length && ref) ref.open = true;
   ['you', 'agent'].forEach(function(tab){
     var p = panel(tab), total = 0;
     p.querySelectorAll('section.g').forEach(function(sec){
@@ -266,7 +293,8 @@ var io = new IntersectionObserver(function(entries){
 document.querySelectorAll('section.g').forEach(function(s){ io.observe(s); });
 document.querySelectorAll('.panel nav a').forEach(function(a){
   a.addEventListener('click', function(e){ e.preventDefault();
-    document.getElementById(a.getAttribute('href').slice(1)).scrollIntoView({block: 'start', behavior: reduce ? 'auto' : 'smooth'}); });
+    var t = document.getElementById(a.getAttribute('href').slice(1)); inRef(t);
+    t.scrollIntoView({block: 'start', behavior: reduce ? 'auto' : 'smooth'}); });
 });
 // lightbox
 var lb = document.getElementById('lb'), lbImg = lb.querySelector('img'), lbCap = lb.querySelector('p'), lbFrom = null, lbT;
@@ -508,7 +536,25 @@ def nav_html(groups, suffix):
         '<a href="#g-%s%s">%s<span>%d</span></a>' % (slug(g), suffix, e(g), n) for g, n in groups)
 
 
-def build(recs, contract_md, man):
+def handover_html():
+    rows = [("ho-url", "Address", MD_URL), ("ho-prompt", "Paste into your agent", AGENT_PROMPT)]
+    out = ['<section class="handover" aria-labelledby="ho-h"><h2 id="ho-h">Give this to your agent</h2>']
+    for i, label, text in rows:
+        out.append('<div class="hrow"><label for="%s">%s</label><div class="hbox"><pre id="%s" tabindex="0">%s</pre>'
+                   '<button type="button" class="btn" data-copy="%s">Copy</button></div></div>'
+                   % (i, e(label), i, e(text), e(text)))
+    out.append('<p class="note">Claude Code, Codex and similar assistants running in a PocketTUI session can read the '
+               'address themselves; the page is plain Markdown.</p>'
+               '<p class="fine">Agents also find it through https://pockettui.com/llms.txt.</p></section>')
+    return "".join(out)
+
+
+def intro_md(gains_md):
+    return "\n\n".join(["# Give this to your agent", "Address: %s" % MD_URL,
+                         "Paste into your agent: `%s`" % AGENT_PROMPT, gains_md.strip()])
+
+
+def build(recs, contract_md, man, gains_md):
     """-> (page body, the agent tab as Markdown)."""
     order = []
     for r in recs:
@@ -529,11 +575,13 @@ def build(recs, contract_md, man):
     # tab 2
     sec = sections(contract_md)
     guide_md = "\n\n".join(sec[k] for k in (1, 2, 3, 4) if k in sec)
-    agent = ['<div class="guide"><h2>How to work with PocketTUI</h2>%s</div>' % md_html(guide_md, shift=1),
-             '<div class="cpyrow"><button type="button" class="btn" id="copy-md">Copy as Markdown</button>'
-             '<span class="note">The same text is at '
-             '<a href="features.md" target="_blank" rel="noopener">pockettui.com/features/features.md</a>.</span></div>']
-    md_out = ["# How to work with PocketTUI", guide_md]
+    head = [handover_html(),
+            '<div class="gains">%s</div>' % md_html(gains_md, shift=0),
+            '<div class="cpyrow"><button type="button" class="btn" id="copy-md">Copy the whole reference as Markdown</button>'
+            '<span class="note">The same text is at '
+            '<a href="features.md" target="_blank" rel="noopener">pockettui.com/features/features.md</a>.</span></div>']
+    agent = ['<div class="guide"><h2>How to work with PocketTUI</h2>%s</div>' % md_html(guide_md, shift=1)]
+    md_out = [intro_md(gains_md), "# How to work with PocketTUI", guide_md]
     agent_groups = []
     for g in order:
         rs = [r for r in by_group[g] if r["agent"]]
@@ -554,6 +602,8 @@ def build(recs, contract_md, man):
         rows = [l for l in sec[5].split("\n") if l.startswith("|")]
         routes = table_html(rows, "tbl routes")
     agent.append('<details><summary>Every route on the server, classified</summary>%s</details>' % routes)
+    agent = head + ['<details class="ref" id="ref" open><summary>Full reference</summary><div class="ref-body">%s</div></details>'
+                    % "".join(agent)]
 
     md_text = "\n\n".join(md_out) + "\n"
     md_js = json.dumps(md_text).replace("</", "<\\/")
@@ -607,6 +657,7 @@ def main():
     ap.add_argument("--catalog", default=str(SRC / "catalog.json"))
     ap.add_argument("--contract", default=str(SRC / "contract.md"))
     ap.add_argument("--manifest", default=str(SRC / "manifest.json"))
+    ap.add_argument("--intro", default=str(SRC / "agent-intro.md"), help="the tab's 'What your agent gains' list")
     a = ap.parse_args()
     out = Path(a.out).resolve()
     # The prototype lives in explore/ and is not this script's to overwrite.
@@ -614,7 +665,8 @@ def main():
         ap.error("--out must not be inside explore/")
     recs = json.loads(Path(a.catalog).read_text(encoding="utf-8"))
     man = json.loads(Path(a.manifest).read_text(encoding="utf-8"))
-    frag, md = build(recs, Path(a.contract).read_text(encoding="utf-8"), man)
+    frag, md = build(recs, Path(a.contract).read_text(encoding="utf-8"), man,
+                     Path(a.intro).read_text(encoding="utf-8"))
     out.mkdir(parents=True, exist_ok=True)
     for name, text in (("index.html", standalone(frag)), ("features.md", md)):
         (out / name).write_text(text, encoding="utf-8")

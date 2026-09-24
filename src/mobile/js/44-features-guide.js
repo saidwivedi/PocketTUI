@@ -39,7 +39,13 @@ function featuresOpen() { return !$("features-overlay").hidden; }
 
 function openFeatures(from) {
   const frame = $("features-frame");
-  if (!frame.getAttribute("src")) frame.src = featuresURL();
+  // Before the first load, which is when the frame's policy is fixed: a
+  // self-served install frames the hosted page cross-origin, and its Copy
+  // buttons need clipboard-write there.
+  if (!frame.getAttribute("src")) {
+    frame.allow = "clipboard-write";
+    frame.src = featuresURL();
+  }
   featuresFrom = from || document.activeElement;
   featuresScrimAtOpen = $("sheet-scrim").classList.contains("show");
   $("features-overlay").hidden = false;
