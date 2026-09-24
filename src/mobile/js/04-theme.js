@@ -1,8 +1,22 @@
 // ============================================================
 // Theme
 // ============================================================
+// The stored choice, or with none, light while unpaired and the OS once
+// paired: the rule lives with the first paint (themePrefInForce,
+// boot-theme.js), so the two can never resolve differently.
 function themePref() {
-  return localStorage.getItem("pockettui_theme") || "auto";
+  return themePrefInForce();
+}
+
+// The moment a first run pairs: a device that never chose keeps the light it
+// was onboarded in rather than flipping to the OS's answer as the rule above
+// hands over, so "light" is stored as its choice — the key the header menu
+// writes, and changed the same way. A device with a choice keeps it.
+function keepLightAfterPairing() {
+  try {
+    if (localStorage.getItem("pockettui_theme")) return;
+    localStorage.setItem("pockettui_theme", "light");
+  } catch (e) {}
 }
 
 // What the app is painted in. The preference picks one half of the chosen pair
@@ -14,6 +28,8 @@ function themePref() {
 function applyChrome() {
   const dark = prefIsDark(themePref());
   applyEntryChrome(termPair()[dark ? "dark" : "light"], dark);
+  // The framed guide paints itself in whatever this just resolved to.
+  featuresSyncTheme();
 }
 
 // The one route a chosen theme takes: stored, then painted. The header menu and
@@ -69,6 +85,16 @@ function showThemeMenu(on) {
     });
     menu.appendChild(row);
   }
+  // The rest of the choosing is the Appearance tab's: a footnote under the
+  // last row's hairline, in the umber of the rail card's "All shortcuts", not a
+  // fourth choice. The rows draw that line themselves once one is not last.
+  const more = el("button", { type: "button", class: "menu-foot", role: "menuitem" },
+                  el("span", {}, "More in Settings"), svgIcon("i-back"));
+  more.addEventListener("click", () => {
+    showThemeMenu(false);
+    openSettings(false, "appearance");
+  });
+  menu.appendChild(more);
 }
 
 $("btn-theme").addEventListener("click", () => {

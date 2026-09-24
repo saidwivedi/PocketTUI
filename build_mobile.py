@@ -73,6 +73,7 @@ JS_FRAGMENTS = (
     "demo/14-commands.js",
     "demo/15-agent-tui.js",
     "demo/16-lifecycle.js",
+    "demo/17-fake-api.js",
     "17-key-bar.js",
     "18-speech-recognition.js",
     "19-voice-capture.js",

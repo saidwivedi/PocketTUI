@@ -132,8 +132,13 @@ let sessListGen = 0;
 // reloads a list nobody asked about, and a backend that has gone away already
 // reports through the terminal's own banner rather than a toast per tick.
 async function loadSessions(spin=false, quiet=false) {
-  // Nothing to query yet — prompt instead of failing against the static host.
-  if (needsSetup()) { openSettings(true); return; }
+  // Nothing to query yet — prompt instead of failing against the static host,
+  // or, once the prompt has been closed, show the demo's list instead.
+  if (needsSetup()) {
+    if (setupDismissed) renderDemoSessions();
+    else openSettings(true);
+    return;
+  }
   const gen = ++sessListGen;
   // Which computer this list was asked of. A switch retires the generation, and
   // an answer from the machine that was left may not paint over the one that
@@ -236,12 +241,61 @@ function demoCard() {
   );
 }
 
+// The demo's sessions, the ones its `tmux ls` prints, for a device that is
+// unpaired and has closed the first run to look around. Drawn in the real rows'
+// markup so the list reads as it will with a computer behind it, minus the
+// per-row controls, which would all be asking a computer; each opens the demo
+// terminal (openDemo, 09-image-viewer.js). data-name is what lets the rail mark
+// the one on screen.
+const DEMO_SESSIONS = [
+  { name: "iphone-webapp", command: "claude", where: "webapp", ago: 2 * 86400,
+    state: "waiting", attached: true },
+  { name: "laptop-api", command: "python", where: "api-service", ago: 30 * 3600,
+    state: "active" },
+  { name: "scratch", command: "", where: "~", ago: 12 * 3600, state: "" },
+];
+const DEMO_STATE_WORDS = { waiting: "Needs input", active: "Running", ready: "Done" };
+
+function renderDemoSessions() {
+  const list = $("list");
+  list.innerHTML = "";
+  $("list-empty").style.display = "none";
+  $("list-error").style.display = "none";
+  $("demo-banner").hidden = false;
+  const now = Math.floor(Date.now() / 1000);
+  for (const s of DEMO_SESSIONS) {
+    const meta = el("div", { class: "item-meta" },
+      el("span", { class: "cmd" }, s.command));
+    if (s.command) meta.appendChild(el("span", { class: "sep" }, "·"));
+    meta.appendChild(el("span", { class: "where" }, s.where));
+    meta.appendChild(el("span", { class: "sep" }, "·"));
+    meta.appendChild(el("span", {}, relTime(now - s.ago)));
+    if (s.state) meta.appendChild(el("span", { class: "sep" }, "·"));
+    meta.appendChild(el("span", { class: "state" + (s.state ? " " + s.state : "") },
+                        DEMO_STATE_WORDS[s.state] || ""));
+    list.appendChild(el("div", {
+      class: "item" + (s.name === currentSession ? " selected" : ""),
+      "data-name": s.name,
+      onclick: () => openDemo(s.name),
+    },
+      el("div", { class: "item-head" },
+        el("div", { class: "item-dot" + (s.attached ? " live" : "") }),
+        el("div", { class: "title" }, s.name),
+      ),
+      meta,
+    ));
+  }
+}
+
+$("demo-banner").addEventListener("click", () => openSettings(true));
+
 // Everything the list holds about the computer it was showing, dropped for the
 // one it is about to show: the painted rows, the unread baseline (whose states
 // belong to another machine's sessions and must never be diffed against this
 // one's), and the error card a failed load may have left standing.
 function sessionsResetForProfile() {
   $("list").innerHTML = "";
+  $("demo-banner").hidden = true;
   $("list-empty").style.display = "none";
   $("list-error").style.display = "none";
   lastStates = null;
@@ -267,6 +321,7 @@ function renderSessions(sessions) {
   const list = $("list");
   const unread = noteUnread(sessions);
   list.innerHTML = "";
+  $("demo-banner").hidden = true;
   $("list-empty").style.display = sessions.length ? "none" : "block";
   for (const s of sessions) {
     const meta = el("div", { class: "item-meta" });

@@ -140,6 +140,7 @@ function downloadFile(path, name, size) {
 // rather than taken whole from .blob(), because on a slow link the line this
 // counts into is the only thing on screen for the length of the transfer.
 async function downloadAsBlob(path, name, size) {
+  if (demoApiOn()) { toast("Not in the demo"); return; }
   const label = name || baseName(path);
   holdToast("Downloading " + label + "…");
   try {
@@ -203,6 +204,7 @@ async function readWithProgress(r, label, size) {
 // the browser puts its own download UI on screen, and ours would only sit on
 // top of it and outlive it. Silence unless something goes wrong.
 async function downloadViaLink(path, name) {
+  if (demoApiOn()) { toast("Not in the demo"); return; }
   let url;
   try {
     const r = await fetch(apiURL("api/fs/download_link?path=" + encodeURIComponent(path)),
@@ -543,8 +545,8 @@ let filesRepo = null;
 let filesRepoAsked = "";
 
 function openExplorer(path, opts) {
-  // Nothing to browse yet — prompt instead of failing against the static host.
-  if (needsSetup()) { openSettings(true); return; }
+  // Unpaired there is no computer to browse, and the demo's tree stands in
+  // (17-fake-api.js), the same one its terminal lists.
   // Beside a terminal there is room for both, so the explorer docks rather than
   // taking the screen. Every caller lands here — the folder key, a tapped path,
   // the editor's parent folder — so the two shapes are one entry point. `opts`
@@ -746,11 +748,9 @@ sideRegister(id, {
 // explorer's half of that is a claim on the slot rather than a folder — so it
 // opens at the session's own cwd, exactly as the folder key would. The only
 // caller is restoreFileView's reload path; a rail switch always has a folder.
-// The demo has no files to open at all, so it gives the slot back instead of
-// leaving the terminal narrowed against an empty pane.
+// The demo answers the same way, out of its own tree (17-fake-api.js).
 function followSession() {
   if (!isWideLayout() || filesDocked) return;
-  if (demoMode) { sideDrop(id); return; }
   // Handed back because the claim it makes is a round trip away: the cwd has to
   // answer before the row is in the column, and the restore that called this
   // has an order to put the rows in once it is (sideOrder, 26-side-pane.js).
@@ -866,7 +866,6 @@ async function fetchPaneCwd() {
 // with every cd — and $HOME quietly stands in when tmux cannot say. `opts` is
 // the column's (sideClaim's `keep`).
 async function filesOpenAtCwd(opts) {
-  if (demoMode) { toast("No files in the demo"); return; }
   // A copy is the user asking for a second look at where they already are, so it
   // opens on the folder the first listing is showing. With no listing up there
   // is no "here" to look at twice, and it falls to the session's own cwd, which
@@ -944,7 +943,8 @@ let cwdTitleTimer = null;
 // again when the timer fires: the pane can be closed, or the app backgrounded,
 // in the second the ask was waiting out.
 function cwdCheckWanted() {
-  return !document.hidden && !demoMode && !needsSetup()
+  // The demo's terminal has a cwd too, answered in memory (17-fake-api.js).
+  return !document.hidden && (demoMode || !needsSetup())
       && !$("sheet-scrim").classList.contains("show")
       && filesFollowsCwd();
 }
@@ -977,7 +977,6 @@ function scheduleCwdAfterTitle() {
 // file's view goes up. Awaiting the listing is what makes that ordering real:
 // back from the file then lands on the parent, and back again on the terminal.
 async function openPath(path) {
-  if (demoMode) { toast("No files in the demo"); return; }
   let hit;
   try {
     hit = await resolveFsPath(path);
@@ -1700,7 +1699,7 @@ function closeFilesMenus() { showViewMenu(false); showRefMenu(false); }
 // have changed, and outside every root there is nothing to re-ask until the
 // folder itself moves.
 async function syncRepo() {
-  if (demoMode || !hasCap("git_ref")) { filesRepo = null; syncRefBar(); return; }
+  if (demoApiOn() || !hasCap("git_ref")) { filesRepo = null; syncRefBar(); return; }
   const path = filesPath;
   const fresh = filesRepo && (filesRepo.root ? insideRoot(path, filesRepo.root)
                                              : path === filesRepoAsked);
@@ -1894,6 +1893,7 @@ function filesTakeView() {
 // hold the tab back — the anchor is still the best of the options, window.open
 // there returns null outright.
 async function openRendered(path) {
+  if (demoApiOn()) { toast("Not in the demo"); return; }
   let url;
   try {
     const r = await fetch(apiURL("api/fs/render_link?path=" + encodeURIComponent(path)),
@@ -1925,6 +1925,7 @@ async function openRendered(path) {
 // reason. Nothing is capped on the way: the file is streamed, by Range, from
 // whichever of the two is showing it.
 async function openPdf(path) {
+  if (demoApiOn()) { toast("Not in the demo"); return; }
   if (isWideLayout()) { showImage(path, self()); return; }
   let url;
   try {
@@ -2082,6 +2083,7 @@ async function addNewFolder() {
 // One file at a time, never in parallel: a 409 asks its own Replace? question,
 // and a pile of confirms racing each other is unanswerable.
 async function uploadFiles(files) {
+  if (demoApiOn()) { toast("Not in the demo"); return; }
   let done = 0, failed = 0;
   for (const f of files) {
     const err = await uploadFile(f, false);

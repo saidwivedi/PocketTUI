@@ -36,8 +36,14 @@
       <path d="M21 12a9 9 0 1 1-2.6-6.4"/>
       <path d="M21 3v6h-6"/>
     </symbol>
-    <symbol id="i-theme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/>
+    <!-- The header's theme menu: a painter's palette, since the menu picks a
+         palette for each of light and dark rather than only flipping between
+         them. -->
+    <symbol id="i-theme-palette" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.25a8.75 8.75 0 0 0 0 17.5c1.1 0 1.85-.75 1.85-1.75 0-.5-.2-.9-.5-1.25-.3-.35-.5-.8-.5-1.3 0-1 .8-1.8 1.8-1.8h2.15c2.6 0 4.45-2.05 4.45-4.6 0-3.95-4.1-6.8-9.25-6.8z"/>
+      <circle cx="7.6" cy="12" r="1.2" fill="currentColor" stroke="none"/>
+      <circle cx="9.4" cy="7.7" r="1.2" fill="currentColor" stroke="none"/>
+      <circle cx="14.4" cy="7.4" r="1.2" fill="currentColor" stroke="none"/>
     </symbol>
     <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="3.2"/>
@@ -383,7 +389,7 @@
            switching to, and a cycle that shows neither name cannot. The panel is
            the switcher's below (#profile-menu), hung off this button's own edge
            and filled by 04-theme.js. -->
-      <div id="theme-wrap"><button class="icon-btn" id="btn-theme" aria-label="Theme" aria-haspopup="true" aria-expanded="false"><svg><use href="#i-theme"/></svg></button><div id="theme-menu" role="menu"></div></div>
+      <div id="theme-wrap"><button class="icon-btn" id="btn-theme" aria-label="Theme" aria-haspopup="true" aria-expanded="false"><svg><use href="#i-theme-palette"/></svg></button><div id="theme-menu" role="menu"></div></div>
       <button class="icon-btn" id="btn-settings" aria-label="Settings"><svg><use href="#i-gear"/></svg></button>
     </div>
   </div>
@@ -397,6 +403,13 @@
          the file bar's dropdown (28-file-explorer.js), since it asks the same
          shape of question. -->
     <div class="list-new"><div class="profile-wrap" id="profile-wrap"><button class="pill-btn profile-pill" id="btn-profile" aria-haspopup="true" aria-expanded="false" hidden><span class="pill-label" id="profile-name"></span></button><div class="profile-menu" id="profile-menu" role="menu"></div></div><button class="pill-btn pill-alert" id="btn-update-rail" hidden></button><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg><span class="pill-label">New session</span></button></div>
+    <!-- Unpaired, the list is the demo's (renderDemoSessions,
+         06-session-list.js), and this says so over it, with the way back to
+         the first run. -->
+    <button type="button" id="demo-banner" hidden>
+      <span class="db-text"><span class="db-title">Demo.</span> Connect your computer to use your own sessions</span>
+      <span class="db-act">Connect<svg aria-hidden="true"><use href="#i-back"/></svg></span>
+    </button>
     <div class="eyebrow" id="list-eyebrow">Sessions</div>
     <div id="list"></div>
     <div id="list-empty">No tmux sessions yet — New session starts one.</div>
@@ -1121,6 +1134,10 @@
 <div class="sheet-scrim" id="sheet-scrim"></div>
 <div class="sheet" id="sheet-settings">
   <h2 id="sheet-title">Settings</h2>
+  <!-- The first run's way out, to look around the demo first. Shown on both of
+       its steps and on nothing else; closing stores nothing, so the next load
+       with no pairing asks again (closeFirstRun, 05-settings.js). -->
+  <button type="button" class="icon-btn" id="btn-setup-close" aria-label="Close and try the demo"><svg><use href="#i-close"/></svg></button>
   <!-- Sections rather than one column. The sheet grew past the height it
        can show at once, and everything below the fold — the dictation picker,
        the quick-command box, the build line — was reachable only by scrolling
