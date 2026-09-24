@@ -26,7 +26,25 @@ const FEATURES_HINT_MS = 6000;
 // localhost) the guide is only on the public site.
 function featuresURL() {
   const own = location.hostname === "pockettui.com";
-  return (own ? location.origin : "https://pockettui.com") + "/features/?embed=1";
+  return (own ? location.origin : "https://pockettui.com") + "/features/?embed=1"
+    + "&theme=" + featuresTheme();
+}
+
+// The guide is painted in the app's theme, not the OS's: the one the chrome
+// resolved to (data-theme, which a palette sets by its own background too). The
+// page reads it off its URL before its first paint and restamps on a message
+// (render_features.py), which is how a change while it is open reaches it.
+function featuresTheme() {
+  return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+}
+
+// Called wherever the chrome is repainted (applyChrome, 04-theme.js) and at
+// every open, since the frame is loaded once and kept. Nothing to tell a frame
+// that has not been given its page yet: its URL will carry the theme.
+function featuresSyncTheme() {
+  const frame = $("features-frame");
+  if (!frame || !frame.getAttribute("src") || !frame.contentWindow) return;
+  frame.contentWindow.postMessage({ type: "pockettui-theme", theme: featuresTheme() }, "*");
 }
 
 // The element focus goes back to on close, and whether a sheet was already up
@@ -45,6 +63,8 @@ function openFeatures(from) {
   if (!frame.getAttribute("src")) {
     frame.allow = "clipboard-write";
     frame.src = featuresURL();
+  } else {
+    featuresSyncTheme();
   }
   featuresFrom = from || document.activeElement;
   featuresScrimAtOpen = $("sheet-scrim").classList.contains("show");

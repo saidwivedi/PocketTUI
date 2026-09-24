@@ -46,6 +46,7 @@ function demoStop() {
   demoInterrupt = () => {};
   demoMode = false;
   syncReportEntry();
+  syncBrowseCap();
   $("demo-badge").classList.remove("show");
 }
 
@@ -56,3 +57,21 @@ function demoExit() {
   history.back();
 }
 
+
+// Pairing from inside the demo (05-settings.js's Save): every screen it has up
+// is about the invented machine, so it all goes the way a switch to another
+// computer takes it down (switchProfile, 40-profiles.js) and the real list is
+// loaded in its place by the caller. The intent a /demo visit parked goes
+// first, or closeTerminal() would leave for the landing page.
+function leaveDemo() {
+  try { sessionStorage.removeItem(DEMO_INTENT); } catch (e) {}
+  if (currentSession || $("screen-term").classList.contains("active")) closeTerminal(true);
+  setupDismissed = false;
+  dropAllFileViews();
+  filesResetForProfile();
+  diffResetForProfile();
+  browserResetForProfile();
+  sessionsResetForProfile();
+  $("screen-list").classList.add("active");
+  syncChrome();
+}

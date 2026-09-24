@@ -339,10 +339,14 @@ const DEMO_SESSION = "__demo__";
 // outlives the URL. Cleared on the way out of the demo.
 const DEMO_INTENT = "pockettui_demo_intent";
 
-function openDemo() {
+// `name` is one of the unpaired list's invented sessions (renderDemoSessions,
+// 06-session-list.js); /demo opens the demo's own.
+function openDemo(name) {
   demoMode = true;
   syncReportEntry();
-  openTerminal(DEMO_SESSION);
+  // The globe key is offered in the demo, whose browser pane is its own.
+  syncBrowseCap();
+  openTerminal(name || DEMO_SESSION);
 }
 
 // ============================================================

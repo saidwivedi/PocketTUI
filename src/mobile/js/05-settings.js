@@ -53,7 +53,10 @@ document.addEventListener("keydown", (e) => {
   if (!$("sheet-scrim").classList.contains("show")) return;
   e.preventDefault();
   e.stopImmediatePropagation();
-  showSheet(false);
+  // The first run's Escape is its cross: put away into the demo, not onto an
+  // empty list.
+  if (firstRunOpen()) closeFirstRun();
+  else showSheet(false);
 }, true);
 
 // Turn what someone actually types ("my-host", "my-host:5560/pockettui",
@@ -104,6 +107,26 @@ function formatTokenDisplay(v) {
 }
 
 let setupMode = false;
+// Set once the first run has been closed from its cross: the device is still
+// unpaired, and until it is paired the list is the demo's rather than the sheet
+// again. In memory only, so a reload with no pairing asks again.
+let setupDismissed = false;
+
+// The first run on screen, either of its steps, and not yet its voice step —
+// the device is paired by then and the cross has gone with the setup class.
+function firstRunOpen() {
+  return setupMode && $("sheet-settings").classList.contains("show")
+    && $("sheet-settings").classList.contains("setup");
+}
+
+// Puts the first run away without storing anything, and shows the demo's list
+// in its place (renderDemoSessions, 06-session-list.js).
+function closeFirstRun() {
+  setupMode = false;
+  setupDismissed = true;
+  showSheet(false);
+  loadSessions();
+}
 // True between a first-run save and its Confirm: the sheet is still open, but
 // on the voice step rather than the address one.
 let voiceStep = false;
@@ -347,6 +370,7 @@ $("btn-settings").addEventListener("click", () => openSettings(false));
 // it either way. Back for the case that answer was optimistic.
 $("btn-setup-ran").addEventListener("click", () => showSetupStep(2));
 $("btn-setup-back").addEventListener("click", () => showSetupStep(1));
+$("btn-setup-close").addEventListener("click", closeFirstRun);
 // Step one is three commands now, and each Copy takes the one beside it: the
 // button names its own code rather than the handler knowing the list.
 $("sheet-install").addEventListener("click", (e) => {
@@ -459,6 +483,13 @@ $("btn-settings-save").addEventListener("click", () => {
     });
   } else {
     showSheet(false);
+  }
+  // The first pairing ends the demo: whatever it had open was invented, and the
+  // list loaded below is this computer's. It also settles the theme the first
+  // run was shown in (keepLightAfterPairing, 04-theme.js).
+  if (wasUnpaired && !needsSetup()) {
+    leaveDemo();
+    keepLightAfterPairing();
   }
   // Reload against the new backend so a bad URL surfaces straight away. Not
   // awaited either way: the list is being built behind the voice step, and is

@@ -191,6 +191,37 @@ var TERM_THEME_KEY = "pockettui_term_theme";
 // --paper, which is what every screen but the terminal is painted in.
 var PAPER_BG_LIGHT = "#FAF8F3", PAPER_BG_DARK = "#16140f";
 
+// The theme preference in force, for this first paint and for the app's own
+// themePref() (04-theme.js) alike: whatever the person chose in the header
+// menu or the Appearance tab, and with nothing chosen, light Paper while this
+// device is unpaired — the first run and the demo behind it are shown in the
+// light whatever the OS says — and the OS's own answer ("auto") once paired.
+// Pairing stores "light" for a device that never chose (keepLightAfterPairing),
+// so a device onboarded this way stays light until the person picks otherwise;
+// one paired before that rule has no first run and keeps "auto".
+function themePrefInForce() {
+  var stored = localStorage.getItem("pockettui_theme");
+  if (stored) return stored;
+  return storedPairingCode() ? "auto" : "light";
+}
+
+// The active computer's pairing code as stored, read the way cfg.token does
+// (02-debug-log.js) but before that script exists: the profile the active id
+// names, or on a device from before profiles, the one legacy key. No code is
+// the first run's own test (needsSetup); the address half of that test never
+// decides it, since a code is never saved without one.
+function storedPairingCode() {
+  try {
+    var list = JSON.parse(localStorage.getItem("pockettui_profiles"));
+    if (!Array.isArray(list)) return localStorage.getItem("pockettui_token") || "";
+    var id = localStorage.getItem("pockettui_profile") || "";
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].id === id) return list[i].token || "";
+    }
+  } catch (e) {}
+  return "";
+}
+
 function prefIsDark(pref) {
   return pref === "dark" || (pref === "auto" &&
     window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -235,7 +266,7 @@ function applyEntryChrome(entry, dark) {
 }
 
 (function() {
-  var dark = prefIsDark(localStorage.getItem("pockettui_theme") || "auto");
+  var dark = prefIsDark(themePrefInForce());
   var entry = readTermPair()[dark ? "dark" : "light"];
   applyEntryChrome(entry, dark);
   var bg = entryIsPaper(entry) ? (dark ? PAPER_BG_DARK : PAPER_BG_LIGHT)

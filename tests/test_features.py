@@ -71,7 +71,13 @@ def test_render_writes_page_and_markdown(tmp_path):
                    check=True, capture_output=True)
     page = (tmp_path / "index.html").read_text(encoding="utf-8")
     md = (tmp_path / "features.md").read_text(encoding="utf-8")
-    assert page.count("<script") == 1
+    # The page's own script, plus the theme stamp in the head: framed, the page
+    # takes the app's theme from ?theme= before its first paint, and each
+    # screenshot carries both pictures for the stylesheet to pick between.
+    assert page.count("<script") == 2
+    head = page[:page.index("</head>")]
+    assert 'root.setAttribute("data-theme", t)' in head and "pockettui-theme" in head
+    assert "<picture" not in page
     assert "data:image" not in page
     you = page[page.index('id="p-you"'):page.index('id="p-agent"')]
     # A card is an <article class="c"> with a picture, or an <li class="c"> in

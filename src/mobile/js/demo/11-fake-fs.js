@@ -5,7 +5,7 @@ const DEMO_FS = {
   home: {
     "projects": {
       "webapp": {
-        "README.md": "# webapp\n\nA small web application.\n\n## Getting started\n\n    npm install\n    npm run dev\n\nThe dev server listens on port 3000.\n\n## Layout\n\n- `src/` — application code\n- `tests/` — unit tests\n- `docs/` — notes and design sketches\n",
+        "README.md": "# webapp\n\nA small web application.\n\n## Getting started\n\n    npm install\n    npm run dev\n\nThe dev server listens on port 5173.\n\n## Budget\n\nThe bundle stays small: $s \\le 40\\,\\text{kB}$, checked in CI.\n\n## Layout\n\n- `src/` — application code\n- `tests/` — unit tests\n- `docs/` — notes and design sketches\n",
         "package.json": '{\n  "name": "webapp",\n  "version": "0.4.2",\n  "scripts": {\n    "dev": "vite",\n    "build": "vite build",\n    "test": "vitest run"\n  }\n}\n',
         ".env.example": "API_URL=http://localhost:8080\nLOG_LEVEL=info\n",
         "src": {

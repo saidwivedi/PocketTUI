@@ -1228,6 +1228,7 @@ async function browserNavigateIn(tab, raw, push = true) {
   // (side_column_smoke.mjs). Null in every build that is not being driven by
   // one.
   if (api.navigateHook) api.navigateHook(url, push);
+  else if (demoMode) { if (!browserPointDemo(tab, url)) return; }
   else if (tab.fullMode) { if (!browserPointFull(tab, url)) return; }
   else if (!await browserPointFrame(tab, url, gen)) return;
   tab.loaded = url;
@@ -1316,6 +1317,19 @@ async function browserPointFrame(tab, url, gen) {
     frame.src = target;
     tab.primed = true;
   }
+  return true;
+}
+
+// The demo's stand-in for the two above: the tab's own frame, sandbox and all,
+// given a page written in 17-fake-api.js instead of an address. srcdoc rather
+// than src, so nothing is fetched and the frame's history is never touched.
+function browserPointDemo(tab, url) {
+  const frame = browserFrame(tab);
+  if (!frame) return false;
+  tab.fullMode = false;
+  frame.srcdoc = demoBrowserPage(url);
+  tab.title = url === DEMO_DEV_URL ? "webapp" : "Demo";
+  tab.titleFor = url;
   return true;
 }
 
@@ -1429,6 +1443,7 @@ function browserOutTarget(tab, rec) {
 async function browserOutPress(tab = browserTab()) {
   const url = browserUrlIn(tab);
   if (!url) return;
+  if (demoMode) { toast("Not in the demo"); return; }
   if (!browserOutThrough(tab)) { browserOpenOutside(url); return; }
   if (!browserTabAllowed()) {
     // Nothing to fetch the page with, so the address goes out as it stands. On a
@@ -1571,6 +1586,9 @@ const BROWSER_ESCAPE_AGAIN = 10000;
 // this tab only: nothing goes on the host record, which is the key's and the
 // proxy's own hand-off's to write (browserHandOff).
 function browserWatchLanding(tab) {
+  // The demo's pages are written here and never go through the proxy, so
+  // they never report in, and that is not a page escaping.
+  if (demoMode) return;
   const gen = ++tab.landGen;
   const paneGen = browserGen;
   const at = Date.now();
@@ -2038,6 +2056,7 @@ function syncBrowserZoom(host) {
 // The star is a toggle rather than a menu: there are two things anyone wants
 // from the page they are on, and the bar underneath says which one happened.
 function browserToggleMark() {
+  if (demoMode) { toast("Not in the demo"); return; }
   const url = browserCurrentUrl();
   if (!url || !hasCapStrict("bookmarks")) return;
   const i = browserMarkAt(url);
@@ -2520,17 +2539,21 @@ function closeFullBrowser() {
 // own (sideClaim's `keep`). Which of the column's rows this is, is the factory's
 // `id` — the dispatcher under it is what picks the pane a caller means.
 function openBrowser(url, tabs, at, opts) {
-  if (needsSetup()) { openSettings(true); return; }
-  if (demoMode) { toast("No browser in the demo"); return; }
+  // The demo's pane is its own: pages written here rather than fetched
+  // (browserPointDemo), so it opens without a computer. Unpaired and outside the
+  // demo there is nothing for it to show.
+  if (!demoMode && needsSetup()) { openSettings(true); return; }
   if (Array.isArray(tabs) && tabs.length) browserSeedTabs(tabs, at);
   // A refused row is no pane at all: seeding a tab into one and sending it
   // somewhere would be a page loading where nothing opened.
   if (browserDockable()) {
     if (!openDockedBrowser(opts)) return;
   } else openFullBrowser();
-  browserLoadMarks();
-  // Ahead of any press, so the key's own click has nothing to wait for.
-  browserEnsureTabToken();
+  if (!demoMode) {
+    browserLoadMarks();
+    // Ahead of any press, so the key's own click has nothing to wait for.
+    browserEnsureTabToken();
+  }
   renderBrowserTabs();
   // Every way in passes here, including the one a reload takes: a strip seeded
   // from the record (browserSeedTabs) never goes through browserShowTab, so
@@ -2544,6 +2567,8 @@ function openBrowser(url, tabs, at, opts) {
   if (browserTab().full) browserTab().full.show();
   const target = browserNormalize(url);
   if (target) { browserNavigate(target); return; }
+  // The demo's one page is its dev server, which is where an empty tab opens.
+  if (demoMode && browserTab().idx < 0) { browserNavigate(DEMO_DEV_URL); return; }
   // Opened with nothing to go to: the page the active tab was last on, whether
   // it is still in its frame (a close keeps it) or only in this session's
   // record (a reload does not).
@@ -3084,7 +3109,8 @@ function browserSyncCap() {
   // Its own capability, not the proxy's: a server can store bookmarks without
   // httpx to fetch pages with, and one too old for the route would answer the
   // save with a 404 the user only learns about after tapping the star.
-  q("btn-browser-star").hidden = !hasCapStrict("bookmarks");
+  // Shown in the demo too, which has no list to keep: the star says so.
+  q("btn-browser-star").hidden = !hasCapStrict("bookmarks") && !demoMode;
   // Strictly checked too, and with the computer's own refusal on top of it: a
   // server too old for the mode answers with the pane's own permission, and a
   // tab turned round on that is a tab that cannot do the one thing it was
@@ -3330,7 +3356,9 @@ async function browserClearProfile() {
 // kept, and this is the one place either of them is set. The keys inside a pane
 // are that pane's own, and every pane hears the answer.
 function syncBrowseCap() {
-  const on = hasCapStrict("browse");
+  // The demo has a pane of its own (browserPointDemo), so the globe is offered
+  // there whatever the computer — there is none — could say.
+  const on = hasCapStrict("browse") || demoMode;
   const btn = $("btn-browser");
   if (btn) btn.hidden = !on;
   const key = $("keybar").querySelector(".k-browser");
