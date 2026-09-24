@@ -405,6 +405,21 @@ body {
 /* The header row is right-aligned, so this one hangs off the edge it shares
    with its button rather than off the left. */
 #theme-menu { left: auto; right: 0; }
+/* The menu's footnote into Settings > Appearance: an umber text link with the
+   small forward chevron, set the way the rail card's "All shortcuts" is. */
+#theme-menu .menu-foot {
+  display: flex; align-items: center; gap: 4px;
+  width: 100%;
+  padding: 9px 14px 10px;
+  background: transparent; border: none;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--umber);
+  text-align: left;
+  cursor: pointer;
+}
+#theme-menu .menu-foot:hover span { text-decoration: underline; }
+#theme-menu .menu-foot svg { width: 10px; height: 10px; transform: rotate(180deg); }
 /* Two lines, so the name has the whole row to itself: side by side, a name and
    a tailnet address shared the width and both came out as three characters and
    an ellipsis. Only the profile rows are taller — the explorer's .view-row
@@ -682,6 +697,37 @@ body {
 }
 .item.demo .title { color: var(--umber); }
 .item.demo .item-meta { margin-left: 0; }
+
+/* Over the demo's list while unpaired: the Guide card's tint and umber, quiet
+   enough to sit above the rows for as long as the demo is up. The whole strip
+   is the button; its umber "Connect" says what a press does. */
+#demo-banner {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%;
+  margin: 0 0 18px;
+  padding: 12px 16px;
+  background: var(--umber-tint);
+  border: 1px solid var(--umber-soft);
+  border-radius: 12px;
+  color: var(--secondary);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.18s var(--ease-out), transform 0.14s var(--ease-out);
+}
+#demo-banner[hidden] { display: none; }
+#demo-banner:hover { background: var(--umber-soft); }
+#demo-banner:active { transform: scale(0.985); background: var(--umber-soft); }
+#demo-banner .db-text { flex: 1; min-width: 0; }
+#demo-banner .db-title { color: var(--umber); font-weight: 600; }
+#demo-banner .db-act {
+  display: inline-flex; align-items: center; gap: 4px;
+  flex: 0 0 auto;
+  color: var(--umber); font-weight: 500;
+}
+#demo-banner .db-act svg { width: 11px; height: 11px; transform: rotate(180deg); }
 
 /* ============================================================
    TERMINAL SCREEN
@@ -2149,6 +2195,16 @@ html.term-open, body.term-open {
   cursor: pointer;
 }
 #sheet-settings.setup #btn-setup-back { display: block; }
+/* The first run's cross, on the title's line at the sheet's right padding: the
+   one way out of it, into the demo. Only while the sheet is the first run —
+   Settings proper has Cancel, and the voice step has dropped .setup. */
+#btn-setup-close {
+  display: none;
+  position: absolute;
+  top: 13px; right: 12px;
+}
+#sheet-settings.setup #btn-setup-close { display: inline-flex; }
+#sheet-settings.setup #sheet-title { padding-right: 36px; }
 .sheet input, .sheet textarea {
   width: 100%;
   font-family: var(--mono);
@@ -4949,6 +5005,14 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-list .list-new { margin: 8px 0 10px; }
   #screen-list .pill-btn { font-size: 12px; padding: 7px 10px 7px 8px; }
   #screen-list .eyebrow { font-size: 10px; margin-bottom: 10px; }
+  /* The rail's rows are compact, and the demo's strip over them follows. */
+  #screen-list #demo-banner {
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    gap: 8px;
+    font-size: calc(var(--rail-title) * 11 / 14);
+  }
   #screen-list #list-empty, #screen-list #list-error {
     padding: 32px 12px;
     font-size: 13px;

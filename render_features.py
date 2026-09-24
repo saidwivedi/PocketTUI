@@ -152,8 +152,13 @@ kbd{font-size:12px;border:1px solid var(--hair-strong);border-radius:4px;padding
 .c h3 a{color:var(--ink)}
 .c.sel h3 a{color:var(--umber)}
 .shot{margin:0 0 5px;width:100%;aspect-ratio:16/8.6;border:1px solid var(--hair-strong);border-radius:8px;overflow:hidden;background:var(--card)}
-.shot picture{display:block;width:100%;height:100%}
+.shot .pic{display:block;width:100%;height:100%}
 .shot img{display:block;width:100%;height:100%;object-fit:cover;object-position:top left}
+.shot img.d{display:none}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .shot img.l{display:none}
+:root:not([data-theme="light"]) .shot img.d{display:block}}
+:root[data-theme="dark"] .shot img.l{display:none}
+:root[data-theme="dark"] .shot img.d{display:block}
 .wh{font:12px/1.45 var(--sans);color:var(--secondary)}
 .wh kbd{font-size:11px}
 .also{display:grid;gap:4px}
@@ -323,7 +328,8 @@ document.querySelectorAll('.panel nav a').forEach(function(a){
 var lb = document.getElementById('lb'), lbImg = lb.querySelector('img'), lbCap = lb.querySelector('p'), lbFrom = null, lbT;
 var outside = [].slice.call(document.querySelectorAll('.hdr,.panel,footer'));
 function lbOpen(fig){
-  var img = fig.querySelector('img'), c = fig.closest('.c'), t = c && c.querySelector('h3');
+  var img = [].filter.call(fig.querySelectorAll('img'), function(i){ return i.offsetParent !== null; })[0]
+            || fig.querySelector('img'), c = fig.closest('.c'), t = c && c.querySelector('h3');
   lbFrom = fig; clearTimeout(lbT);
   lbImg.src = img.currentSrc || img.src; lbImg.alt = img.alt;
   lbCap.innerHTML = ''; var st = document.createElement('strong'); st.textContent = t ? t.textContent : '';
@@ -509,10 +515,15 @@ def search_text(r, with_id=True):
 
 def figure_html(shot, man):
     m = man[shot]
-    return ('<figure class="shot"><picture>'
-            '<source srcset="shots/{id}-dark.webp" media="(prefers-color-scheme: dark)">'
-            '<img src="shots/{id}-light.webp" width="{w}" height="{h}" loading="lazy" decoding="async" alt="{alt}">'
-            '</picture></figure>').format(id=e(shot), w=m["width"], h=m["height"], alt=e(m["caption"]))
+    # Both pictures, and the stylesheet shows the one for the theme in force: the
+    # page's theme can be the app's rather than the OS's (THEME_STAMP), which a
+    # <source media> cannot follow. A lazy image that is not displayed is never
+    # fetched, so each visit downloads one of the pair.
+    img = ('<img class="{t}" src="shots/{id}-{theme}.webp" width="{w}" height="{h}" '
+           'loading="lazy" decoding="async" alt="{alt}">')
+    fmt = dict(id=e(shot), w=m["width"], h=m["height"], alt=e(m["caption"]))
+    return ('<figure class="shot"><span class="pic">%s%s</span></figure>'
+            % (img.format(t="l", theme="light", **fmt), img.format(t="d", theme="dark", **fmt)))
 
 
 def group_you(rs, man):
@@ -707,6 +718,7 @@ STANDALONE_HEAD = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>What PocketTUI can do</title>
 <meta name="description" content="Everything PocketTUI does, with screenshots, and the contract an agent in one of its terminals can rely on.">
+__THEME_STAMP__
 <style>
   :root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
   body { margin: 0; font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -716,6 +728,26 @@ STANDALONE_HEAD = """<!doctype html>
 </head>
 <body>
 """
+
+
+# Framed by the app, the page takes the app's theme rather than the OS's:
+# ?theme=light|dark is stamped on the root as data-theme before anything paints,
+# which the stylesheet's two dark blocks and the screenshots' pick both key off,
+# and the app posts {type: "pockettui-theme"} to restamp when its theme changes
+# while the page is open (44-features-guide.js). Opened on its own with no
+# param, nothing is stamped and the OS decides, as before.
+THEME_STAMP = """<script>
+(function(){
+  var root = document.documentElement;
+  function stamp(t){ if (t === "light" || t === "dark") root.setAttribute("data-theme", t); }
+  try { stamp(new URLSearchParams(location.search).get("theme")); } catch (e) {}
+  window.addEventListener("message", function(e){
+    var d = e.data;
+    if (e.source === window.parent && d && d.type === "pockettui-theme") stamp(d.theme);
+  });
+})();
+</script>"""
+STANDALONE_HEAD = STANDALONE_HEAD.replace("__THEME_STAMP__", THEME_STAMP)
 
 
 def standalone(fragment):

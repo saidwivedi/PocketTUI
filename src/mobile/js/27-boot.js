@@ -34,10 +34,12 @@ if (location.hash.indexOf("#pair=") === 0) {
     const p = JSON.parse(atob(raw.replace(/-/g, "+").replace(/_/g, "/")));
     const tok = normalizeToken(p.t);
     if (isValidToken(tok)) {
+      const wasUnpaired = needsSetup();
       // Into this device's profiles rather than over the active one: a scan is
       // how a second computer arrives, and the one scanned is the one the app
       // talks to from here (adoptPairedBackend, 40-profiles.js).
       adoptPairedBackend(p.a ? normalizeBackend(p.a, "") : "", tok);
+      if (wasUnpaired && !needsSetup()) keepLightAfterPairing();
       toast("Paired");
     } else {
       toast("Pairing link invalid");
