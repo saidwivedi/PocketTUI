@@ -5,8 +5,8 @@
 // render_features.py builds from src/features/catalog.json on every deploy. It
 // is framed rather than bundled, so the guide describes the newest release
 // whatever build this shell is, and the shell carries none of its 150 records
-// or its screenshots. Shown over the whole app, on both layouts: the page has a
-// layout of its own for each width.
+// or its screenshots. Full screen on a phone and a centred card over a scrim
+// on the wide layout; the page has a layout of its own for each width.
 //
 // Two ways in, the session list's row and one in Settings > About, and one
 // hint: the first time a device ever gets a session list back, a toast names
@@ -14,7 +14,8 @@
 // row; it does not open anything itself.
 //
 // The way out is the page's own cross, which posts a message to this window
-// (the page shows the cross only when it is framed), or Escape here. A frame
+// (the page shows the cross only when it is framed), Escape here, or on the
+// wide layout a press on the scrim outside the card. A frame
 // that holds focus keeps its keys to itself, so the page answers Escape too, by
 // posting the same message.
 
@@ -82,6 +83,18 @@ function closeFeatures() {
 
 $("btn-features").addEventListener("click", (e) => openFeatures(e.currentTarget));
 $("btn-features-about").addEventListener("click", (e) => openFeatures(e.currentTarget));
+
+// On the wide layout the guide is a card over a scrim, and a press on the
+// scrim around it closes it. Only on the overlay itself: a press in the frame
+// never reaches this window. On a phone the only overlay left uncovered is
+// the safe-area padding, which is not a way out. mousedown, prevented, rather
+// than pointerdown: its default would move focus to whatever lies under the
+// pointer once the overlay is gone, undoing the focus closeFeatures restores.
+$("features-overlay").addEventListener("mousedown", (e) => {
+  if (e.target !== e.currentTarget || !isWideLayout()) return;
+  e.preventDefault();
+  closeFeatures();
+});
 
 // Only from the frame this file put up: any other window (a proxied page in
 // the browser pane, a rendered report) could post the same shape.
