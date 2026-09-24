@@ -5192,20 +5192,21 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* ============================================================
    FEATURES GUIDE
    ============================================================ */
-/* The way into the guide: a card in the session rows' idiom — .item's surface,
-   corner and padding, the row title's serif and a sans meta line under it —
-   with the shortcuts card's fold chevron turned to point on. Its own rules
+/* The way into the guide: a card in the session rows' shape — .item's corner
+   and padding, the row title's serif and a sans meta line under it — with the
+   shortcuts card's fold chevron turned to point on. No eyebrow: it is the
+   list's last object, not a section of its own, and the accent's tint and
+   umber ink are what set it apart from the paper-white rows. Its own rules
    rather than .item's class, which the list's scripts count rows by. On the
-   phone it follows the last session row at the list's 22px gutter; the last
-   row's own 14px margin is the gap above the eyebrow, the same 14px the
-   Sessions eyebrow has above it. */
+   phone it follows the last session row at the list's 22px gutter, the last
+   row's own 14px margin being the gap above it, as between rows. */
 #features-guide { margin: 0 22px; }
 #btn-features {
   display: flex; align-items: center; gap: 12px;
   width: 100%;
   padding: 18px 20px 16px;
-  background: var(--card);
-  border: 1px solid var(--hair);
+  background: var(--umber-tint);
+  border: 1px solid var(--umber-soft);
   border-radius: 16px;
   color: inherit;
   font: inherit;
@@ -5214,8 +5215,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
   transition: border-color 0.18s var(--ease-out), background 0.18s var(--ease-out),
               transform 0.14s var(--ease-out);
 }
-#btn-features:hover { border-color: var(--hair-strong); }
-#btn-features:active { transform: scale(0.985); background: var(--card-2); }
+#btn-features:hover { background: var(--umber-soft); }
+#btn-features:active { transform: scale(0.985); background: var(--umber-soft); }
 #btn-features .fg-text { flex: 1; min-width: 0; display: block; }
 #btn-features .fg-title {
   display: block;
@@ -5224,30 +5225,29 @@ html.term-open #dbg-panel { opacity: 0.85; }
   font-weight: 500;
   letter-spacing: -0.012em;
   line-height: 1.32;
-  color: var(--ink);
+  color: var(--umber);
 }
 #btn-features .fg-meta {
   display: block;
   margin-top: 5px;
   font-family: var(--sans);
   font-size: 11.5px;
-  color: var(--tertiary);
+  color: var(--secondary);
 }
 #btn-features svg {
   flex: 0 0 auto;
   width: 13px; height: 13px;
   transform: rotate(180deg);
-  color: var(--tertiary);
-  transition: color 0.18s var(--ease-out);
+  color: var(--umber);
 }
-#btn-features:hover svg { color: var(--ink); }
 @media (min-width: 768px) and (min-height: 500px) {
   /* Held out of the rail's scroll above the shortcuts card, at the list's
-     14px gutter, in the rail rows' compact sizes. With no shortcuts card
-     (a touch tablet) it is the foot on its own, with the same 10px under it. */
+     14px gutter, in the rail rows' compact sizes, with the rows' own 6px
+     between it and the card. With no shortcuts card (a touch tablet) it is
+     the foot on its own, with the same 6px under it. */
   #features-guide {
     flex: 0 0 auto;
-    margin: 0 14px 10px;
+    margin: 0 14px 6px;
   }
   #btn-features {
     gap: 8px;
