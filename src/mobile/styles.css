@@ -4091,9 +4091,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
   color: var(--m-g2);
   cursor: pointer;
 }
-/* The glyph says which mode the tab is in; the keys beside the arrows change
-   it, so it takes no pointer. On a bar too narrow for both the keys and a
-   readable address it goes, since the keys say the same thing. */
+/* The glyph says which mode the tab is in; the key beside the arrows and the
+   landing ladder change it, so it takes no pointer. On a bar too narrow for
+   both the key and a readable address it goes. */
 .browser-mode { margin-left: 3px; pointer-events: none; cursor: default; }
 @container (max-width: 420px) { .browser-mode { display: none; } }
 .browser-topbar #btn-browser-reload { margin-right: 3px; }
@@ -4116,16 +4116,15 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 .browser-topbar #btn-browser-out svg { width: 13px; height: 13px; }
 .browser-topbar #btn-browser-out:hover { color: var(--m-g1); background: var(--m-fill2); }
-/* The two mode keys after the arrows, 10px from them and 2px apart (the
-   group's gap). On, a key wears the accent over the pressed fill, so it reads
-   on beside one that is off. */
-#btn-browser-fwd + #btn-browser-full,
-#btn-browser-fwd + #btn-browser-full[hidden] + #btn-browser-tab { margin-left: 8px; }
-.browser-topbar :is(#btn-browser-full, #btn-browser-tab)[aria-pressed="true"] {
+/* The mode key after the arrows, 10px from them (this margin and the group's
+   2px gap). On, it wears the accent over the pressed fill, so it reads on
+   beside the keys that are not. */
+#btn-browser-fwd + #btn-browser-full { margin-left: 8px; }
+.browser-topbar #btn-browser-full[aria-pressed="true"] {
   color: var(--umber);
   background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
 }
-.browser-topbar :is(#btn-browser-full, #btn-browser-tab)[aria-pressed="true"]:hover {
+.browser-topbar #btn-browser-full[aria-pressed="true"]:hover {
   background: linear-gradient(var(--umber-soft), var(--umber-soft)),
               linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
 }
@@ -4175,11 +4174,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
    screen that can say so. */
 #btn-browser-zoom.on { color: var(--umber); }
 #btn-browser-star[hidden] { display: none; }
-/* The network key hides the same way when the computer has no tab flavour to
-   offer (an older server, or a shell served from the computer itself), and the
-   monitor key when there is no browser on the computer to stream from. Both are
-   .icon-btn, whose display the attribute alone does not undo. */
-#btn-browser-tab[hidden] { display: none; }
+/* The monitor key hides the same way when there is no browser on the computer
+   to stream from. It is .icon-btn, whose display the attribute alone does not
+   undo. */
 #btn-browser-full[hidden] { display: none; }
 /* #files-view-scrim's recipe, in the pane rather than over the window:
    #screen-browser is position:fixed, so absolute already means "this pane",
@@ -4245,8 +4242,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 /* In a dark palette the active tab is lighter than the band, as Safari's is. */
 :root[data-theme="dark"] .tab-chip.on { background: color-mix(in srgb, var(--ink) 13%, var(--paper)); }
-/* A tab on the computer's own network, for the tabs the page-mode key is not
-   speaking for. A dot rather than a glyph: at this size a mark is all that
+/* A tab on the computer's own network, for the tabs the capsule's page-mode
+   glyph is not speaking for. A dot rather than a glyph: at this size a mark is all that
    reads. */
 .tab-chip.lan .tab-name::before {
   content: "";

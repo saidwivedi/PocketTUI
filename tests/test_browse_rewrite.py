@@ -624,6 +624,35 @@ def test_shim_reports_a_page_that_did_not_work(tmp_path):
     subprocess.run([node, "--check", str(f)], check=True, capture_output=True)
 
 
+def test_shim_reports_a_page_that_tried_to_take_the_top_window():
+    """The pane's frame has no allow-top-navigation in either flavour, so a
+    frame-breaking page throws a SecurityError inside the frame. The shim says
+    so at the load, after the landing's own report, so that the pane's landing
+    ladder can act on it (browserLandFailed, 42-browser.js)."""
+    s = A.BROWSE_SHIM
+    assert ('if(e&&e.error&&e.error.name==="SecurityError"&&/navigat/i.test(e.message||"")){'
+            in s)
+    assert 'if(busted){tell({type:"pockettui-health",busted:true});return}' in s
+    # The load listener that reports the landing is added before the one that
+    # tells of the break, so the pane hears them in that order.
+    assert s.index('["DOMContentLoaded","load","popstate","hashchange"]') \
+        < s.index('if(busted){tell(')
+
+
+def test_shim_lets_a_framed_network_page_set_document_domain():
+    """A sandboxed document may not set document.domain (Chrome throws
+    "Assignment is forbidden for sandboxed iframes"), and the network flavour's
+    frame is now sandboxed with allow-same-origin. Every proxied host is on the
+    one origin, so in the frame the setter does nothing; only in that flavour
+    and only when framed."""
+    s = A.BROWSE_SHIM
+    at = s.index('Object.defineProperty(Document.prototype,"domain",')
+    assert at > s.index("if(!C.sandbox){")
+    block = s[s.rindex("P(function(){", 0, at):at]
+    assert "if(window.parent===window)return;" in block
+    assert "get:d.get,set:function(){}" in s[at:at + 200]
+
+
 def test_shim_parses_as_javascript(tmp_path):
     node = shutil.which("node")
     if node is None:
@@ -698,8 +727,10 @@ def test_shim_hands_a_targeted_link_to_the_pane():
     # its own right and its browser still knows where to put one.
     assert 'var t=(a.getAttribute("target")||"").toLowerCase(),n=t&&t!=="_self";' \
         in A.BROWSE_SHIM
-    assert "if(n&&!C.sandbox)return;" in A.BROWSE_SHIM
-    # _parent and _top name the shell, which the sandbox refuses anyway, so
+    assert ('if(n&&!C.sandbox&&(window.parent===window||(t!=="_top"&&t!=="_parent")))return;'
+            in A.BROWSE_SHIM)
+    # _parent and _top name the shell, which the sandbox refuses anyway (in the
+    # network flavour's frame as well, which has no allow-top-navigation), so
     # they stay this frame's own navigation rather than becoming a tab.
     assert 'if(n&&t!=="_parent"&&t!=="_top"){out(h);return}' in A.BROWSE_SHIM
     assert '"pockettui-open"' in A.BROWSE_SHIM

@@ -964,7 +964,7 @@ const SHOTS = {
   "browser": {
     ...M, seed: RAIL_CLOSED,
     features: ["browser.open", "browser.tabs", "browser.bookmarks", "browser.address-search", "links.wide-to-pane", "browser.open-outside", "browser.stream", "browser.local-network"],
-    caption: "The browser pane showing a dev server on the computer: tabs, the address field, bookmarks bar, and the stream and network keys.",
+    caption: "The browser pane showing a dev server on the computer: tabs, the address field, bookmarks bar, and the stream key.",
     async run(ui) { await dockBrowser(ui); },
   },
   "browser-more": {
