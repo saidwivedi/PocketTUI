@@ -5194,15 +5194,19 @@ html.term-open #dbg-panel { opacity: 0.85; }
    ============================================================ */
 /* The way into the guide: a card in the session rows' shape — .item's corner
    and padding, the row title's serif and a sans meta line under it — with the
-   shortcuts card's fold chevron turned to point on. No eyebrow: it is the
-   list's last object, not a section of its own, and the accent's tint and
-   umber ink are what set it apart from the paper-white rows. Its own rules
+   shortcuts card's fold chevron turned to point on. Its "Guide" eyebrow is
+   inside the card, on #rail-keys-head's recipe, with the hairline stopping
+   short by the width of that head's fold button so the two lines end at the
+   same x; with no eyebrow outside it, it is the list's last object, not a
+   section of its own, and the accent's tint and umber ink are what set it
+   apart from the paper-white rows. Its own rules
    rather than .item's class, which the list's scripts count rows by. On the
    phone it follows the last session row at the list's 22px gutter, the last
    row's own 14px margin being the gap above it, as between rows. */
 #features-guide { margin: 0 22px; }
 #btn-features {
-  display: flex; align-items: center; gap: 12px;
+  display: grid; grid-template-columns: 1fr auto; column-gap: 12px;
+  align-items: center;
   width: 100%;
   padding: 18px 20px 16px;
   background: var(--umber-tint);
@@ -5217,7 +5221,17 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 #btn-features:hover { background: var(--umber-soft); }
 #btn-features:active { transform: scale(0.985); background: var(--umber-soft); }
-#btn-features .fg-text { flex: 1; min-width: 0; display: block; }
+/* #rail-keys-head's head: margin 0 under it, 8px to what follows, and the
+   hairline ends 27px short of the edge — the fold button's 19px and the
+   eyebrow's 8px gap before it. --hair vanishes on the tint, so the line is
+   drawn a step stronger. */
+#btn-features .eyebrow {
+  grid-row: 1; grid-column: 1 / -1;
+  margin-bottom: 8px;
+  padding-right: 27px;
+}
+#btn-features .eyebrow::after { background: var(--hair-strong); }
+#btn-features .fg-text { grid-row: 2; grid-column: 1; min-width: 0; display: block; }
 #btn-features .fg-title {
   display: block;
   font-family: var(--serif);
@@ -5235,7 +5249,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   color: var(--secondary);
 }
 #btn-features svg {
-  flex: 0 0 auto;
+  grid-row: 2; grid-column: 2;
   width: 13px; height: 13px;
   transform: rotate(180deg);
   color: var(--umber);
@@ -5250,8 +5264,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
     margin: 0 14px 6px;
   }
   #btn-features {
-    gap: 8px;
-    padding: 8px 10px;
+    column-gap: 8px;
+    padding: 9px 10px 10px;
     border-radius: 10px;
   }
   #btn-features .fg-title {
