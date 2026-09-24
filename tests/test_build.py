@@ -747,6 +747,38 @@ def test_the_pane_has_tabs_of_its_own(doc):
     assert "tab.fullMode = full || tab.lan ? false : null;" in doc
 
 
+def test_a_session_switch_leaves_the_pane_one_empty_tab(doc):
+    """The rail's stash puts every open strip away with the session being left,
+    and the panes then drop their tabs: without that the next session's globe
+    reopened the last session's tabs. Only the stash path asks for it; a pane
+    closed and reopened in the same session keeps its pages. A pane that is
+    closed at the switch but still holds pages is stashed too, as a record
+    that restores without opening the pane."""
+    assert ('    view.browser = browserStash("browser");\n'
+            '    view.browser2 = browserStash("browser#2");\n') in doc
+    assert "    browserTeardown(true);\n" in doc
+    assert doc.count("browserTeardown(true)") == 1
+    pane = doc[doc.index("function browserTeardown(fresh = false) {\n  const wasDocked"):]
+    pane = pane[:pane.index("\n}\n")]
+    assert ("  if (fresh) {\n"
+            "    browserTabs = [browserNewTab()];\n"
+            "    browserActive = 0;") in pane
+    assert ("function browserTeardown(fresh = false) {\n"
+            "  for (const pane of Object.values(browserPanes)) pane.teardown(fresh);") in doc
+    # The closed pane's half: held pages are stashed and the stash is taken on
+    # a switch even when nothing else is up.
+    assert "  held: () => browserTabs.some((t) => t.idx >= 0 || !!t.title)," in doc
+    assert "  return pane && (pane.isOpen() || pane.held()) ? pane.stash() : null;" in doc
+    assert "  if (browserAnyOpen() || browserAnyHeld()) {" in doc
+    assert ("    } else if (browserAnyHeld() && name !== currentSession && currentSession) {\n"
+            "      stashFileView(currentSession, null);") in doc
+    # And a record left closed goes back closed: no open, no history entry.
+    restore = doc[doc.index("function browserRestore(s) {"):]
+    restore = restore[:restore.index("\n}\n")]
+    assert "  if (!s.docked) { syncBrowserNav(); return; }" in restore
+    assert "pushState" not in restore
+
+
 def test_the_pane_offers_the_stream_where_a_proxied_page_did_not_work(doc):
     """A bar over the page, naming the key that would fix it.
 
