@@ -2047,10 +2047,11 @@ document.addEventListener("keydown", (e) => {
 // so a line can be read back, fixed or dictated before it runs. A double tap
 // (two accepted taps within termTapWindow, anywhere on the grid) puts it in the
 // terminal instead, for the keys the shell has to see one at a time: tab
-// completion, ctrl+r, arrow history. Anything already in the box stays there.
-// A full-screen app (vim, less, htop: xterm's alternate buffer) reads keys one
-// at a time by nature, so there a single tap goes to the terminal too. Beside a
-// real keyboard every tap goes to the terminal, as it always has. Both focus
+// completion, ctrl+r, arrow history, and vim or less. Anything already in the
+// box stays there. The buffer type cannot tell a keystroke app from a chat
+// prompt: Claude Code, the main thing typed into from a phone, runs in xterm's
+// alternate buffer just as vim does, so a single tap goes to the box there too.
+// Beside a real keyboard every tap goes to the terminal, as it always has. Both focus
 // calls run inside the click, so iOS raises the keyboard for either, and a hop
 // from the box to the terminal keeps it up: keyboardUp() counts both fields,
 // and the docked strip ignores the blur (composeBlurred()).
@@ -2063,10 +2064,12 @@ $("term-host").addEventListener("click", () => {
   const second = now - termTapAt < termTapWindow;
   // A pair is spent once it is read, so a third tap starts a new pair.
   termTapAt = second ? 0 : now;
-  if (!touchOnly() || second || term.buffer.active.type === "alternate") {
+  if (!touchOnly() || second) {
+    if (touchOnly()) dbg("tap: terminal (double tap)");
     term.focus();
     return;
   }
+  dbg("tap: composer (single tap)");
   if (!composeOpen) setCompose(true, true);
   $("compose-text").focus();
 });
