@@ -7193,6 +7193,10 @@ class BrowseToken:
     # shell mount of each flavour — (sandbox, prefix, origin) — and every one
     # of them is good on every /b/ route, HTTP and socket alike.
     sandbox: bool = True
+    # HTTP Basic sign-ins the browser sent through this record, keyed by the
+    # upstream (scheme, host, port) they went to. See browse_auth_attach. Kept
+    # out of repr because each value is a password in base64.
+    auth: dict = dataclasses.field(default_factory=dict, repr=False)
 
 
 def browse_client(httpx):
@@ -7708,6 +7712,69 @@ def browse_upstream_headers(request: Request, authority: str,
     return out
 
 
+def browse_is_basic(value: "str | None") -> bool:
+    """Whether an Authorization value is HTTP Basic, whose scheme is caseless."""
+    return bool(value) and value[:6].lower() == "basic "
+
+
+def browse_auth_attach(request: Request, rec: "BrowseToken", key: tuple,
+                       headers: list) -> "str | None":
+    """Put a remembered Basic sign-in on a request the frame sent without one.
+
+    The pane's frame is on an opaque origin, so the browser attaches the
+    credentials it prompted for only to the navigation and to no-cors loads:
+    a font (CORS mode) and every fetch or XHR the page makes arrive here
+    with no Authorization and the target answers them 401. So a Basic value
+    the browser did send is remembered against this record and the target it
+    went to, and handed on for the requests that came without one.
+
+    Returns the Basic value this request carries upstream, or None, for
+    browse_auth_settle to judge by the answer. The key is scheme, host and
+    port and nothing else: the realm would be the finer key a browser uses,
+    but one host asking for two Basic realms is rare enough that the cost of
+    the coarse key is one re-prompt, when the target refuses the value and
+    browse_auth_settle forgets it. A remembered value never goes to another
+    scheme, host or port, and never to a request that brought its own
+    Authorization of any kind. Basic only: Digest answers a nonce the target
+    hands out per challenge, so a replayed Digest header is worthless and the
+    browser's own is forwarded as it always was.
+
+    Only the pane's flavour. A tab page, and the network flavour's frame, share
+    the shell's origin, where the browser sends its own credentials. The store
+    is held in memory and never written anywhere: it dies with the record and
+    with the process, and Clear browsing data empties it (api_browser_reset).
+    """
+    sent = request.headers.get("authorization")
+    if sent is not None:
+        return sent if browse_is_basic(sent) else None
+    if not rec.sandbox:
+        return None
+    kept = rec.auth.get(key)
+    if kept is not None:
+        headers.append(("authorization", kept))
+    return kept
+
+
+def browse_auth_settle(rec: "BrowseToken", key: tuple, used: "str | None",
+                       status: int, hostport: str) -> None:
+    """Remember a Basic value the target took, forget one it refused.
+
+    A refused value is dropped and the 401 goes back to the browser untouched,
+    WWW-Authenticate and all, so the next navigation prompts afresh. Logs name
+    the target only, never the value.
+    """
+    if used is None or not rec.sandbox:
+        return
+    if status == 401:
+        if rec.auth.get(key) == used:
+            del rec.auth[key]
+            log(f"browse: remembered sign-in for {hostport} refused, forgotten")
+        return
+    if rec.auth.get(key) != used:
+        rec.auth[key] = used
+        log(f"browse: sign-in for {hostport} remembered")
+
+
 def browse_response_headers(resp, ctx: BrowseCtx,
                             drop: frozenset = frozenset()) -> list:
     """The upstream response headers, minus the ones that would fight the frame.
@@ -8127,7 +8194,14 @@ async def api_browser_reset() -> Response:
     be indistinguishable from a crash.
 
     The downloads directory is not touched. Those are the user's files.
+
+    The proxy's remembered Basic sign-ins (BrowseToken.auth) are forgotten
+    first, on every call, whatever the browser half answers: they are logins
+    too, forgetting one costs a single prompt, and the Settings button asks
+    again after a 409 anyway. The proxy's cookie jar is not touched here.
     """
+    for rec in BROWSE.values():
+        rec.auth.clear()
     mod = _chromium_module()
     if mod is None:
         return no_store(JSONResponse(
@@ -8278,6 +8352,8 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
     identity = browse_wants_rewrite(request, path, rec.sandbox)
     headers = browse_upstream_headers(request, authority, target_origin,
                                       rec.prefix, identity)
+    auth_key = (scheme, host.lower(), port)
+    auth_used = browse_auth_attach(request, rec, auth_key, headers)
     content = request.stream() if browse_has_body(request) else None
     try:
         req = rec.client.build_request(request.method, url, headers=headers,
@@ -8286,6 +8362,7 @@ async def api_browse_proxy(request: Request, tok: str, sch: str, hostport: str,
     except Exception as exc:  # noqa: BLE001 — every failure here is a page
         code, detail = browse_failure(exc, hostport)
         return browse_error_response(code, detail, rec.origin, rec.sandbox, alt)
+    browse_auth_settle(rec, auth_key, auth_used, resp.status_code, hostport)
 
     # A login is a burst of redirects each setting one, and the jar is what
     # survives a restart of this server (browse_save_cookies).

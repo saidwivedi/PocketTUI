@@ -1667,6 +1667,195 @@ def test_a_restored_jar_is_sent_to_the_target(client, site, tmp_path,
 
 
 # ---------------------------------------------------------------------------
+# HTTP Basic sign-ins the frame cannot send
+# ---------------------------------------------------------------------------
+# The pane's frame is on an opaque origin: the browser sends the credentials
+# it prompted for with the navigation and with no-cors loads, and with nothing
+# else. A font and a DataTables POST arrived without them and were answered
+# 401, so the proxy remembers the Basic value and hands it on (browse_auth_*).
+
+GOOD = "Basic " + "dXNlcjpwYXNz"            # user:pass
+OTHER = "Basic " + "dXNlcjpvdGhlcg=="       # user:other
+
+
+class AuthHandler(BaseHTTPRequestHandler):
+    """An intranet page behind Basic auth, recording what each request carried."""
+
+    protocol_version = "HTTP/1.1"
+    accepted = GOOD
+    seen: list = []
+
+    def log_message(self, fmt, *args):  # noqa: A003, quiet under pytest
+        pass
+
+    def answer(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length:
+            self.rfile.read(length)
+        sent = self.headers.get("Authorization")
+        type(self).seen.append((self.command, self.path, sent))
+        ctype = "text/html; charset=utf-8"
+        if sent != type(self).accepted:
+            body = b"<html><body>sign in</body></html>"
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", "Negotiate")
+            self.send_header("WWW-Authenticate", 'Basic realm="Campus Login"')
+        elif self.path.endswith(".woff"):
+            body, ctype = b"wOFF", "font/woff"
+            self.send_response(200)
+        else:
+            body = b"<html><body>ok</body></html>"
+            self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = answer  # noqa: N815
+    do_POST = answer  # noqa: N815
+
+
+@pytest.fixture
+def auth_site():
+    AuthHandler.accepted = GOOD
+    AuthHandler.seen = []
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), AuthHandler)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    yield srv.server_address[1]
+    srv.shutdown()
+    srv.server_close()
+    thread.join(timeout=3)
+
+
+def auth_base(client, port):
+    r = mint(client, f"http://127.0.0.1:{port}/app/")
+    assert r.status_code == 200, r.text
+    tok = r.json()["token"]
+    return tok, base_of(tok, port)[len(PREFIX):]
+
+
+def last_auth():
+    return AuthHandler.seen[-1][2]
+
+
+def test_the_first_navigation_still_gets_the_prompt(client, auth_site):
+    _, base = auth_base(client, auth_site)
+    r = client.get(f"{base}/app/")
+    assert r.status_code == 401
+    assert r.headers.get_list("www-authenticate") == [
+        "Negotiate", 'Basic realm="Campus Login"']
+
+
+def test_a_basic_sign_in_is_remembered(client, auth_site):
+    tok, base = auth_base(client, auth_site)
+    r = client.get(f"{base}/app/", headers={"Authorization": GOOD})
+    assert r.status_code == 200
+    assert last_auth() == GOOD
+    assert A.BROWSE[tok].auth == {("http", "127.0.0.1", auth_site): GOOD}
+    assert GOOD not in repr(A.BROWSE[tok])
+
+
+def test_a_font_without_it_is_sent_with_it(client, auth_site):
+    _, base = auth_base(client, auth_site)
+    client.get(f"{base}/app/", headers={"Authorization": GOOD})
+    r = client.get(f"{base}/app/fonts/glyphicons-halflings-regular.woff")
+    assert r.status_code == 200 and r.content == b"wOFF"
+    assert last_auth() == GOOD
+
+
+def test_a_post_without_it_is_sent_with_it(client, auth_site):
+    _, base = auth_base(client, auth_site)
+    client.get(f"{base}/app/", headers={"Authorization": GOOD})
+    r = client.post(f"{base}/app/API/LastMovements", content=b"draw=1")
+    assert r.status_code == 200
+    assert AuthHandler.seen[-1][:1] == ("POST",)
+    assert last_auth() == GOOD
+
+
+def test_a_refused_remembered_value_is_relayed_and_forgotten(client, auth_site):
+    tok, base = auth_base(client, auth_site)
+    client.get(f"{base}/app/", headers={"Authorization": GOOD})
+    # The password changed on the target's side since the prompt.
+    AuthHandler.accepted = OTHER
+    r = client.get(f"{base}/app/fonts/fontawesome-webfont.woff")
+    assert r.status_code == 401
+    assert last_auth() == GOOD
+    assert 'Basic realm="Campus Login"' in r.headers.get_list("www-authenticate")
+    assert A.BROWSE[tok].auth == {}
+    client.get(f"{base}/app/fonts/fontawesome-webfont.woff")
+    assert last_auth() is None
+
+
+def test_a_refused_value_from_the_browser_is_not_remembered(client, auth_site):
+    tok, base = auth_base(client, auth_site)
+    r = client.get(f"{base}/app/", headers={"Authorization": OTHER})
+    assert r.status_code == 401
+    assert A.BROWSE[tok].auth == {}
+
+
+def test_another_host_port_under_the_same_token_gets_nothing(client, auth_site,
+                                                              site):
+    tok, base = auth_base(client, auth_site)
+    client.get(f"{base}/app/", headers={"Authorization": GOOD})
+    r = client.get(f"{base_of(tok, site)}/echo-headers"[len(PREFIX):])
+    assert r.status_code == 200
+    assert "authorization" not in r.text
+
+
+def test_another_scheme_on_the_same_host_port_gets_nothing(client, auth_site):
+    tok, base = auth_base(client, auth_site)
+    client.get(f"{base}/app/", headers={"Authorization": GOOD})
+    rec = A.BROWSE[tok]
+    headers: list = []
+
+    class Req:
+        headers = {}
+
+    used = A.browse_auth_attach(Req, rec, ("https", "127.0.0.1", auth_site),
+                                headers)
+    assert used is None and headers == []
+
+
+def test_a_digest_header_is_forwarded_and_not_remembered(client, auth_site):
+    tok, base = auth_base(client, auth_site)
+    digest = 'Digest username="user", realm="x", nonce="n1", response="r"'
+    client.get(f"{base}/app/", headers={"Authorization": digest})
+    assert last_auth() == digest
+    assert A.BROWSE[tok].auth == {}
+
+
+def test_the_tab_flavour_remembers_nothing(client, auth_site):
+    r = mint_tab(client, f"http://127.0.0.1:{auth_site}/app/")
+    assert r.status_code == 200, r.text
+    tok = r.json()["token"]
+    base = base_of(tok, auth_site)[len(PREFIX):]
+    client.get(f"{base}/app/", headers={"Authorization": GOOD})
+    assert A.BROWSE[tok].auth == {}
+    client.get(f"{base}/app/fonts/x.woff")
+    assert last_auth() is None
+
+
+def test_clear_browsing_data_forgets_every_sign_in(client, auth_site,
+                                                   monkeypatch, tmp_path,
+                                                   no_browser_singleton):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tok, base = auth_base(client, auth_site)
+    client.get(f"{base}/app/", headers={"Authorization": GOOD})
+    assert A.BROWSE[tok].auth
+
+    async def shutdown(timeout=6.0):
+        pass
+
+    monkeypatch.setattr(CH.FullBrowser.get(), "shutdown", shutdown)
+    r = client.post("/api/browser/reset", headers=HDRS)
+    assert r.status_code == 200
+    assert A.BROWSE[tok].auth == {}
+    client.get(f"{base}/app/fonts/x.woff")
+    assert last_auth() is None
+
+
+# ---------------------------------------------------------------------------
 # Full browser: the pane's socket
 # ---------------------------------------------------------------------------
 
