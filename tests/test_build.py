@@ -861,47 +861,77 @@ def test_every_pane_tab_carries_the_proxys_own_sandbox_list(doc):
 
 def _term_tap_handler(doc):
     """The terminal's tap rule, from its window constant to the end of the
-    #term-host click listener."""
-    at = doc.index("\nconst termTapWindow") + 1
+    #term-host click listener (the touchend pair reader sits in between)."""
+    at = doc.index("\nconst TERM_DOUBLE_TAP_MS") + 1
     click = doc.index('$("term-host").addEventListener("click"', at)
     return doc[at:doc.index("\n});\n", click) + 5]
 
 
-# Each case is (touch, alternate buffer, gaps in ms before each tap after the
-# first) -> where the caret is after every tap. The alternate buffer is where
-# Claude Code runs, so it must not change where a tap goes.
+# Each case is (touch, alternate buffer, steps) -> where the caret is after
+# every step. A step is ("tap", ms) for a touchstart/touchend pair at that event
+# time, ("drag", ms) for one that travelled, or ("click", ms) for the click the
+# browser synthesizes. Real iOS may deliver a pair's clicks late or drop the
+# second one, so the pair is read from the touches alone. The alternate buffer
+# is where Claude Code runs, so it must not change where a tap goes.
 TERM_TAP_CASES = [
-    ("touch single tap", True, False, [], ["compose"]),
-    ("touch taps far apart", True, False, [900], ["compose", "compose"]),
-    ("touch double tap", True, False, [200], ["compose", "term"]),
-    ("touch triple tap starts a new pair", True, False, [200, 200],
-     ["compose", "term", "compose"]),
-    ("touch in the alternate buffer", True, True, [], ["compose"]),
-    ("touch double tap in the alternate buffer", True, True, [200],
-     ["compose", "term"]),
-    ("real keyboard", False, False, [], ["term"]),
-    ("real keyboard double tap", False, False, [200], ["term", "term"]),
+    ("touch single tap", True, False,
+     [("tap", 0), ("click", 10)], [None, "compose"]),
+    ("touch taps far apart", True, False,
+     [("tap", 0), ("click", 10), ("tap", 900), ("click", 910)],
+     [None, "compose", "compose", "compose"]),
+    ("touch double tap", True, False,
+     [("tap", 0), ("click", 10), ("tap", 200), ("click", 210)],
+     [None, "compose", "term", "term"]),
+    ("touch triple tap starts a new pair", True, False,
+     [("tap", 0), ("click", 10), ("tap", 200), ("click", 210),
+      ("tap", 400), ("click", 410)],
+     [None, "compose", "term", "term", "term", "compose"]),
+    ("touch double tap past the window is two singles", True, False,
+     [("tap", 0), ("click", 10), ("tap", 600), ("click", 610)],
+     [None, "compose", "compose", "compose"]),
+    ("touch second click swallowed", True, False,
+     [("tap", 0), ("tap", 100), ("click", 110)], [None, "term", "term"]),
+    ("touch clicks both late", True, False,
+     [("tap", 0), ("tap", 150), ("click", 250), ("click", 750)],
+     [None, "term", "term", "term"]),
+    ("touch drag is not half a pair", True, False,
+     [("tap", 0), ("click", 10), ("drag", 150), ("click", 160)],
+     [None, "compose", "compose", "compose"]),
+    ("touch in the alternate buffer", True, True,
+     [("tap", 0), ("click", 10)], [None, "compose"]),
+    ("touch double tap in the alternate buffer", True, True,
+     [("tap", 0), ("click", 10), ("tap", 200), ("click", 210)],
+     [None, "compose", "term", "term"]),
+    ("real keyboard", False, False, [("click", 0)], ["term"]),
+    ("real keyboard double tap", False, False,
+     [("click", 0), ("click", 200)], ["term", "term"]),
 ]
 
 
-@pytest.mark.parametrize("name,touch,alt,gaps,want", TERM_TAP_CASES,
+@pytest.mark.parametrize("name,touch,alt,steps,want", TERM_TAP_CASES,
                          ids=[c[0] for c in TERM_TAP_CASES])
 def test_a_terminal_tap_on_touch_types_into_the_box(doc, tmp_path, name,
-                                                    touch, alt, gaps, want):
+                                                    touch, alt, steps, want):
     """Run rather than read: on touch a single tap puts the caret in the
-    composer, a double tap puts it in the terminal, whichever buffer is up
-    (Claude Code lives in the alternate one), and beside a real keyboard every tap goes to the terminal. A
-    double tap leaves the box's text where it was."""
+    composer and a double tap, read from touchend event times, puts it in the
+    terminal, whichever buffer is up (Claude Code lives in the alternate one)
+    and however late or few the clicks are; beside a real keyboard every tap
+    goes to the terminal. A lone touchend focuses nothing, and a double tap
+    leaves the box's text where it was."""
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not on PATH")
     harness = f"""
 let now = 10000;
 Date.now = () => now;
-let focused = null, listener = null, composeOpen = true;
+let focused = null, composeOpen = true;
+const on = {{}};
 const selectEndedAt = 0, dragScrolled = false, edgeSwipe = false, termGesture = false;
-const box = {{ value: "half a line", focus() {{ focused = "compose"; }} }};
-const host = {{ addEventListener(ev, fn) {{ if (ev === "click") listener = fn; }} }};
+const box = {{ id: "compose-text", className: "", tagName: "TEXTAREA", value: "half a line",
+  focus() {{ focused = "compose"; document.activeElement = box; }} }};
+const helper = {{ id: "", className: "xterm-helper-textarea", tagName: "TEXTAREA" }};
+const document = {{ activeElement: null }};
+const host = {{ addEventListener(ev, fn) {{ (on[ev] = on[ev] || []).push(fn); }} }};
 function $(id) {{ return id === "term-host" ? host : id === "compose-text" ? box : null; }}
 const dbgLines = [];
 function dbg(...p) {{ dbgLines.push(p.join(" ")); }}
@@ -909,13 +939,23 @@ function touchOnly() {{ return {json.dumps(touch)}; }}
 function setCompose() {{ throw new Error("the docked strip is already open"); }}
 const term = {{
   buffer: {{ active: {{ type: {json.dumps("alternate" if alt else "normal")} }} }},
-  focus() {{ focused = "term"; }},
+  focus() {{ focused = "term"; document.activeElement = helper; }},
 }};
 {_term_tap_handler(doc)}
+const fire = (ev, e) => (on[ev] || []).forEach(fn => fn(e));
+const pt = (x) => ({{ clientX: x, clientY: 50 }});
 const got = [];
-const gaps = {json.dumps(gaps)};
-listener(); got.push(focused);
-for (const g of gaps) {{ now += g; listener(); got.push(focused); }}
+for (const [kind, ms] of {json.dumps(steps)}) {{
+  now = 10000 + ms;
+  const t = 5000 + ms;
+  if (kind === "click") fire("click", {{}});
+  else {{
+    fire("touchstart", {{ timeStamp: t - 40, touches: [pt(50)] }});
+    if (kind === "drag") fire("touchmove", {{ timeStamp: t - 20, touches: [pt(90)] }});
+    fire("touchend", {{ timeStamp: t, touches: [] }});
+  }}
+  got.push(focused);
+}}
 console.log(JSON.stringify({{ got, value: box.value, dbgLines }}));
 """
     f = tmp_path / "tap.mjs"
@@ -924,16 +964,31 @@ console.log(JSON.stringify({{ got, value: box.value, dbgLines }}));
                                     capture_output=True).stdout.decode())
     assert out["got"] == want
     assert out["value"] == "half a line"
-    if touch:
-        assert [l.split()[1] for l in out["dbgLines"]] == [
-            "composer" if w == "compose" else "terminal" for w in want]
+    lines = out["dbgLines"]
+    if not touch:
+        assert lines == []
+        return
+    # Every accepted touch says its gap and how it was read; every pair says
+    # where the caret landed; every click says whether the pair swallowed it.
+    taps = [s for s in steps if s[0] == "tap"]
+    assert len([l for l in lines if l.startswith("tap: touch gap=")]) == len(taps)
+    for l in lines:
+        if l.startswith("tap: terminal (double tap)"):
+            assert "active=textarea.xterm-helper-textarea" in l
+    clicks = [l for l in lines if l.startswith(("tap: composer", "tap: click suppressed"))]
+    assert len(clicks) == len([s for s in steps if s[0] == "click"])
 
 
 def test_a_terminal_tap_keeps_every_gesture_guard(doc):
     handler = _term_tap_handler(doc)
-    assert "Date.now() - selectEndedAt < 350" in handler
-    assert "dragScrolled || edgeSwipe || termGesture" in handler
+    assert handler.count("Date.now() - selectEndedAt < 350") == 2
+    assert handler.count("!term || dragScrolled || edgeSwipe || termGesture") == 2
     assert "e.detail" not in handler
+    # The pair is timed by the touch's own event time, not by when the click
+    # got round to being dispatched.
+    assert "termTapAt = pair ? null : e.timeStamp;" in handler
+    assert 'host.addEventListener("touchend", (e) => {' in handler
+    assert "}, { passive: true });" in handler
 
 
 def test_vendor_script_tags_survive(doc):
