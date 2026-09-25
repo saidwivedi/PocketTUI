@@ -606,6 +606,19 @@ function filesEntryState() {
   return filesPath === filesStack[0] ? { files: true } : { files: true, path: filesPath };
 }
 
+// The rows and crumbs a closed explorer leaves behind. Emptied on the way out,
+// because the next open shows the screen before its listing lands, and that
+// can take seconds on a network mount: rows left over from the folder the pane
+// was closed on read as the explorer having opened there, and then jumping to
+// the folder it really opened at.
+function filesClearListing() {
+  stopThumbs();
+  filesEntries = [];
+  q("files-list").innerHTML = "";
+  q("files-empty").style.display = "none";
+  q("files-crumbs").innerHTML = "";
+}
+
 function closeExplorer() {
   // Before the address-field branch below, which returns without closing the
   // screen: either way the bar's menus are going, scrim and all.
@@ -624,6 +637,7 @@ function closeExplorer() {
   filesOrigin = null;
   filesStack = [];
   clearRefState();
+  filesClearListing();
   $(back).classList.add("active");
   syncChrome();
   // The terminal kept its socket while we were away; it only needs its size
@@ -708,6 +722,7 @@ function closeDockedFiles() {
   filesStack = [];
   filesHeldAt = "";
   clearRefState();
+  filesClearListing();
   root.classList.remove("docked");
   root.classList.remove("active");
   syncFilesExpand();         // takes .side-full off the terminal with it
@@ -806,6 +821,7 @@ function filesTeardown() {
   filesStack = [];
   filesHeldAt = "";
   clearRefState();
+  filesClearListing();
   const wasDocked = filesDocked;
   filesDocked = false;
   // Docked, the slot goes back with the folder: the pane was the leaving

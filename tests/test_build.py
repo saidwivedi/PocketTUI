@@ -1392,3 +1392,27 @@ for (const s of {json.dumps(steps)}) {{
 console.log(JSON.stringify(got));
 """)
     assert out == want
+
+
+def test_a_closed_explorer_leaves_no_rows_for_the_next_open(doc, tmp_path):
+    """Founder, v0.9.192: reopening showed the folder the pane was closed on,
+    then jumped to the terminal's cwd once that listing landed (seconds on the
+    cluster mount). Those rows were leftovers, not a restore. Every way out
+    empties the rows and crumbs, so an open shows nothing until its own
+    folder lands."""
+    fn = _js_chunk(doc, "function filesClearListing() {")
+    out = _node_json(tmp_path, "clear.mjs", f"""
+const els = {{ "files-list": {{ innerHTML: "<div>old</div>" }},
+  "files-crumbs": {{ innerHTML: "<b>paper</b>" }}, "files-empty": {{ style: {{ display: "block" }} }} }};
+function q(id) {{ return els[id]; }}
+let stopped = 0, filesEntries = [1, 2];
+function stopThumbs() {{ stopped++; }}
+{fn}
+filesClearListing();
+console.log(JSON.stringify([els["files-list"].innerHTML, els["files-crumbs"].innerHTML,
+  els["files-empty"].style.display, filesEntries.length, stopped]));
+""")
+    assert out == ["", "", "none", 0, 1]
+    for head in ("function closeExplorer() {", "function closeDockedFiles() {",
+                 "function filesTeardown() {"):
+        assert "  filesClearListing();\n" in _js_chunk(doc, head), head

@@ -722,6 +722,9 @@ def list_sessions() -> list[dict]:
         w = WATCHER.get(row["name"])
         sessions.append({
             "name": row["name"],
+            # tmux's own id for the session, which a rename keeps: what the
+            # client remembers per-session state under (06-session-list.js).
+            "sid": row["sid"],
             "created": row["created"],
             "attached": row["attached"],
             "windows": row["windows"],
