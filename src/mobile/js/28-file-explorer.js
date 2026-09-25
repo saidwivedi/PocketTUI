@@ -642,7 +642,7 @@ let filesRepo = null;
 // against, so this is what says whether the question needs asking again.
 let filesRepoAsked = "";
 
-function openExplorer(path, opts) {
+function openExplorer(path, opts, primed) {
   // Unpaired there is no computer to browse, and the demo's tree stands in
   // (17-fake-api.js), the same one its terminal lists.
   // Beside a terminal there is room for both, so the explorer docks rather than
@@ -651,7 +651,7 @@ function openExplorer(path, opts) {
   // is nothing to do with the folder: it is the column's, carried through to the
   // claim the docked shape makes (sideClaim, 26-side-pane.js).
   if (isWideLayout() && $("screen-term").classList.contains("active")) {
-    return openDockedFiles(path, opts);
+    return openDockedFiles(path, opts, primed);
   }
   // The whole window is the markup's own pane and no other: a copy is a second
   // row of the column, which only a wide layout beside a terminal has, and it
@@ -674,7 +674,7 @@ function openExplorer(path, opts) {
   // The listing is handed back rather than left running: openPathInExplorer
   // opens a file on top of this folder, and the folder is only really the
   // screen underneath once its listing has landed and seeded filesStack.
-  return loadDir(path);
+  return loadDir(path, primed);
 }
 
 // The state object for the history entry matching wherever navigation
@@ -693,6 +693,7 @@ function filesEntryState() {
 // was closed on read as the explorer having opened there, and then jumping to
 // the folder it really opened at.
 function filesClearListing() {
+  filesStopLoad();
   stopThumbs();
   filesEntries = [];
   q("files-list").innerHTML = "";
@@ -768,7 +769,7 @@ function filesSetExpanded(v) {
 // Opening the pane a second time is a navigation within it, not a fresh entry:
 // a path tapped in the terminal lands in the pane already open, and the crumb
 // stack it walks back through is worth keeping.
-function openDockedFiles(path, opts) {
+function openDockedFiles(path, opts, primed) {
   // The column's answer comes first, and a no is final: the row this would take
   // may be a docked editor with unsaved work whose owner was asked and said
   // stay (sideClaim, 26-side-pane.js), and nothing here may have moved by then.
@@ -782,9 +783,9 @@ function openDockedFiles(path, opts) {
   root.classList.add("docked");
   root.classList.add("active");
   syncFilesExpand();
-  if (already) return navigateDir(path);
+  if (already) return navigateDir(path, primed);
   filesStack = [];           // seeded once loadDir below resolves the real path
-  return loadDir(path);
+  return loadDir(path, primed);
 }
 
 // This pane's way out: its own cross, the folder key toggling it away, and the
@@ -990,7 +991,10 @@ async function filesOpenAtCwd(opts) {
   // is no "here" to look at twice, and it falls to the session's own cwd, which
   // is where the folder key opens.
   if (id !== "files") {
-    const here = filesPanes.files ? filesPanes.files.path() : "";
+    // Only while that listing is up: a closed pane still holds the folder it
+    // was last at, which may be another session's.
+    const here = filesPanes.files && filesPanes.files.isOpen()
+      ? filesPanes.files.path() : "";
     if (here) return openExplorer(here, opts);
   }
   const from = currentSession;
@@ -1006,9 +1010,9 @@ async function filesOpenAtCwd(opts) {
   // the terminal's cwd as a new session's would, with no error on the way.
   const held = id === "files" ? filesLastDir(from) : "";
   if (held && held !== cwd) {
-    let there = false, gone = false;
+    let there = null, gone = false;
     try {
-      there = !!(await fsList(held));
+      there = await fsList(held);
     } catch (e) {
       // An expired token has already been answered (rejectToken); any other
       // failure that is not the folder being gone leaves the memory alone.
@@ -1017,7 +1021,9 @@ async function filesOpenAtCwd(opts) {
     }
     if (currentSession !== from) return;
     if (there) {
-      const ok = await openExplorer(held, opts);
+      // The probe's listing is the folder: painted as it is rather than asked
+      // for a second time, which on the network mount is a second wait.
+      const ok = await openExplorer(held, opts, there);
       // Following waits for the terminal to move: the cwd it has now is the
       // baseline, and only a cd to somewhere else takes the pane there.
       if (ok && filesDocked) { filesSyncedCwd = cwd; filesHeldAt = filesPath; }
@@ -1170,13 +1176,13 @@ function cachedListing(path) {
 // Raw GET against /api/fs/list, cache-populating. Throws on anything but a
 // clean 200 so callers keep their own error handling (loadDir's toast-style
 // failure, the suggestion dropdown's inline note) rather than sharing one.
-async function fsList(path) {
+async function fsList(path, signal) {
   const ref = refFor(path);
   const parts = path ? ["path=" + encodeURIComponent(path)] : [];
   parts.push(...refParams(ref));
   const qs = parts.length ? "?" + parts.join("&") : "";
   const r = await fetch(apiURL("api/fs/list" + qs),
-                        { cache: "no-store", headers: authHeaders() });
+                        { cache: "no-store", headers: authHeaders(), signal: signal });
   if (r.status === 401) { rejectToken(); throw new Error("unauthorized"); }
   const data = await r.json().catch(() => null);
   if (!r.ok || !data) {
@@ -1292,13 +1298,40 @@ function showListError(e) {
   q("files-error").style.display = "block";
 }
 
-async function loadDir(path) {
+// The newest load wins. On a slow mount a listing can take a minute, and in
+// that minute the user taps on, backs out, or the terminal cd's elsewhere; each
+// of those starts a load of its own, and an older answer landing after it would
+// paint the folder they left over the one they asked for. So every load aborts
+// the one before it, and an answer that is no longer the latest is dropped
+// (false, as a failure is: nothing was put on screen). `primed` is a listing
+// the caller already holds for `path`, painted without asking again.
+let filesLoadSeq = 0;
+let filesLoadCtrl = null;
+function filesStopLoad() {
+  filesLoadSeq++;
+  if (filesLoadCtrl) filesLoadCtrl.abort();
+  filesLoadCtrl = null;
+  root.classList.remove("files-loading");
+}
+async function loadDir(path, primed) {
+  filesStopLoad();
+  const seq = filesLoadSeq;
+  const ctrl = filesLoadCtrl = new AbortController();
+  root.classList.add("files-loading");
   try {
-    applyListing(await fsList(path));
+    const data = primed || await fsList(path, ctrl.signal);
+    if (seq !== filesLoadSeq) return false;
+    applyListing(data);
     return true;
   } catch (e) {
+    if (seq !== filesLoadSeq) return false;
     showListError(e);
     return false;
+  } finally {
+    if (seq === filesLoadSeq) {
+      filesLoadCtrl = null;
+      root.classList.remove("files-loading");
+    }
   }
 }
 
@@ -1312,8 +1345,8 @@ async function loadDir(path) {
 // Answers whether the folder is on screen, the way loadDir does: a tapped path
 // link opens the file over the folder that holds it, and openPathInExplorer
 // reaches this one when the docked pane is already up.
-async function navigateDir(path) {
-  const ok = await loadDir(path);
+async function navigateDir(path, primed) {
+  const ok = await loadDir(path, primed);
   if (ok) {
     // The docked pane reserves nothing: a back press there belongs to the
     // terminal beside it, and its own arrow reads the stack directly.
@@ -1593,7 +1626,7 @@ function sortedEntries() {
   const mode = cfg.filesSort;
   if (mode === "name") return filesEntries;
   // Ranked high-to-low below, so oldest-first is newest-first on a flipped key.
-  const key = mode === "size" ? (e) => e.size
+  const key = mode === "size" ? (e) => e.size || 0
             : mode === "oldest" ? (e) => -e.mtime
             : (e) => e.mtime;
   // sort() is stable, so whatever the key ties — every directory under "size",
@@ -1606,8 +1639,11 @@ function fileRow(e) {
   // No mtime is what a listing read at a ref has to say — a commit records
   // when the tree was written, not when each file in it was — so the row drops
   // the age rather than dating everything to the epoch.
+  // No size either is a file a slow mount did not stat in time (`partial` on
+  // /api/fs/list): the row shows nothing rather than "0 B".
   const meta = e.type === "file"
-                 ? fmtSize(e.size) + (e.mtime ? " · " + relTime(e.mtime) : "")
+                 ? (e.size == null ? ""
+                    : fmtSize(e.size) + (e.mtime ? " · " + relTime(e.mtime) : ""))
              : e.type === "link" ? "link" : "";
   const row = el("div", { class: "file-row" },
     el("span", { class: "file-ic " + e.type }, svgIcon(entryIcon(e))),
@@ -1852,25 +1888,41 @@ function closeFilesMenus() { showViewMenu(false); showRefMenu(false); filesHideM
 // repo rather than per folder: inside a root already known the answer cannot
 // have changed, and outside every root there is nothing to re-ask until the
 // folder itself moves.
+// One question in flight per pane. On the network mount the answer takes as
+// long as the three git runs behind it (a minute, measured), and the folders
+// tapped through meanwhile are nearly always in the same repository — so they
+// wait for that answer rather than each asking again, and it is read against
+// whatever folder is on screen when it lands.
+let filesRepoBusy = false;
 async function syncRepo() {
   if (demoApiOn() || !hasCap("git_ref")) { filesRepo = null; syncRefBar(); return; }
   const path = filesPath;
   const fresh = filesRepo && (filesRepo.root ? insideRoot(path, filesRepo.root)
                                              : path === filesRepoAsked);
   if (fresh) { syncRefBar(); return; }
+  if (filesRepoBusy) return;
+  filesRepoBusy = true;
   let d = null;
   try {
     const r = await fetch(apiURL("api/git/branches?path=" + encodeURIComponent(path)),
                           { cache: "no-store", headers: authHeaders() });
     if (r.status === 401) { rejectToken(); return; }
     if (r.ok) d = await r.json();
-  } catch (e) {}
-  // The explorer can have moved on while the question was in flight, and a late
-  // answer would name a repo it has already left.
-  if (path !== filesPath) return;
+  } catch (e) {
+  } finally {
+    filesRepoBusy = false;
+  }
   // A server that could not answer — an older one with no such route — is a
   // folder with no branches, not a folder to keep asking about.
-  filesRepo = d && typeof d === "object" ? d : { root: null, current: null, branches: [] };
+  const repo = d && typeof d === "object" ? d : { root: null, current: null, branches: [] };
+  // The explorer can have moved on while the question was in flight. An answer
+  // whose repo still holds the folder on screen is still the right one; any
+  // other names a repo already left, and the folder on screen is asked about.
+  if (path !== filesPath && !(repo.root && insideRoot(filesPath, repo.root))) {
+    syncRepo();
+    return;
+  }
+  filesRepo = repo;
   filesRepoAsked = path;
   syncRefBar();
 }
@@ -1997,6 +2049,12 @@ function wireRow(row, entry) {
   row.addEventListener("click", () => {
     if (Date.now() - filesPressedAt < 500) return;  // the long-press's own click
     openEntry(entry);
+    // The folder tapped says so at once, however long the mount takes to list
+    // it; the rows are redrawn when it lands, which is what clears the mark.
+    if (entry.type === "dir" && root.classList.contains("files-loading")) {
+      for (const r of q("files-list").querySelectorAll(".pending")) r.classList.remove("pending");
+      row.classList.add("pending");
+    }
   });
   // The pointer device's second way to move a file, wired nowhere near the
   // listeners above — see the drag-and-drop section for why a phone gets none
