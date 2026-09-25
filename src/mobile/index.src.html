@@ -1544,6 +1544,16 @@
   </div>
 </div>
 
+<!-- The same four actions as a pointer's right-click menu: a popover at the
+     pointer, the way a desktop file manager answers a right-click, rather than
+     the sheet a long press raises (filesShowMenu, 28-file-explorer.js). -->
+<div id="file-ctx-menu" class="ctx-menu" role="menu" hidden>
+  <button type="button" class="view-row" role="menuitem" id="ctx-file-edit">Edit</button>
+  <button type="button" class="view-row" role="menuitem" id="ctx-file-rename">Rename</button>
+  <button type="button" class="view-row" role="menuitem" id="ctx-file-download">Download</button>
+  <button type="button" class="view-row danger" role="menuitem" id="ctx-file-delete">Delete</button>
+</div>
+
 <!-- The explorer's + button. -->
 <div class="sheet" id="sheet-files-add">
   <h2>Add here</h2>

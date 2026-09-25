@@ -3698,6 +3698,33 @@ html.term-open #dbg-panel { opacity: 0.85; }
   padding: 6px 14px 4px 11px;
 }
 .menu-rule { height: 1px; margin: 4px 0; background: var(--hair); }
+/* The explorer's right-click menu: the docked split menu's card and compact
+   rows, fixed at the pointer instead of hanging off a key (filesShowMenu,
+   28-file-explorer.js). Over the panes and under the sheets. */
+.ctx-menu {
+  position: fixed;
+  left: 0; top: 0;
+  min-width: 170px;
+  padding: 4px 0;
+  background: var(--card);
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
+  z-index: 205;
+}
+.ctx-menu[hidden] { display: none; }
+.ctx-menu .view-row {
+  height: 30px;
+  font-size: 13px;
+  border-bottom: none;
+  white-space: nowrap;
+}
+.ctx-menu .view-row:hover, .ctx-menu .view-row:focus-visible {
+  background: var(--umber-tint);
+  color: var(--ink);
+  outline: none;
+}
+.ctx-menu .view-row.danger { color: var(--bad); }
 /* What a row's key says now, at the row's right end (the zoom level). */
 .more-note {
   margin-left: auto;
