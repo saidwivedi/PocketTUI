@@ -977,18 +977,74 @@ console.log(JSON.stringify({{ got, value: box.value, dbgLines }}));
             assert "active=textarea.xterm-helper-textarea" in l
     clicks = [l for l in lines if l.startswith(("tap: composer", "tap: click suppressed"))]
     assert len(clicks) == len([s for s in steps if s[0] == "click"])
+    # And every touch that was not taken says why.
+    drags = [s for s in steps if s[0] == "drag"]
+    assert [l for l in lines if l.startswith("tap: touch rejected")] == \
+        ["tap: touch rejected moved(40px)"] * len(drags)
 
 
 def test_a_terminal_tap_keeps_every_gesture_guard(doc):
     handler = _term_tap_handler(doc)
     assert handler.count("Date.now() - selectEndedAt < 350") == 2
-    assert handler.count("!term || dragScrolled || edgeSwipe || termGesture") == 2
+    assert handler.count("!term || dragScrolled || edgeSwipe || termGesture") == 1
+    # The touchend reader checks the same guards one by one, naming each.
+    for why in ('"fingers="', '"selectEnded "', '"noterm"', '"dragScrolled"',
+                '"edgeSwipe"', '"termGesture="', '"multi"', '"moved("', '"long("'):
+        assert f'reject({why}' in handler
+    assert 'host.addEventListener("touchcancel", (e) => {' in handler
     assert "e.detail" not in handler
     # The pair is timed by the touch's own event time, not by when the click
     # got round to being dispatched.
     assert "termTapAt = pair ? null : e.timeStamp;" in handler
     assert 'host.addEventListener("touchend", (e) => {' in handler
     assert "}, { passive: true });" in handler
+
+
+@pytest.mark.parametrize("name,touch,active,stopped", [
+    ("touch, box focused", True, "compose", True),
+    ("touch, pair already moved focus to xterm", True, "term", False),
+    ("touch, nothing focused", True, None, False),
+    ("laptop, box focused", False, "compose", False),
+])
+def test_a_tap_with_the_box_focused_keeps_xterm_off_the_press(doc, tmp_path, name,
+                                                              touch, active, stopped):
+    """With the caret in the box, the tap's mousedown is held on the host in
+    the capture phase, so xterm's own handler (preventDefault + focus its
+    textarea) never runs and the box keeps focus: no blur, no keyboard flap.
+    A pair has focused xterm from touchend before its mousedowns arrive, so
+    they pass; the laptop is never touched."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    harness = f"""
+let now = 10000;
+Date.now = () => now;
+let composeOpen = true;
+const caps = {{}};
+const selectEndedAt = 0, dragScrolled = false, edgeSwipe = false, termGesture = false;
+const box = {{ id: "compose-text", className: "", tagName: "TEXTAREA", focus() {{}} }};
+const helper = {{ id: "", className: "xterm-helper-textarea", tagName: "TEXTAREA" }};
+const document = {{ activeElement: {{ compose: box, term: helper }}[{json.dumps(active)}] || null }};
+const host = {{ addEventListener(ev, fn, opt) {{ if (opt === true) caps[ev] = fn; }} }};
+function $(id) {{ return id === "term-host" ? host : id === "compose-text" ? box : null; }}
+const dbgLines = [];
+function dbg(...p) {{ dbgLines.push(p.join(" ")); }}
+function touchOnly() {{ return {json.dumps(touch)}; }}
+function setCompose() {{}}
+const term = {{ focus() {{}} }};
+{_term_tap_handler(doc)}
+let prevented = false, stopped = false;
+caps.mousedown({{ preventDefault() {{ prevented = true; }}, stopPropagation() {{ stopped = true; }} }});
+console.log(JSON.stringify({{ prevented, stopped, still: document.activeElement === box, dbgLines }}));
+"""
+    f = tmp_path / "md.mjs"
+    f.write_text(harness, encoding="utf-8")
+    out = json.loads(subprocess.run([node, str(f)], check=True,
+                                    capture_output=True).stdout.decode())
+    assert out["prevented"] is stopped and out["stopped"] is stopped
+    assert out["dbgLines"] == (["tap: mousedown kept in composer"] if stopped else [])
+    if active == "compose":
+        assert out["still"]
 
 
 def test_vendor_script_tags_survive(doc):

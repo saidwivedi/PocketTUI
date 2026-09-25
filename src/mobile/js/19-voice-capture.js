@@ -2075,23 +2075,33 @@ let termTapsUnclicked = 0;         // accepted taps whose click has not arrived
 let termTapEndAt = -Infinity;      // e.timeStamp of the last accepted tap
 (function termTaps() {
   const host = $("term-host");
-  let startX = 0, startY = 0, startAt = 0, moved = false, multi = false;
+  let startX = 0, startY = 0, startAt = 0, moved = false, multi = false, travel = 0;
   host.addEventListener("touchstart", (e) => {
     if (e.touches.length !== 1) { multi = true; return; }
     const t = e.touches[0];
     startX = t.clientX; startY = t.clientY; startAt = e.timeStamp;
-    moved = false; multi = false;
+    moved = false; multi = false; travel = 0;
   }, { passive: true });
   host.addEventListener("touchmove", (e) => {
     const t = e.touches[0];
     if (!t) return;
-    if (Math.abs(t.clientX - startX) > TERM_TAP_SLOP || Math.abs(t.clientY - startY) > TERM_TAP_SLOP) moved = true;
+    travel = Math.max(travel, Math.abs(t.clientX - startX), Math.abs(t.clientY - startY));
+    if (travel > TERM_TAP_SLOP) moved = true;
   }, { passive: true });
+  // Every touch that is not accepted as a tap says why, so a phone's debug tail
+  // shows what became of the second touch of a pair that never paired.
+  const reject = (why) => { dbg("tap: touch rejected " + why); };
   host.addEventListener("touchend", (e) => {
-    if (!touchOnly() || e.touches.length) return;
-    if (Date.now() - selectEndedAt < 350) return;
-    if (!term || dragScrolled || edgeSwipe || termGesture) return;
-    if (multi || moved || e.timeStamp - startAt > TERM_TAP_MAX_MS) return;
+    if (!touchOnly()) return;
+    if (e.touches.length) { reject("fingers=" + e.touches.length); return; }
+    if (Date.now() - selectEndedAt < 350) { reject("selectEnded " + (Date.now() - selectEndedAt) + "ms"); return; }
+    if (!term) { reject("noterm"); return; }
+    if (dragScrolled) { reject("dragScrolled"); return; }
+    if (edgeSwipe) { reject("edgeSwipe"); return; }
+    if (termGesture) { reject("termGesture=" + termGesture); return; }
+    if (multi) { reject("multi"); return; }
+    if (moved) { reject("moved(" + Math.round(travel) + "px)"); return; }
+    if (e.timeStamp - startAt > TERM_TAP_MAX_MS) { reject("long(" + Math.round(e.timeStamp - startAt) + "ms)"); return; }
     // Past the click wait, any click an earlier tap still owed is not coming.
     if (e.timeStamp - termTapEndAt > TERM_PAIR_CLICK_MS) termTapsUnclicked = 0;
     termTapEndAt = e.timeStamp;
@@ -2105,10 +2115,31 @@ let termTapEndAt = -Infinity;      // e.timeStamp of the last accepted tap
     termRawAt = Date.now();
     termPairClicks = Math.min(termTapsUnclicked, 2);
     term.focus();
-    const a = document.activeElement;
-    dbg("tap: terminal (double tap) active=" + (a ? (a.id || a.tagName.toLowerCase()) + (a.className ? "." + String(a.className).split(" ")[0] : "") : "none") + " owed=" + termPairClicks);
+    dbg("tap: terminal (double tap) active=" + activeName() + " owed=" + termPairClicks);
+  }, { passive: true });
+  host.addEventListener("touchcancel", (e) => {
+    if (!touchOnly()) return;
+    dbg("tap: touchcancel " + Math.round(e.timeStamp - startAt) + "ms after touchstart active=" + activeName());
   }, { passive: true });
 })();
+function activeName() {
+  const a = document.activeElement;
+  return a ? (a.id || a.tagName.toLowerCase()) + (a.className ? "." + String(a.className).split(" ")[0] : "") : "none";
+}
+// With the caret in the box, the tap's synthetic mousedown would reach xterm's
+// own handler, which calls preventDefault and focuses its hidden textarea: the
+// box blurs, the keyboard geometry reads "down" for a moment and refits, and
+// the click then puts the caret back — a focus hop on every single tap. Stopped
+// here, in the capture phase on the host, xterm never sees the press and the
+// box keeps focus; the click's composer focus is then a no-op. A pair has
+// already moved focus to xterm from its touchend by the time its mousedowns
+// arrive, so they pass untouched and agree with it. The laptop never gets here.
+$("term-host").addEventListener("mousedown", (e) => {
+  if (!touchOnly() || document.activeElement !== $("compose-text")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  dbg("tap: mousedown kept in composer");
+}, true);
 $("term-host").addEventListener("click", () => {
   if (Date.now() - selectEndedAt < 350) return;
   if (!term || dragScrolled || edgeSwipe || termGesture) return;
