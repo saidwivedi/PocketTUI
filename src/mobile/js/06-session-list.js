@@ -138,10 +138,18 @@ function forgetFilesDir(name) {
 }
 // Every payload re-keys the names and drops the folders of sessions that are
 // gone, however they went.
+// A server before 0.9.193 sends no sid, and the creation time alone stands in:
+// it is whole seconds, so two sessions made in the same second would share a
+// folder, which is the whole of the cost.
+function filesLastKey(s) {
+  if (typeof s.sid === "number") return s.sid + "@" + (s.created || 0);
+  return s.created ? "t" + s.created : "";
+}
 function keepFilesLast(sessions) {
   sessionKeys = new Map();
   for (const s of sessions) {
-    if (typeof s.sid === "number") sessionKeys.set(s.name, s.sid + "@" + (s.created || 0));
+    const key = filesLastKey(s);
+    if (key) sessionKeys.set(s.name, key);
   }
   const keys = new Set(sessionKeys.values());
   const m = filesLastMap();
