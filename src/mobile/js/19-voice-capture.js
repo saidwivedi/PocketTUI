@@ -2042,14 +2042,32 @@ document.addEventListener("keydown", (e) => {
 // A selection gesture also ends in a click the browser synthesizes, and the tap
 // that dismisses the pill is a dismiss and nothing more — both stamp
 // selectEndedAt, and a click just after one is not a request for the keyboard.
+//
+// Where the keys go on touch: a single tap puts the caret in the composer box,
+// so a line can be read back, fixed or dictated before it runs. A double tap
+// (two accepted taps within termTapWindow, anywhere on the grid) puts it in the
+// terminal instead, for the keys the shell has to see one at a time: tab
+// completion, ctrl+r, arrow history. Anything already in the box stays there.
+// A full-screen app (vim, less, htop: xterm's alternate buffer) reads keys one
+// at a time by nature, so there a single tap goes to the terminal too. Beside a
+// real keyboard every tap goes to the terminal, as it always has. Both focus
+// calls run inside the click, so iOS raises the keyboard for either, and a hop
+// from the box to the terminal keeps it up: keyboardUp() counts both fields,
+// and the docked strip ignores the blur (composeBlurred()).
+const termTapWindow = 330;
+let termTapAt = 0;
 $("term-host").addEventListener("click", () => {
   if (Date.now() - selectEndedAt < 350) return;
   if (!term || dragScrolled || edgeSwipe || termGesture) return;
-  // Type where you tap: the target decides where the keys go. The strip stands
-  // on touch whatever this does, so the box is one tap away whenever a line
-  // wants reading back, fixing or dictating before it runs. The grid is for the
-  // keys the shell has to see one at a time, which is tab completion, history
-  // and everything inside vim.
-  term.focus();
+  const now = Date.now();
+  const second = now - termTapAt < termTapWindow;
+  // A pair is spent once it is read, so a third tap starts a new pair.
+  termTapAt = second ? 0 : now;
+  if (!touchOnly() || second || term.buffer.active.type === "alternate") {
+    term.focus();
+    return;
+  }
+  if (!composeOpen) setCompose(true, true);
+  $("compose-text").focus();
 });
 

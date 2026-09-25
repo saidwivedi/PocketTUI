@@ -859,6 +859,75 @@ def test_every_pane_tab_carries_the_proxys_own_sandbox_list(doc):
     assert f"sandbox {sandbox}" in re.sub(r'"\s*\n\s*"', "", app_py)
 
 
+def _term_tap_handler(doc):
+    """The terminal's tap rule, from its window constant to the end of the
+    #term-host click listener."""
+    at = doc.index("\nconst termTapWindow") + 1
+    click = doc.index('$("term-host").addEventListener("click"', at)
+    return doc[at:doc.index("\n});\n", click) + 5]
+
+
+# Each case is (touch, alternate buffer, gaps in ms before each tap after the
+# first) -> where the caret is after every tap.
+TERM_TAP_CASES = [
+    ("touch single tap", True, False, [], ["compose"]),
+    ("touch taps far apart", True, False, [900], ["compose", "compose"]),
+    ("touch double tap", True, False, [200], ["compose", "term"]),
+    ("touch triple tap starts a new pair", True, False, [200, 200],
+     ["compose", "term", "compose"]),
+    ("touch in a full-screen app", True, True, [], ["term"]),
+    ("real keyboard", False, False, [], ["term"]),
+    ("real keyboard double tap", False, False, [200], ["term", "term"]),
+]
+
+
+@pytest.mark.parametrize("name,touch,alt,gaps,want", TERM_TAP_CASES,
+                         ids=[c[0] for c in TERM_TAP_CASES])
+def test_a_terminal_tap_on_touch_types_into_the_box(doc, tmp_path, name,
+                                                    touch, alt, gaps, want):
+    """Run rather than read: on touch a single tap puts the caret in the
+    composer, a double tap or a tap on a full-screen app puts it in the
+    terminal, and beside a real keyboard every tap goes to the terminal. A
+    double tap leaves the box's text where it was."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    harness = f"""
+let now = 10000;
+Date.now = () => now;
+let focused = null, listener = null, composeOpen = true;
+const selectEndedAt = 0, dragScrolled = false, edgeSwipe = false, termGesture = false;
+const box = {{ value: "half a line", focus() {{ focused = "compose"; }} }};
+const host = {{ addEventListener(ev, fn) {{ if (ev === "click") listener = fn; }} }};
+function $(id) {{ return id === "term-host" ? host : id === "compose-text" ? box : null; }}
+function touchOnly() {{ return {json.dumps(touch)}; }}
+function setCompose() {{ throw new Error("the docked strip is already open"); }}
+const term = {{
+  buffer: {{ active: {{ type: {json.dumps("alternate" if alt else "normal")} }} }},
+  focus() {{ focused = "term"; }},
+}};
+{_term_tap_handler(doc)}
+const got = [];
+const gaps = {json.dumps(gaps)};
+listener(); got.push(focused);
+for (const g of gaps) {{ now += g; listener(); got.push(focused); }}
+console.log(JSON.stringify({{ got, value: box.value }}));
+"""
+    f = tmp_path / "tap.mjs"
+    f.write_text(harness, encoding="utf-8")
+    out = json.loads(subprocess.run([node, str(f)], check=True,
+                                    capture_output=True).stdout.decode())
+    assert out["got"] == want
+    assert out["value"] == "half a line"
+
+
+def test_a_terminal_tap_keeps_every_gesture_guard(doc):
+    handler = _term_tap_handler(doc)
+    assert "Date.now() - selectEndedAt < 350" in handler
+    assert "dragScrolled || edgeSwipe || termGesture" in handler
+    assert "e.detail" not in handler
+
+
 def test_vendor_script_tags_survive(doc):
     for name in ("xterm.js", "addon-fit.js", "addon-webgl.js"):
         assert f'src="vendor/{name}?v=__CACHE_VERSION__"' in doc
