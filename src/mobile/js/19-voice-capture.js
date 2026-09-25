@@ -2045,30 +2045,81 @@ document.addEventListener("keydown", (e) => {
 //
 // Where the keys go on touch: a single tap puts the caret in the composer box,
 // so a line can be read back, fixed or dictated before it runs. A double tap
-// (two accepted taps within termTapWindow, anywhere on the grid) puts it in the
+// (two taps within TERM_DOUBLE_TAP_MS, anywhere on the grid) puts it in the
 // terminal instead, for the keys the shell has to see one at a time: tab
 // completion, ctrl+r, arrow history, and vim or less. Anything already in the
 // box stays there. The buffer type cannot tell a keystroke app from a chat
 // prompt: Claude Code, the main thing typed into from a phone, runs in xterm's
 // alternate buffer just as vim does, so a single tap goes to the box there too.
-// Beside a real keyboard every tap goes to the terminal, as it always has. Both focus
-// calls run inside the click, so iOS raises the keyboard for either, and a hop
-// from the box to the terminal keeps it up: keyboardUp() counts both fields,
-// and the docked strip ignores the blur (composeBlurred()).
-const termTapWindow = 330;
-let termTapAt = 0;
+// Beside a real keyboard every tap goes to the terminal, as it always has.
+//
+// The pair is read from touchend, not from click. On a real iPhone the first
+// tap raises the keyboard and the terminal refits, so the second tap's click
+// can be dispatched well past the window, and Safari may swallow the second
+// click of a fast pair altogether. touchend's timeStamp is when the finger
+// lifted, whatever the main thread was doing. The second touchend of a pair
+// focuses xterm itself (touchend is a user gesture, so iOS keeps or raises the
+// keyboard), and the clicks the pair still owes are spent as no-ops so neither
+// can pull the caret back into the box. A lone touchend never focuses anything:
+// the single tap stays on click, where it works. xterm's own mousedown handler
+// focuses its textarea too, which agrees with the pair. keyboardUp() counts
+// both fields and the docked strip ignores the blur (composeBlurred()).
+const TERM_DOUBLE_TAP_MS = 350;    // touchend to touchend, event time
+const TERM_TAP_SLOP = 10;          // px of travel a tap may have
+const TERM_TAP_MAX_MS = 350;       // a longer press is the long-press select's
+const TERM_PAIR_CLICK_MS = 1000;   // how long a pair's late clicks are waited for
+let termTapAt = null;              // e.timeStamp of the last unpaired tap
+let termRawAt = 0;                 // Date.now() when a pair last focused xterm
+let termPairClicks = 0;            // clicks the last pair still owes, to swallow
+let termTapsUnclicked = 0;         // accepted taps whose click has not arrived
+let termTapEndAt = -Infinity;      // e.timeStamp of the last accepted tap
+(function termTaps() {
+  const host = $("term-host");
+  let startX = 0, startY = 0, startAt = 0, moved = false, multi = false;
+  host.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) { multi = true; return; }
+    const t = e.touches[0];
+    startX = t.clientX; startY = t.clientY; startAt = e.timeStamp;
+    moved = false; multi = false;
+  }, { passive: true });
+  host.addEventListener("touchmove", (e) => {
+    const t = e.touches[0];
+    if (!t) return;
+    if (Math.abs(t.clientX - startX) > TERM_TAP_SLOP || Math.abs(t.clientY - startY) > TERM_TAP_SLOP) moved = true;
+  }, { passive: true });
+  host.addEventListener("touchend", (e) => {
+    if (!touchOnly() || e.touches.length) return;
+    if (Date.now() - selectEndedAt < 350) return;
+    if (!term || dragScrolled || edgeSwipe || termGesture) return;
+    if (multi || moved || e.timeStamp - startAt > TERM_TAP_MAX_MS) return;
+    // Past the click wait, any click an earlier tap still owed is not coming.
+    if (e.timeStamp - termTapEndAt > TERM_PAIR_CLICK_MS) termTapsUnclicked = 0;
+    termTapEndAt = e.timeStamp;
+    termTapsUnclicked++;
+    const gap = termTapAt === null ? null : Math.round(e.timeStamp - termTapAt);
+    const pair = gap !== null && gap < TERM_DOUBLE_TAP_MS;
+    // A pair is spent once it is read, so a third tap starts a new pair.
+    termTapAt = pair ? null : e.timeStamp;
+    dbg("tap: touch gap=" + (gap === null ? "-" : gap + "ms") + (pair ? " -> pair" : " -> single"));
+    if (!pair) return;
+    termRawAt = Date.now();
+    termPairClicks = Math.min(termTapsUnclicked, 2);
+    term.focus();
+    const a = document.activeElement;
+    dbg("tap: terminal (double tap) active=" + (a ? (a.id || a.tagName.toLowerCase()) + (a.className ? "." + String(a.className).split(" ")[0] : "") : "none") + " owed=" + termPairClicks);
+  }, { passive: true });
+})();
 $("term-host").addEventListener("click", () => {
   if (Date.now() - selectEndedAt < 350) return;
   if (!term || dragScrolled || edgeSwipe || termGesture) return;
-  const now = Date.now();
-  const second = now - termTapAt < termTapWindow;
-  // A pair is spent once it is read, so a third tap starts a new pair.
-  termTapAt = second ? 0 : now;
-  if (!touchOnly() || second) {
-    if (touchOnly()) dbg("tap: terminal (double tap)");
-    term.focus();
+  if (!touchOnly()) { term.focus(); return; }
+  if (termTapsUnclicked > 0) termTapsUnclicked--;
+  if (termPairClicks > 0 && Date.now() - termRawAt < TERM_PAIR_CLICK_MS) {
+    termPairClicks--;
+    dbg("tap: click suppressed (pair) " + (Date.now() - termRawAt) + "ms after");
     return;
   }
+  termPairClicks = 0;
   dbg("tap: composer (single tap)");
   if (!composeOpen) setCompose(true, true);
   $("compose-text").focus();
