@@ -1407,6 +1407,7 @@ const els = {{ "files-list": {{ innerHTML: "<div>old</div>" }},
 function q(id) {{ return els[id]; }}
 let stopped = 0, filesEntries = [1, 2];
 function stopThumbs() {{ stopped++; }}
+function filesStopLoad() {{}}
 {fn}
 filesClearListing();
 console.log(JSON.stringify([els["files-list"].innerHTML, els["files-crumbs"].innerHTML,
@@ -1690,3 +1691,159 @@ def test_the_explorer_head_has_a_refresh_key(doc):
     assert "loadDir(filesPath)" in handler
     assert 'btn.classList.remove("spin");' in handler
     assert ".icon-btn.spin svg { animation: spin" in doc
+
+
+def _explorer_load(doc):
+    return "\n".join(_js_chunk(doc, h) for h in (
+        "function filesStopLoad() {", "async function loadDir(path, primed) {"))
+
+
+def test_the_newest_folder_load_wins(doc, tmp_path):
+    """On the cluster mount a listing can take a minute. A second tap while the
+    first is pending aborts it, and the older answer, landing late, never
+    paints over the folder asked for last; the pane is marked loading until
+    the latest lands. A primed listing is painted without asking again."""
+    out = _node_json(tmp_path, "load.mjs", """
+let filesLoadSeq = 0, filesLoadCtrl = null;
+const cls = new Set();
+const root = { classList: { add: (c) => cls.add(c), remove: (c) => cls.delete(c),
+                            contains: (c) => cls.has(c) } };
+const painted = [], errors = [], asked = [], aborted = [];
+function fsList(path, signal) {
+  asked.push(path);
+  return new Promise((res, rej) => {
+    // The first folder answers late and ignores the abort, as a server
+    // mid-scan does; the listing must still be dropped.
+    setTimeout(() => res({ path }), path === "/slow" ? 60 : 10);
+    signal.addEventListener("abort", () => aborted.push(path));
+  });
+}
+function applyListing(d) { painted.push(d.path); }
+function showListError(e) { errors.push(String(e)); }
+""" + _explorer_load(doc) + """
+const first = loadDir("/slow");
+const during = cls.has("files-loading");
+const second = loadDir("/fast");
+const results = await Promise.all([first, second]);
+const after = cls.has("files-loading");
+await new Promise((r) => setTimeout(r, 80));
+const primed = await loadDir("/p", { path: "/p" });
+console.log(JSON.stringify({ results, painted, errors, asked, aborted, during, after, primed }));
+""")
+    assert out == {"results": [False, True], "painted": ["/fast", "/p"], "errors": [],
+                   "asked": ["/slow", "/fast"], "aborted": ["/slow"],
+                   "during": True, "after": False, "primed": True}
+
+
+def test_closing_the_explorer_drops_a_listing_still_on_its_way(doc):
+    assert "  filesStopLoad();\n" in _js_chunk(doc, "function filesClearListing() {")
+
+
+def _open_at_cwd_harness(doc, body):
+    store_at = doc.index("\nconst FILES_LAST_KEY") + 1
+    end = doc.index("\nfunction dropProfileFilesLast(", store_at)
+    store = doc[store_at:doc.index("\n}\n", end) + 3]
+    return """
+const ls = {};
+const localStorage = { getItem: (k) => (k in ls ? ls[k] : null), setItem: (k, v) => { ls[k] = v; } };
+function unreadProfileKey() { return "p"; }
+""" + store + """
+let id = "files", currentSession = "", filesHeldAt = "", filesDocked = false;
+let filesPath = "", filesSyncedCwd = "";
+const cwds = {}, listed = [], opened = [];
+let firstPane = { open: false, at: "" };
+const filesPanes = { files: { isOpen: () => firstPane.open, path: () => firstPane.at } };
+async function fetchPaneCwd() { return cwds[currentSession]; }
+async function fsList(path) { listed.push(path); return { path, entries: [] }; }
+async function openExplorer(path, opts, primed) {
+  opened.push([currentSession, path, !!primed]);
+  filesPath = path;
+  return true;
+}
+""" + _js_chunk(doc, "async function filesOpenAtCwd(opts) {") + body
+
+
+def test_the_reopen_lists_the_remembered_folder_once(doc, tmp_path):
+    """The journal showed each reopen listing the remembered folder twice: the
+    probe, then the open. The probe's listing is the one painted."""
+    out = _node_json(tmp_path, "reopen.mjs", _open_at_cwd_harness(doc, """
+keepFilesLast([{ name: "a", sid: 1, created: 5 }]);
+currentSession = "a"; cwds.a = "/home/u";
+rememberFilesDir("a", "/mnt/cifs/paper");
+await filesOpenAtCwd();
+console.log(JSON.stringify({ listed, opened }));
+"""))
+    assert out == {"listed": ["/mnt/cifs/paper"], "opened": [["a", "/mnt/cifs/paper", True]]}
+
+
+def test_one_sessions_folder_never_opens_in_another(doc, tmp_path):
+    """Founder rule: each session has one remembered folder of its own, and a
+    session with nothing remembered opens at its terminal's cwd. Neither the
+    store, nor a pane left closed at the other session's folder, nor an old
+    server whose two sessions share a creation second may hand B what A left."""
+    out = _node_json(tmp_path, "isolate.mjs", _open_at_cwd_harness(doc, """
+const got = {};
+keepFilesLast([{ name: "a", sid: 1, created: 5 }, { name: "b", sid: 2, created: 5 }]);
+cwds.a = "/home/u/a"; cwds.b = "/home/u/b";
+currentSession = "a";
+rememberFilesDir("a", "/mnt/cifs/paper");
+await filesOpenAtCwd();
+// The first pane is closed, still holding A's folder, when B opens a copy.
+firstPane = { open: false, at: "/mnt/cifs/paper" };
+currentSession = "b";
+await filesOpenAtCwd();
+id = "files#2";
+await filesOpenAtCwd();
+id = "files";
+got.b = filesLastDir("b");
+// An old server sends no sid, and both sessions were made in the same second.
+keepFilesLast([{ name: "a", created: 7 }, { name: "b", created: 7 }]);
+rememberFilesDir("a", "/mnt/cifs/old");
+got.oldA = filesLastDir("a");
+got.oldB = filesLastDir("b");
+console.log(JSON.stringify({ got, listed, opened }));
+"""))
+    assert out["opened"] == [["a", "/mnt/cifs/paper", True],
+                             ["b", "/home/u/b", False],
+                             ["b", "/home/u/b", False]]
+    assert out["listed"] == ["/mnt/cifs/paper"]
+    assert out["got"] == {"b": "", "oldA": "", "oldB": ""}
+
+
+def test_the_branch_question_is_asked_once_per_repo_in_flight(doc, tmp_path):
+    """The journal showed /api/git/branches twice for one folder, each a minute
+    of git over the mount. Folders tapped through while it is pending wait for
+    that answer, which holds for any folder inside the repo it names; a folder
+    outside it is asked about when the answer lands."""
+    out = _node_json(tmp_path, "repo.mjs", """
+let filesPath = "/r/a", filesRepo = null, filesRepoAsked = "", filesRepoBusy = false;
+let filesHome = "/home/u";
+const asked = [], waiting = [];
+function demoApiOn() { return false; }
+function hasCap() { return true; }
+function syncRefBar() {}
+function rejectToken() {}
+function authHeaders() { return {}; }
+function apiURL(u) { return u; }
+function fetch(u) {
+  asked.push(decodeURIComponent(u.split("path=")[1]));
+  return new Promise((res) => waiting.push((body) => res({ status: 200, ok: true,
+                                                           json: async () => body })));
+}
+""" + _js_chunk(doc, "function insideRoot(path, root) {") + _js_chunk(doc, "async function syncRepo() {") + """
+const tick = () => new Promise((r) => setTimeout(r, 5));
+const p1 = syncRepo();
+filesPath = "/r/a/b";
+syncRepo();
+waiting.shift()({ root: "/r", current: "main", branches: ["main"] });
+await p1;
+const inRepo = { asked: asked.slice(), root: filesRepo && filesRepo.root };
+filesPath = "/s/x";
+const p2 = syncRepo();
+filesPath = "/t/y";
+waiting.shift()({ root: "/s", current: "main", branches: [] });
+await p2; await tick();
+console.log(JSON.stringify({ inRepo, asked }));
+""")
+    assert out == {"inRepo": {"asked": ["/r/a"], "root": "/r"},
+                   "asked": ["/r/a", "/s/x", "/t/y"]}

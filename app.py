@@ -53,6 +53,7 @@ import time
 import urllib.parse
 import urllib.request
 import wave
+import weakref
 import zipfile
 import zlib
 from contextlib import asynccontextmanager
@@ -3687,6 +3688,142 @@ def api_fs_read_at_ref(path: str, ref: str, root: str) -> Response:
     }))
 
 
+# The per-entry half of a listing. One readdir names every entry and, through
+# d_type, says which are folders; size and age still cost one stat each, and on
+# the CIFS mount a stat is a network round trip — 350 of them serially took
+# 140 s where the readdir took 2.6 s. So the stats run side by side on a pool
+# shared by every listing (latency-bound, so wide: 16 at once brought those 140
+# s to 9), and the listing waits for them only as long as FS_LIST_STAT_BUDGET_S.
+# What has not answered by then goes out without a size or an age, flagged
+# `partial`; the rows are there, typed and enterable, and nothing a slow mount
+# does to one entry holds the folder back. Stats not yet started when the budget
+# runs out are dropped rather than left to queue ahead of the next listing's.
+FS_STAT_WORKERS = 32
+FS_LIST_STAT_BUDGET_S = 2.0
+_fs_stat_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=FS_STAT_WORKERS, thread_name_prefix="fs-stat")
+
+
+def fs_list_entries(p: Path) -> tuple[list[dict], bool]:
+    """(`p`'s entries in api_fs_list's shape, whether any lack their stat)."""
+    with os.scandir(p) as it:
+        found = list(it)
+    futures = {e.name: _fs_stat_pool.submit(os.stat, e.path) for e in found}
+    concurrent.futures.wait(futures.values(), timeout=FS_LIST_STAT_BUDGET_S)
+    entries, partial = [], False
+    for e in found:
+        fut = futures[e.name]
+        st = None
+        if fut.done():
+            try:
+                st = fut.result()
+            except OSError:
+                pass
+            # Classified through the symlink, so a linked directory is
+            # enterable and a linked file editable. "link" is what remains — a
+            # broken link or a special file — which the client can only offer
+            # to download.
+            kind = "link" if st is None else (
+                "dir" if stat.S_ISDIR(st.st_mode) else (
+                    "file" if stat.S_ISREG(st.st_mode) else "link"))
+        else:
+            fut.cancel()
+            partial = True
+            # readdir's own answer, which never touches the network again. A
+            # symlink it cannot see through, so that one stays a "link" until a
+            # listing whose stat came back in time says what it points at.
+            try:
+                kind = ("dir" if e.is_dir(follow_symlinks=False) else
+                        "file" if e.is_file(follow_symlinks=False) else "link")
+            except OSError:
+                kind = "link"
+        entries.append({
+            "name": e.name,
+            "type": kind,
+            # null rather than 0 for a file whose stat did not answer: the row
+            # says nothing about its size instead of claiming it is empty.
+            "size": (st.st_size if st is not None and kind == "file"
+                     else None if not fut.done() and kind == "file" else 0),
+            "mtime": int(st.st_mtime) if st is not None else 0,
+        })
+    entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower(), e["name"]))
+    return entries, partial
+
+
+# The explorer's side work — grid thumbnails and the branch picker's git
+# questions — is slow exactly where the listing is (a PDF read over the mount,
+# a for-each-ref that took 55 s there), and none of it is what the user tapped
+# for. Each kind runs on a small pool of its own, so however much of it a slow
+# mount has stuck, the threadpool every plain route shares (the listing, the
+# session list, the cwd) keeps its threads. The gate in front of each pool is
+# where a request waits its turn, and a request whose client has gone by then —
+# a tile of a folder the user has left, a picker for a folder long since passed
+# through — is dropped there without ever starting.
+SIDE_WORKERS = {"thumb": 3, "git": 2}
+_side_pools = {kind: concurrent.futures.ThreadPoolExecutor(
+                   max_workers=n, thread_name_prefix="side-" + kind)
+               for kind, n in SIDE_WORKERS.items()}
+# asyncio primitives belong to one loop, and a test client runs its own, so the
+# gates are made per loop rather than once at import.
+_side_gates: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict]" = \
+    weakref.WeakKeyDictionary()
+
+
+async def side_work(request: Request, kind: str, fn, *args):
+    """fn(*args) on `kind`'s own pool, once a slot is free and the client is still there."""
+    loop = asyncio.get_running_loop()
+    gates = _side_gates.setdefault(loop, {})
+    gate = gates.get(kind)
+    if gate is None:
+        gate = gates[kind] = asyncio.Semaphore(SIDE_WORKERS[kind])
+    async with gate:
+        if await request.is_disconnected():
+            # Nobody reads this; it only has to be a response.
+            return Response(status_code=204)
+        return await loop.run_in_executor(_side_pools[kind], fn, *args)
+
+
+# One scan per folder at a time, git_status_files' rule: a folder tapped twice,
+# the reopen's probe and its open, or two devices on the same folder all wait on
+# the scan already running instead of each sending its own readdir and stats
+# down the same slow link, each making the next slower.
+_fs_list_lock = threading.Lock()
+_fs_list_runs: dict[str, "FsListRun"] = {}
+
+
+class FsListRun:
+    """One in-flight scan: its answer (or the OSError it raised) and its event."""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: tuple[list[dict], bool] | None = None
+        self.error: OSError | None = None
+
+
+def fs_list_shared(p: Path) -> tuple[list[dict], bool]:
+    key = str(p)
+    with _fs_list_lock:
+        run = _fs_list_runs.get(key)
+        mine = run is None
+        if mine:
+            run = FsListRun()
+            _fs_list_runs[key] = run
+    if mine:
+        try:
+            run.result = fs_list_entries(p)
+        except OSError as exc:
+            run.error = exc
+        finally:
+            with _fs_list_lock:
+                _fs_list_runs.pop(key, None)
+            run.done.set()
+    else:
+        run.done.wait()
+    if run.error is not None or run.result is None:
+        raise run.error or OSError("listing failed")
+    return run.result
+
+
 @app.get("/api/fs/list")
 def api_fs_list(path: str = "", ref: str = "", root: str = "") -> Response:
     """A directory's entries: dirs first, then everything else, alphabetical.
@@ -3699,40 +3836,30 @@ def api_fs_list(path: str = "", ref: str = "", root: str = "") -> Response:
     A non-empty `ref` reads the folder as it stands on that branch instead,
     relative to the repository `root` — same shape, plus `readonly`. Absent, not
     one byte of the answer below changes.
+
+    `partial` is true when some entries came back without their size and age
+    (fs_list_entries above): a folder on a slow network mount.
     """
     if ref:
         return api_fs_list_at_ref(path, ref, root)
     p = fs_path(path or "~")
     if p is None:
         return fs_error("bad_path", 400)
-    if not p.exists():
+    # One stat for both questions: on a network mount each is a round trip.
+    try:
+        mode = os.stat(p).st_mode
+    except OSError:
         return fs_error("not_found", 404)
-    if not p.is_dir():
+    if not stat.S_ISDIR(mode):
         return fs_error("not_a_directory", 400)
     try:
-        names = os.listdir(p)
+        entries, partial = fs_list_shared(p)
     except OSError:
         return fs_error("not_readable", 403)
-    entries = []
-    for name in names:
-        # Classified through the symlink, so a linked directory is enterable
-        # and a linked file editable. "link" is what remains — a broken link
-        # or a special file — which the client can only offer to download.
-        try:
-            st = os.stat(p / name)
-            kind = "dir" if stat.S_ISDIR(st.st_mode) else (
-                "file" if stat.S_ISREG(st.st_mode) else "link")
-        except OSError:
-            st, kind = None, "link"
-        entries.append({
-            "name": name,
-            "type": kind,
-            "size": st.st_size if st is not None and kind == "file" else 0,
-            "mtime": int(st.st_mtime) if st is not None else 0,
-        })
-    entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower(), e["name"]))
-    return no_store(JSONResponse(
-        {"path": str(p), "home": str(Path.home()), "entries": entries}))
+    body = {"path": str(p), "home": str(Path.home()), "entries": entries}
+    if partial:
+        body["partial"] = True
+    return no_store(JSONResponse(body))
 
 
 @app.get("/api/fs/read")
@@ -4396,7 +4523,7 @@ def render_pdf_page(src: Path, out: Path) -> bool:
 
 
 @app.get("/api/fs/thumb")
-def api_fs_thumb(request: Request, path: str = "") -> Response:
+async def api_fs_thumb(request: Request, path: str = "") -> Response:
     """A small image of an image, a video or a PDF's first page, for the grid's tiles.
 
     Path handling is /api/fs/read's, with media_file()'s resolve() on top
@@ -4413,10 +4540,23 @@ def api_fs_thumb(request: Request, path: str = "") -> Response:
 
     `ref` is deliberately not taken. A blob at a ref has no path to key on,
     and the grid only ever shows the working tree.
+
+    Rendered on a pool of its own behind a gate (side_work), never on the
+    threadpool every plain route shares: a grid of PDFs on the network mount
+    is a dozen renders each reading its file over that link, and on the shared
+    pool they sat beside the listings and the session list waiting on it. A
+    tile whose client has gone by the time its turn comes — the user tapped on
+    into another folder — is not rendered at all.
     """
     refusal = throttled("thumb", RATE_THUMB, request)
     if refusal is not None:
         return refusal
+    return await side_work(request, "thumb", fs_thumb_answer, path,
+                           request.headers.get("if-none-match", ""))
+
+
+def fs_thumb_answer(path: str, if_none_match: str) -> Response:
+    """api_fs_thumb's answer, worked out on the thumbnail pool."""
     p = fs_path(path)
     if p is None:
         return fs_error("bad_path", 400)
@@ -4439,7 +4579,7 @@ def api_fs_thumb(request: Request, path: str = "") -> Response:
 
     etag = f'"{thumb_key(p, st)}"'
     headers = {"Cache-Control": "private, max-age=3600", "ETag": etag}
-    known = [t.strip() for t in request.headers.get("if-none-match", "").split(",")]
+    known = [t.strip() for t in if_none_match.split(",")]
     if etag in known:
         return Response(status_code=304, headers=headers)
 
@@ -4804,7 +4944,7 @@ def api_git_changes(session: str = "", dev: str = "",
 
 
 @app.get("/api/git/branches")
-def api_git_branches(path: str = "") -> Response:
+async def api_git_branches(request: Request, path: str = "") -> Response:
     """The branches of the repository `path` sits in, for the explorer's picker.
 
     `path` need not exist. The explorer asks about the folder it is showing, and
@@ -4817,7 +4957,15 @@ def api_git_branches(path: str = "") -> Response:
     with no branches to offer. Local branches lead, remote-tracking ones follow,
     and a symbolic ref (origin/HEAD) is dropped — it is another name for a
     branch already in the list, not a branch.
+
+    Three git runs, each a walk of the repository's files over whatever it is
+    mounted on, and never what the user tapped for — so on the git side pool
+    (side_work), off the threadpool the listing itself needs.
     """
+    return await side_work(request, "git", git_branches_answer, path)
+
+
+def git_branches_answer(path: str) -> Response:
     def answer(root, current, branches):
         return no_store(JSONResponse(
             {"root": root, "current": current, "branches": branches}))
