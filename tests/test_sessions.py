@@ -147,6 +147,69 @@ def test_creation_order_beats_a_same_second_view(monkeypatch):
     assert reps == {"work": True, "a-work": False}
 
 
+def test_the_list_carries_the_id_a_rename_keeps(monkeypatch):
+    """The client remembers the explorer's folder per session under this id
+    (keepFilesLast, 06-session-list.js); v0.9.192 keyed on a sid the payload
+    never carried, so nothing was ever remembered."""
+    tmux = fake(monkeypatch, ({"name": "work", "created": 100},
+                              {"name": "play", "created": 100}))
+    before = {s["name"]: s["sid"] for s in A.list_sessions()}
+    assert before == {"work": 0, "play": 1}
+    tmux.find("work")["name"] = "job"
+    assert {s["name"]: s["sid"] for s in A.list_sessions()} == {"job": 0, "play": 1}
+
+
+def test_the_real_payload_keys_the_explorer_memory(monkeypatch, tmp_path):
+    """Run the client's store over what /api/sessions actually sends, so the
+    payload and the key can never drift apart again: a folder remembered for
+    one session comes back after a rename, is not another session's (even one
+    made in the same second), and a server that sends no sid still keys by the
+    creation time."""
+    import importlib.util
+    import json
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    spec = importlib.util.spec_from_file_location(
+        "build_mobile", Path(A.__file__).parent / "build_mobile.py")
+    bm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bm)
+    doc = bm.assemble()
+    at = doc.index("\nconst FILES_LAST_KEY") + 1
+    end = doc.index("\nfunction dropProfileFilesLast(", at)
+    store = doc[at:doc.index("\n}\n", end) + 3]
+    tmux = fake(monkeypatch, ({"name": "work", "created": 100},
+                              {"name": "play", "created": 100}))
+    first = A.list_sessions()
+    tmux.find("work")["name"] = "job"
+    renamed = A.list_sessions()
+    old_server = [{k: v for k, v in s.items() if k != "sid"} for s in first]
+    harness = f"""
+const ls = {{}};
+const localStorage = {{ getItem: (k) => (k in ls ? ls[k] : null), setItem: (k, v) => {{ ls[k] = v; }} }};
+function unreadProfileKey() {{ return "p"; }}
+{store}
+const got = {{}};
+keepFilesLast({json.dumps(first)});
+rememberFilesDir("work", "/h/w/deep");
+got.work = filesLastDir("work");
+got.play = filesLastDir("play");
+keepFilesLast({json.dumps(renamed)});
+got.job = filesLastDir("job");
+keepFilesLast({json.dumps(old_server[1:])});
+rememberFilesDir("play", "/h/p");
+got.oldServer = filesLastDir("play");
+console.log(JSON.stringify(got));
+"""
+    f = tmp_path / "keys.mjs"
+    f.write_text(harness, encoding="utf-8")
+    got = json.loads(subprocess.run([node, str(f)], check=True,
+                                    capture_output=True).stdout.decode())
+    assert got == {"work": "/h/w/deep", "play": "", "job": "/h/w/deep", "oldServer": "/h/p"}
+
+
 def test_list_survives_a_tmuxless_machine(monkeypatch):
     monkeypatch.setattr(A, "tmux", lambda *a: (1, ""))
     assert A.list_sessions() == []
