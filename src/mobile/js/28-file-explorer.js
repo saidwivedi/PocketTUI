@@ -2676,6 +2676,23 @@ attachEdgeSwipe(root, filesBack);
   }, { passive: true });
 })();
 
+// The same reload as a key on the tool row, since a pointer cannot pull. It
+// spins for as long as the listing takes, and never shorter than a glance, so
+// a folder that answers at once still shows it was asked. The listing's
+// scroll is put back after, on whichever of the page or the pane scrolls it.
+q("btn-files-refresh").addEventListener("click", async () => {
+  const btn = q("btn-files-refresh");
+  if (!filesPath || btn.classList.contains("spin")) return;
+  const pageY = window.scrollY, paneY = filesDropZone.scrollTop;
+  btn.classList.add("spin");
+  const [ok] = await Promise.all([loadDir(filesPath),
+                                  new Promise((r) => setTimeout(r, 400))]);
+  btn.classList.remove("spin");
+  if (!ok) return;
+  if (!filesDocked) window.scrollTo(0, pageY);
+  filesDropZone.scrollTop = paneY;
+});
+
 // What the column and the rest of the app can ask of this pane. Everything else
 // in the body above is the pane's own and stays in the closure.
 const api = {

@@ -709,6 +709,11 @@
          the path bar under it is where a folder is picked. -->
     <div class="files-title" aria-hidden="true"><svg><use href="#i-m-folder"/></svg><span class="files-title-name"></span></div>
     <span class="files-tools">
+    <!-- A reload of the folder on screen (or of the branch it is read at), for
+         the pointer that has no pull-down to give. First of the folder's keys:
+         it changes nothing, so it sits furthest from the ones that write. -->
+    <button class="icon-btn" id="btn-files-refresh" aria-label="Refresh"
+            title="Refresh"><svg><use href="#i-m-reload"/></svg></button>
     <button class="icon-btn" id="btn-files-add" aria-label="New file, folder or upload"><svg><use href="#i-m-plus"/></svg></button>
     <!-- How the folder is drawn and in what order, both remembered across
          reloads (cfg.filesView, cfg.filesSort) and both used for every folder.

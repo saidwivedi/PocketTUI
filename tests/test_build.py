@@ -1674,3 +1674,19 @@ def test_plain_files_keep_the_flat_upload_and_a_ref_is_read_only(doc):
     assert 'if (empty.length || items.some((it) => it.relPath.includes("/"))) {' in fn
     assert 'if (items.length === 1) { if (done) toast("Uploaded " + items[0].file.name); }' in fn
     assert 'if (confirm(f.name + " already exists here. Replace it?")) return uploadFile(it, true);' in doc
+
+
+def test_the_explorer_head_has_a_refresh_key(doc):
+    """For pointers, which have no pull-down: first of the folder's keys, on
+    every pane (the second is a clone of the first's markup), spinning while
+    the listing reloads, at a ref as well since fsList reads the ref."""
+    tools = doc[doc.index('<span class="files-tools">'):]
+    assert tools.index('id="btn-files-refresh"') < tools.index('id="btn-files-add"')
+    assert ('<button class="icon-btn" id="btn-files-refresh" aria-label="Refresh"\n'
+            '            title="Refresh"><svg><use href="#i-m-reload"/></svg></button>') in doc
+    at = doc.index('q("btn-files-refresh").addEventListener("click", async () => {')
+    handler = doc[at:doc.index("\n});\n", at)]
+    assert 'btn.classList.add("spin");' in handler
+    assert "loadDir(filesPath)" in handler
+    assert 'btn.classList.remove("spin");' in handler
+    assert ".icon-btn.spin svg { animation: spin" in doc
