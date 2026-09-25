@@ -392,6 +392,10 @@ function filesRefreshPeers(from, path) {
   }
 }
 
+// Where the full-screen listing was scrolled to when a file view covered it,
+// or null while none is covering it.
+let filesCoveredScroll = null;
+
 // ---- a file opened in a pane -----------------------------------------------
 // The editor, the reader and the media viewer open inside the docked pane
 // rather than over the whole window: same slot, same width, and the listing
@@ -416,7 +420,11 @@ function dockFileView(el, pane) {
   filesSetViewOwner(null);
   // Full screen the view covers the explorer rather than sitting in it, and
   // an active screen under another one would be two screens at once. Only the
-  // markup's own pane is ever the whole window.
+  // markup's own pane is ever the whole window. The listing scrolls the page,
+  // and the page under the view is the view's, so where the listing was is
+  // kept here for undockFileView — only when it is the listing being covered,
+  // not the reader handing its screen to the editor.
+  if (filesPanes.files.isOpen()) filesCoveredScroll = window.scrollY;
   filesPanes.files.setActive(false);
   return false;
 }
@@ -437,6 +445,10 @@ function undockFileView(el) {
     return true;
   }
   filesPanes.files.setActive(true);
+  if (filesCoveredScroll !== null) {
+    window.scrollTo(0, filesCoveredScroll);
+    filesCoveredScroll = null;
+  }
   return false;
 }
 
@@ -2355,6 +2367,16 @@ window.addEventListener("popstate", () => {
   // rather than before the go() keeps #screen-term inactive until the pop is
   // spent, so the terminal's own popstate handler stays out of it.
   if (filesClosing) { filesClosing = false; closeExplorer(); return; }
+  // The media viewer over the explorer pushes no entry of its own (it is an
+  // overlay), so the back that meant "close this picture" has spent the
+  // folder's: put the picture away and push that entry back, the dirty
+  // editor's trick (editorPopped), rather than climbing a folder or closing
+  // the explorer with the picture still on screen.
+  if ($("viewer").classList.contains("show")) {
+    hideImage();
+    history.pushState(filesEntryState(), "", location.href);
+    return;
+  }
   // An open address field takes the back first — closeExplorer turns that one
   // into closing just the field, and re-pushes the entry the pop consumed.
   if (q("files-path-wrap").classList.contains("editing")) { closeExplorer(); return; }
@@ -2653,8 +2675,12 @@ for (const name of ["screen-editor", "screen-reader", "viewer"]) {
       refit(0);
     });
   }
+  // The cross over a file closes the file, not the pane: the listing it was
+  // opened from is right there underneath, and the listing's own cross is the
+  // way out of the pane. The same close as the back arrow and Escape, so an
+  // unsaved buffer gets its question either way.
   for (const btn of $(name).querySelectorAll(".dock-close")) {
-    btn.addEventListener("click", () => closeDockedFiles(filesViewOwner));
+    btn.addEventListener("click", () => closeDockedFileView());
   }
 }
 

@@ -1097,3 +1097,144 @@ def test_a_page_that_escapes_twice_ends_in_the_stream_after_the_network(doc):
     flip = _js_chunk(doc, "function browserFlipLan(")
     assert "  if (!on) tab.lanEscaped = false;" in flip
 
+
+
+def _node_json(tmp_path, name, harness):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    f = tmp_path / name
+    f.write_text(harness, encoding="utf-8")
+    return json.loads(subprocess.run([node, str(f)], check=True,
+                                     capture_output=True).stdout.decode())
+
+
+def _explorer_popstate(doc):
+    at = doc.index('\nwindow.addEventListener("popstate", () => {') + 1
+    return doc[at:doc.index("\n});\n", at) + 5]
+
+
+def test_the_cross_over_a_docked_file_closes_the_file_not_the_pane(doc, tmp_path):
+    """Founder, 2026-09-25: closing a PDF opened in the docked explorer closed
+    the whole pane. The editor's, the reader's and the viewer's cross put the
+    file away (the back arrow's and Escape's close) and leave the listing it
+    came from; only the listing's own cross closes the pane."""
+    loop = _js_chunk(doc, 'for (const name of ["screen-editor", "screen-reader", "viewer"]) {')
+    out = _node_json(tmp_path, "cross.mjs", f"""
+const calls = [];
+const btns = {{}};
+function mk(cls) {{ const b = {{ cls, on: {{}},
+  addEventListener(ev, fn) {{ this.on[ev] = fn; }} }}; return b; }}
+function $(name) {{
+  btns[name] = {{ ".dock-expand": [mk("expand")], ".dock-close": [mk("close")] }};
+  return {{ querySelectorAll: (sel) => btns[name][sel] || [] }};
+}}
+let filesViewOwner = "files#2";
+const filesPanes = {{}};
+function refit() {{}}
+function closeDockedFileView() {{ calls.push("file"); return true; }}
+function closeDockedFiles(id) {{ calls.push("pane " + id); }}
+{loop}
+for (const name of ["screen-editor", "screen-reader", "viewer"]) btns[name][".dock-close"][0].on.click();
+console.log(JSON.stringify(calls));
+""")
+    assert out == ["file", "file", "file"]
+    for view in ("screen-editor", "screen-reader", "viewer"):
+        at = doc.index(f'id="{view}"')
+        bar = doc[at:doc.index('dock-close"', at) + 200]
+        assert 'aria-label="Close this file"' in bar
+    # The listing's own cross is still the pane's way out.
+    assert 'id="btn-files-close"' in doc
+    assert ('for (const btn of root.querySelectorAll(".dock-close")) {\n'
+            '  btn.addEventListener("click", () => closeDockedFiles());') in doc
+
+
+# (viewer shown, stack depth) -> what the explorer's popstate does.
+POPSTATE_CASES = [
+    ("viewer over a subfolder", True, 2, ["hide", 'push {"files":true,"path":"/h/a"}'], 2),
+    ("viewer over the entry folder", True, 1, ["hide", 'push {"files":true}'], 1),
+    ("no viewer in a subfolder", False, 2, ["apply /h"], 1),
+    ("no viewer at the entry folder", False, 1, ["closeExplorer"], 1),
+]
+
+
+@pytest.mark.parametrize("name,shown,depth,want,left", POPSTATE_CASES,
+                         ids=[c[0] for c in POPSTATE_CASES])
+def test_back_over_the_full_screen_viewer_closes_only_the_picture(doc, tmp_path, name,
+                                                                  shown, depth, want, left):
+    """The media viewer is an overlay with no history entry, so a back (iOS
+    swipe, Android back, the browser's button) over it used to climb a folder
+    or close the explorer with the picture still up. It now puts the picture
+    away and re-pushes the folder's entry; without the viewer, back is as
+    before."""
+    handler = _explorer_popstate(doc)
+    out = _node_json(tmp_path, "pop.mjs", f"""
+const calls = [];
+const on = {{}};
+const window = {{ addEventListener(ev, fn) {{ on[ev] = fn; }} }};
+const cls = (set) => ({{ contains: (c) => set.includes(c) }});
+const els = {{
+  "viewer": {{ classList: cls({json.dumps(["show"] if shown else [])}) }},
+  "screen-editor": {{ classList: cls([]) }},
+  "screen-reader": {{ classList: cls([]) }},
+}};
+function $(id) {{ return els[id]; }}
+function q(id) {{ return {{ classList: cls([]) }}; }}
+const id = "files";
+const root = {{ classList: cls(["active"]) }};
+let filesDocked = false, filesClosing = false;
+let filesStack = {json.dumps(["/h", "/h/a"][:depth])};
+let filesPath = filesStack[filesStack.length - 1];
+function dockedFileView() {{ return null; }}
+function editorPopped() {{ calls.push("editor"); }}
+function closeReader() {{ calls.push("reader"); }}
+function hideImage() {{ calls.push("hide"); }}
+function filesEntryState() {{
+  return filesPath === filesStack[0] ? {{ files: true }} : {{ files: true, path: filesPath }};
+}}
+const location = {{ href: "x" }};
+const history = {{ pushState(s) {{ calls.push("push " + JSON.stringify(s)); }} }};
+function closeExplorer() {{ calls.push("closeExplorer"); }}
+function cachedListing(p) {{ return {{ path: p }}; }}
+function applyListing(d) {{ calls.push("apply " + d.path); }}
+function loadDir(p) {{ calls.push("load " + p); }}
+{handler}
+on.popstate();
+console.log(JSON.stringify({{ calls, left: filesStack.length }}));
+""")
+    assert out["calls"] == want
+    assert out["left"] == left
+
+
+def test_a_full_screen_file_view_gives_the_listing_its_scroll_back(doc, tmp_path):
+    """The full-screen listing scrolls the page, and the editor or reader over
+    it takes the page, so closing one used to land at the top of the folder.
+    Where the listing was is kept when a view covers it and put back when the
+    view goes; the reader handing its screen to the editor keeps the first
+    reading, and a docked view never touches the page's scroll."""
+    assert "\nlet filesCoveredScroll = null;\n" in doc
+    chunk = ("let filesCoveredScroll = null;\n" + _js_chunk(doc, "function dockFileView(")
+             + "\n" + _js_chunk(doc, "function undockFileView("))
+    out = _node_json(tmp_path, "scroll.mjs", f"""
+const log = [];
+let active = true, docked = false;
+const window = {{ scrollY: 640, scrollTo(x, y) {{ log.push(y); this.scrollY = y; }} }};
+const filesPanes = {{ files: {{ isOpen: () => active, setActive: (on) => {{ active = on; }},
+  isDocked: () => docked }} }};
+function filesActive() {{ return filesPanes.files; }}
+function filesSetViewOwner() {{}}
+const mk = () => {{ const s = new Set(); return {{ classList: {{
+  add: (c) => s.add(c), remove: (c) => s.delete(c), contains: (c) => s.has(c) }} }}; }};
+const reader = mk(), editor = mk();
+{chunk}
+dockFileView(reader);            // covers the listing at 640
+window.scrollY = 0;              // the reader's page
+dockFileView(editor);            // Edit: the listing is already covered
+undockFileView(editor);          // back to the listing
+const full = [active, log.slice()];
+docked = true; log.length = 0;
+dockFileView(reader); undockFileView(reader);
+console.log(JSON.stringify({{ full, docked: log }}));
+""")
+    assert out["full"] == [True, [640]]
+    assert out["docked"] == []
