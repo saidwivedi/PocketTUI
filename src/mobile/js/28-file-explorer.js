@@ -526,6 +526,11 @@ let filesExpanded = id === "files" ? cfg.filesExpanded : false;
 // pane is still where the terminal left it" is measured against, and "" while
 // nothing has ever synced it. Only the docked shape has a terminal to follow.
 let filesSyncedCwd = "";
+// The folder this session's pane was left at, when it reopened there instead of
+// at the terminal's cwd (filesOpenAtCwd), and "" otherwise. While the pane is
+// still on it the following is armed, with filesSyncedCwd holding the cwd the
+// terminal had at the reopen: only a cd to somewhere new moves the pane.
+let filesHeldAt = "";
 // Set while btn-files-term's multi-entry history.go is in flight, so the one
 // popstate it lands as closes the view instead of climbing one folder.
 let filesClosing = false;
@@ -701,6 +706,7 @@ function closeDockedFiles() {
   filesDocked = false;
   filesOrigin = null;
   filesStack = [];
+  filesHeldAt = "";
   clearRefState();
   root.classList.remove("docked");
   root.classList.remove("active");
@@ -784,6 +790,7 @@ function filesStash() {
   return {
     stack: filesStack.slice(), path: filesPath,
     origin: filesOrigin, docked: filesDocked, syncedCwd: filesSyncedCwd,
+    heldAt: filesHeldAt,
     // A branch being read is part of what the session was looking at, so it
     // comes back with the folder rather than the pane returning to the disk.
     ref: filesRef, refRoot: filesRefRoot, repo: filesRepo, repoAsked: filesRepoAsked,
@@ -797,6 +804,7 @@ function filesTeardown() {
   root.classList.remove("active");
   filesOrigin = null;
   filesStack = [];
+  filesHeldAt = "";
   clearRefState();
   const wasDocked = filesDocked;
   filesDocked = false;
@@ -820,6 +828,7 @@ function filesReset() {
   filesPath = "";
   filesHome = "";
   filesSyncedCwd = "";
+  filesHeldAt = "";
   filesEntries = [];
   filesSelected = null;
 }
@@ -834,6 +843,7 @@ function filesRestore(s) {
   // A pane that was following its session's terminal when the rail left it is
   // still following when the rail comes back.
   filesSyncedCwd = s.syncedCwd || "";
+  filesHeldAt = s.heldAt || "";
   filesRef = s.ref || "";
   filesRefRoot = s.refRoot || "";
   filesRepo = s.repo || null;
@@ -887,12 +897,37 @@ async function filesOpenAtCwd(opts) {
     if (here) return openExplorer(here, opts);
   }
   const from = currentSession;
+  filesHeldAt = "";
   const cwd = await fetchPaneCwd();
   if (cwd === null) return;
   // The rail can move on while tmux is being asked, and the answer is about the
   // session it was asked of: opening now would put one session's folder in
   // another session's slot, which is the one thing the pane must never do.
   if (currentSession !== from) return;
+  // A session the explorer was open in before goes back to where it was left.
+  // Asked of the disk first, so a folder that has gone since falls through to
+  // the terminal's cwd as a new session's would, with no error on the way.
+  const held = id === "files" ? filesLastDir(from) : "";
+  if (held && held !== cwd) {
+    let there = false, gone = false;
+    try {
+      there = !!(await fsList(held));
+    } catch (e) {
+      // An expired token has already been answered (rejectToken); any other
+      // failure that is not the folder being gone leaves the memory alone.
+      if (e.message === "unauthorized") return;
+      gone = !!e.code;
+    }
+    if (currentSession !== from) return;
+    if (there) {
+      const ok = await openExplorer(held, opts);
+      // Following waits for the terminal to move: the cwd it has now is the
+      // baseline, and only a cd to somewhere else takes the pane there.
+      if (ok && filesDocked) { filesSyncedCwd = cwd; filesHeldAt = filesPath; }
+      return ok;
+    }
+    if (gone) forgetFilesDir(from);
+  }
   const ok = await openExplorer(cwd, opts);
   // The folder that actually resolved, not the string asked for: a cwd tmux
   // could not give lands at $HOME, and that is where the pane is. Docked only —
@@ -914,7 +949,8 @@ function filesFollowsCwd() {
       // Reading a branch is the user having taken the pane somewhere; a cd in
       // the terminal cannot pull it back to the working tree from under them.
       && !filesRef
-      && filesStack.length <= 1 && filesPath === filesSyncedCwd
+      && filesStack.length <= 1
+      && (filesPath === filesSyncedCwd || (!!filesHeldAt && filesPath === filesHeldAt))
       && !$("screen-editor").classList.contains("active")
       && !$("screen-reader").classList.contains("active")
       && !q("files-path-wrap").classList.contains("editing");
@@ -932,7 +968,7 @@ async function followPaneCwd() {
   // "" is tmux declining to answer, not a move to $HOME — the pane stays put.
   if (!cwd || cwd === filesSyncedCwd || !filesFollowsCwd()) return;
   filesStack = [];         // a new entry folder, seeded once loadDir resolves it
-  if (await loadDir(cwd)) filesSyncedCwd = filesPath;
+  if (await loadDir(cwd)) { filesSyncedCwd = filesPath; filesHeldAt = ""; }
 }
 
 // The wide tick (31-wide-layout.js) is the backstop; these are the moments a cd
@@ -1139,6 +1175,15 @@ function applyListing(data) {
   renderCrumbs(data.path);
   renderEntries(data.entries || []);
   q("files-error").style.display = "none";
+  // Where this session's explorer is, for the next time it opens
+  // (filesLastDir, 06-session-list.js). The markup's own pane only — the copy
+  // is a second look at a folder, not where the session went — and only over a
+  // terminal, whose session this is, and only on the working tree: a folder
+  // read at a ref is the branch's.
+  if (id === "files" && filesOrigin === "screen-term" && !filesRef && currentSession
+      && root.classList.contains("active")) {
+    rememberFilesDir(currentSession, data.path);
+  }
   // After filesPath, which is the folder the question is about.
   syncRefBar();
   syncRepo();

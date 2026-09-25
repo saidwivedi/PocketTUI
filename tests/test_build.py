@@ -1238,3 +1238,157 @@ console.log(JSON.stringify({{ full, docked: log }}));
 """)
     assert out["full"] == [True, [640]]
     assert out["docked"] == []
+
+
+def _files_last_store(doc):
+    at = doc.index("\nconst FILES_LAST_KEY") + 1
+    end = doc.index("\nfunction dropProfileFilesLast(", at)
+    return doc[at:doc.index("\n}\n", end) + 3]
+
+
+def test_the_explorer_folder_is_remembered_per_session(doc, tmp_path):
+    """Founder, 2026-09-25: reopening the explorer in a session goes back to the
+    folder it was left at. Kept per session under the tmux id and creation
+    time, so a rename keeps it, another session never sees it, a session that
+    is gone (killed) loses it with the next list, and each computer (profile)
+    has its own map."""
+    store = _files_last_store(doc)
+    out = _node_json(tmp_path, "store.mjs", f"""
+const ls = {{}};
+const localStorage = {{ getItem: (k) => (k in ls ? ls[k] : null), setItem: (k, v) => {{ ls[k] = v; }} }};
+let profile = "p1";
+function unreadProfileKey() {{ return profile; }}
+{store}
+const got = {{}};
+keepFilesLast([{{ name: "work", sid: 3, created: 100 }}, {{ name: "play", sid: 4, created: 101 }}]);
+rememberFilesDir("work", "/h/proj/src");
+got.work = filesLastDir("work");
+got.play = filesLastDir("play");
+got.unknown = filesLastDir("nobody");
+rememberFilesDir("nobody", "/x");
+// Renamed: same tmux session, new name.
+keepFilesLast([{{ name: "job", sid: 3, created: 100 }}, {{ name: "play", sid: 4, created: 101 }}]);
+got.renamed = filesLastDir("job");
+got.oldName = filesLastDir("work");
+// Another computer's list: its own map, and it does not prune this one's.
+profile = "p2";
+keepFilesLast([{{ name: "job", sid: 3, created: 555 }}]);
+got.otherProfile = filesLastDir("job");
+profile = "p1";
+keepFilesLast([{{ name: "job", sid: 3, created: 100 }}, {{ name: "play", sid: 4, created: 101 }}]);
+got.back = filesLastDir("job");
+// A tmux restart reuses $3 for a new session: different creation time.
+keepFilesLast([{{ name: "job", sid: 3, created: 900 }}]);
+got.reused = filesLastDir("job");
+// Killed: the next list no longer names it.
+keepFilesLast([{{ name: "a", sid: 7, created: 1 }}]);
+rememberFilesDir("a", "/a");
+forgetFilesDir("a");
+got.forgot = filesLastDir("a");
+rememberFilesDir("a", "/a2");
+keepFilesLast([]);
+got.pruned = JSON.parse(ls[FILES_LAST_KEY]).p1;
+// A demo row has no sid and gets no key.
+keepFilesLast([{{ name: "demo" }}]);
+rememberFilesDir("demo", "/d");
+got.demo = filesLastDir("demo");
+console.log(JSON.stringify(got));
+""")
+    assert out == {"work": "/h/proj/src", "play": "", "unknown": "", "renamed": "/h/proj/src",
+                   "oldName": "", "otherProfile": "", "back": "/h/proj/src", "reused": "",
+                   "forgot": "", "pruned": {}, "demo": ""}
+    # The list payload feeds it, a kill drops it at once, a forgotten computer
+    # takes its map with it.
+    assert "  keepFileViews(names);\n  keepFilesLast(sessions);\n" in doc
+    assert "    dropFileView(name);\n    forgetFilesDir(name);\n" in doc
+    assert "  dropProfileUnread(id);\n  dropProfileFilesLast(id);\n" in doc
+    # Written from the markup's own pane, over a terminal, on the working tree.
+    assert ('  if (id === "files" && filesOrigin === "screen-term" && !filesRef && currentSession\n'
+            '      && root.classList.contains("active")) {\n'
+            '    rememberFilesDir(currentSession, data.path);') in doc
+
+
+# name, remembered folder, what the disk says about it, docked
+# -> the folder opened, whether the memory was forgotten, synced cwd, held folder
+OPEN_AT_CWD_CASES = [
+    ("reopen restores the folder", "/h/p/deep", "ok", True,
+     ["/h/p/deep"], False, "/h/p", "/h/p/deep"),
+    ("reopen full screen", "/h/p/deep", "ok", False,
+     ["/h/p/deep"], False, "", ""),
+    ("new session follows the terminal", "", "ok", True,
+     ["/h/p"], False, "/h/p", ""),
+    ("remembered folder is the cwd", "/h/p", "ok", True,
+     ["/h/p"], False, "/h/p", ""),
+    ("missing folder falls back", "/h/p/gone", "not_found", True,
+     ["/h/p"], True, "/h/p", ""),
+    ("network failure falls back, memory kept", "/h/p/deep", "network", True,
+     ["/h/p"], False, "/h/p", ""),
+]
+
+
+@pytest.mark.parametrize("name,held,disk,docked,opened,forgot,synced,heldAt",
+                         OPEN_AT_CWD_CASES, ids=[c[0] for c in OPEN_AT_CWD_CASES])
+def test_opening_the_explorer_goes_back_to_the_remembered_folder(
+        doc, tmp_path, name, held, disk, docked, opened, forgot, synced, heldAt):
+    fn = _js_chunk(doc, "async function filesOpenAtCwd(opts) {")
+    out = _node_json(tmp_path, "open.mjs", f"""
+const id = "files";
+const filesPanes = {{}};
+let currentSession = "work";
+let filesPath = "", filesDocked = false, filesSyncedCwd = "", filesHeldAt = "stale";
+const opened = [];
+let forgot = false;
+async function fetchPaneCwd() {{ return "/h/p"; }}
+function filesLastDir(s) {{ return s === "work" ? {json.dumps(held)} : ""; }}
+function forgetFilesDir(s) {{ forgot = true; }}
+async function fsList(p) {{
+  const disk = {json.dumps(disk)};
+  if (disk === "ok") return {{ path: p }};
+  const e = new Error(disk === "network" ? "Failed to fetch" : disk);
+  if (disk !== "network") e.code = disk;
+  throw e;
+}}
+async function openExplorer(p) {{ opened.push(p); filesPath = p; filesDocked = {json.dumps(docked)}; return true; }}
+{fn}
+await filesOpenAtCwd();
+console.log(JSON.stringify({{ opened, forgot, filesSyncedCwd, filesHeldAt }}));
+""")
+    assert out == {"opened": opened, "forgot": forgot,
+                   "filesSyncedCwd": synced, "filesHeldAt": heldAt}
+
+
+# Following after a reopen at a remembered folder: steps of the tick's cwd
+# answer (or "nav" for the user browsing one level in) -> folder after each.
+FOLLOW_CASES = [
+    ("unchanged cwd does not yank the pane", ["/h/p", "/h/p"], ["/h/p/deep", "/h/p/deep"]),
+    ("a cd moves it, and it follows from there", ["/h/p/new", "/h/p/other"],
+     ["/h/p/new", "/h/p/other"]),
+    ("browsed away, a cd does not move it", ["nav", "/h/p/new"], ["/h/p/deep/sub", "/h/p/deep/sub"]),
+]
+
+
+@pytest.mark.parametrize("name,steps,want", FOLLOW_CASES, ids=[c[0] for c in FOLLOW_CASES])
+def test_following_after_a_reopen_waits_for_the_terminal_to_move(doc, tmp_path, name, steps, want):
+    chunk = (_js_chunk(doc, "function filesFollowsCwd() {") + "\nlet filesCwdBusy = false;\n"
+             + _js_chunk(doc, "async function followPaneCwd() {"))
+    assert "\nlet filesCwdBusy = false;\nasync function followPaneCwd() {" in doc
+    out = _node_json(tmp_path, "follow.mjs", f"""
+const cls = () => ({{ classList: {{ contains: () => false }} }});
+function $(id) {{ return cls(); }}
+function q(id) {{ return cls(); }}
+let filesDocked = true, filesRef = "";
+let filesStack = ["/h/p/deep"], filesPath = "/h/p/deep";
+let filesSyncedCwd = "/h/p", filesHeldAt = "/h/p/deep";
+let answer = "";
+async function fetchPaneCwd() {{ return answer; }}
+async function loadDir(p) {{ filesPath = p; if (!filesStack.length) filesStack.push(p); return true; }}
+{chunk}
+const got = [];
+for (const s of {json.dumps(steps)}) {{
+  if (s === "nav") {{ filesPath = "/h/p/deep/sub"; filesStack.push(filesPath); }}
+  else {{ answer = s; await followPaneCwd(); }}
+  got.push(filesPath);
+}}
+console.log(JSON.stringify(got));
+""")
+    assert out == want
