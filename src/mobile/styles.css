@@ -3495,6 +3495,19 @@ html.term-open #dbg-panel { opacity: 0.85; }
   font-size: 11px;
   color: var(--tertiary);
 }
+/* A folder on its way (loadDir, 28-file-explorer.js). The one tapped is held
+   in its pressed tint with its icon breathing, and a row says it is opening;
+   whatever else started the load (a crumb, back, the terminal's cd) dims the
+   listing instead, after a beat so a fast folder never flickers. */
+.file-row.pending, .file-tile.pending { background: var(--umber-tint); }
+.pending .file-ic { animation: files-wait 0.8s ease-in-out infinite alternate; }
+.file-row.pending .file-meta::after { content: "Opening\2026"; }
+@keyframes files-wait { to { opacity: 0.3; } }
+#files-list { transition: opacity 0.2s var(--ease-out); }
+.files-loading #files-list:not(:has(.pending)) {
+  opacity: 0.55;
+  transition-delay: 0.25s;
+}
 /* The grid view. auto-fill rather than a fixed column count so one rule covers
    a narrow phone, a landscape tablet and the wide layout's main pane, which is
    only ever the window less the rail; a short last row stays left-aligned. */

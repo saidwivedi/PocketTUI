@@ -106,6 +106,139 @@ def test_list_applies_path_rewrites(client, tree, monkeypatch):
     assert r.json()["path"] == str(tree / "sub")
 
 
+def slow_stat_for(monkeypatch, delay, slow=lambda name: True):
+    """os.stat that takes `delay` seconds for every entry `slow` picks, as a
+    stat on the CIFS mount does; the folder's own stat stays instant."""
+    real = os.stat
+
+    def fake(path, *a, **k):
+        if slow(os.path.basename(str(path))):
+            time.sleep(delay)
+        return real(path, *a, **k)
+    monkeypatch.setattr(os, "stat", fake)
+
+
+def test_list_does_not_wait_past_its_budget_for_slow_stats(client, tree, monkeypatch):
+    """An entry whose stat hangs still lists, typed by readdir, with no size or
+    age, and the folder says it is partial; the rest keep theirs."""
+    monkeypatch.setattr(A, "FS_LIST_STAT_BUDGET_S", 0.3)
+    slow_stat_for(monkeypatch, 1.5, lambda n: n in ("zdir", "beta.txt"))
+    began = time.monotonic()
+    r = client.get("/api/fs/list", params={"path": str(tree)})
+    took = time.monotonic() - began
+    assert r.status_code == 200
+    data = r.json()
+    assert took < 1.2, took
+    assert data["partial"] is True
+    assert entry_names(data) == ["sub", "zdir", ".dotfile", "Alpha.py", "beta.txt"]
+    by_name = {e["name"]: e for e in data["entries"]}
+    assert by_name["zdir"] == {"name": "zdir", "type": "dir", "size": 0, "mtime": 0}
+    assert by_name["beta.txt"] == {"name": "beta.txt", "type": "file",
+                                   "size": None, "mtime": 0}
+    assert by_name["Alpha.py"]["size"] == len("print('hi')\n")
+    assert by_name["Alpha.py"]["mtime"] > 0
+
+
+def test_list_stats_entries_side_by_side(client, tmp_path, monkeypatch):
+    """Twenty entries at 0.2 s a stat are four seconds serially; side by side
+    they fit well inside the budget, and the listing is whole."""
+    for i in range(20):
+        (tmp_path / f"f{i:02}.txt").write_text("x")
+    slow_stat_for(monkeypatch, 0.2, lambda n: n.startswith("f"))
+    began = time.monotonic()
+    data = client.get("/api/fs/list", params={"path": str(tmp_path)}).json()
+    assert time.monotonic() - began < 1.5
+    assert "partial" not in data
+    assert all(e["size"] == 1 for e in data["entries"])
+
+
+def test_a_fast_listing_is_not_partial(client, tree):
+    assert "partial" not in client.get("/api/fs/list",
+                                       params={"path": str(tree)}).json()
+
+
+def test_concurrent_listings_of_one_folder_share_one_scan(tree, monkeypatch):
+    """A double tap, the reopen's probe and its open, a second device: one
+    readdir, every caller answered from it."""
+    real = os.scandir
+    calls = []
+
+    def slow_scandir(path):
+        calls.append(str(path))
+        time.sleep(0.4)
+        return real(path)
+    monkeypatch.setattr(os, "scandir", slow_scandir)
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(
+        A.api_fs_list(path=str(tree)))) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert calls == [str(tree)]
+    assert [r.status_code for r in out] == [200] * 4
+    # Over once it has answered: the next listing reads the folder afresh.
+    A.api_fs_list(path=str(tree))
+    assert len(calls) == 2
+
+
+class FakeRequest:
+    def __init__(self, gone=False):
+        self.gone = gone
+
+    async def is_disconnected(self):
+        return self.gone
+
+
+def test_side_work_runs_on_its_own_pool_and_is_bounded():
+    """Thumbnails never take a thread of the pool every plain route shares, and
+    no more of them run at once than their pool has workers."""
+    import asyncio
+    lock = threading.Lock()
+    live, peak, names = [0], [0], set()
+
+    def work(i):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+            names.add(threading.current_thread().name)
+        time.sleep(0.1)
+        with lock:
+            live[0] -= 1
+        return i
+
+    async def main():
+        return await asyncio.gather(*(A.side_work(FakeRequest(), "thumb", work, i)
+                                      for i in range(8)))
+    assert asyncio.run(main()) == list(range(8))
+    assert peak[0] == A.SIDE_WORKERS["thumb"]
+    assert all(n.startswith("side-thumb") for n in names), names
+
+
+def test_side_work_drops_a_request_whose_client_has_gone():
+    import asyncio
+    ran = []
+    r = asyncio.run(A.side_work(FakeRequest(gone=True), "git", ran.append, 1))
+    assert r.status_code == 204
+    assert ran == []
+
+
+def test_branches_and_thumbs_answer_off_the_shared_threadpool(client, tree, monkeypatch):
+    seen = {}
+
+    def record(kind):
+        def fn(*a):
+            seen[kind] = threading.current_thread().name
+            return A.no_store(A.JSONResponse({}))
+        return fn
+    monkeypatch.setattr(A, "git_branches_answer", record("git"))
+    monkeypatch.setattr(A, "fs_thumb_answer", record("thumb"))
+    assert client.get("/api/git/branches", params={"path": str(tree)}).status_code == 200
+    assert client.get("/api/fs/thumb", params={"path": str(tree / "a.png")}).status_code == 200
+    assert seen["git"].startswith("side-git")
+    assert seen["thumb"].startswith("side-thumb")
+
+
 # ---------------------------------------------------------------------------
 # read
 # ---------------------------------------------------------------------------
