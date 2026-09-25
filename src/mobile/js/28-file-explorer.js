@@ -346,19 +346,56 @@ function filesSheetPane() { return filesPanes[filesSheetOwner] || filesActive();
 // The action sheet raised over an entry. The sheet's markup is reached from here
 // rather than from inside a pane, for the same reason its rows are wired here:
 // there is one of it, over the window, whichever listing raised it.
-function filesShowActions(entry) {
-  $("file-actions-title").textContent = entry.name;
+// `at` is a right-click's point (and the pane it landed in): the same rows then
+// open as a popover there instead of the sheet a long press raises.
+function filesShowActions(entry, at) {
   // A folder downloads as a zip the server builds while it sends it, so the row
   // is offered over one too — but only where the server on the other end can
   // build it, since an older one answers a folder with a 404.
-  $("btn-file-download").style.display =
-    entry.type === "dir" && !hasCap("zip_dir") ? "none" : "";
+  const download = !(entry.type === "dir" && !hasCap("zip_dir"));
   // Only where the tap itself no longer reaches the editor. Every other text
   // file already opens there, so an Edit row would say nothing.
-  $("btn-file-edit").style.display =
-    entry.type === "file" && FILES_HTML_RE.test(entry.name) ? "" : "none";
+  const edit = entry.type === "file" && FILES_HTML_RE.test(entry.name);
+  if (at) {
+    $("ctx-file-download").style.display = download ? "" : "none";
+    $("ctx-file-edit").style.display = edit ? "" : "none";
+    filesShowMenu(at);
+    return;
+  }
+  $("file-actions-title").textContent = entry.name;
+  $("btn-file-download").style.display = download ? "" : "none";
+  $("btn-file-edit").style.display = edit ? "" : "none";
   showSheet(true, "sheet-file-actions");
 }
+
+// ---- the right-click menu ----------------------------------------------------
+// Where a w-by-h menu opened at the pointer (x, y) goes: its top-left corner at
+// the point, flipped to the point's left or above it when it would cross the
+// right or bottom edge of `box` (the pane the click was in, already cut to the
+// window), then clamped `pad` inside the window, so a menu taller than a short
+// pane still shows whole.
+function filesMenuPlace(x, y, w, h, box, vw, vh, pad) {
+  let left = x + w > box.right - pad ? x - w : x;
+  let top = y + h > box.bottom - pad ? y - h : y;
+  left = Math.max(pad, Math.min(left, vw - pad - w));
+  top = Math.max(pad, Math.min(top, vh - pad - h));
+  return { left: Math.round(left), top: Math.round(top) };
+}
+
+function filesShowMenu(at) {
+  const menu = $("file-ctx-menu");
+  menu.hidden = false;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const r = at.pane ? at.pane.getBoundingClientRect() : null;
+  const box = r ? { right: Math.min(r.right, vw), bottom: Math.min(r.bottom, vh) }
+                : { right: vw, bottom: vh };
+  const p = filesMenuPlace(at.x, at.y, menu.offsetWidth, menu.offsetHeight, box, vw, vh, 6);
+  menu.style.left = p.left + "px";
+  menu.style.top = p.top + "px";
+}
+
+function filesHideMenu() { $("file-ctx-menu").hidden = true; }
+function filesMenuOpen() { return !$("file-ctx-menu").hidden; }
 
 function filesAnyDocked() {
   return Object.values(filesPanes).some((p) => p.isDocked());
@@ -1765,7 +1802,7 @@ function showRefMenu(on) {
   q("btn-files-ref").setAttribute("aria-expanded", on ? "true" : "false");
 }
 
-function closeFilesMenus() { showViewMenu(false); showRefMenu(false); }
+function closeFilesMenus() { showViewMenu(false); showRefMenu(false); filesHideMenu(); }
 
 // Which repo the folder on screen is in, and what it has to offer. Asked per
 // repo rather than per folder: inside a root already known the answer cannot
@@ -1883,7 +1920,7 @@ q("btn-files-ref").addEventListener("click", () => {
 
 // Tap opens; a long press (or a desktop right-click) opens the action sheet.
 function wireRow(row, entry) {
-  let timer = null, sx = 0, sy = 0;
+  let timer = null, sx = 0, sy = 0, pressedByTouch = false;
   const cancel = () => { clearTimeout(timer); timer = null; };
   row.addEventListener("touchstart", (ev) => {
     cancel();
@@ -1904,8 +1941,15 @@ function wireRow(row, entry) {
   row.addEventListener("contextmenu", (ev) => {
     ev.preventDefault();
     filesPressedAt = Date.now();
-    openFileActions(entry);
+    // A finger's long press can arrive as a contextmenu too (Android Chrome);
+    // that one keeps the sheet the long-press timer above raises. Read off the
+    // press itself rather than the device, so an iPad's trackpad gets the menu.
+    if (pressedByTouch) { openFileActions(entry); return; }
+    openFileActions(entry, { x: ev.clientX, y: ev.clientY, pane: root });
   });
+  row.addEventListener("pointerdown", (ev) => {
+    pressedByTouch = ev.pointerType === "touch";
+  }, { passive: true });
   row.addEventListener("click", () => {
     if (Date.now() - filesPressedAt < 500) return;  // the long-press's own click
     openEntry(entry);
@@ -2021,7 +2065,7 @@ async function openPdf(path) {
   a.remove();
 }
 
-function openFileActions(entry) {
+function openFileActions(entry, at) {
   // Every row in this sheet either writes the working tree or downloads it off
   // the disk, and at a ref the listing on screen is neither.
   if (filesRef) { toast("Read-only on " + filesRef); return; }
@@ -2029,7 +2073,7 @@ function openFileActions(entry) {
   // which listing the rows it is about belong to.
   filesSheetOwner = id;
   filesSelected = entry;
-  filesShowActions(entry);
+  filesShowActions(entry, at);
 }
 
 // ---- the action sheet ------------------------------------------------------
@@ -2711,6 +2755,30 @@ $("btn-file-rename").addEventListener("click", () => filesSheetPane().sheet.rena
 $("btn-file-download").addEventListener("click", () => filesSheetPane().sheet.download());
 $("btn-file-delete").addEventListener("click", () => filesSheetPane().sheet.remove());
 $("btn-files-newfile").addEventListener("click", () => filesSheetPane().add.file());
+// The right-click menu's rows are the sheet's, on the listing that raised it.
+$("ctx-file-edit").addEventListener("click", () => { filesHideMenu(); filesSheetPane().sheet.edit(); });
+$("ctx-file-rename").addEventListener("click", () => { filesHideMenu(); filesSheetPane().sheet.rename(); });
+$("ctx-file-download").addEventListener("click", () => { filesHideMenu(); filesSheetPane().sheet.download(); });
+$("ctx-file-delete").addEventListener("click", () => { filesHideMenu(); filesSheetPane().sheet.remove(); });
+// Anything that is not a press inside the menu puts it away: a press elsewhere
+// (which still does what it does, so a right-click on another row moves the
+// menu there), a scroll or wheel, a resize, the window losing focus. On the
+// window, in capture, so it runs ahead of every document-level handler — and
+// for Escape that matters: the explorer's own Escape would otherwise read the
+// press as "back to the terminal".
+window.addEventListener("pointerdown", (e) => {
+  if (filesMenuOpen() && !$("file-ctx-menu").contains(e.target)) filesHideMenu();
+}, true);
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !filesMenuOpen()) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  filesHideMenu();
+}, true);
+for (const type of ["scroll", "wheel", "resize", "blur"]) {
+  window.addEventListener(type, () => { if (filesMenuOpen()) filesHideMenu(); },
+                          { capture: true, passive: true });
+}
 $("btn-files-newfolder").addEventListener("click", () => filesSheetPane().add.folder());
 $("btn-files-upload").addEventListener("click", () => {
   showSheet(false);

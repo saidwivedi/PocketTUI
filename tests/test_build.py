@@ -1416,3 +1416,64 @@ console.log(JSON.stringify([els["files-list"].innerHTML, els["files-crumbs"].inn
     for head in ("function closeExplorer() {", "function closeDockedFiles() {",
                  "function filesTeardown() {"):
         assert "  filesClearListing();\n" in _js_chunk(doc, head), head
+
+
+# (x, y, menu w, h, pane box right, bottom) in a 1400x900 window -> left, top
+MENU_PLACE_CASES = [
+    ("opens at the pointer", 300, 200, 170, 130, 1400, 900, [300, 200]),
+    ("flips left at the right edge", 1350, 200, 170, 130, 1400, 900, [1180, 200]),
+    ("flips up at the bottom edge", 300, 850, 170, 130, 1400, 900, [300, 720]),
+    ("flips both near the bottom-right row", 1380, 880, 170, 130, 1400, 900, [1210, 750]),
+    ("flips up at a top-row pane's bottom", 900, 420, 170, 130, 1400, 450, [900, 290]),
+    ("clamped inside the window after a flip", 100, 200, 170, 130, 200, 900, [6, 200]),
+    ("taller than the room either way", 300, 60, 170, 130, 1400, 150, [300, 6]),
+    ("exactly fits against the edge", 1224, 764, 170, 130, 1400, 900, [1224, 764]),
+]
+
+
+@pytest.mark.parametrize("name,x,y,w,h,right,bottom,want", MENU_PLACE_CASES,
+                         ids=[c[0] for c in MENU_PLACE_CASES])
+def test_the_right_click_menu_sits_at_the_pointer(doc, tmp_path, name, x, y, w, h,
+                                                  right, bottom, want):
+    """Founder, 2026-09-25: a right-click's actions open next to the file like
+    a desktop file manager, not in a sheet in the middle. Top-left at the
+    pointer, flipped left/up past the pane's edge, clamped 6px inside the
+    window."""
+    fn = _js_chunk(doc, "function filesMenuPlace(")
+    out = _node_json(tmp_path, "place.mjs", f"""
+{fn}
+const p = filesMenuPlace({x}, {y}, {w}, {h}, {{ right: {right}, bottom: {bottom} }}, 1400, 900, 6);
+console.log(JSON.stringify([p.left, p.top]));
+""")
+    assert out == want
+
+
+def test_a_right_click_raises_the_menu_and_a_long_press_the_sheet(doc, tmp_path):
+    """Same rows, same visibility rules; only a point decides the shape."""
+    fn = _js_chunk(doc, "function filesShowActions(")
+    out = _node_json(tmp_path, "route.mjs", f"""
+const els = {{}};
+function $(id) {{ return els[id] = els[id] || {{ style: {{}}, textContent: "" }}; }}
+const FILES_HTML_RE = /\\.html?$/i;
+function hasCap() {{ return false; }}
+const shown = [];
+function showSheet(on, id) {{ shown.push("sheet " + id); }}
+function filesShowMenu(at) {{ shown.push("menu " + at.x + "," + at.y); }}
+{fn}
+filesShowActions({{ name: "a.html", type: "file" }}, {{ x: 5, y: 7 }});
+filesShowActions({{ name: "docs", type: "dir" }});
+console.log(JSON.stringify({{ shown, ctxEdit: els["ctx-file-edit"].style.display,
+  ctxDl: els["ctx-file-download"].style.display, dl: els["btn-file-download"].style.display,
+  edit: els["btn-file-edit"].style.display }}));
+""")
+    assert out == {"shown": ["menu 5,7", "sheet sheet-file-actions"], "ctxEdit": "",
+                   "ctxDl": "", "dl": "none", "edit": "none"}
+    wire = _js_chunk(doc, "function wireRow(")
+    assert "if (pressedByTouch) { openFileActions(entry); return; }" in wire
+    assert 'pressedByTouch = ev.pointerType === "touch";' in wire
+    assert "openFileActions(entry, { x: ev.clientX, y: ev.clientY, pane: root });" in wire
+    # Escape is claimed on the window, ahead of the explorer's own Escape.
+    assert ('window.addEventListener("keydown", (e) => {\n'
+            '  if (e.key !== "Escape" || !filesMenuOpen()) return;') in doc
+    assert "function closeFilesMenus() { showViewMenu(false); showRefMenu(false); filesHideMenu(); }" in doc
+    assert '<div id="file-ctx-menu" class="ctx-menu" role="menu" hidden>' in doc
