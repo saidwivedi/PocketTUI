@@ -1105,6 +1105,27 @@
   "show": false
  },
  {
+  "id": "files.folder-upload",
+  "group": "Files and code",
+  "title": "Upload a whole folder",
+  "outcome": "Drop a folder on the file browser, or pick one, and it lands in the folder on screen with its subfolders, asking once before replacing files already there.",
+  "where": "Drag a folder onto the file list, or File browser > + > Upload folder",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": "upload_dirs",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/28-file-explorer.js:261-319",
+   "src/mobile/js/28-file-explorer.js:2247-2352",
+   "app.py:3891-3944"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
   "id": "files.drag-move",
   "group": "Files and code",
   "title": "Drag to move files",
@@ -2746,7 +2767,7 @@
   "hidden": 2,
   "agent": {
    "kind": "http",
-   "text": "Read the capability map to learn which features this server has (a missing or false flag means absent): fs, image_paste, upload, voice, learned, push, dbg, git, git_ref, search, ping, update, pair_qr, update_status, type, relay, browse, browse_tab, bookmarks, zip_dir, thumbs, browser_full, pdf_thumbs. It is frozen at server start.",
+   "text": "Read the capability map to learn which features this server has (a missing or false flag means absent): fs, image_paste, upload, voice, learned, push, dbg, git, git_ref, search, ping, update, pair_qr, update_status, type, relay, browse, browse_tab, bookmarks, zip_dir, thumbs, browser_full, pdf_thumbs, upload_dirs. It is frozen at server start.",
    "contract": "GET /api/version  -  -> {version, host, capabilities:{<flag>: bool}}"
   },
   "sources": [
