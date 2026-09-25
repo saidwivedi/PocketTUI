@@ -258,20 +258,64 @@ function hasDragType(dt, type) {
   return !!dt && Array.from(dt.types || []).includes(type);
 }
 
-// A folder dragged in from the OS has no bytes behind it — the drop hands over
-// an entry that either fails to read or uploads as zero bytes — so it is left
-// out rather than written as rubbish. webkitGetAsEntry is what tells the two
-// apart; where it is missing, or answers null for a file the page itself made,
-// the item counts as a file.
-function droppedFiles(dt) {
+// A folder dragged in from the OS has no bytes behind it — getAsFile() hands
+// over something that either fails to read or uploads as zero bytes — so it
+// comes back as its directory entry instead, for walkDroppedDir() to open on a
+// server that takes folders and for the drop to leave out on one that does
+// not. webkitGetAsEntry is what tells the two apart; where it is missing, or
+// answers null for a file the page itself made, the item counts as a file.
+// Synchronous on purpose: the items are only readable during the drop event
+// itself, while the entries taken out of them stay good for the walk after.
+function droppedEntries(dt) {
   const items = Array.from(dt.items || []).filter((it) => it.kind === "file");
   if (items.length && items[0].webkitGetAsEntry) {
-    return items
-      .filter((it) => { const e = it.webkitGetAsEntry(); return !e || e.isFile; })
-      .map((it) => it.getAsFile())
-      .filter(Boolean);
+    const files = [], dirs = [];
+    for (const it of items) {
+      const e = it.webkitGetAsEntry();
+      if (e && e.isDirectory) { dirs.push(e); continue; }
+      const f = it.getAsFile();
+      if (f) files.push(f);
+    }
+    return { files, dirs };
   }
-  return Array.from(dt.files || []);
+  return { files: Array.from(dt.files || []), dirs: [] };
+}
+
+// Everything in a dropped folder, depth first, as the upload loop's items:
+// relPath starts with the folder's own name, so dropping photos/ on /x lands
+// its files under /x/photos. A folder with nothing in it at all comes back in
+// `empty`, since no file will make it. readEntries() is a page at a time
+// (Chrome stops at 100), and only an empty page means the folder is done.
+async function walkDroppedDir(dir, prefix, into) {
+  const path = prefix + dir.name;
+  const reader = dir.createReader();
+  const kids = [];
+  for (;;) {
+    const page = await new Promise((ok, fail) => reader.readEntries(ok, fail));
+    if (!page.length) break;
+    kids.push(...page);
+  }
+  if (!kids.length) into.empty.push(path);
+  for (const k of kids) {
+    if (k.isDirectory) { await walkDroppedDir(k, path + "/", into); continue; }
+    if (!k.isFile) continue;
+    try {
+      const file = await new Promise((ok, fail) => k.file(ok, fail));
+      into.items.push({ file, relPath: path + "/" + k.name });
+    } catch (e) {
+      into.unreadable++;
+    }
+  }
+  return into;
+}
+
+// The folder picker's own test. iOS Safari has the webkitdirectory property
+// and ignores it — the sheet opens a plain photo or file picker and the pick
+// arrives flat — so the property alone would put a row there that does
+// nothing its name says; a2hsPlatform() is what counts iPadOS as iOS.
+function folderPickerWorks() {
+  return "webkitdirectory" in document.createElement("input")
+         && a2hsPlatform() !== "ios";
 }
 
 // The terminal's left-edge back gesture (20-edge-swipe.js), re-armed for the
@@ -2167,6 +2211,9 @@ function canDownload(path) { return !refFor(path); }
 
 q("btn-files-add").addEventListener("click", () => {
   filesSheetOwner = id;
+  // Strict: an older server 404s every file of a tree whose folders it will
+  // not make.
+  $("btn-files-upload-dir").hidden = !(hasCapStrict("upload_dirs") && folderPickerWorks());
   showSheet(true, "sheet-files-add");
 });
 
@@ -2198,29 +2245,115 @@ async function addNewFolder() {
 }
 
 // One file at a time, never in parallel: a 409 asks its own Replace? question,
-// and a pile of confirms racing each other is unanswerable.
-async function uploadFiles(files) {
+// and a pile of confirms racing each other is unanswerable. Items are
+// {file, relPath}, relPath being the file's name for a plain pick or drop and
+// its path inside the folder for a folder's — any "/" in one, or a folder
+// with nothing in it, makes the batch a tree and uploadTree() its loop.
+async function uploadFiles(items, empty = [], unreadable = 0) {
   if (demoApiOn()) { toast("Not in the demo"); return; }
+  if (refFor(filesPath)) { toast("Read-only on " + refFor(filesPath)); return; }
+  if (empty.length || items.some((it) => it.relPath.includes("/"))) {
+    return uploadTree(items, empty, unreadable);
+  }
   let done = 0, failed = 0;
-  for (const f of files) {
-    const err = await uploadFile(f, false);
+  for (const it of items) {
+    const err = await uploadFile(it, false);
     if (err === null) { done++; continue; }
     // "" is a declined replace or an expired token — both already said their
     // piece, or deliberately say nothing.
-    if (err) { failed++; if (files.length === 1) toast(err); }
+    if (err) { failed++; if (items.length === 1) toast(err); }
   }
-  if (files.length === 1) { if (done) toast("Uploaded " + files[0].name); }
+  if (items.length === 1) { if (done) toast("Uploaded " + items[0].file.name); }
   else if (done) toast("Uploaded " + done + (done === 1 ? " file" : " files")
                        + (failed ? ", " + failed + " failed" : ""));
   else if (failed) toast("Couldn't upload " + failed + " files");
   if (done) { loadDir(filesPath); filesRefreshPeers(id); }
 }
 
+// A folder's worth, which can be hundreds of files: one line of progress held
+// in place rather than a toast per file, one Replace? for the whole batch —
+// asked at the first file already there and applied to every one after it —
+// and one summary at the end. Into the folder that was on screen when it
+// started, whatever the listing moves on to while it runs. `unreadable` is the
+// files the walk could not open, which count as failed from the start.
+async function uploadTree(items, empty, unreadable = 0) {
+  const dir = filesPath;
+  let done = 0, skipped = 0, failed = unreadable, made = 0, replace = null;
+  for (let i = 0; i < items.length; i++) {
+    holdToast("Uploading " + (i + 1) + "/" + items.length);
+    let got = await uploadTreeFile(dir, items[i], replace === true);
+    if (got === "exists") {
+      if (replace === null) {
+        replace = await appConfirm(
+          items[i].relPath + " is the first. Replace every file that is "
+          + "already here, or keep them all and skip those?",
+          { title: "Some of these files already exist", confirmLabel: "Replace all" });
+      }
+      got = replace ? await uploadTreeFile(dir, items[i], true) : "skipped";
+    }
+    if (got === "auth") { hideToast(); return; }
+    if (got === "ok") done++;
+    else if (got === "skipped") skipped++;
+    else failed++;
+  }
+  // A folder with no file in it has nothing to upload, so it is made on its
+  // own, one level at a time: mkdir makes only the last one, and the levels
+  // above an empty folder can be as empty as it is. A level already there
+  // answers 409, which here is the same as having made it.
+  const have = new Set();
+  for (const rel of empty) {
+    let ok = true;
+    const parts = rel.split("/");
+    for (let n = 1; n <= parts.length && ok; n++) {
+      const at = parts.slice(0, n).join("/");
+      if (have.has(at)) continue;
+      const res = await fsPost("api/fs/mkdir", { path: joinPath(dir, at) });
+      if (!res) { hideToast(); return; }
+      ok = res.ok || res.status === 409;
+      if (ok) have.add(at);
+    }
+    if (ok) made++; else failed++;
+  }
+  if (!items.length && !failed) {
+    toast("Created " + made + (made === 1 ? " empty folder" : " empty folders"));
+  } else {
+    const parts = ["Uploaded " + done + (done === 1 ? " file" : " files")];
+    if (skipped) parts.push(skipped + " skipped");
+    if (failed) parts.push(failed + " failed");
+    toast(parts.join(", "), 4000);
+  }
+  if (done || made) { loadDir(filesPath); filesRefreshPeers(id); }
+}
+
+// One file of a tree: "ok", "exists" for the batch to decide on, "auth" when
+// the token is gone and the batch has to stop, otherwise "failed". mkdirs=1 is
+// what has the server make the file's folders on the way; a file sitting where
+// one of them has to go comes back as a 409 of its own, which is a failure
+// rather than a file to replace.
+async function uploadTreeFile(dir, it, overwrite) {
+  const qs = "?path=" + encodeURIComponent(joinPath(dir, it.relPath))
+             + "&mkdirs=1" + (overwrite ? "&overwrite=1" : "");
+  try {
+    const r = await fetch(apiURL("api/fs/upload" + qs),
+                          { method: "POST", headers: authHeaders(), body: it.file });
+    if (r.status === 401) { rejectToken(); return "auth"; }
+    if (r.ok) return "ok";
+    if (r.status === 409 && !overwrite) {
+      const data = await r.json().catch(() => null);
+      if (data && data.error === "exists") return "exists";
+    }
+    return "failed";
+  } catch (e) {
+    return "failed";
+  }
+}
+
 // Returns null when the file landed, "" when nothing more should be said, and
 // otherwise the message for whatever went wrong — the batch decides whether
 // that surfaces per file or as one summary.
-async function uploadFile(f, overwrite) {
-  const target = joinPath(filesPath, f.name);
+async function uploadFile(it, overwrite) {
+  const f = it.file;
+  const target = joinPath(filesPath, it.relPath);
   try {
     const qs = "?path=" + encodeURIComponent(target) + (overwrite ? "&overwrite=1" : "");
     // The body is the file itself — the raw-body shape /api/fs/upload shares
@@ -2229,7 +2362,7 @@ async function uploadFile(f, overwrite) {
                           { method: "POST", headers: authHeaders(), body: f });
     if (r.status === 401) { rejectToken(); return ""; }
     if (r.status === 409 && !overwrite) {
-      if (confirm(f.name + " already exists here. Replace it?")) return uploadFile(f, true);
+      if (confirm(f.name + " already exists here. Replace it?")) return uploadFile(it, true);
       return "";
     }
     if (r.status === 413) return "Too large to upload (50 MB max)";
@@ -2369,10 +2502,33 @@ filesDropZone.addEventListener("drop", (ev) => {
   clearDropHints();
   if (!isUploadDrag(ev)) return;
   ev.preventDefault();
-  const files = droppedFiles(ev.dataTransfer);
-  if (files.length) uploadFiles(files);
-  else toast("Folders can't be dropped");
+  if (demoApiOn()) { toast("Not in the demo"); return; }
+  const { files, dirs } = droppedEntries(ev.dataTransfer);
+  const items = files.map((f) => ({ file: f, relPath: f.name }));
+  if (dirs.length && hasCapStrict("upload_dirs")) { uploadDropped(items, dirs); return; }
+  // An older server cannot make a tree's folders, so its folders are left out
+  // as they always were — and said so when they were all the drop had.
+  if (items.length) uploadFiles(items);
+  else toast(dirs.length ? "Update the server to upload folders"
+                         : "Folders can't be dropped");
 });
+
+async function uploadDropped(items, dirs) {
+  holdToast("Reading " + (dirs.length === 1 ? dirs[0].name : dirs.length + " folders"));
+  const into = { items, empty: [], unreadable: 0 };
+  try {
+    for (const d of dirs) await walkDroppedDir(d, "", into);
+  } catch (e) {
+    toast("Couldn't read the folder");
+    return;
+  }
+  hideToast();
+  if (!into.items.length && !into.empty.length) {
+    toast(into.unreadable ? "Couldn't read the folder" : "Nothing to upload");
+    return;
+  }
+  uploadFiles(into.items, into.empty, into.unreadable);
+}
 
 // ---- navigation chrome -----------------------------------------------------
 
@@ -2789,7 +2945,24 @@ $("files-upload-input").addEventListener("change", (ev) => {
   // reset that lets the same pick fire change again.
   const files = Array.from(ev.target.files || []);
   ev.target.value = "";
-  if (files.length) filesSheetPane().uploadPicked(files);
+  if (files.length) {
+    filesSheetPane().uploadPicked(files.map((f) => ({ file: f, relPath: f.name })));
+  }
+});
+$("btn-files-upload-dir").addEventListener("click", () => {
+  showSheet(false);
+  $("files-upload-dir-input").click();
+});
+// webkitRelativePath already starts with the picked folder's own name, the
+// shape a drop's walk builds. A picker that ignored webkitdirectory (a browser
+// the row's test did not catch) hands over plain files with no relative path,
+// and those upload flat, as the Upload files row would have.
+$("files-upload-dir-input").addEventListener("change", (ev) => {
+  const files = Array.from(ev.target.files || []);
+  ev.target.value = "";
+  if (!files.length) { toast("Nothing to upload"); return; }
+  filesSheetPane().uploadPicked(
+    files.map((f) => ({ file: f, relPath: f.webkitRelativePath || f.name })));
 });
 
 // The pane's two controls in the bar of each file view. One editor, one reader

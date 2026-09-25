@@ -1466,6 +1466,11 @@ def server_capabilities() -> dict:
         # poppler, so this is its own flag rather than part of "thumbs". False
         # there, and the grid keeps the pdf icon.
         "pdf_thumbs": pdf_renderer() is not None,
+        # ?mkdirs=1 on /api/fs/upload — a dropped or picked folder, whose
+        # files land under subfolders that do not exist yet. Strictly checked
+        # by the shell: an older server 404s every file of the tree, so the
+        # explorer skips folders there as it always has.
+        "upload_dirs": True,
     }
 
 
@@ -3890,19 +3895,39 @@ async def api_fs_upload(request: Request) -> Response:
     to send, and this keeps python-multipart out of the dependency list.
 
     No clobber unless ?overwrite=1, which the client only sends after asking.
+    ?mkdirs=1 is a folder upload's: the file's own subfolders are created on
+    the way down rather than a 404, since a dropped tree is one file per POST
+    and the folders between them have no bytes of their own to send.
     """
     raw = await request.body()
     path = str(request.query_params.get("path", ""))
     overwrite = request.query_params.get("overwrite", "") == "1"
-    return await run_in_threadpool(fs_store_upload, raw, path, overwrite)
+    mkdirs = request.query_params.get("mkdirs", "") == "1"
+    return await run_in_threadpool(fs_store_upload, raw, path, overwrite, mkdirs)
 
 
-def fs_store_upload(raw: bytes, path: str, overwrite: bool) -> Response:
+def fs_store_upload(raw: bytes, path: str, overwrite: bool,
+                    mkdirs: bool = False) -> Response:
     p = fs_path(path)
     if p is None:
         return fs_error("bad_path", 400)
+    # A folder upload's path is the folder on screen plus a relative path out
+    # of the dropped tree, and a ".." in that tail would plant folders beside
+    # the target instead of under it. Path() has already folded away "." and
+    # doubled slashes; ".." it keeps, because it cannot know about symlinks.
+    if mkdirs and ".." in p.parts:
+        return fs_error("bad_path", 400)
     if len(raw) > MAX_UPLOAD_BYTES:
         return fs_error("too_large", 413)
+    if mkdirs:
+        try:
+            os.makedirs(p.parent, exist_ok=True)
+        except (FileExistsError, NotADirectoryError):
+            # A file already sits where one of the folders has to go: the
+            # tree cannot land as dropped, and nothing is moved aside for it.
+            return fs_error("not_a_directory", 409)
+        except OSError:
+            return fs_error("not_writable", 403)
     if not p.parent.is_dir():
         return fs_error("not_found", 404)
     mode = None

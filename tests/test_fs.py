@@ -360,6 +360,70 @@ def test_upload_size_cap(client, tree, monkeypatch):
     assert r.status_code == 413
 
 
+def up(client, path, body=b"x", **flags):
+    params = {"path": str(path), **{k: "1" for k, v in flags.items() if v}}
+    return client.post("/api/fs/upload", params=params, content=body)
+
+
+def test_upload_mkdirs_creates_the_missing_folders(client, tree):
+    target = tree / "photos" / "2026" / "trip" / "a.jpg"
+    r = up(client, target, b"jpeg", mkdirs=True)
+    assert r.status_code == 200
+    assert target.read_bytes() == b"jpeg"
+    # A second file in the same tree finds its folders already there.
+    r = up(client, tree / "photos" / "2026" / "b.jpg", b"b", mkdirs=True)
+    assert r.status_code == 200
+    assert (tree / "photos" / "2026" / "b.jpg").read_bytes() == b"b"
+
+
+def test_upload_without_mkdirs_still_404s_a_missing_folder(client, tree):
+    r = up(client, tree / "nope" / "a.txt")
+    assert r.status_code == 404
+    assert not (tree / "nope").exists()
+
+
+def test_upload_mkdirs_refuses_a_path_that_climbs_out(client, tree):
+    r = up(client, f"{tree}/drop/../../escaped/a.txt", mkdirs=True)
+    assert r.status_code == 400
+    assert r.json()["error"] == "bad_path"
+    assert not (tree.parent / "escaped").exists()
+    assert not (tree / "drop").exists()
+    assert up(client, "rel/a.txt", mkdirs=True).status_code == 400
+
+
+@pytest.mark.parametrize("rel", ["beta.txt/a.txt", "beta.txt/deeper/a.txt"])
+def test_upload_mkdirs_with_a_file_in_the_way_is_409(client, tree, rel):
+    r = up(client, tree / rel, mkdirs=True)
+    assert r.status_code == 409
+    assert r.json()["error"] == "not_a_directory"
+    assert (tree / "beta.txt").read_text() == "beta\n"
+
+
+def test_upload_mkdirs_keeps_the_clobber_rules(client, tree):
+    target = tree / "sub" / "inner.md"
+    r = up(client, target, b"new", mkdirs=True)
+    assert r.status_code == 409
+    assert r.json()["error"] == "exists"
+    assert target.read_text() == "# inner\n"
+    r = up(client, target, b"new", mkdirs=True, overwrite=True)
+    assert r.status_code == 200
+    assert target.read_bytes() == b"new"
+    # A folder where the file would go is not a file to replace.
+    r = up(client, tree / "zdir", b"new", mkdirs=True, overwrite=True)
+    assert r.status_code == 400
+
+
+def test_upload_mkdirs_over_the_cap_creates_nothing(client, tree, monkeypatch):
+    monkeypatch.setattr(A, "MAX_UPLOAD_BYTES", 8)
+    r = up(client, tree / "big" / "cap.bin", b"123456789", mkdirs=True)
+    assert r.status_code == 413
+    assert not (tree / "big").exists()
+
+
+def test_the_capabilities_map_offers_folder_uploads():
+    assert A.server_capabilities()["upload_dirs"] is True
+
+
 def test_download_any_file_as_attachment(client, tree):
     (tree / "blob.bin").write_bytes(b"PK\x00\x03rest")
     r = client.get("/api/fs/download", params={"path": str(tree / "blob.bin")})

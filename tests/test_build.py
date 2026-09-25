@@ -1477,3 +1477,200 @@ console.log(JSON.stringify({{ shown, ctxEdit: els["ctx-file-edit"].style.display
             '  if (e.key !== "Escape" || !filesMenuOpen()) return;') in doc
     assert "function closeFilesMenus() { showViewMenu(false); showRefMenu(false); filesHideMenu(); }" in doc
     assert '<div id="file-ctx-menu" class="ctx-menu" role="menu" hidden>' in doc
+
+
+# ---------------------------------------------------------------------------
+# Folder upload
+# ---------------------------------------------------------------------------
+# A fake of the File and Directory Entries API, for the walk and the drop:
+# a directory's reader hands out at most `page` entries per readEntries call,
+# the way Chrome stops at 100, and counts the calls.
+FAKE_ENTRIES = """
+let readCalls = 0;
+function fileEntry(name) {
+  return { name, isFile: true, isDirectory: false,
+           file: (ok) => ok({ name, size: 1 }) };
+}
+function dirEntry(name, kids, page = 100) {
+  return { name, isFile: false, isDirectory: true, createReader() {
+    let at = 0;
+    return { readEntries(ok) {
+      readCalls++;
+      const out = kids.slice(at, at + page); at += out.length;
+      setTimeout(() => ok(out), 0);
+    } };
+  } };
+}
+"""
+
+
+def test_a_dropped_folder_is_walked_page_by_page_under_its_own_name(doc, tmp_path):
+    """Chrome answers readEntries 100 at a time; a walk that stopped at the
+    first page would drop the rest of a big folder without a word. relPath
+    starts with the dropped folder's name, and a folder with nothing in it is
+    reported for the upload to make."""
+    fn = _js_chunk(doc, "async function walkDroppedDir(")
+    out = _node_json(tmp_path, "walk.mjs", FAKE_ENTRIES + fn + """
+const many = Array.from({ length: 250 }, (_, i) => fileEntry("f" + i + ".jpg"));
+const tree = dirEntry("photos", [
+  ...many,
+  dirEntry("2026", [fileEntry("a.jpg"), dirEntry("empty", [])]),
+  dirEntry("blank", []),
+]);
+const into = await walkDroppedDir(tree, "", { items: [], empty: [], unreadable: 0 });
+const rels = into.items.map((it) => it.relPath);
+console.log(JSON.stringify({ n: rels.length, first: rels[0], last: rels[rels.length - 1],
+  f249: rels.includes("photos/f249.jpg"), nested: rels.includes("photos/2026/a.jpg"),
+  empty: into.empty, readCalls, named: into.items[0].file.name }));
+""")
+    assert out == {"n": 251, "first": "photos/f0.jpg", "last": "photos/2026/a.jpg",
+                   "f249": True, "nested": True,
+                   "empty": ["photos/2026/empty", "photos/blank"],
+                   # photos: 3 full-or-part pages + the empty one; 2026: 2;
+                   # each empty folder: 1.
+                   "readCalls": 4 + 2 + 1 + 1, "named": "f0.jpg"}
+
+
+DROP_HANDLER_STUBS = """
+let serverDirs = false;
+const calls = [];
+function hasCapStrict(name) { return name === "upload_dirs" && serverDirs; }
+function demoApiOn() { return false; }
+function clearDropHints() {}
+function isUploadDrag() { return true; }
+function toast(m) { calls.push(["toast", m]); }
+function holdToast(m) {}
+function hideToast() {}
+function uploadFiles(items, empty) {
+  calls.push(["upload", items.map((it) => it.relPath), empty || []]);
+}
+let dropHandler = null;
+const filesDropZone = { addEventListener(type, fn) { if (type === "drop") dropHandler = fn; } };
+function dataTransfer(entries) {
+  return { items: entries.map((e) => ({ kind: "file", webkitGetAsEntry: () => e,
+                                        getAsFile: () => (e.isFile ? { name: e.name } : null) })) };
+}
+function drop(entries) {
+  return dropHandler({ dataTransfer: dataTransfer(entries), preventDefault() {} });
+}
+"""
+
+
+def _drop_code(doc):
+    at = doc.index('\nfilesDropZone.addEventListener("drop", (ev) => {') + 1
+    return doc[at:doc.index("\n});\n", at) + 5]
+
+
+def test_a_folder_drop_uploads_its_tree_where_the_server_takes_folders(doc, tmp_path):
+    code = "\n".join([_js_chunk(doc, "function droppedEntries("),
+                      _js_chunk(doc, "async function walkDroppedDir("),
+                      _drop_code(doc),
+                      _js_chunk(doc, "async function uploadDropped(")])
+    out = _node_json(tmp_path, "drop.mjs", FAKE_ENTRIES + DROP_HANDLER_STUBS + code + """
+const mixed = () => [fileEntry("notes.txt"),
+                     dirEntry("photos", [fileEntry("a.jpg"), dirEntry("x", [])])];
+// An older server: the files in a mixed drop go, the folder is left out, and
+// a drop of nothing but folders says why nothing happened.
+drop(mixed());
+drop([dirEntry("photos", [fileEntry("a.jpg")])]);
+serverDirs = true;
+drop(mixed());
+await new Promise((r) => setTimeout(r, 50));
+console.log(JSON.stringify(calls));
+""")
+    assert out == [
+        ["upload", ["notes.txt"], []],
+        ["toast", "Update the server to upload folders"],
+        ["upload", ["notes.txt", "photos/a.jpg"], ["photos/x"]],
+    ]
+
+
+# user agent, maxTouchPoints, input has webkitdirectory -> row offered
+PICKER_CASES = [
+    ("desktop chrome", "Mozilla/5.0 (X11; Linux x86_64) Chrome/140", 0, True, True),
+    ("mac safari", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605", 0, True, True),
+    ("iphone", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Safari/604", 5, True, False),
+    ("ipad as mac", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605", 5, True, False),
+    ("android chrome", "Mozilla/5.0 (Linux; Android 14) Chrome/140 Mobile", 5, True, True),
+    ("no property", "Mozilla/5.0 (X11; Linux x86_64) Firefox/50", 0, False, False),
+]
+
+
+@pytest.mark.parametrize("name,ua,touch,prop,want", PICKER_CASES,
+                         ids=[c[0] for c in PICKER_CASES])
+def test_the_folder_picker_row_is_offered_only_where_it_picks_a_folder(
+        doc, tmp_path, name, ua, touch, prop, want):
+    """iOS Safari has webkitdirectory and ignores it, so the property alone is
+    not the test."""
+    code = _js_chunk(doc, "function a2hsPlatform(") + _js_chunk(doc, "function folderPickerWorks(")
+    out = _node_json(tmp_path, "picker.mjs", f"""
+// Node has a navigator of its own, which plain assignment cannot replace.
+Object.defineProperty(globalThis, "navigator", {{
+  value: {{ userAgent: {json.dumps(ua)}, maxTouchPoints: {touch} }} }});
+globalThis.document = {{ createElement: () => ({json.dumps(prop)} ? {{ webkitdirectory: false }} : {{}}) }};
+{code}
+console.log(JSON.stringify(folderPickerWorks()));
+""")
+    assert out is want
+    # And the row is hidden where the server cannot make a tree's folders.
+    assert ('  $("btn-files-upload-dir").hidden = !(hasCapStrict("upload_dirs") '
+            '&& folderPickerWorks());') in doc
+    assert ('<input type="file" id="files-upload-dir-input" webkitdirectory multiple '
+            'style="display:none">') in doc
+
+
+def test_a_tree_upload_asks_about_existing_files_once(doc, tmp_path):
+    """The first file already there raises one question and its answer holds
+    for the batch; a file in the way of a folder is a failure, not a replace;
+    empty folders are made level by level; one summary at the end."""
+    code = _js_chunk(doc, "async function uploadTree(") + _js_chunk(doc, "async function uploadTreeFile(")
+    out = {}
+    for answer in (True, False):
+        out[answer] = _node_json(tmp_path, f"tree{answer}.mjs", f"""
+const filesPath = "/x", id = "files";
+const disk = new Set(["/x/p/a.txt", "/x/p/b.txt"]);
+const posts = [], mkdirs = [], asked = [], toasts = [], held = [];
+function joinPath(d, n) {{ return d + "/" + n; }}
+function apiURL(p) {{ return p; }}
+function authHeaders() {{ return {{}}; }}
+function rejectToken() {{}}
+function holdToast(m) {{ held.push(m); }}
+function hideToast() {{}}
+function toast(m) {{ toasts.push(m); }}
+function loadDir() {{}}
+function filesRefreshPeers() {{}}
+async function appConfirm(msg, opts) {{ asked.push(opts.title); return {json.dumps(answer)}; }}
+async function fsPost(route, body) {{ mkdirs.push(body.path); return {{ ok: true, status: 200 }}; }}
+async function fetch(url) {{
+  const q = new URLSearchParams(url.split("?")[1]);
+  const path = q.get("path");
+  posts.push(path + (q.get("overwrite") ? " !" : "") + (q.get("mkdirs") ? "" : " NO-MKDIRS"));
+  if (path.startsWith("/x/p/blocked")) return {{ ok: false, status: 409, json: async () => ({{ error: "not_a_directory" }}) }};
+  if (disk.has(path) && !q.get("overwrite")) return {{ ok: false, status: 409, json: async () => ({{ error: "exists" }}) }};
+  return {{ ok: true, status: 200 }};
+}}
+{code}
+const it = (relPath) => ({{ file: {{}}, relPath }});
+await uploadTree([it("p/a.txt"), it("p/new.txt"), it("p/b.txt"), it("p/blocked/c.txt")],
+                 ["p/e1/e2"]);
+console.log(JSON.stringify({{ posts, mkdirs, asked, toasts, held }}));
+""")
+    yes, no = out[True], out[False]
+    assert yes["asked"] == no["asked"] == ["Some of these files already exist"]
+    # Once the answer is yes, the rest go with overwrite=1 up front.
+    assert yes["posts"] == ["/x/p/a.txt", "/x/p/a.txt !", "/x/p/new.txt !", "/x/p/b.txt !",
+                            "/x/p/blocked/c.txt !"]
+    assert yes["toasts"] == ["Uploaded 3 files, 1 failed"]
+    assert no["posts"] == ["/x/p/a.txt", "/x/p/new.txt", "/x/p/b.txt", "/x/p/blocked/c.txt"]
+    assert no["toasts"] == ["Uploaded 1 file, 2 skipped, 1 failed"]
+    assert yes["mkdirs"] == ["/x/p", "/x/p/e1", "/x/p/e1/e2"]
+    assert yes["held"] == ["Uploading 1/4", "Uploading 2/4", "Uploading 3/4", "Uploading 4/4"]
+
+
+def test_plain_files_keep_the_flat_upload_and_a_ref_is_read_only(doc):
+    fn = _js_chunk(doc, "async function uploadFiles(")
+    assert 'if (demoApiOn()) { toast("Not in the demo"); return; }' in fn
+    assert 'if (refFor(filesPath)) { toast("Read-only on " + refFor(filesPath)); return; }' in fn
+    assert 'if (empty.length || items.some((it) => it.relPath.includes("/"))) {' in fn
+    assert 'if (items.length === 1) { if (done) toast("Uploaded " + items[0].file.name); }' in fn
+    assert 'if (confirm(f.name + " already exists here. Replace it?")) return uploadFile(it, true);' in doc
