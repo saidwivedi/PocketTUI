@@ -868,14 +868,17 @@ def _term_tap_handler(doc):
 
 
 # Each case is (touch, alternate buffer, gaps in ms before each tap after the
-# first) -> where the caret is after every tap.
+# first) -> where the caret is after every tap. The alternate buffer is where
+# Claude Code runs, so it must not change where a tap goes.
 TERM_TAP_CASES = [
     ("touch single tap", True, False, [], ["compose"]),
     ("touch taps far apart", True, False, [900], ["compose", "compose"]),
     ("touch double tap", True, False, [200], ["compose", "term"]),
     ("touch triple tap starts a new pair", True, False, [200, 200],
      ["compose", "term", "compose"]),
-    ("touch in a full-screen app", True, True, [], ["term"]),
+    ("touch in the alternate buffer", True, True, [], ["compose"]),
+    ("touch double tap in the alternate buffer", True, True, [200],
+     ["compose", "term"]),
     ("real keyboard", False, False, [], ["term"]),
     ("real keyboard double tap", False, False, [200], ["term", "term"]),
 ]
@@ -886,8 +889,8 @@ TERM_TAP_CASES = [
 def test_a_terminal_tap_on_touch_types_into_the_box(doc, tmp_path, name,
                                                     touch, alt, gaps, want):
     """Run rather than read: on touch a single tap puts the caret in the
-    composer, a double tap or a tap on a full-screen app puts it in the
-    terminal, and beside a real keyboard every tap goes to the terminal. A
+    composer, a double tap puts it in the terminal, whichever buffer is up
+    (Claude Code lives in the alternate one), and beside a real keyboard every tap goes to the terminal. A
     double tap leaves the box's text where it was."""
     node = shutil.which("node")
     if node is None:
@@ -900,6 +903,8 @@ const selectEndedAt = 0, dragScrolled = false, edgeSwipe = false, termGesture = 
 const box = {{ value: "half a line", focus() {{ focused = "compose"; }} }};
 const host = {{ addEventListener(ev, fn) {{ if (ev === "click") listener = fn; }} }};
 function $(id) {{ return id === "term-host" ? host : id === "compose-text" ? box : null; }}
+const dbgLines = [];
+function dbg(...p) {{ dbgLines.push(p.join(" ")); }}
 function touchOnly() {{ return {json.dumps(touch)}; }}
 function setCompose() {{ throw new Error("the docked strip is already open"); }}
 const term = {{
@@ -911,7 +916,7 @@ const got = [];
 const gaps = {json.dumps(gaps)};
 listener(); got.push(focused);
 for (const g of gaps) {{ now += g; listener(); got.push(focused); }}
-console.log(JSON.stringify({{ got, value: box.value }}));
+console.log(JSON.stringify({{ got, value: box.value, dbgLines }}));
 """
     f = tmp_path / "tap.mjs"
     f.write_text(harness, encoding="utf-8")
@@ -919,6 +924,9 @@ console.log(JSON.stringify({{ got, value: box.value }}));
                                     capture_output=True).stdout.decode())
     assert out["got"] == want
     assert out["value"] == "half a line"
+    if touch:
+        assert [l.split()[1] for l in out["dbgLines"]] == [
+            "composer" if w == "compose" else "terminal" for w in want]
 
 
 def test_a_terminal_tap_keeps_every_gesture_guard(doc):
