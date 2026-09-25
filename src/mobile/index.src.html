@@ -1561,10 +1561,14 @@
     <button type="button" id="btn-files-newfile">New file</button>
     <button type="button" id="btn-files-newfolder">New folder</button>
     <button type="button" id="btn-files-upload">Upload files</button>
+    <button type="button" id="btn-files-upload-dir">Upload folder</button>
   </div>
 </div>
-<!-- The upload sheet's file picker; never rendered, only clicked. -->
+<!-- The upload sheet's file pickers; never rendered, only clicked. The second
+     picks a whole folder, and its row hides where that cannot work
+     (folderPickerWorks, 28-file-explorer.js). -->
 <input type="file" id="files-upload-input" multiple style="display:none">
+<input type="file" id="files-upload-dir-input" webkitdirectory multiple style="display:none">
 
 <!-- ============================================================
      SESSION (alias / rename / kill)
