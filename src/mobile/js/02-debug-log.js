@@ -228,6 +228,7 @@ function removeProfile(id) {
   // The marks were about that machine's sessions, and nothing will ever ask
   // about them again.
   dropProfileUnread(id);
+  dropProfileFilesLast(id);
   if (id === activeProfileId()) localStorage.removeItem(ACTIVE_PROFILE_KEY);
   mirrorLegacyKeys();
 }

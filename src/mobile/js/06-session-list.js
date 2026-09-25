@@ -90,6 +90,73 @@ function clearUnread(name) {
   const row = $("list").querySelector('.item[data-name="' + CSS.escape(name) + '"]');
   if (row) row.classList.remove("unread");
 }
+// ---- the explorer's last folder, per session --------------------------------
+// Opening the explorer again in a session it was open in lands where it was
+// left, rather than on the terminal's cwd (filesOpenAtCwd, 28-file-explorer.js).
+// Keyed by what tmux calls the session for its whole life — its id and its
+// creation time, both in every /api/sessions row — so a rename keeps the folder,
+// and a tmux server restart, which hands the ids out again from $0, does not
+// give a new session an old one's folder. One map per profile, the unread
+// marks' rule: two computers can each have a session called "work".
+const FILES_LAST_KEY = "pockettui_files_last";
+// Session name to key, from the latest payload. A session the list has not yet
+// named has no key, and no folder is remembered for it or read back.
+let sessionKeys = new Map();
+function sessionKey(name) { return sessionKeys.get(name) || ""; }
+function filesLastAll() {
+  let m = null;
+  try { m = JSON.parse(localStorage.getItem(FILES_LAST_KEY)); } catch (e) {}
+  return m && typeof m === "object" ? m : {};
+}
+function filesLastMap() {
+  const m = filesLastAll()[unreadProfileKey()];
+  return m && typeof m === "object" ? m : {};
+}
+function saveFilesLast(m) {
+  const all = filesLastAll();
+  all[unreadProfileKey()] = m;
+  try { localStorage.setItem(FILES_LAST_KEY, JSON.stringify(all)); } catch (e) {}
+}
+function filesLastDir(name) {
+  const key = sessionKey(name);
+  return key ? (filesLastMap()[key] || "") : "";
+}
+function rememberFilesDir(name, path) {
+  const key = sessionKey(name);
+  if (!key || !path) return;
+  const m = filesLastMap();
+  if (m[key] === path) return;
+  m[key] = path;
+  saveFilesLast(m);
+}
+function forgetFilesDir(name) {
+  const key = sessionKey(name);
+  const m = filesLastMap();
+  if (!key || !(key in m)) return;
+  delete m[key];
+  saveFilesLast(m);
+}
+// Every payload re-keys the names and drops the folders of sessions that are
+// gone, however they went.
+function keepFilesLast(sessions) {
+  sessionKeys = new Map();
+  for (const s of sessions) {
+    if (typeof s.sid === "number") sessionKeys.set(s.name, s.sid + "@" + (s.created || 0));
+  }
+  const keys = new Set(sessionKeys.values());
+  const m = filesLastMap();
+  const stale = Object.keys(m).filter((k) => !keys.has(k));
+  if (!stale.length) return;
+  for (const k of stale) delete m[k];
+  saveFilesLast(m);
+}
+function dropProfileFilesLast(id) {
+  const all = filesLastAll();
+  if (!(id in all)) return;
+  delete all[id];
+  try { localStorage.setItem(FILES_LAST_KEY, JSON.stringify(all)); } catch (e) {}
+}
+
 // Watcher states as of the previous payload; null until one has arrived.
 let lastStates = null;
 // Diffs a fresh payload against the baseline: prunes marks for sessions that
@@ -108,6 +175,7 @@ function noteUnread(sessions) {
   // the same reason — a session that is gone takes its marks and its file view
   // with it, however it went.
   keepFileViews(names);
+  keepFilesLast(sessions);
   if (lastStates) {
     for (const s of sessions) {
       if (s.state === "waiting" && lastStates.get(s.name) !== "waiting"
@@ -484,6 +552,7 @@ async function killSession(name) {
     // for it is dropped here rather than left to the refresh below: the next
     // session created under this name must not open onto this one's buffer.
     dropFileView(name);
+    forgetFilesDir(name);
     loadSessions();
     return true;
   } catch (e) {
