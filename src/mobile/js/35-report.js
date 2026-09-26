@@ -191,7 +191,7 @@ async function offerDebugLog() {
   if (!n) { dbgRecDiscard(); return; }
   const yes = await appConfirm(
     (n === 1 ? "1 line was" : n + " lines were") +
-    " recorded since Debug log was turned on. The log can include file paths," +
+    " logged since Debug log was turned on. The log can include file paths," +
     " session names and your computer's address.",
     { title: "Send the debug log to support?", confirmLabel: "Send log…", danger: false });
   if (!yes) { dbgRecDiscard(); return; }
