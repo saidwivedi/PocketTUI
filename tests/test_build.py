@@ -120,6 +120,150 @@ def test_report_dialog_is_wired(doc):
     assert "https://pockettui.com/api/report" in doc
 
 
+def test_report_sheet_can_attach_the_debug_recording(doc):
+    """The founder, 2026-09-26: a report carries the debug log. Turning Debug
+    log off asks whether to send it, and the sheet has an attach row that is
+    hidden unless there is a recording."""
+    sheet = doc[doc.index('<div class="sheet" id="sheet-report">'):]
+    sheet = sheet[:sheet.index("</div>\n\n")]
+    row = sheet[sheet.index('id="report-log-row"') - 30:]
+    assert '<div class="toggle-row" id="report-log-row" hidden>' in row
+    assert '<input id="report-log" type="checkbox" checked>' in row
+    # After the diagnostics switch, before the details block.
+    assert sheet.index('id="report-diag"') < sheet.index('id="report-log-row"') \
+        < sheet.index('id="report-diag-details"')
+    assert "#report-log-row[hidden] { display: none; }" in doc
+    assert 'const DBG_REC_KEY = "pockettui_dbg_rec";' in doc
+    # The toggle's off tap offers the log; its on tap starts a fresh recording.
+    handler = doc[doc.index('$("dbg-toggle").addEventListener("change"'):]
+    handler = handler[:handler.index("\n});\n")]
+    assert "setDebug(e.target.checked, true);" in handler
+    assert "if (!e.target.checked) offerDebugLog();" in handler
+    offer = _js_chunk(doc, "async function offerDebugLog(")
+    assert 'title: "Send the debug log to support?"' in offer
+    assert 'confirmLabel: "Send log…"' in offer and "danger: false" in offer
+    assert "openReport({ fromOff: true });" in offer
+    # Any way out of the sheet but Send drops a log the turn-off path handed it.
+    show = _js_chunk(doc, "function showSheet(")
+    assert 'if (dbgRecHeld && !(on && id === "sheet-report")) dbgRecDiscard();' in show
+    send = _js_chunk(doc, "async function sendReport(")
+    assert '$("report-log").checked ? reportLogRec : null' in send
+    assert "const REPORT_TIMEOUT = 30000;" in doc
+    # Boot's re-enable carries the recording on (no fresh flag).
+    assert "if (cfg.debug) setDebug(true);" in doc
+
+
+def _dbg_rec_code(doc):
+    at = doc.index("\nconst DBG_REC_KEY") + 1
+    end = doc.index("\nfunction dbgRecResume(", at)
+    return doc[at:doc.index("\n}\n", end) + 3]
+
+
+def test_debug_recording_caps_persists_and_resumes(doc, tmp_path):
+    """Newest lines win on both caps, the header survives them, storage is
+    written only on save (the flush), a reload resumes rather than restarts,
+    and a discard only ever removes the recording of a setting that is off."""
+    code = _dbg_rec_code(doc)
+    out = _node_json(tmp_path, "rec.mjs", f"""
+const ls = {{}};
+let writes = 0;
+const localStorage = {{ getItem: (k) => (k in ls ? ls[k] : null),
+  setItem: (k, v) => {{ writes++; ls[k] = v; }}, removeItem: (k) => {{ delete ls[k]; }} }};
+let dbgOn = true;
+function buildVersion() {{ return "v-test"; }}
+function reportLogHeader() {{ return ["PocketTUI debug log", "started: now", ""]; }}
+{code}
+const got = {{}};
+dbgRecStart();
+got.startWrites = writes;
+for (let i = 0; i < 4100; i++) dbgRecPush("line " + i);
+got.writesBeforeSave = writes;
+dbgRecSave(); dbgRecSave();
+got.writesAfterSave = writes;
+let r = dbgRecLoad();
+got.count = r.lines.length;
+got.first = r.lines[0];
+got.head = r.head;
+// The char cap: long lines evict by size well before 4000 of them.
+dbgRecStart();
+for (let i = 0; i < 400; i++) dbgRecPush(String(i).padEnd(1000, "."));
+dbgRecSave();
+r = dbgRecLoad();
+got.bigCount = r.lines.length;
+got.bigChars = r.chars <= DBG_REC_CHARS;
+got.bigLast = r.lines[r.lines.length - 1].slice(0, 3);
+// A reload: memory gone, storage kept, the same recording carries on.
+dbgRec = null;
+dbgRecResume();
+got.resumed = dbgRec.lines.length === got.bigCount + 1 &&
+  dbgRec.lines[dbgRec.lines.length - 1].startsWith("--- resumed after reload");
+got.text = dbgRecText({{ head: ["h"], lines: ["a", "b"] }});
+// Discard while on does nothing; while off, it removes the stored copy.
+dbgRecSave();
+dbgRecDiscard();
+got.keptWhileOn = DBG_REC_KEY in ls;
+dbgOn = false; dbgRecHeld = true;
+dbgRecDiscard();
+got.goneWhenOff = !(DBG_REC_KEY in ls) && !dbgRecHeld;
+// A corrupt store reads as none.
+ls[DBG_REC_KEY] = "{{nope";
+got.corrupt = dbgRecLoad();
+console.log(JSON.stringify(got));
+""")
+    assert out["startWrites"] == 1
+    assert out["writesBeforeSave"] == 1
+    assert out["writesAfterSave"] == 2
+    assert out["count"] == 4000 and out["first"] == "line 100"
+    assert out["head"] == ["PocketTUI debug log", "started: now", ""]
+    assert 250 <= out["bigCount"] < 400 and out["bigChars"] and out["bigLast"] == "399"
+    assert out["resumed"] is True
+    assert out["text"] == "h\na\nb"
+    assert out["keptWhileOn"] is True and out["goneWhenOff"] is True
+    assert out["corrupt"] is None
+
+
+def test_report_body_fits_the_log_under_the_endpoint_limits(doc, tmp_path):
+    """A log that would take the report over the endpoint's byte or char cap
+    loses its oldest lines at send time; the header stays and the cut is
+    marked, so the endpoint never refuses it or cuts the header off."""
+    consts = "\n".join(_js_chunk(doc, c) for c in (
+        "const REPORT_MAX_BODY", "const REPORT_MAX_LOG"))
+    body = _js_chunk(doc, "function reportBody(")
+    out = _node_json(tmp_path, "body.mjs", f"""
+{consts}
+{body}
+const fields = {{ message: "m", email: "", diag: "", website: "" }};
+const got = {{}};
+got.none = JSON.parse(reportBody(fields, null));
+got.small = JSON.parse(reportBody(fields, {{ head: ["H"], lines: ["a", "b"] }})).log;
+// Non-ASCII: under the char cap, over the byte cap as UTF-8.
+const wide = [];
+for (let i = 0; i < 3000; i++) wide.push(i + " " + "日本語".repeat(40));
+let raw = reportBody(fields, {{ head: ["HEAD"], lines: wide }});
+let log = JSON.parse(raw).log;
+got.wideBytes = new TextEncoder().encode(raw).length <= REPORT_MAX_BODY;
+got.wideHead = log.split("\\n")[0];
+got.wideMarker = / earlier lines dropped to fit the report]$/.test(log.split("\\n")[1]) &&
+  log.split("\\n")[1].startsWith("[");
+got.wideLast = log.endsWith("2999 " + "日本語".repeat(40));
+got.wideKeptBytes = new TextEncoder().encode(raw).length;
+// ASCII over the char cap.
+const ascii = [];
+for (let i = 0; i < 3000; i++) ascii.push(String(i).padEnd(100, "x"));
+log = JSON.parse(reportBody(fields, {{ head: ["HEAD"], lines: ascii }})).log;
+got.asciiChars = log.length <= REPORT_MAX_LOG;
+got.asciiHead = log.startsWith("HEAD\\n[");
+got.asciiKept = log.length;
+console.log(JSON.stringify(got));
+""")
+    assert "log" not in out["none"]
+    assert out["small"] == "H\na\nb"
+    assert out["wideBytes"] and out["wideHead"] == "HEAD" and out["wideMarker"] and out["wideLast"]
+    # Only what had to go: the kept part fills most of the byte cap.
+    assert out["wideKeptBytes"] > 300 * 1024
+    assert out["asciiChars"] and out["asciiHead"] and out["asciiKept"] > 250 * 1024
+
+
 def test_browser_zoom_scales_the_frame_not_the_page(doc):
     """The pane's zoom is a transform on the iframe, never the page's own.
 

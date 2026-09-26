@@ -1658,6 +1658,12 @@
     <label for="report-diag">Include diagnostics</label>
     <input id="report-diag" type="checkbox" checked>
   </div>
+  <!-- Shown only when there is a recording to attach: the one the Debug log
+       switch offered on its way off, or the one still running (openReport). -->
+  <div class="toggle-row" id="report-log-row" hidden>
+    <label for="report-log" id="report-log-label">Attach debug log</label>
+    <input id="report-log" type="checkbox" checked>
+  </div>
   <details id="report-diag-details">
     <summary>What&rsquo;s included</summary>
     <pre id="report-diag-text"></pre>

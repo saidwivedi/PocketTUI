@@ -12,7 +12,13 @@
 // thing in it that could name a private machine — the shell's own hostname — is
 // reduced to "self-hosted" rather than sent.
 const REPORT_URL = "https://pockettui.com/api/report";
-const REPORT_TIMEOUT = 15000;
+// Long enough for a quarter-megabyte debug log to go up over a poor phone link.
+const REPORT_TIMEOUT = 30000;
+// The endpoint's own limits (functions/api/report.js): the body in bytes, the
+// log in chars. The log is fitted under both here, oldest lines first, so the
+// endpoint never has to refuse a report or cut the log's header off it.
+const REPORT_MAX_BODY = 320 * 1024;
+const REPORT_MAX_LOG = 256 * 1024;
 // Shown when the send failed with nothing to say for itself. The endpoint's own
 // wording for the same case, so a network failure and a refused send read alike.
 const REPORT_SEND_FAILED = "Couldn't send. Email support@pockettui.com instead.";
@@ -147,19 +153,109 @@ function reportDiagnostics() {
   ].filter(line => line !== null).join("\n");
 }
 
+// The top of a debug recording (dbgRecStart, 02-debug-log.js): when it began
+// and on what, so a log read on its own still says which build and browser it
+// came from. Only ever called from the Settings tap, after every fragment has
+// run; Client Hints are left out because they are fetched asynchronously.
+function reportLogHeader() {
+  const ua = parseUA(navigator.userAgent, navigator.maxTouchPoints);
+  return [
+    "PocketTUI debug log",
+    "started: " + new Date().toISOString(),
+    "version: " + buildVersion(),
+    "app: " + (appVersion() || "unknown"),
+    "server: " + (serverVersion || "unknown"),
+    "browser: " + ua.browser,
+    "os: " + ua.os,
+    "platform: " + (a2hsPlatform() || "desktop"),
+    "shell: " + reportShell(),
+    "",
+  ];
+}
+
+// The recording the open sheet would attach, as {head, lines}, or null. Taken
+// when the sheet opens, like the diagnostics block: what the row counted is
+// what goes out.
+let reportLogRec = null;
+
+function reportLogKB(text) {
+  return Math.max(1, Math.round(new TextEncoder().encode(text).length / 1024));
+}
+
+// Turning Debug log off (05-settings.js) lands here with the recording already
+// written out and the setting already off. Nothing recorded past the header is
+// nothing to ask about.
+async function offerDebugLog() {
+  const rec = dbgRecLoad();
+  const n = rec ? rec.lines.length : 0;
+  if (!n) { dbgRecDiscard(); return; }
+  const yes = await appConfirm(
+    (n === 1 ? "1 line was" : n + " lines were") +
+    " recorded since Debug log was turned on. The log can include file paths," +
+    " session names and your computer's address.",
+    { title: "Send the debug log to support?", confirmLabel: "Send log…", danger: false });
+  if (!yes) { dbgRecDiscard(); return; }
+  openReport({ fromOff: true });
+}
+
+// The report body as it will be posted. A log that would take it over either
+// limit loses its oldest lines, the header kept and the cut marked in it. Lines
+// are dropped by their UTF-8 size against the byte excess and by their length
+// against the char excess; JSON escaping can leave a little over, which the
+// next pass takes.
+function reportBody(fields, rec) {
+  if (!rec) return JSON.stringify(fields);
+  const enc = new TextEncoder();
+  let lines = rec.lines;
+  let dropped = 0;
+  for (;;) {
+    const text = rec.head.concat(
+      dropped ? ["[" + dropped + " earlier lines dropped to fit the report]"] : [],
+      lines).join("\n");
+    const body = JSON.stringify(Object.assign({}, fields, { log: text }));
+    const overBytes = enc.encode(body).length - REPORT_MAX_BODY;
+    const overChars = text.length - REPORT_MAX_LOG;
+    if ((overBytes <= 0 && overChars <= 0) || !lines.length) return body;
+    // 64 past each excess leaves room for the marker line to grow.
+    let cut = 0, bytes = 0, chars = 0;
+    while (cut < lines.length && (bytes < overBytes + 64 || chars < overChars + 64)) {
+      bytes += enc.encode(lines[cut]).length + 1;
+      chars += lines[cut++].length + 1;
+    }
+    lines = lines.slice(cut);
+    dropped += cut;
+  }
+}
+
 function showReportError(text) {
   $("report-error").textContent = text;
   $("report-error").classList.add("show");
 }
 
-async function openReport() {
+// `fromOff` is the turn-off question's yes: the recording is attached, and is
+// dropped with the sheet unless Send takes it. Opened the ordinary way while
+// debug is still on, the sheet attaches what has been recorded so far and
+// leaves the recording running.
+async function openReport(opts) {
+  const fromOff = !!(opts && opts.fromOff);
   $("report-error").classList.remove("show");
   await loadUAHints();
   $("report-diag-text").textContent = reportDiagnostics();
+  const rec = fromOff || dbgOn ? dbgRecCurrent() : null;
+  reportLogRec = rec && rec.lines.length
+    ? { head: rec.head.slice(), lines: rec.lines.slice() } : null;
+  $("report-log-row").hidden = !reportLogRec;
+  $("report-log").checked = true;
+  if (reportLogRec) {
+    const n = reportLogRec.lines.length;
+    $("report-log-label").textContent = "Attach debug log (" + n +
+      (n === 1 ? " line, " : " lines, ") + reportLogKB(dbgRecText(reportLogRec)) + " KB)";
+  }
+  dbgRecHeld = fromOff && !!reportLogRec;
   showSheet(true, "sheet-report");
 }
 
-$("btn-report").addEventListener("click", openReport);
+$("btn-report").addEventListener("click", () => openReport());
 $("btn-report-cancel").addEventListener("click", () => showSheet(false));
 
 let reportSending = false;
@@ -179,14 +275,14 @@ async function sendReport() {
     const r = await fetch(REPORT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: reportBody({
         message: message,
         email: $("report-email").value.trim(),
         // The block the sheet is showing, not a fresh one: what was on screen
         // is what the user agreed to send.
         diag: $("report-diag").checked ? $("report-diag-text").textContent : "",
         website: $("report-website").value,
-      }),
+      }, $("report-log").checked ? reportLogRec : null),
       signal: ctl.signal,
     });
     const data = await r.json().catch(() => null);
@@ -199,7 +295,7 @@ async function sendReport() {
     showSheet(false);
     toast("Sent. Thanks!");
   } catch (e) {
-    // A refusal, a dead network or the 15s timer, all one outcome here: the
+    // A refusal, a dead network or the 30s timer, all one outcome here: the
     // sheet stays up with the text still in it, because a failed send must not
     // be the thing that loses the report. The mailto line below is the way out.
     dbg("report: send failed", e);
