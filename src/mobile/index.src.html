@@ -1642,7 +1642,9 @@
      the address it may be answered at, and the diagnostics block in full. -->
 <div class="sheet" id="sheet-report">
   <h2>Report a problem</h2>
-  <label for="report-msg">What happened</label>
+  <!-- The marker shows while a debug log is attached (openReport): the log is
+       the report then, and a description only helps. -->
+  <label for="report-msg" class="opt">What happened <span id="report-msg-opt" hidden>optional</span></label>
   <textarea id="report-msg" rows="5" maxlength="2000" required
             placeholder="What went wrong? What did you expect?"></textarea>
   <label for="report-email" class="opt">Email <span>optional</span></label>
