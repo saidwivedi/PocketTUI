@@ -24,6 +24,9 @@ function showSheet(on, id="sheet-settings") {
   // their resolver before calling back in here, so this cannot loop.
   if (!(on && id === "sheet-confirm")) settleConfirm(false);
   if (!(on && id === "sheet-prompt")) settlePrompt(null);
+  // The same rule for a debug log the turn-off question handed to the report
+  // sheet: Send is the one way to keep it, and every other way out drops it.
+  if (dbgRecHeld && !(on && id === "sheet-report")) dbgRecDiscard();
   for (const s of SHEET_IDS) $(s).classList.toggle("show", on && id === s);
   $("sheet-scrim").classList.toggle("show", on);
 }
@@ -615,9 +618,12 @@ $("voice-engine").addEventListener("change", (e) => {
 });
 // Applies on the tap rather than on Save: the reason to reach for it is that
 // something is already going wrong, and Cancel must not be able to lose it.
+// Turning it off is also where the recording is offered to support, since the
+// log is only worth anything to someone who is not holding the phone.
 $("dbg-toggle").addEventListener("change", (e) => {
   cfg.debug = e.target.checked;
-  setDebug(e.target.checked);
+  setDebug(e.target.checked, true);
+  if (!e.target.checked) offerDebugLog();
 });
 // Applies on the tap, same as the switches above: the key it adds or drops is
 // this sheet's scrim sitting over the key bar, so nothing can be mid-press

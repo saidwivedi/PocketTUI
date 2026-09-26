@@ -31,6 +31,7 @@ function dbg(...parts) {
   const line = stamp + "  " + parts.map(dbgFormat).join(" ");
   dbgBuf.push(line);
   if (dbgBuf.length > DBG_MAX) dbgBuf.shift();
+  if (dbgRec) dbgRecPush(line);
   dbgSend(line);
   const p = $("dbg-panel");
   if (!p) return;
@@ -61,6 +62,7 @@ function dbgSend(line) {
 function dbgFlush() {
   clearTimeout(dbgFlushTimer);
   dbgFlushTimer = null;
+  dbgRecSave();
   if (!dbgQueue.length) return;
   const lines = dbgQueue.splice(0, dbgQueue.length);
   // Swallowed whole: no toast, and above all no dbg() — a line about a failed
@@ -78,6 +80,109 @@ function dbgFlush() {
 // The last second of lines is the interesting one when a phone is being put
 // away or reloaded; keepalive is what lets the request outlive the page.
 window.addEventListener("pagehide", dbgFlush);
+
+// The journal above lives on the user's own computer, which is no help to
+// support: a report arrives with a message and no log. So while the setting is
+// on, every line is also kept on the device as a recording, and turning the
+// setting off asks whether to mail it (offerDebugLog, 35-report.js). It is in
+// localStorage because the session worth recording is the one that reloads or
+// gets put away; boot re-enables debug and the recording carries on from there.
+//
+// The newest lines win on both caps. The char cap stands in for bytes: the log
+// is almost all ASCII, and a report that still comes out too large is trimmed
+// once more at send time against the endpoint's own limit.
+//
+// Written from dbgFlush, on its one-second timer and on pagehide, never per
+// line: dbg() sits on per-keystroke paths and a 256 KB setItem is not cheap.
+const DBG_REC_KEY = "pockettui_dbg_rec";
+const DBG_REC_LINES = 4000;
+const DBG_REC_CHARS = 256 * 1024;
+// {head: [...], lines: [...], chars} while recording, null otherwise. The head
+// sits apart from the lines so the caps can never drop it.
+let dbgRec = null;
+let dbgRecDirty = false;
+// Set while a recording that outlived its setting waits on the report sheet
+// (the turn-off path). Any way that sheet goes away but Send is a discard; see
+// showSheet(). Kept here rather than beside the sheet because showSheet can run
+// before 35-report.js has, and a later fragment's let would still be unbound.
+let dbgRecHeld = false;
+
+function dbgRecPush(line) {
+  dbgRec.lines.push(line);
+  dbgRec.chars += line.length + 1;
+  while (dbgRec.lines.length > DBG_REC_LINES ||
+         (dbgRec.chars > DBG_REC_CHARS && dbgRec.lines.length > 1)) {
+    dbgRec.chars -= dbgRec.lines.shift().length + 1;
+  }
+  dbgRecDirty = true;
+}
+
+function dbgRecSave() {
+  if (!dbgRec || !dbgRecDirty) return;
+  dbgRecDirty = false;
+  // Quota and private mode both throw here. The recording in memory is still
+  // whole, so the next flush simply tries again with it.
+  try {
+    localStorage.setItem(DBG_REC_KEY, JSON.stringify({ head: dbgRec.head, lines: dbgRec.lines }));
+  } catch (e) {}
+}
+
+// The stored recording, or null for none or one that does not parse.
+function dbgRecLoad() {
+  let r = null;
+  try { r = JSON.parse(localStorage.getItem(DBG_REC_KEY) || "null"); } catch (e) {}
+  if (!r || !Array.isArray(r.head) || !Array.isArray(r.lines)) return null;
+  const lines = r.lines.map(String);
+  return { head: r.head.map(String), lines: lines,
+           chars: lines.reduce((n, l) => n + l.length + 1, 0) };
+}
+
+// The recording as it stands: the live one while recording, else what storage
+// holds (the turn-off path, after setDebug(false) has written it out).
+function dbgRecCurrent() {
+  return dbgRec || dbgRecLoad();
+}
+
+function dbgRecText(rec) {
+  return rec.head.concat(rec.lines).join("\n");
+}
+
+// Only ever the stored recording of a setting that is already off: while it is
+// on, the recording is the one still being made and a report leaves it alone.
+function dbgRecDiscard() {
+  dbgRecHeld = false;
+  if (dbgOn) return;
+  try { localStorage.removeItem(DBG_REC_KEY); } catch (e) {}
+}
+
+// Called from the tap that turns the setting on, never at load: the header
+// reaches into 35-report.js and 36-server-version.js, whose constants are not
+// bound yet while boot is running. reportLogHeader() is a hoisted declaration,
+// and it is still wrapped, so a header that cannot be built costs only itself.
+function dbgRecStart() {
+  let head;
+  try { head = reportLogHeader(); } catch (e) {
+    head = ["PocketTUI debug log", "started: " + new Date().toISOString(),
+            "version: " + buildVersion()];
+  }
+  dbgRec = { head: head, lines: [], chars: 0 };
+  dbgRecDirty = true;
+  dbgRecSave();
+}
+
+// Boot's re-enable: the same recording, with the reload marked in it. A device
+// with nothing stored (debug turned on before recordings existed, or storage
+// that refused the last write) starts one instead.
+function dbgRecResume() {
+  dbgRec = dbgRecLoad();
+  if (!dbgRec) { dbgRecStart(); return; }
+  dbgRecPush("--- resumed after reload " + new Date().toISOString() + " ---");
+}
+
+// A recording left behind with the setting off is one whose send-or-discard
+// question was never answered (a reload with the report sheet up). It is not
+// kept for later: the only recording on a device is the one being made now.
+if (!dbgOn) { try { localStorage.removeItem(DBG_REC_KEY); } catch (e) {} }
 
 // Built on first enable and then kept — toggling off hides it rather than tearing
 // it down, since the only cost while hidden is one detached-from-view element.
@@ -100,7 +205,9 @@ window.addEventListener("unhandledrejection", (e) => {
   dbg("unhandled rejection:", r instanceof Error ? r : dbgFormat(r));
 });
 
-function setDebug(on) {
+// `fresh` is the Settings tap: a new recording. Without it (boot) the stored
+// one carries on.
+function setDebug(on, fresh) {
   dbgOn = !!on;
   if (dbgOn) {
     dbgPanel().style.display = "";
@@ -109,7 +216,14 @@ function setDebug(on) {
     // the const itself is declared with the service-worker code at the far end of
     // this script, after the boot path that restores this setting has run.
     dbg("debug on — build", buildVersion());
+    // After the line above, so a fresh recording holds nothing but its header
+    // until the app actually logs something: on then straight off asks nothing.
+    if (fresh) { dbgRecHeld = false; dbgRecStart(); } else dbgRecResume();
   } else {
+    // Written out before it is let go: the turn-off question reads it back from
+    // storage, and discards it there once it is answered.
+    dbgRecSave();
+    dbgRec = null;
     const p = $("dbg-panel");
     if (p) { p.style.display = "none"; p.textContent = ""; }
     dbgBuf.length = 0;
