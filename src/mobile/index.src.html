@@ -1474,6 +1474,10 @@
       <label for="dbg-toggle">Debug log</label>
       <input id="dbg-toggle" type="checkbox">
     </div>
+    <!-- Says where the log can go, since the switch alone does not: the offer
+         only appears once it is turned off (offerDebugLog, 35-report.js). -->
+    <p class="row-hint">Records what the app does while it is on. Turning it off
+      offers to send the log to PocketTUI support.</p>
     <!-- Below the debug toggle because that is what a report is usually carrying.
          Shown only once the app has actually reached a backend — see
          reportAvailable(); a shell still asking for an address has nothing to

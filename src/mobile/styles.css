@@ -2248,6 +2248,13 @@ html.term-open, body.term-open {
   margin-top: 18px;
 }
 .sheet .toggle-row label { margin-bottom: 0; }
+/* A line under a toggle row that says what the switch leads to. */
+.sheet .row-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tertiary);
+}
 .sheet .toggle-row input {
   /* Bypasses .sheet input entirely — the native control is the whole widget. */
   width: 44px; flex: 0 0 auto;
