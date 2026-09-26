@@ -2950,9 +2950,16 @@ html.term-open, body.term-open {
    DEBUG PANEL
    ============================================================ */
 /* Top-anchored on purpose: a phone has no console, and the one place a keyboard
-   can never reach is the top of the screen. pointer-events:none because it hangs
-   over the terminal — every tap has to pass straight through it. Dark and
-   translucent in both themes; it is an instrument, not part of the paper. */
+   can never reach is the top of the screen. But it hangs just under the
+   screen's top chrome, not over it: taps pass through (pointer-events:none),
+   yet a button under a dark box does not look pressable, so nothing pressable
+   may sit under it. The top here is only the bare case — no bar at the top, as
+   on a phone's terminal — and dbgPlace() (02-debug-log.js) moves it below
+   whatever bar, badge or banner is up, and past the rail on the wide layout.
+   The phone's session list has no keyboard, and its first button sits right
+   under its bar, so there dbgPlace() puts the panel at the foot instead.
+   Dark and translucent in both themes; it is an instrument, not part of the
+   paper. */
 #dbg-panel {
   position: fixed;
   top: calc(8px + var(--safe-top, 0px)); left: 8px; right: 8px;

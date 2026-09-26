@@ -191,8 +191,57 @@ function dbgPanel() {
   if (!p) {
     p = el("div", { id: "dbg-panel" });
     document.body.appendChild(p);
+    // A screen change, the connection banner and the find bar all arrive as a
+    // class flip somewhere in the page, so that is what re-hangs the panel.
+    new MutationObserver(dbgPlaceSoon).observe(document.body,
+      { subtree: true, attributes: true, attributeFilter: ["class"] });
+    window.addEventListener("resize", dbgPlaceSoon);
   }
   return p;
+}
+
+// Hung under the top chrome of whatever is on screen rather than over it: taps
+// pass through the panel, but nobody can tell that a button under it is still
+// live. Which chrome is up changes by screen and by moment — a phone's list has
+// its bar, a phone's terminal has none but may carry the demo badge or the
+// connection banner, and the wide layout's main pane may head itself with the
+// find bar, a docked pane's head or a screen's own bar — so the bottom edge is
+// read off the page, not written into the stylesheet. On the wide layout the
+// panel also starts past the rail, which is a column of buttons from top to
+// foot. The phone's session list is the exception: it has no keyboard to keep
+// clear of, and under its bar sits the list's own first button, so there the
+// panel drops to the foot of the screen instead. Read in a frame callback,
+// never inside dbg() itself: dbg() sits on geometry paths, and a forced layout
+// there would change what it measures.
+const DBG_CHROME = ".topbar, #diff-head, #demo-badge, #conn-banner, #search-bar";
+let dbgPlaceFrame = 0;
+function dbgPlaceSoon() {
+  if (!dbgOn || dbgPlaceFrame) return;
+  dbgPlaceFrame = requestAnimationFrame(() => { dbgPlaceFrame = 0; dbgPlace(); });
+}
+function dbgPlace() {
+  const p = $("dbg-panel");
+  if (!p || !dbgOn) return;
+  const rail = $("rail-resize").getBoundingClientRect();
+  if (!rail.width && $("screen-list").classList.contains("active")) {
+    p.style.left = "";
+    p.style.top = "auto";
+    p.style.bottom = "calc(8px + var(--safe-bot, 0px))";
+    return;
+  }
+  p.style.bottom = "";
+  const left = rail.width ? rail.right + 8 : 8;
+  const right = window.innerWidth - 8;
+  let bottom = 0;
+  for (const c of document.querySelectorAll(DBG_CHROME)) {
+    const r = c.getBoundingClientRect();
+    if (!r.height || r.top > window.innerHeight / 2) continue;
+    if (r.right <= left || r.left >= right) continue;
+    bottom = Math.max(bottom, r.bottom);
+  }
+  p.style.left = rail.width ? left + "px" : "";
+  // Nothing to clear leaves the stylesheet's own top, which knows the notch.
+  p.style.top = bottom ? Math.round(bottom + 6) + "px" : "";
 }
 
 // Attached once, unconditionally: dbg() self-gates, so there is nothing to
@@ -211,6 +260,7 @@ function setDebug(on, fresh) {
   dbgOn = !!on;
   if (dbgOn) {
     dbgPanel().style.display = "";
+    dbgPlaceSoon();
     // The cache version is the only build stamp the app carries, and it is what
     // identifies which shell a report came from. Read through a function because
     // the const itself is declared with the service-worker code at the far end of
