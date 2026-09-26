@@ -61,6 +61,7 @@ curl -s -H "X-PocketTUI-Token: $(cat ~/pockettui/.token)" http://127.0.0.1:$PORT
 | `browser_full` | `/ws/browser/<pane>`, `/api/browser/status` | false without a Chromium |
 | `pdf_thumbs` | PDF page-one thumbnails | false without pdftoppm, gs or sips |
 | `upload_dirs` | `?mkdirs=1` on `/api/fs/upload` makes a folder upload's subfolders | true |
+| `session_order` | `POST /api/session/order` places the listed sessions in the order given | true |
 
 ## 3. Terminal-side conventions
 

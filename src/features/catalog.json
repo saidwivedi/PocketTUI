@@ -148,6 +148,24 @@
   "show": true
  },
  {
+  "id": "sessions.reorder",
+  "group": "Stay attached to your work",
+  "title": "Put your sessions in your own order",
+  "outcome": "Drag a session to where you want it in the list; every phone and computer paired to the machine shows the same order, and a new session starts at the top.",
+  "where": "Session list: hold a row, then drag (phone); drag a row in the sidebar (laptop)",
+  "surface": "both",
+  "gates": [],
+  "needs": "session_order",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/06-session-list.js:507-725",
+   "app.py:1638-1662"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
   "id": "sessions.kill",
   "group": "Stay attached to your work",
   "title": "Close a session",

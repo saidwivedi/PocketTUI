@@ -615,7 +615,7 @@ def session_rows() -> list[dict]:
         "-F",
         "#{session_name}\t#{session_created}\t#{session_attached}\t#{session_windows}"
         "\t#{session_grouped}\t#{session_group}\t#{session_id}\t#{@alias}\t#{@notify}"
-        "\t#{@ptui_view}",
+        "\t#{@ptui_view}\t#{@ptui_order}",
     )
     if rc != 0:
         return []
@@ -641,6 +641,7 @@ def session_rows() -> list[dict]:
             "alias": alias,
             "notify": _notify_mode(notify),
             "view": parts[9] == "1" if len(parts) > 9 else False,
+            "order": _order_value(parts[10] if len(parts) > 10 else ""),
         })
 
     # Oldest member per group, ordered by session id: tmux hands ids out in
@@ -669,6 +670,16 @@ def _session_sid(raw: str) -> int:
         return int(raw.lstrip("$"))
     except ValueError:
         return 1 << 62
+
+
+def _order_value(raw: str) -> int | None:
+    """The raw @ptui_order option as the row's place in the list, or None for
+    a session nobody has placed yet. A hand-set value that is not a number
+    reads as unplaced rather than breaking the sort."""
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 def _notify_mode(raw: str) -> str:
@@ -701,8 +712,10 @@ def other_group_members(rows: list[dict], row: dict) -> list[str]:
 
 
 def list_sessions() -> list[dict]:
-    """All non-phone tmux sessions with their active pane's command, newest first."""
+    """All non-phone tmux sessions with their active pane's command, in the
+    order the user dragged them into (see /api/session/order)."""
     sessions = []
+    order: dict[str, int | None] = {}
     for row in session_rows():
         # Hide the grouped non-representatives — this app's own views are born
         # grouped onto their target, which is race-free in a way a marker set
@@ -721,6 +734,7 @@ def list_sessions() -> list[dict]:
         # seconds after backgrounding, so the list is where "still waiting on
         # you" survives. A session the watcher has not seen yet reads idle.
         w = WATCHER.get(row["name"])
+        order[row["name"]] = row["order"]
         sessions.append({
             "name": row["name"],
             # tmux's own id for the session, which a rename keeps: what the
@@ -738,7 +752,13 @@ def list_sessions() -> list[dict]:
             "last_activity": w.last_activity if w else 0,
         })
 
+    # Newest first, then the placed ones by their place: a session nobody has
+    # dragged yet is one the user has just made, and the top is where they
+    # will look for it. Every drop places every row, so this only ever holds
+    # the sessions made since the last one.
     sessions.sort(key=lambda s: s["created"], reverse=True)
+    sessions.sort(key=lambda s: (order[s["name"]] is not None,
+                                 order[s["name"]] or 0))
     return sessions
 
 
@@ -1472,6 +1492,11 @@ def server_capabilities() -> dict:
         # by the shell: an older server 404s every file of the tree, so the
         # explorer skips folders there as it always has.
         "upload_dirs": True,
+        # /api/session/order — rows dragged into place on the list, the order
+        # kept on the sessions themselves so every device shows the same one.
+        # Strictly checked by the shell: an older server 404s the POST, and a
+        # row that snaps back after every drop is worse than rows that stay put.
+        "session_order": True,
     }
 
 
@@ -1608,6 +1633,33 @@ def api_alias(body: dict = Body(...)) -> Response:
     if rc != 0:
         return JSONResponse({"error": "could not set alias"}, status_code=500)
     return no_store(JSONResponse({"session": name, "alias": alias}))
+
+
+@app.post("/api/session/order")
+def api_session_order(body: dict = Body(...)) -> Response:
+    """Place the listed sessions in the order given: the whole list as a drag
+    left it, top first.
+
+    Stored as each session's own `@ptui_order` option, exactly as @alias is:
+    it follows the session through a rename and every device sorts by the same
+    numbers. A name that is not a listed session — gone since the drag began,
+    or one of this app's views — is skipped rather than failing the rest.
+    """
+    names = body.get("sessions")
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        return JSONResponse({"error": "sessions must be a list of names"},
+                            status_code=400)
+    rows = session_rows()
+    for index, name in enumerate(names):
+        row = find_row(rows, name)
+        if row is None or not row["representative"]:
+            continue
+        # No "=" exact-match prefix: set-option rejects it, as noted in enable_mouse.
+        rc, _ = tmux("set-option", "-t", name, "@ptui_order", str(index))
+        if rc != 0:
+            return JSONResponse({"error": "could not set the order"},
+                                status_code=500)
+    return no_store(JSONResponse({"sessions": list_sessions()}))
 
 
 @app.post("/api/session/kill")
