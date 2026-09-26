@@ -490,6 +490,25 @@ body {
 .item:hover { border-color: var(--hair-strong); }
 .item:active { transform: scale(0.985); background: var(--card-2); }
 
+/* Dragging a row into a new place (sessionReorder, 06-session-list.js). The
+   rows' offsetTop is what the drag measures, so the list is their offset
+   parent. A pressed row gives up the iOS callout and text selection, which
+   would otherwise claim the same hold that lifts it; the lifted row rides
+   above its neighbours and follows the pointer with no easing of its own. */
+#list { position: relative; }
+.item.drag-press, .item.drag-lifted {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none; user-select: none;
+}
+.item.drag-lifted {
+  z-index: 2;
+  cursor: grabbing;
+  background: var(--card-2);
+  box-shadow: 0 10px 28px rgba(20, 16, 10, 0.16), 0 2px 6px rgba(20, 16, 10, 0.08);
+  transition: box-shadow 0.14s var(--ease-out), background 0.18s var(--ease-out);
+}
+body.sess-dragging { -webkit-user-select: none; user-select: none; cursor: grabbing; }
+
 .item .item-head {
   display: flex; gap: 12px; align-items: flex-start;
 }

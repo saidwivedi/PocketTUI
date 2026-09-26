@@ -254,6 +254,8 @@ async function loadSessions(spin=false, quiet=false) {
     return data.sessions || [];
   } catch (e) {
     if (gen !== sessListGen || pgen !== profileGen) return;
+    // A poll that fails mid-drag says so on the next one; the row in hand stays.
+    if (sessDrag) return;
     $("list").innerHTML = "";
     if (needsSetup()) $("list").appendChild(demoCard());
     $("list-empty").style.display = "none";
@@ -399,7 +401,15 @@ function paneLabel(s) {
   return cwd ? (cwd.slice(cwd.lastIndexOf("/") + 1) || "/") : "";
 }
 
+// The row being pressed or dragged into a new place (sessionReorder below), or
+// null. While there is one the list is not rebuilt — every poll would wipe the
+// row out from under the finger — and the newest payload waits here for the
+// drop instead.
+let sessDrag = null;
+let sessDragPending = null;
+
 function renderSessions(sessions) {
+  if (sessDrag) { sessDragPending = sessions; return; }
   const list = $("list");
   const unread = noteUnread(sessions);
   list.innerHTML = "";
@@ -493,6 +503,226 @@ function markSelectedSession() {
       !!currentSession && row.dataset.name === currentSession);
   }
 }
+
+// ---- drag to reorder --------------------------------------------------------
+// Rows are dragged into the order the user wants, and the order is the
+// server's (@ptui_order on each session, /api/session/order), so every device
+// shows the same list. A finger has to hold still first — before the hold the
+// list scrolls as it always has — where a mouse lifts the row as soon as it
+// moves, having no scroll to confuse it with. The row's buttons never start a
+// drag, and a drag never ends as a tap on the row.
+(function sessionReorder() {
+  const list = $("list");
+  const LIFT_MS = 350;
+  const TOUCH_SLOP = 8;
+  const MOUSE_SLOP = 6;
+  // How close to the list's visible edge the pointer has to be before the list
+  // scrolls under it, and the fastest it scrolls, per frame.
+  const EDGE = 56;
+  const MAX_STEP = 14;
+  const ROW = ".item[data-name]:not(.demo)";
+  // The click a release produces belongs to the drop, not to the row. Cleared
+  // by the next press, since not every browser sends a click after a hold.
+  let swallowClick = false;
+
+  const order = () => [...list.querySelectorAll(":scope > " + ROW)].map(r => r.dataset.name);
+  function sibling(row, dir) {
+    let n = dir > 0 ? row.nextElementSibling : row.previousElementSibling;
+    while (n && !n.matches(ROW)) n = dir > 0 ? n.nextElementSibling : n.previousElementSibling;
+    return n;
+  }
+
+  // The phone's list scrolls with the page, under a sticky topbar; the rail's
+  // scrolls inside its own column.
+  function scroller() {
+    return isWideLayout() ? $("list-wrap") : (document.scrollingElement || document.documentElement);
+  }
+  function edges() {
+    if (isWideLayout()) {
+      const r = $("list-wrap").getBoundingClientRect();
+      return [r.top, r.bottom];
+    }
+    const bar = $("screen-list").querySelector(".topbar");
+    return [bar ? bar.getBoundingClientRect().bottom : 0, window.innerHeight];
+  }
+
+  list.addEventListener("pointerdown", (e) => {
+    swallowClick = false;
+    if (sessDrag || !e.isPrimary) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    const row = e.target.closest(ROW);
+    if (!row || e.target.closest("button")) return;
+    if (needsSetup() || !hasCapStrict("session_order")) return;
+    const touch = e.pointerType !== "mouse";
+    sessDrag = { row, id: e.pointerId, touch, x: e.clientX, y: e.clientY,
+                 lastY: e.clientY, lifted: false, before: order(),
+                 grab: 0, timer: 0, raf: 0 };
+    if (touch) {
+      // Pressed, not yet lifted: the class takes the iOS callout and text
+      // selection off the row before the system's own long press can claim it.
+      row.classList.add("drag-press");
+      sessDrag.timer = setTimeout(lift, LIFT_MS);
+    }
+  });
+
+  function lift() {
+    const d = sessDrag;
+    d.timer = 0;
+    d.lifted = true;
+    try { d.row.setPointerCapture(d.id); } catch (e) {}
+    // Where on the row it was grabbed, in the list's own coordinates, which a
+    // scroll moves together with every row in it.
+    d.grab = d.y - list.getBoundingClientRect().top - d.row.offsetTop;
+    d.row.classList.remove("drag-press");
+    d.row.classList.add("drag-lifted");
+    document.body.classList.add("sess-dragging");
+    const sel = window.getSelection();
+    if (sel) sel.removeAllRanges();
+    if (d.touch && navigator.vibrate) navigator.vibrate(10);
+    follow();
+    d.raf = requestAnimationFrame(autoScroll);
+  }
+
+  // The row trails the pointer by transform, and swaps places in the DOM with
+  // a neighbour once its middle crosses the neighbour's. The neighbour is the
+  // node that moves, never the dragged row: a captured element taken out of
+  // the document loses its capture. The neighbour slides to its new place from
+  // the old one on .item's own transform transition.
+  function follow() {
+    const d = sessDrag, row = d.row;
+    const top = d.lastY - list.getBoundingClientRect().top - d.grab;
+    const mid = top + row.offsetHeight / 2;
+    for (;;) {
+      const next = sibling(row, 1), prev = sibling(row, -1);
+      if (next && mid > next.offsetTop + next.offsetHeight / 2) {
+        shift(next, () => list.insertBefore(next, row));
+      } else if (prev && mid < prev.offsetTop + prev.offsetHeight / 2) {
+        shift(prev, () => row.after(prev));
+      } else break;
+    }
+    row.style.transform = "translateY(" + (top - row.offsetTop) + "px) scale(1.02)";
+  }
+  function shift(other, move) {
+    const was = other.offsetTop;
+    move();
+    other.style.transition = "none";
+    other.style.transform = "translateY(" + (was - other.offsetTop) + "px)";
+    void other.offsetWidth;
+    other.style.transition = "";
+    other.style.transform = "";
+  }
+
+  function autoScroll() {
+    const d = sessDrag;
+    if (!d || !d.lifted) return;
+    const [top, bottom] = edges();
+    let step = 0;
+    if (d.lastY < top + EDGE) step = -Math.min(1, (top + EDGE - d.lastY) / EDGE);
+    else if (d.lastY > bottom - EDGE) step = Math.min(1, (d.lastY - bottom + EDGE) / EDGE);
+    if (step) {
+      const sc = scroller(), was = sc.scrollTop;
+      sc.scrollTop = was + (Math.round(step * MAX_STEP) || Math.sign(step));
+      if (sc.scrollTop !== was) follow();
+    }
+    d.raf = requestAnimationFrame(autoScroll);
+  }
+
+  // Before the lift, a finger that moves is scrolling, and the press is let go
+  // for the browser to have; a mouse that moves is dragging.
+  window.addEventListener("pointermove", (e) => {
+    const d = sessDrag;
+    if (!d || e.pointerId !== d.id) return;
+    d.lastY = e.clientY;
+    if (d.lifted) { follow(); return; }
+    const far = Math.hypot(e.clientX - d.x, e.clientY - d.y);
+    if (d.touch ? far > TOUCH_SLOP : far > MOUSE_SLOP) {
+      if (d.touch) release(); else lift();
+    }
+  });
+
+  // A pointercancel on a lifted row drops it where it is, as a release would.
+  function end(e) {
+    const d = sessDrag;
+    if (!d || e.pointerId !== d.id) return;
+    if (d.lifted) drop(d); else release();
+  }
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+  // A press whose release never arrives — the window lost focus under it —
+  // must not hold the list's repaints back for good.
+  window.addEventListener("blur", () => {
+    if (sessDrag) { if (sessDrag.lifted) drop(sessDrag); else release(); }
+  });
+
+  // Ends a press that never lifted, and paints whatever arrived during it.
+  function release() {
+    const d = sessDrag;
+    clearTimeout(d.timer);
+    d.row.classList.remove("drag-press");
+    sessDrag = null;
+    flushPending();
+  }
+  function flushPending() {
+    const pending = sessDragPending;
+    sessDragPending = null;
+    if (pending) renderSessions(pending);
+  }
+
+  function drop(d) {
+    cancelAnimationFrame(d.raf);
+    sessDrag = null;
+    swallowClick = true;
+    document.body.classList.remove("sess-dragging");
+    d.row.classList.remove("drag-lifted");
+    d.row.style.transform = "";
+    const after = order();
+    if (after.join("\n") === d.before.join("\n")) { flushPending(); return; }
+    // The rows are already where the user left them; the server's answer only
+    // repaints them. A payload that came in during the drag is older than the
+    // order it would paint over.
+    sessDragPending = null;
+    saveOrder(after);
+  }
+
+  async function saveOrder(names) {
+    // Retires any poll already in flight: it was asked before the new order
+    // existed, and would put the rows back where they were.
+    const gen = ++sessListGen;
+    const pgen = profileGen;
+    try {
+      const r = await fetch(apiURL("api/session/order"), {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ sessions: names }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      if (gen !== sessListGen || pgen !== profileGen) return;
+      renderSessions(data.sessions || []);
+    } catch (e) {
+      if (pgen !== profileGen) return;
+      toast("Couldn't save the order");
+      loadSessions(false, true);
+    }
+  }
+
+  // Once a row is lifted the finger belongs to it, and the page must not
+  // scroll under the drag. Non-passive so the preventDefault is honoured; a
+  // no-op for every touch that is not holding a row.
+  list.addEventListener("touchmove", (e) => {
+    if (sessDrag && sessDrag.lifted) e.preventDefault();
+  }, { passive: false });
+  // Android's long press opens a context menu on the same hold that lifts.
+  list.addEventListener("contextmenu", (e) => {
+    if (sessDrag && sessDrag.touch) e.preventDefault();
+  });
+  list.addEventListener("click", (e) => {
+    if (!swallowClick) return;
+    swallowClick = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
+})();
 
 // The session sheet edits both names at once and carries the kill row. The
 // alias is a display name held on the tmux session itself (it follows the
@@ -686,6 +916,10 @@ $("btn-reload").addEventListener("click", () => loadSessions(true));
     // the scrolling part, so it has no scrollTop of its own.
     const top = isWideLayout() ? wrap.scrollTop : window.scrollY;
     startY = top <= 0 ? e.touches[0].clientY : null;
+  }, { passive: true });
+  // A row lifted and dragged down from the top is not a pull.
+  scr.addEventListener("touchmove", () => {
+    if (sessDrag && sessDrag.lifted) startY = null;
   }, { passive: true });
   scr.addEventListener("touchend", (e) => {
     if (startY !== null && e.changedTouches[0].clientY - startY > 70) loadSessions(true);
