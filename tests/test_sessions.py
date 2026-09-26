@@ -54,6 +54,7 @@ class FakeTmux:
         "@alias": lambda s: s.get("alias", ""),
         "@notify": lambda s: s.get("notify", ""),
         "@ptui_view": lambda s: "1" if s.get("view") else "",
+        "@ptui_order": lambda s: str(s.get("order", "")),
     }
 
     def __call__(self, *args):
@@ -86,6 +87,12 @@ class FakeTmux:
             self.sessions.append({"name": args[args.index("-s") + 1],
                                   "sid": self.next_sid})
             self.next_sid += 1
+            return 0, ""
+        if cmd == "set-option" and "@ptui_order" in args:
+            s = self.find(args[args.index("-t") + 1])
+            if s is None:
+                return 1, ""
+            s["order"] = args[-1]
             return 0, ""
         # set-option, list-panes, …: succeed quietly with no output.
         return 0, ""
@@ -389,6 +396,63 @@ def test_alias_follows_the_representative_rule(client, monkeypatch):
     # … and the view never is.
     r = client.post("/api/alias", json={"session": "phone-work", "alias": "x"})
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# The dragged order
+# ---------------------------------------------------------------------------
+
+def listed():
+    return [s["name"] for s in A.list_sessions()]
+
+
+def test_unplaced_sessions_lead_newest_first_then_the_placed_by_place(monkeypatch):
+    fake(monkeypatch, (
+        {"name": "placed-late", "created": 100, "order": 2},
+        {"name": "old-new", "created": 200},
+        {"name": "placed-first", "created": 300, "order": 0},
+        {"name": "new-new", "created": 400},
+        {"name": "tie-old", "created": 50, "order": 1},
+        {"name": "tie-young", "created": 60, "order": 1},
+        {"name": "garbage", "created": 500, "order": "x"},
+    ))
+    assert listed() == ["garbage", "new-new", "old-new", "placed-first",
+                        "tie-young", "tie-old", "placed-late"]
+
+
+def test_order_writes_each_place_onto_the_representative(client, monkeypatch):
+    tmux = fake(monkeypatch, RENAMED_BASE)
+    r = client.post("/api/session/order", json={"sessions": ["solo", "work2"]})
+    assert r.status_code == 200
+    assert ("set-option", "-t", "solo", "@ptui_order", "0") in tmux.calls
+    assert ("set-option", "-t", "work2", "@ptui_order", "1") in tmux.calls
+    assert [s["name"] for s in r.json()["sessions"]] == ["solo", "work2"]
+    # The option lives on the session, so the next list from any device agrees.
+    assert listed() == ["solo", "work2"]
+
+
+def test_order_skips_views_and_names_that_are_gone(client, monkeypatch):
+    tmux = fake(monkeypatch, RENAMED_BASE)
+    r = client.post("/api/session/order",
+                    json={"sessions": ["ghost", "phone-work", "work2", "solo"]})
+    assert r.status_code == 200
+    sets = [c for c in tmux.calls if c[0] == "set-option"]
+    assert sets == [("set-option", "-t", "work2", "@ptui_order", "2"),
+                    ("set-option", "-t", "solo", "@ptui_order", "3")]
+    assert [s["name"] for s in r.json()["sessions"]] == ["work2", "solo"]
+
+
+@pytest.mark.parametrize("body", [{}, {"sessions": "solo"}, {"sessions": [1]},
+                                  {"sessions": None}])
+def test_order_refuses_a_body_that_is_not_a_list_of_names(client, monkeypatch, body):
+    tmux = fake(monkeypatch, RENAMED_BASE)
+    r = client.post("/api/session/order", json=body)
+    assert r.status_code == 400
+    assert not [c for c in tmux.calls if c[0] == "set-option"]
+
+
+def test_session_order_is_a_capability_the_shell_can_check():
+    assert A.server_capabilities()["session_order"] is True
 
 
 # ---------------------------------------------------------------------------
