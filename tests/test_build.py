@@ -153,6 +153,38 @@ def test_report_sheet_can_attach_the_debug_recording(doc):
     assert "if (cfg.debug) setDebug(true);" in doc
 
 
+
+def test_report_send_is_never_silent(doc, tmp_path):
+    """The founder, 2026-09-27: Send with an empty box and a log attached did
+    nothing at all. With a log attached the description is optional and a
+    stand-in message goes out; without one, an empty box says so in red."""
+    sheet = doc[doc.index('<div class="sheet" id="sheet-report">'):]
+    assert ('<label for="report-msg" class="opt">What happened '
+            '<span id="report-msg-opt" hidden>optional</span></label>') in sheet
+    opener = _js_chunk(doc, "async function openReport(")
+    assert '$("report-msg-opt").hidden = !reportLogRec;' in opener
+    send = _js_chunk(doc, "async function sendReport(")
+    assert "if (!message) { $(\"report-msg\").focus(); return; }" not in send
+    empty = send[send.index("if (!message) {"):]
+    empty = empty[:empty.index("return;")]
+    assert 'showReportError("Please describe what went wrong.");' in empty
+    assert ('$("report-msg").addEventListener("input", () => '
+            '$("report-error").classList.remove("show"));') in doc
+    code = _js_chunk(doc, "const REPORT_LOG_ONLY_MESSAGE") + "\n" + \
+        _js_chunk(doc, "function reportMessage(")
+    out = _node_json(tmp_path, "msg.mjs", code + """
+console.log(JSON.stringify({
+  logOnly: reportMessage("  \\n ", true),
+  none: reportMessage("", false),
+  typed: reportMessage(" it broke ", true),
+  typedNoLog: reportMessage("it broke", false),
+}));
+""")
+    assert out["logOnly"] == "Debug log sent from Settings (no description given)."
+    assert out["none"] == ""
+    assert out["typed"] == "it broke" and out["typedNoLog"] == "it broke"
+
+
 def _dbg_rec_code(doc):
     at = doc.index("\nconst DBG_REC_KEY") + 1
     end = doc.index("\nfunction dbgRecResume(", at)

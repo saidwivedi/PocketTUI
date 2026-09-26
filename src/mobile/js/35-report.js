@@ -227,6 +227,16 @@ function reportBody(fields, rec) {
   }
 }
 
+// Sent in place of a description when the user attached a debug log and wrote
+// nothing: the endpoint requires a message, and the log is the report here.
+const REPORT_LOG_ONLY_MESSAGE = "Debug log sent from Settings (no description given).";
+
+// The message to post, or "" when there is nothing to send.
+function reportMessage(typed, logAttached) {
+  const message = typed.trim();
+  return message || (logAttached ? REPORT_LOG_ONLY_MESSAGE : "");
+}
+
 function showReportError(text) {
   $("report-error").textContent = text;
   $("report-error").classList.add("show");
@@ -245,6 +255,7 @@ async function openReport(opts) {
   reportLogRec = rec && rec.lines.length
     ? { head: rec.head.slice(), lines: rec.lines.slice() } : null;
   $("report-log-row").hidden = !reportLogRec;
+  $("report-msg-opt").hidden = !reportLogRec;
   $("report-log").checked = true;
   if (reportLogRec) {
     const n = reportLogRec.lines.length;
@@ -262,8 +273,13 @@ let reportSending = false;
 
 async function sendReport() {
   if (reportSending) return;
-  const message = $("report-msg").value.trim();
-  if (!message) { $("report-msg").focus(); return; }
+  const withLog = !$("report-log-row").hidden && $("report-log").checked;
+  const message = reportMessage($("report-msg").value, withLog);
+  if (!message) {
+    showReportError("Please describe what went wrong.");
+    $("report-msg").focus();
+    return;
+  }
   const btn = $("btn-report-send");
   reportSending = true;
   btn.disabled = true;
@@ -309,3 +325,4 @@ async function sendReport() {
 }
 
 $("btn-report-send").addEventListener("click", sendReport);
+$("report-msg").addEventListener("input", () => $("report-error").classList.remove("show"));
