@@ -17,17 +17,38 @@ const CORS = {
   "Cache-Control": "no-store",
 };
 
-const MAX_BODY = 16 * 1024;
+// Sized for the debug log the app can attach (MAX_LOG) plus the rest of a
+// report and its JSON escaping.
+const MAX_BODY = 320 * 1024;
 const MAX_MESSAGE = 2000;
 const MAX_EMAIL = 200;
 const MAX_DIAG = 8000;
 const MAX_SUBJECT = 60;
+const MAX_LOG = 256 * 1024;
 
 const SUPPORT = "support@pockettui.com";
 // What the sender is told whenever the send itself failed. Deliberately the
 // same string for a missing key, a refused key and a dead API: the person
 // reading it can do exactly one thing about any of them, and it is this.
 const SEND_FAILED = "Couldn't send. Email " + SUPPORT + " instead.";
+
+// Workers have btoa but no Buffer. btoa takes a byte string, so the UTF-8
+// bytes go through fromCharCode in chunks: one apply over a quarter megabyte
+// would overflow the argument limit.
+function base64Utf8(text) {
+  const bytes = new TextEncoder().encode(text);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+
+function logFilename(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return "pockettui-debug-" + d.getUTCFullYear() + p(d.getUTCMonth() + 1) + p(d.getUTCDate()) +
+    "-" + p(d.getUTCHours()) + p(d.getUTCMinutes()) + ".log";
+}
 
 function json(status, body) {
   return new Response(JSON.stringify(body), {
@@ -74,6 +95,11 @@ export async function onRequestPost({ request, env }) {
   // Truncated rather than refused: diagnostics are collected by the app, not
   // typed, so an oversized block is nothing the sender can act on.
   const diag = String(body.diag || "").slice(0, MAX_DIAG);
+  // The same rule for the debug log, but the tail is what is kept: the lines
+  // closest to the report are the ones about the problem.
+  let log = typeof body.log === "string" ? body.log : "";
+  const logDropped = Math.max(0, log.length - MAX_LOG);
+  if (logDropped) log = log.slice(-MAX_LOG);
 
   const oneLine = message.replace(/\s+/g, " ");
   const subject = "[report] " + (oneLine.length > MAX_SUBJECT
@@ -83,6 +109,15 @@ export async function onRequestPost({ request, env }) {
   // Plain text only, never html: every line below is untrusted input.
   const lines = [message, "", "-- ", "From: " + (email || "(not given)")];
   if (diag) lines.push("", diag);
+  if (log) {
+    const logBytes = new TextEncoder().encode(log).length;
+    lines.push("", "Debug log attached: " + log.split("\n").length + " lines, " +
+      Math.max(1, Math.round(logBytes / 1024)) + " KB");
+    if (logDropped) {
+      lines.push("Debug log truncated: the first " + logDropped +
+        " characters were dropped, the last " + MAX_LOG + " kept.");
+    }
+  }
 
   if (!env.RESEND_API_KEY) return json(500, { error: SEND_FAILED });
 
@@ -95,6 +130,9 @@ export async function onRequestPost({ request, env }) {
   // Only when there is somewhere to reply to — an empty reply_to is a rejected
   // send, and an anonymous report is a supported way to use this.
   if (email) payload.reply_to = email;
+  // An attachment rather than more body text: a log this long buries the
+  // message in the mail client, and a file is what gets searched and diffed.
+  if (log) payload.attachments = [{ filename: logFilename(new Date()), content: base64Utf8(log) }];
 
   try {
     const r = await fetch("https://api.resend.com/emails", {
