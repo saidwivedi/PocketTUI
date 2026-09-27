@@ -749,12 +749,6 @@ const SHOTS = {
       await sleep(600);
     },
   },
-  "prompt-chips": {
-    ...M, seed: RAIL_CLOSED,
-    features: ["notify.prompt-chips"],
-    caption: "A session waiting on a yes/no question: one-tap answer chips appear above the terminal.",
-    async run(ui) { await ui.click("#btn-reload", { after: 600 }); await inSession(ui, "agent"); await ui.wait("#chips.show"); await ui.remeasure(); },
-  },
   "settings-connection": {
     ...M, seed: RAIL_CLOSED,
     features: ["connect.add-computer", "connect.switch-computer", "connect.pairing-code", "connect.rename-computer", "connect.device-name", "connect.port-field", "connect.forget-computer"],

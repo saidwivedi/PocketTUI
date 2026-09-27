@@ -10501,7 +10501,8 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
 # watched session goes quiet after real work, the visible pane is read once
 # and classified, and the verdict goes out as a Web Push / ntfy notification
 # (per-session opt-in via the @notify session option, mirroring @alias) and as
-# prompt chips over the WS control channel to whoever is still attached.
+# a prompt frame over the WS control channel to whoever is still attached
+# (the phone no longer renders it; the badge and notification are the signal).
 
 # Tick period. Two tmux subprocesses per tick regardless of session count —
 # list-sessions (via session_rows) and one list-panes -a — so the cost is
@@ -10548,7 +10549,7 @@ class WatchState:
     fired_sig: str = ""           # signature of the last idle push actually sent
     notified_at: float | None = None   # monotonic stamp of the last dispatch
     state: str = "idle"           # active|waiting|ready|idle (the badge)
-    prompt: dict | None = None    # the chips frame currently showing, if any
+    prompt: dict | None = None    # the prompt frame last published, if any
 
 
 # Keyed by representative session name. Written by the watcher's worker
@@ -10942,7 +10943,7 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
     (the clock #{window_activity} is on) and `mono` a monotonic clock for
     notification spacing — both parameters so tests can drive the machine
     without patching time. Returns the tick's events: {"kind": "ws", ...} for
-    prompt-chip control frames and {"kind": "push", ...} for notifications.
+    prompt control frames and {"kind": "push", ...} for notifications.
 
     The rules, as decided: BUSY while output is younger than IDLE_S; a
     busy→idle transition reads the pane once and classifies it, either after
@@ -11008,7 +11009,7 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
 
         if agg["activity"] > w.last_activity:
             # Output resumed: re-arm, open an episode if none is running, and
-            # take down any chips the previous prompt put up.
+            # clear the prompt frame the previous prompt published.
             w.fired = False
             if not w.busy_started:
                 w.busy_started = agg["activity"]
@@ -11046,9 +11047,9 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
                     asks = kind in ("prompt", "menu", "waiting")
                     w.state = ("waiting" if asks
                                else "ready" if kind == "ready" else "idle")
-                    # Only a real question has anything to tap. "ready" and
-                    # "drafting" publish the empty frame instead, which
-                    # showPromptChips reads as "take the bar down" — but
+                    # Only a real question carries answers. "ready" and
+                    # "drafting" publish the empty frame instead ("no longer
+                    # waiting"; the client ignores prompt frames) — but
                     # w.prompt still has to hold it, or the `w.prompt is None`
                     # branch below would drop the badge back to idle on the
                     # very next tick.
@@ -11070,7 +11071,7 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
                         events.extend(_watch_notify(
                             row, w, mono, "ready", line,
                             sig=f"ready\x00{line}"))
-                    # "drafting" is a human mid-sentence: badge and chips only.
+                    # "drafting" is a human mid-sentence: badge and frame only.
                 else:
                     w.state = "idle"
                     # A finished run is not a question, so these two keep the
@@ -11120,7 +11121,7 @@ def watch_tick_sync() -> list[dict]:
     """One whole tick, run off-loop: poll, update, dispatch the transports.
 
     Push and ntfy are blocking HTTP and this already runs in a worker thread,
-    so they are sent here; the WS chip frames are returned instead, because
+    so they are sent here; the WS prompt frames are returned instead, because
     an Attachment's queue belongs to the event loop.
     """
     events = watch_update(session_rows(), watch_panes(),
@@ -11252,7 +11253,7 @@ def save_push_subs(subs: list[dict]) -> None:
 
 
 # A push is redundant while the user is looking at the app — the in-app
-# chips and badges are the signal there. Only an explicit visible=true from
+# badges are the signal there. Only an explicit visible=true from
 # the client suppresses; the default is hidden, and the state dies with the
 # socket. A socket silent longer than this bound is not believed either: a
 # dead-but-undetected TCP connection must not swallow notifications forever.

@@ -1,11 +1,10 @@
 // ============================================================
-// Notifications — bell toggle, Web Push, prompt chips, deep links
+// Notifications — bell toggle, Web Push, deep links
 // ============================================================
 // The server's pane watcher decides when a session needs its human (a y/n
 // question, a numbered menu, a long run finishing); this fragment is the
 // phone half: the list rows' bell opting a session in, this device's Web
-// Push subscription, the chips row that renders a detected prompt's answers,
-// and landing a tapped notification on the right session.
+// Push subscription, and landing a tapped notification on the right session.
 
 // What /api/push/status last answered. Fetched once a paired app boots and
 // kept, so the bell tap can act inside the user's own gesture instead of
@@ -112,45 +111,6 @@ async function toggleNotify(s, btn) {
   } catch (e) {
     toast("Couldn't update notifications");
   }
-}
-
-// ------------------------------------------------------------
-// Prompt chips
-// ------------------------------------------------------------
-function hideChips() {
-  const bar = $("chips");
-  if (!bar.classList.contains("show")) return;
-  bar.classList.remove("show");
-  bar.textContent = "";
-  // The row is a flex sibling of #term-host: its height comes out of the
-  // terminal's rows, which xterm only learns from a fit.
-  refit(0);
-}
-
-// Renders a prompt frame's answers, plus ⏎ and esc always — confirm and back
-// out are what every prompt understands. A tap sends the literal key(s);
-// send() itself hides the row, so answering by any other key clears it too.
-// The empty frame (options and line both blank) is the watcher saying the
-// session is busy again.
-function showPromptChips(ctl) {
-  const options = Array.isArray(ctl.options) ? ctl.options : [];
-  const line = typeof ctl.line === "string" ? ctl.line : "";
-  if (!options.length && !line) { hideChips(); return; }
-  const bar = $("chips");
-  bar.textContent = "";
-  const chips = options.map(o => ({ label: String(o), seq: String(o) }))
-    .concat([{ label: "⏎", seq: "\r" }, { label: "esc", seq: "\x1b" }]);
-  for (const c of chips) {
-    const b = el("button", { type: "button" }, c.label);
-    // Focus stays exactly where it is, like the key bar's keys: stealing it
-    // would drop the soft keyboard mid-typing.
-    b.addEventListener("pointerdown", (e) => e.preventDefault());
-    b.addEventListener("mousedown", (e) => e.preventDefault());
-    b.addEventListener("click", (e) => { e.preventDefault(); send(c.seq); });
-    bar.appendChild(b);
-  }
-  bar.classList.add("show");
-  refit(0);
 }
 
 // ------------------------------------------------------------

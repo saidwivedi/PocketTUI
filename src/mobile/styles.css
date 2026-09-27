@@ -1405,47 +1405,6 @@ html.term-open, body.term-open {
 #voice-retry-dismiss:hover { color: var(--ink); }
 
 /* ============================================================
-   PROMPT CHIPS — a detected prompt's answers, above the key bar
-   ============================================================ */
-/* Same glass as the key bar below so the dock stays one surface. Shown only
-   while the pane watcher says a prompt is up; sending any key hides it. */
-.chipbar {
-  flex: 0 0 auto;
-  display: none;
-  gap: 5px;
-  padding: 3px 5px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  background: color-mix(in srgb, var(--card) 94%, transparent);
-  backdrop-filter: saturate(1.4) blur(14px);
-  -webkit-backdrop-filter: saturate(1.4) blur(14px);
-  border-top: 1px solid var(--hair);
-  z-index: 20;
-}
-.chipbar.show { display: flex; }
-.chipbar::-webkit-scrollbar { display: none; }
-/* Answers carry an accent the key bar's own keys do not: this row only exists
-   because something is waiting, so its keys are the point of the screen. */
-.chipbar button {
-  flex: 0 0 auto;
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--umber);
-  background: var(--card-2);
-  border: 1px solid var(--hair-strong);
-  border-radius: 7px;
-  min-height: 28px;
-  min-width: 44px;
-  padding: 0 12px;
-  white-space: nowrap;
-  cursor: pointer;
-  -webkit-user-select: none; user-select: none;
-}
-.chipbar button:active { transform: scale(0.96); background: var(--hair); }
-
-/* ============================================================
    KEY BAR — docked above the soft keyboard
    ============================================================ */
 .keybar {

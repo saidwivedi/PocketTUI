@@ -69,14 +69,6 @@
   ],
   "caption": "A path printed in the terminal becomes a link under the pointer; the key pill at the top right holds the mic, files, browser and report keys."
  },
- "prompt-chips": {
-  "width": 2320,
-  "height": 1240,
-  "features": [
-   "notify.prompt-chips"
-  ],
-  "caption": "A session waiting on a yes/no question: one-tap answer chips appear above the terminal."
- },
  "settings-connection": {
   "width": 2320,
   "height": 1240,

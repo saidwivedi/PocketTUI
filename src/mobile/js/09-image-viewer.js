@@ -192,8 +192,6 @@ document.addEventListener("keydown", (e) => {
 // and the physical-keyboard handler all arrive here, so the demo only has to
 // intercept this one function to receive all of them.
 function send(data) {
-  // Any key the user sends answers whatever prompt the chips were offering.
-  hideChips();
   // Enter is a moment the shell's cwd can move, so the docked explorer asks
   // just after one rather than waiting for its tick (28-file-explorer.js).
   if (typeof data === "string" && data.indexOf("\r") !== -1) scheduleCwdAfterEnter();
@@ -260,7 +258,7 @@ function rzWatchFeed(bytes) {
 // Set when a hidden report could not be sent; cleared once one has been.
 let missedHidden = false;
 // Whether this client is on screen. The server holds this device's Web Push
-// (and the ntfy topic) while it is — the chips and badges are the in-app
+// (and the ntfy topic) while it is — the badges are the in-app
 // signal — and resumes the moment hidden arrives or the socket dies.
 function sendVisibility(visible) {
   if (!sock || sock.readyState !== WebSocket.OPEN) {
@@ -650,7 +648,6 @@ function openTerminal(name, resumed) {
   currentSession = name;
   retries = 0;
   hideConnBanner();  // a banner left up by the previous session is stale here
-  hideChips();       // and so is a chips row — it named the old session's prompt
   // The pane comes forward for every switch that reaches here — whatever was
   // over it has been put away or closed above. A view this session put away
   // itself takes it back at the end, once the terminal underneath is its own.
@@ -918,10 +915,11 @@ function connect() {
           painted = true;
           return;
         }
-        // The pane watcher saying this session is waiting on a prompt (or,
-        // with empty options and line, that it stopped waiting): the chips
-        // row renders the offered answers.
-        if (ctl && ctl.type === "prompt") { showPromptChips(ctl); return; }
+        // The pane watcher saying this session is waiting on a prompt (or that
+        // it stopped waiting). Nothing here renders it any more: the session
+        // row's badge and the notification are the signal, so it drops like
+        // an unknown frame.
+        if (ctl && ctl.type === "prompt") return;
         // A control frame this build does not know — a newer server's. Writing
         // raw JSON into the grid helps nobody; drop it.
         if (ctl) return;
