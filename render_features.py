@@ -31,7 +31,7 @@ ORDER = [
     "browser.open", "browser.stream", "links.localhost-relay", "preview.html-file",
     "connect.install-tailscale", "connect.pair-qr", "connect.add-computer", "connect.update", "connect.type-it",
     "connect.install-lan", "connect.cli",
-    "notify.prompt-chips", "notify.state-badges", "notify.bell-toggle", "notify.unread", "notify.push",
+    "notify.state-badges", "notify.bell-toggle", "notify.unread", "notify.push",
     "theme.palettes", "theme.import", "editor.vim", "keys.shortcut-list", "keys.alt-toggle",
     "hood.report", "hood.privacy-direct", "hood.pwa", "hood.demo",
 ]

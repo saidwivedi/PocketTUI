@@ -2456,29 +2456,6 @@
   "show": true
  },
  {
-  "id": "notify.prompt-chips",
-  "group": "Know when it needs you",
-  "title": "Answer a prompt with one tap",
-  "outcome": "When a program asks yes/no or offers numbered choices, buttons for each answer appear above the keys.",
-  "where": "Automatic chips row above the terminal; tap a chip",
-  "surface": "both",
-  "gates": [],
-  "needs": null,
-  "hidden": 2,
-  "agent": {
-   "kind": "convention",
-   "text": "A detected y/n question gets y and n chips, a numbered menu gets its first four digits, and an unnumbered chooser or trailing question gets only Enter and Esc (always added). A tap sends just that key to your pane, with no Enter after a digit or letter; the chips go away as soon as the pane prints again.",
-   "contract": null
-  },
-  "sources": [
-   "src/mobile/js/30-notify.js:130-154",
-   "src/mobile/js/09-image-viewer.js:909-912",
-   "app.py:10700-10725"
-  ],
-  "shot": "prompt-chips",
-  "show": true
- },
- {
   "id": "notify.unread",
   "group": "Know when it needs you",
   "title": "Unread marks on sessions",
