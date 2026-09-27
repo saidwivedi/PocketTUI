@@ -103,15 +103,13 @@ A path that does not exist gets a "Couldn't find" toast. Media and PDF paths are
 ### 3.4 How "waiting", "ready" and "idle" are derived (`app.py:10170-10780`)
 The watcher polls every 2 s. A session is `active` while its newest output is less than 6 s old (`POCKETTUI_NOTIFY_IDLE_S`). At the busy-to-idle edge it reads the visible pane once, if the busy episode lasted 10 s or more or a non-shell program still holds the pane. `detect_prompt` then checks the last 5 non-empty lines above an empty composer, in this order:
 
-1. `[y/n]`, `(y/n)` or `yes/no` → **waiting**, chips `y` `n`.
-2. Two or more adjacent lines matching `^\s*│?\s*(❯\s*)?\d+[.)]\s` (numbered menu, box border tolerated) → **waiting**, chips are the first four digits.
-3. Exactly one line `❯ <text>` with a non-empty line under it (unnumbered chooser) → **waiting**, no answer chips.
-4. `do you want | would you like | proceed? | continue? | are you sure` → **waiting**, chips `y` `n`.
+1. `[y/n]`, `(y/n)` or `yes/no` → **waiting**.
+2. Two or more adjacent lines matching `^\s*│?\s*(❯\s*)?\d+[.)]\s` (numbered menu, box border tolerated) → **waiting**.
+3. Exactly one line `❯ <text>` with a non-empty line under it (unnumbered chooser) → **waiting**.
+4. `do you want | would you like | proceed? | continue? | are you sure` → **waiting**.
 5. The cursor line is a composer (`>` or `❯`, optionally after `│`) that is empty, or holds only dim (SGR 2) placeholder text → **ready**. Non-dim text in it → drafting, shown as **idle** and never notified.
-6. The cursor line ends in `?` → **waiting**, no answer chips.
+6. The cursor line ends in `?` → **waiting**.
 7. Otherwise → **idle**.
-
-Chips always add Enter (`\r`) and Esc. A chip tap sends only that key, with no Enter after `y` or a digit, and the chips come down as soon as the pane prints again.
 
 Notifications (Web Push and/or ntfy) go out only for sessions whose `@notify` is `on` or `quiet`. At most one goes out per 30 s per session, and a repeat of the same text is suppressed:
 - waiting: at once;
