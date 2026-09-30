@@ -9201,6 +9201,12 @@ def api_dbg(request: Request, body: dict = Body(...)) -> Response:
 # PTY <-> WebSocket bridge
 # ---------------------------------------------------------------------------
 
+def _last_nonblank_row(text: str) -> int:
+    """0-based index of the last capture row with any text; -1 if all blank."""
+    rows = text.split("\n")
+    return max((i for i, r in enumerate(rows) if r.strip()), default=-1)
+
+
 def set_winsize(fd: int, cols: int, rows: int) -> bool:
     """Put `cols`x`rows` on the PTY. False means it was already that size.
 
@@ -10312,6 +10318,27 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
     # Whether the next visibility frame is this connection's first, which is
     # the one the client sends unprompted on open (see the claim rule below).
     first_visibility = True
+    resize_seq = 0
+
+    async def post_resize_probe(seq: int) -> None:
+        # Journal tmux's grid once a resize has had time to repaint.
+        try:
+            await asyncio.sleep(1.5)
+            if seq != resize_seq or not me.live or me.retired.is_set():
+                return
+            rc, grid = await asyncio.to_thread(
+                tmux, "capture-pane", "-p", "-t", view)
+            rc2, info = await asyncio.to_thread(
+                tmux, "display", "-p", "-t", view,
+                "#{pane_height} #{cursor_y} #{alternate_on}")
+            if rc or rc2:
+                return
+            height, cy, alt = info.split()
+            log(f"conn {cid} post-resize rows={height}"
+                f" last_nonblank={_last_nonblank_row(grid)}"
+                f" cursor_y={cy} alt={alt}")
+        except Exception:
+            pass
 
     def on_readable() -> None:
         try:
@@ -10351,7 +10378,7 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                 await ws.send_bytes(data)
 
     async def pump_in() -> None:
-        nonlocal first_visibility
+        nonlocal first_visibility, resize_seq
         while True:
             msg = await ws.receive()
             if msg.get("type") == "websocket.disconnect":
@@ -10377,6 +10404,9 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
                     changed = set_winsize(fd, rcols, rrows)
                     log(f"conn {cid} resize {rcols}x{rrows}"
                         + ("" if changed else " (unchanged)"))
+                    if changed:
+                        resize_seq += 1
+                        asyncio.create_task(post_resize_probe(resize_seq))
                     continue
                 if ctl and ctl.get("type") == "ping":
                     # A liveness probe. A resumed iOS PWA can hold a socket

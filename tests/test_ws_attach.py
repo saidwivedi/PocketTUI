@@ -1661,3 +1661,10 @@ class TestRealTmux:
             assert wait_for(lambda: A.ATTACHED["phone-base"].visible is False)
             report(ws2, True)
             assert wait_for(lambda: self.width() == "40"), self.width()
+
+
+def test_last_nonblank_row_of_a_capture():
+    assert A._last_nonblank_row("") == -1
+    assert A._last_nonblank_row("\n   \n\n") == -1
+    assert A._last_nonblank_row("$ ls\n\nfoo  \n  \n\n") == 2
+    assert A._last_nonblank_row("a\nb\nc") == 2
