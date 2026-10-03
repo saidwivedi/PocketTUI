@@ -79,10 +79,21 @@ The web app at pockettui.com/app is a static shell — it asks for your machine'
 
 Useful environment variables: `PORT` (default 5560), `POCKETTUI_DIR` (install dir), `POCKETTUI_PATH_REWRITES` (`src:dst[,src:dst]` prefix rewrites for remote-mounted storage whose local mount point differs).
 
+## Privacy
+
+Your terminal never passes through our servers: the app talks straight to `app.py` on your computer. What does reach pockettui.com:
+
+- **One anonymous usage summary per use** ([`functions/api/wave.js`](functions/api/wave.js), sent by [`src/mobile/js/45-usage.js`](src/mobile/js/45-usage.js)): app and server version, hosted or self-served shell, layout, OS, installed-as-app flag, seconds open, reconnect count, number of sessions shown, and per-pane open counts. The server adds the country. No hostnames, paths, session names, commands, terminal text or pairing code.
+- **A daily person hash** in place of an address: SHA-256 over a key that changes every day, the IP and the user agent ([`functions/_lib/usage.js`](functions/_lib/usage.js)). The address is never stored, and the hash does not link one day to the next.
+- **An optional random id**, only after you turn on *Count me as a returning user* in Settings, About. Turning it off deletes the id. *Usage statistics* off sends nothing at all.
+- **Download counts** for `install.sh`, the tarball and `version.txt` ([`functions/_middleware.js`](functions/_middleware.js)): install or update, country, curl or browser, and for update checks a keyed hash of the backend host. No address.
+
+Rows are stored in Cloudflare D1 (Western Europe) and deleted after 400 days. The landing page uses Cloudflare Web Analytics (no cookie) and no Google Analytics.
+
 ## Self-hosting the app shell
 
 You don't have to use the hosted page: `build_mobile.py` builds the phone app into a single HTML file you can serve from anywhere (`--backend URL` bakes your address in).
 
 ## License
 
-[MIT](LICENSE) — free and open source. No account, no cloud.
+[MIT](LICENSE) — free and open source. No account, and your terminal stays on your computer.
