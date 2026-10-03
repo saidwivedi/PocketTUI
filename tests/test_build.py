@@ -2086,6 +2086,12 @@ def test_the_cloudflare_beacon_is_gone_and_the_about_rows_exist(doc):
     assert "Your terminal is never routed through our servers." in about
 
 
+# The consent wording's current version, read from the fragment so a bump that
+# re-asks every device does not also rewrite these expectations.
+TEXT_V = int(re.search(r"const USAGE_TEXT_VERSION = (\d+);",
+                       (SRC / "js" / "45-usage.js").read_text(encoding="utf-8")).group(1))
+
+
 def _usage_harness(doc, text_version=None):
     """The real usage code under node: the 01 counters, cfg's three usage keys,
     parseUA, and the whole 45 fragment, over stubbed browser globals. The DOM is
@@ -2100,9 +2106,9 @@ def _usage_harness(doc, text_version=None):
     frag = (SRC / "js" / "45-usage.js").read_text(encoding="utf-8")
     assert frag in doc
     if text_version is not None:
-        assert "const USAGE_TEXT_VERSION = 1;" in frag
-        frag = frag.replace("const USAGE_TEXT_VERSION = 1;",
-                            f"const USAGE_TEXT_VERSION = {text_version};")
+        assert re.search(r"const USAGE_TEXT_VERSION = \d+;", frag)
+        frag = re.sub(r"const USAGE_TEXT_VERSION = \d+;",
+                      f"const USAGE_TEXT_VERSION = {text_version};", frag)
     gate = "\n".join(_js_chunk(doc, h) for h in (
         "function testGateActive(", "function testGateLocked("))
     return f"""
@@ -2315,9 +2321,9 @@ got.badIdIgnored = cfg.usageId === "";
 console.log(JSON.stringify(got));
 """)
     assert out["dueNone"] is True and out["dueBad"] is True and out["dueOld"] is True
-    assert out["grant"] == {"uuid": True, "consent": True, "v": 1, "at": True,
+    assert out["grant"] == {"uuid": True, "consent": True, "v": TEXT_V, "at": True,
                             "due": False, "cfgId": True}
-    assert out["revoke"] == {"gone": True, "consent": False, "v": 1, "due": False}
+    assert out["revoke"] == {"gone": True, "consent": False, "v": TEXT_V, "due": False}
     assert out["regrant"] is True
     assert out["offDeletes"] is True and out["onAgain"] is True
     assert out["fallback"] is True and out["badIdIgnored"] is True
@@ -2353,7 +2359,7 @@ $("btn-usage-close").click();
 got.closed = { shown, consent: "pockettui_usage_consent" in ls, due: usageConsentDue() };
 // Not due: nothing to ask.
 fresh();
-ls.pockettui_usage_consent = JSON.stringify({ consent: false, at: "x", v: 1 });
+ls.pockettui_usage_consent = JSON.stringify({ consent: false, at: "x", v: USAGE_TEXT_VERSION });
 got.notDue = usageAskIfDue("t");
 console.log(JSON.stringify(got));
 """)
@@ -2387,17 +2393,17 @@ got.yes = { shown, consent: yes.consent, v: yes.v, uuid: UUID.test(ls.pockettui_
   due: usageConsentDue(), rows: rowSyncs };
 console.log(JSON.stringify(got));
 """)
-    assert out["no"] == {"shown": None, "consent": False, "v": 1, "at": True,
+    assert out["no"] == {"shown": None, "consent": False, "v": TEXT_V, "at": True,
                          "id": False, "off": False, "due": False, "rows": 1}
     assert out["askedAgain"] is False
-    assert out["yes"] == {"shown": None, "consent": True, "v": 1, "uuid": True,
+    assert out["yes"] == {"shown": None, "consent": True, "v": TEXT_V, "uuid": True,
                           "due": False, "rows": 2}
 
 
 def test_usage_question_returns_when_the_wording_version_rises(doc, tmp_path):
-    out = _node_json(tmp_path, "reask.mjs", _usage_harness(doc, text_version=2) + ASK_JS + """
+    out = _node_json(tmp_path, "reask.mjs", _usage_harness(doc) + ASK_JS + """
 // A yes to the old wording: the id it minted must not outlive a no to the new.
-ls.pockettui_usage_consent = JSON.stringify({ consent: true, at: "x", v: 1 });
+ls.pockettui_usage_consent = JSON.stringify({ consent: true, at: "x", v: USAGE_TEXT_VERSION - 1 });
 ls.pockettui_usage_id = "0b8f5e1c-2d3a-4b5c-9d6e-7f8091a2b3c4";
 got.due = usageConsentDue();
 got.asked = usageAskIfDue("t");
@@ -2408,7 +2414,7 @@ got.idGone = !("pockettui_usage_id" in ls) && !("id" in usagePayload());
 got.after = usageConsentDue();
 console.log(JSON.stringify(got));
 """)
-    assert out == {"due": True, "asked": True, "rec": {"consent": False, "v": 2},
+    assert out == {"due": True, "asked": True, "rec": {"consent": False, "v": TEXT_V},
                    "idGone": True, "after": False}
 
 
