@@ -144,11 +144,16 @@ def test_purge_maybe(tmp_path):
     skip, hit = run(tmp_path, [("purgeMaybe", [now, 0.5]), ("purgeMaybe", [now, 0.001])])
     assert skip["calls"] == []
     assert [c["sql"] for c in hit["calls"]] == [
-        "DELETE FROM events WHERE ts < ?", "DELETE FROM fetches WHERE ts < ?"]
+        "DELETE FROM events WHERE ts < ?", "DELETE FROM fetches WHERE ts < ?",
+        "DELETE FROM installs WHERE last_day < ?"]
     for c in hit["calls"]:
         assert c["ran"]
-        (cutoff,) = c["binds"]
-        assert cutoff == now - 400 * 24 * 3600 * 1000
+    cutoff_ms = now - 400 * 24 * 3600 * 1000
+    for c in hit["calls"][:2]:
+        assert c["binds"] == [cutoff_ms]
+    (day,) = hit["calls"][2]["binds"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", day)
+    assert day == time.strftime("%Y-%m-%d", time.gmtime(cutoff_ms / 1000))
 
 
 def test_purge_maybe_swallows_db_errors(tmp_path):

@@ -92,6 +92,9 @@ export function json(status, body) {
 // Resolves either way: a failed purge only means the rows wait for the next
 // lucky write, and must never fail the request that triggered it.
 // rand is a number in [0, 1) or a function returning one, so tests can pin it.
+// installs goes too: a returning-user id whose last event is past the cutoff
+// would otherwise outlive the summaries it links, against the 400-day promise.
+// last_day is a UTC day string, so the cutoff is compared as one.
 export async function purgeMaybe(db, now = Date.now(), rand = Math.random) {
   const r = typeof rand === "function" ? rand() : rand;
   if (!(r < PURGE_CHANCE)) return;
@@ -99,6 +102,7 @@ export async function purgeMaybe(db, now = Date.now(), rand = Math.random) {
   try {
     await db.prepare("DELETE FROM events WHERE ts < ?").bind(cutoff).run();
     await db.prepare("DELETE FROM fetches WHERE ts < ?").bind(cutoff).run();
+    await db.prepare("DELETE FROM installs WHERE last_day < ?").bind(utcDay(cutoff)).run();
   } catch (e) {
     // Swallowed on purpose; see above.
   }
