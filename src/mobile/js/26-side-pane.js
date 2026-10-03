@@ -199,7 +199,7 @@ function sideClaim(id, opts) {
   sideRemember();
   // Half the main pane the first time, and whatever was dragged after that.
   applySideWidth(cfg.sideWidth || Math.round(sideMainW() / 2));
-  if (sideRows.length === 2) applySideSplit(cfg.sideSplit || 0.5);
+  if (sideRows.length === 2) { usageCount("side2"); applySideSplit(cfg.sideSplit || 0.5); }
   $("screen-term").classList.add("side-open");
   sideLayout();
   refit(0);

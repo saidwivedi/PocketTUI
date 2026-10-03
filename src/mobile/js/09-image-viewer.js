@@ -544,6 +544,8 @@ function resetTerm() {
 // `resumed` marks the second half of a switch that had a file view to put away
 // first: its entries are spent and history already sits on the terminal's own.
 function openTerminal(name, resumed) {
+  // Only the set's size is ever sent; the names stay on this device.
+  if (!demoMode) usageSeen.add(name);
   // A rail tap while a switch is still spending entries retargets that switch
   // rather than starting a second one on top of it.
   if (pendingSwitch && !resumed) { pendingSwitch.name = name; return; }
@@ -1024,6 +1026,7 @@ function scheduleReconnect() {
     renderConnBanner(classifyFailure(null, null, null));
     return;
   }
+  usageReconnects += 1;
   retries += 1;
   // 0.5s → 5s, capped; only nag with a toast once it's clearly not transient.
   const delay = Math.min(500 * Math.pow(1.7, retries - 1), 5000);

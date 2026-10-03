@@ -755,6 +755,7 @@ function recWaitUnmute(track) {
 // then start, with no wait in between, because a wait before the recorder
 // starts is what broke this before.
 function startRecording() {
+  usageCount("voice");
   // recording() cannot answer for the gap between the tap and the grant — the
   // recorder does not exist yet — and that gap is exactly when the blur this
   // tap caused comes due. Set synchronously, cleared on both exits.

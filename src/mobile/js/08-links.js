@@ -457,6 +457,7 @@ function dropFrame() {
 }
 
 function showImage(path, pane) {
+  usageCount("viewer");
   const kind = viewerKind(path);
   // Re-opening the same path (mouse users get both the link and the tap path)
   // would otherwise reload and re-decode it.

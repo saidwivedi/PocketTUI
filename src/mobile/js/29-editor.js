@@ -242,6 +242,7 @@ function edDefineVimEx() {
 // — the markdown reader's Edit hands over the one it pushed, so the two views
 // of a file cost one back between them.
 async function openEditor(path, opts) {
+  usageCount("editor");
   const create = !!(opts && opts.create);
   let content = "", hash = "", lossy = false, atRef = false;
   if (!create) {

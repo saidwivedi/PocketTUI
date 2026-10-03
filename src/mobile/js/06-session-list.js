@@ -869,6 +869,7 @@ let creatingSession = false;
 // the name came from the user and is not the shell's to suffix.
 async function createAndOpenSession(base, exact) {
   if (creatingSession) return;
+  usageCount("newsess");
   creatingSession = true;
   try {
     const made = await createSessionNamed(base, exact);

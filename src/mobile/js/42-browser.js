@@ -3339,6 +3339,7 @@ sideMakers.browser = (id) => !!browserPaneAt(id);
 // names a slot rather than a pane that must already exist: opening the second
 // one is what makes it.
 function openBrowser(url, tabs, at, id, opts) {
+  usageCount("browser");
   let want = id || sideFocusedOf("browser") || "browser";
   // The copy is only ever a row of the column. Off a wide layout, or with no
   // terminal behind it, the only shape left is the full-screen one, and that one
