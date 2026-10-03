@@ -637,6 +637,7 @@ function syncUsageRows() {
   $("usage-toggle").checked = !cfg.usageOff;
   $("usage-id-toggle").checked = !!cfg.usageId;
   $("usage-id-toggle").disabled = cfg.usageOff;
+  syncConsoleRow();
 }
 $("usage-toggle").addEventListener("change", (e) => {
   usageSetOff(!e.target.checked);
