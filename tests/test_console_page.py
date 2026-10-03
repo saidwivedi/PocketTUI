@@ -21,13 +21,15 @@ RUNNER = r"""
 import { readFileSync } from "node:fs";
 const chunk = readFileSync(process.argv[2], "utf8");
 const input = JSON.parse(readFileSync(process.argv[3], "utf8"));
-const api = new Function(chunk + "\nreturn { mergeInstallDays, historyTotals, peopleRows, landingFallbackDays };")();
+const api = new Function(chunk + "\nreturn { mergeInstallDays, historyTotals, peopleRows, peopleRange, peopleRangeText, landingFallbackDays };")();
 const h = input.history.days;
 console.log(JSON.stringify({
   merged: api.mergeInstallDays(input.installs.days, h),
   history: api.historyTotals(h),
   people: api.peopleRows(input.app.days, h),
   landing: api.landingFallbackDays(h),
+  ranges: (input.ranges || []).map(([days, totals]) => api.peopleRange(days, totals)),
+  rangeTexts: (input.rangeTexts || []).map((r) => api.peopleRangeText(r)),
 }));
 """
 
@@ -142,3 +144,26 @@ def test_card_head_legend_can_wrap():
     offenders = [sel.strip() for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
                  if re.search(r"\.(legend|card-head)\b", sel) and re.search(r"white-space\s*:\s*nowrap", body)]
     assert offenders == [], offenders
+
+
+def test_people_range(tmp_path):
+    days = [dict(day=d, people=p) for d, p in zip(DAYS, [3, 5, 2])]
+    resp = sample()
+    resp["ranges"] = [
+        [[], {}],
+        [days, {"installs_seen": 4, "people_sum": 10}],
+        [days, {"installs_seen": 9, "people_sum": 10}],
+        [days, {"installs_seen": 4}],
+    ]
+    out = run(tmp_path, resp)["ranges"]
+    assert out[0] == {"low": 0, "high": 0}
+    assert out[1] == {"low": 5, "high": 10}
+    assert out[2] == {"low": 9, "high": 10}
+    # Without people_sum the high end is the sum of the days.
+    assert out[3] == {"low": 5, "high": 10}
+
+
+def test_people_range_text(tmp_path):
+    resp = sample()
+    resp["rangeTexts"] = [{"low": 0, "high": 0}, {"low": 7, "high": 7}, {"low": 21, "high": 146}]
+    assert run(tmp_path, resp)["rangeTexts"] == ["0", "7", "21 to 146"]

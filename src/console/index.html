@@ -321,6 +321,8 @@ tr:last-child td { border-bottom: 0; }
      stays on one line; a label wraps only when the row truly cannot hold it. */
   .tiles { grid-template-columns: repeat(3, auto); }
   .tile { min-width: auto; }
+  /* Four tiles do not fit one phone row with whole labels: two rows of two. */
+  .tiles[style*="--n: 4"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 374.98px) {
   .tiles { gap: 6px; }
@@ -543,6 +545,21 @@ tr:last-child td { border-bottom: 0; }
       version_ips: num((hist.get(r.day) || {}).version_ips) }));
   }
 
+  // The daily person hash rotates, so a window headcount is only a range:
+  // at least the busiest day (or the opted-in ids seen, if more), at most the
+  // sum of daily people (a person once per day they came).
+  function peopleRange(appDays, totals) {
+    const days = (appDays || []).map((r) => num(r.people));
+    const t = totals || {};
+    const low = Math.max(0, ...days, num(t.installs_seen));
+    const high = t.people_sum == null ? days.reduce((a, b) => a + b, 0) : num(t.people_sum);
+    return { low, high: Math.max(low, high) };
+  }
+  function peopleRangeText(range, fmt) {
+    fmt = fmt || String;
+    return range.low === range.high ? fmt(range.low) : fmt(range.low) + " to " + fmt(range.high);
+  }
+
   function landingFallbackDays(historyDays) {
     return (historyDays || []).map((r) => ({ day: r.day, visits: num(r.landing_visits) }));
   }
@@ -738,12 +755,13 @@ tr:last-child td { border-bottom: 0; }
         series: [{ key: "people", cls: "b1", name: "people" }],
         line: devices ? { key: "version_ips", cls: "l3", dot: "d3", name: "devices checking for updates (Cloudflare)" } : null }) +
       tiles([
+        [`People, ${(d.range || {}).days || days} days`, peopleRangeText(peopleRange(app.days, t), fmtN)],
         ["Sessions", fmtN(t.sessions)],
         ["People per day", fmtN(Math.round(n0(t.people_sum) / days * 10) / 10)],
         ["Consent share", fmtPct(app.consent_share), "Share of sessions that carried a returning-user id"],
       ]);
-    return card("People", body + note("People are counted per day by a hash that changes daily, so the window total over-counts anyone who came on several days.") +
-      (devices ? note("Devices checking for updates is Cloudflare's count of distinct addresses per day that fetched version.txt. Phones change address often, so it over-counts a little, and it includes the founder's own devices.") : ""),
+    return card("People", body + note("The identifier behind the people count changes every day, so a period total cannot be exact: the low end is the busiest day (or the opted-in return visitors, if more), the high end counts a person once per day they came." +
+      (devices ? " The thin line is Cloudflare's count of distinct addresses that fetched version.txt each day; it includes the founder's own devices." : "")),
       { id: "s-people", aside: devices ? legend([["sw-1", "People"], ["sw-line3", "Devices checking for updates (Cloudflare)"]]) : "" });
   }
 
