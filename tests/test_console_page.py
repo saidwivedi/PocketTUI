@@ -21,7 +21,7 @@ RUNNER = r"""
 import { readFileSync } from "node:fs";
 const chunk = readFileSync(process.argv[2], "utf8");
 const input = JSON.parse(readFileSync(process.argv[3], "utf8"));
-const api = new Function(chunk + "\nreturn { mergeInstallDays, historyTotals, peopleRows, peopleRange, peopleRangeText, landingFallbackDays };")();
+const api = new Function(chunk + "\nreturn { mergeInstallDays, historyTotals, peopleRows, peopleRange, peopleRangeText, landingFallbackDays, nearestIndex, readoutLines };")();
 const h = input.history.days;
 console.log(JSON.stringify({
   merged: api.mergeInstallDays(input.installs.days, h),
@@ -30,6 +30,8 @@ console.log(JSON.stringify({
   landing: api.landingFallbackDays(h),
   ranges: (input.ranges || []).map(([days, totals]) => api.peopleRange(days, totals)),
   rangeTexts: (input.rangeTexts || []).map((r) => api.peopleRangeText(r)),
+  nearest: (input.nearest || []).map(([xs, x]) => api.nearestIndex(xs, x)),
+  lines: (input.lines || []).map(([series, i]) => api.readoutLines(series, i)),
 }));
 """
 
@@ -167,3 +169,66 @@ def test_people_range_text(tmp_path):
     resp = sample()
     resp["rangeTexts"] = [{"low": 0, "high": 0}, {"low": 7, "high": 7}, {"low": 21, "high": 146}]
     assert run(tmp_path, resp)["rangeTexts"] == ["0", "7", "21 to 146"]
+
+
+def test_nearest_index(tmp_path):
+    xs = [10, 20, 30, 40]
+    resp = sample()
+    resp["nearest"] = [
+        [[], 5],          # empty
+        [xs, -100],       # before the first
+        [xs, 10],         # on the first
+        [xs, 999],        # after the last
+        [xs, 22],         # between, nearer the left
+        [xs, 28],         # between, nearer the right
+        [xs, 25],         # tie goes to the later index
+        [[7], 3],         # one point
+        [[0, 1, 2, 3, 4, 5, 6], 4.6],
+    ]
+    assert run(tmp_path, resp)["nearest"] == [-1, 0, 0, 3, 1, 2, 2, 0, 5]
+
+
+def test_readout_lines(tmp_path):
+    people = [{"name": "People", "sw": "sw-1", "values": [7, 1234]},
+              {"name": "Devices checking for updates", "sw": "sw-line3", "values": [19, 1234567]}]
+    installs = [{"name": "Installs", "sw": "sw-1", "values": [3, None]},
+                {"name": "Updates", "sw": "sw-2", "values": [2, None]},
+                {"name": "Tarball downloads", "sw": "sw-3", "est": True, "values": [None, 11]},
+                {"name": "Installer runs", "est": True, "values": [None, 7]}]
+    resp = sample()
+    resp["lines"] = [[people, 0], [people, 1], [installs, 0], [installs, 1], [[], 0],
+                     [[{"name": "Per day", "values": [2.25]}], 0]]
+    out = run(tmp_path, resp)["lines"]
+    assert out[0] == [{"sw": "sw-1", "name": "People", "text": "7"},
+                      {"sw": "sw-line3", "name": "Devices checking for updates", "text": "19"}]
+    # Full numbers, never the 1.2k short form.
+    assert [e["text"] for e in out[1]] == ["1,234", "1,234,567"]
+    # An app day lists the app's counts and no Cloudflare note.
+    assert out[2] == [{"sw": "sw-1", "name": "Installs", "text": "3"},
+                      {"sw": "sw-2", "name": "Updates", "text": "2"}]
+    # A hatched day skips the app series and says once that it is an estimate.
+    assert out[3] == [{"sw": "sw-3", "name": "Tarball downloads", "text": "11"},
+                      {"sw": "", "name": "Installer runs", "text": "7 (Cloudflare estimate)"}]
+    assert out[4] == []
+    assert out[5][0]["text"] in ("2.3", "2.2")
+
+
+def test_every_chart_has_a_readout():
+    s = page()
+    script = re.search(r"<script>(.*?)</script>", s, re.S).group(1)
+    roots = re.findall(r"`<svg [^`]*", script)
+    assert roots, "no chart svg template found"
+    for r in roots:
+        assert 'tabindex="0"' in r and "touch-action: pan-y" in r and "aria-label=" in r, r
+    # All three draws go through the one root, and none keeps a hover-only <title>.
+    for fn in ("barChart", "lineChart", "histChart"):
+        body = re.search(r"function " + fn + r"\(.*?\n  }\n", script, re.S).group(0)
+        assert "svgRoot(" in body and "<title>" not in body, fn
+    # chart() emits a polite readout box next to every chart container.
+    chart_fn = re.search(r"function chart\(spec\).*?\n  }\n", script, re.S).group(0)
+    assert 'class="readout"' in chart_fn and 'aria-live="polite"' in chart_fn
+    # Every chart spec names the series its readout lists.
+    specs = re.findall(r"chart\(\{ type: \"(?:bar|line|hist)\".*?\}\) \+|chart\(\{ type: \"line\".*?\}\);", script, re.S)
+    assert len(specs) == 5, len(specs)
+    for sp in specs:
+        assert "ro: { " in sp, sp[:80]

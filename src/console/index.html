@@ -173,7 +173,7 @@ button { cursor: pointer; }
    for updates (Cloudflare)") kept on one line is wider than the card head
    on a phone and pushes the whole page sideways. */
 .legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 12px; font-size: 12px; color: var(--secondary); text-align: right; }
-.legend i {
+.legend i, .readout i {
   display: inline-block;
   width: 9px; height: 9px;
   border-radius: 2px;
@@ -184,7 +184,7 @@ button { cursor: pointer; }
 .sw-2 { background: var(--bar2); }
 .sw-line2 { background: var(--secondary); }
 .sw-3 { background: repeating-linear-gradient(135deg, var(--accent) 0 1.5px, rgba(var(--accent-rgb), 0.18) 1.5px 3.5px); }
-.legend i.sw-line3 { height: 2px; border-radius: 1px; vertical-align: 3px; background: var(--ink-2); }
+.legend i.sw-line3, .readout i.sw-line3 { height: 2px; border-radius: 1px; vertical-align: 3px; background: var(--ink-2); }
 .note { margin: 10px 0 0; font-size: 12px; color: var(--tertiary); }
 .empty {
   margin: 0;
@@ -233,8 +233,30 @@ button { cursor: pointer; }
 .chart .d2 { fill: var(--secondary); }
 .chart .l3 { stroke: var(--ink-2); stroke-width: 1.5; fill: none; stroke-linejoin: round; stroke-linecap: round; }
 .chart .d3 { fill: var(--ink-2); }
-.chart .hit { fill: transparent; }
-.chart .hit:hover { fill: rgba(var(--accent-rgb), 0.08); }
+.chart svg:focus { outline: none; }
+.chart svg:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.45); outline-offset: 2px; border-radius: 4px; }
+.chart svg.has-sel rect[data-i]:not(.on) { opacity: 0.45; }
+.chart .guide { stroke: var(--tertiary); stroke-width: 1; }
+.chart .ro-dot { stroke: var(--card); stroke-width: 1.5; }
+
+/* The values of the selected day (or the latest day) under a chart. Its
+   min-height is set after drawing to the tallest any day needs, so moving
+   the selection never shifts the card. */
+.readout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-top: 8px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: var(--well);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--secondary);
+  min-height: 28px;
+}
+.readout b { font-weight: 600; color: var(--ink); }
 
 /* horizontal share bars */
 .hbars { display: grid; gap: 7px; }
@@ -397,6 +419,7 @@ tr:last-child td { border-bottom: 0; }
   const SHELL_NAMES = { hosted: "Hosted", self: "Self-served", other: "Other host" };
   const LAYOUT_NAMES = { phone: "Phone", desktop: "Desktop" };
   const LEN_LABELS = ["<30 s", "1 m", "2 m", "5 m", "15 m", "1 h", ">1 h"];
+  const LEN_RANGES = ["Under 30 s", "30 s to 1 m", "1 m to 2 m", "2 m to 5 m", "5 m to 15 m", "15 m to 1 h", "Over 1 h"];
 
   const $ = (id) => document.getElementById(id);
 
@@ -458,6 +481,11 @@ tr:last-child td { border-bottom: 0; }
   function dayLabel(day) {
     const p = String(day).split("-");
     return MONTHS[Number(p[1]) - 1] + " " + Number(p[2]);
+  }
+  const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  function readoutDay(day) {
+    const d = new Date(day + "T00:00:00Z");
+    return WEEKDAYS[d.getUTCDay()] + " " + d.getUTCDate() + " " + MONTHS[d.getUTCMonth()];
   }
   function monthLabel(mo) {
     const p = String(mo).split("-");
@@ -563,6 +591,42 @@ tr:last-child td { border-bottom: 0; }
   function landingFallbackDays(historyDays) {
     return (historyDays || []).map((r) => ({ day: r.day, visits: num(r.landing_visits) }));
   }
+
+  // The index of the x in xs (ascending) closest to x; a tie goes to the
+  // later index. -1 for an empty list.
+  function nearestIndex(xs, x) {
+    if (!xs || !xs.length) return -1;
+    let lo = 0, hi = xs.length - 1;
+    if (x <= xs[lo]) return lo;
+    if (x >= xs[hi]) return hi;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (xs[mid] <= x) lo = mid; else hi = mid;
+    }
+    return x - xs[lo] < xs[hi] - x ? lo : hi;
+  }
+
+  // Readout entries for index i: one per series with a value there (null
+  // means the series has nothing that day), in full numbers. When any shown
+  // series is a Cloudflare estimate, the last entry says so.
+  function fullNum(v) {
+    v = num(v);
+    const s = Number.isInteger(v) ? String(Math.abs(v)) : Math.abs(v).toFixed(1).replace(/\.0$/, "");
+    const [a, b] = s.split(".");
+    return (v < 0 ? "-" : "") + a.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (b ? "." + b : "");
+  }
+  function readoutLines(series, i) {
+    const out = [];
+    let est = false;
+    for (const s of series || []) {
+      const v = (s.values || [])[i];
+      if (v == null) continue;
+      out.push({ sw: s.sw || "", name: s.name, text: fullNum(v) });
+      if (s.est) est = true;
+    }
+    if (est && out.length) out[out.length - 1].text += " (Cloudflare estimate)";
+    return out;
+  }
   // END SHAPING
 
   // ---- charts ----------------------------------------------------------
@@ -605,7 +669,15 @@ tr:last-child td { border-bottom: 0; }
     return { padL, padR, padT, plotW, plotH, slot, y, svg, base: padT + plotH };
   }
 
+  // Every chart's root: focusable for the arrow keys, and vertical swipes
+  // still scroll the page while horizontal drags move the readout.
+  function svgRoot(width, height, label, inner) {
+    const aria = esc(label + ". Left and right arrow keys read the values.");
+    return `<svg viewBox="0 0 ${width} ${height}" height="${height}" role="img" aria-label="${aria}" tabindex="0" style="touch-action: pan-y">${inner}</svg>`;
+  }
+
   // series: [{ key, cls, name }]; stacked bottom-up in the order given.
+  // Each draw returns the svg and where its slots sit, for the readout.
   function barChart(spec, width) {
     const height = spec.height || 150;
     const rows = spec.rows;
@@ -624,20 +696,18 @@ tr:last-child td { border-bottom: 0; }
     rows.forEach((r, i) => {
       const x = f.padL + f.slot * i + (f.slot - bw) / 2;
       let acc = 0;
-      const tip = spec.tip ? spec.tip(r) : dayLabel(r.day) + ": " +
-        spec.series.concat(spec.line ? [spec.line] : []).map((c) => fmtN(n0(r[c.key])) + " " + c.name).join(", ");
       for (const c of spec.series) {
         const v = n0(r[c.key]);
         if (v <= 0) continue;
         const y0 = f.y(acc), y1 = f.y(acc + v);
-        svg += `<rect class="${c.cls}" x="${x.toFixed(1)}" y="${y1.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, y0 - y1).toFixed(1)}" rx="${bw > 6 ? 1.5 : 0}"/>`;
+        svg += `<rect class="${c.cls}" data-i="${i}" x="${x.toFixed(1)}" y="${y1.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, y0 - y1).toFixed(1)}" rx="${bw > 6 ? 1.5 : 0}"/>`;
         acc += v;
       }
-      svg += `<rect class="hit" x="${(f.padL + f.slot * i).toFixed(1)}" y="${f.padT}" width="${f.slot.toFixed(1)}" height="${f.plotH}"><title>${esc(tip)}</title></rect>`;
     });
     svg += `<line class="base" x1="${f.padL}" x2="${width - f.padR}" y1="${f.base + 0.5}" y2="${f.base + 0.5}"/>`;
+    const ys = {};
     if (spec.line && lineVals.some((v) => v > 0)) {
-      // Drawn after the hit areas with pointer-events off, so the bars' tips still show.
+      ys[spec.line.key] = lineVals.map((v) => f.y(v));
       const pts = lineVals.map((v, i) => (f.padL + f.slot * (i + 0.5)).toFixed(1) + "," + f.y(v).toFixed(1));
       svg += `<g pointer-events="none"><polyline class="${spec.line.cls}" points="${pts.join(" ")}"/>`;
       if (days.length <= 31) pts.forEach((p) => {
@@ -646,7 +716,7 @@ tr:last-child td { border-bottom: 0; }
       });
       svg += `</g>`;
     }
-    return `<svg viewBox="0 0 ${width} ${height}" height="${height}" role="img" aria-label="${esc(spec.label)}">${svg}</svg>`;
+    return { svg: svgRoot(width, height, spec.label, svg), x0: f.padL, x1: width - f.padR, top: f.padT, bottom: f.base, ys };
   }
 
   function lineChart(spec, width) {
@@ -658,19 +728,17 @@ tr:last-child td { border-bottom: 0; }
     let svg = f.svg;
     svg += `<line class="base" x1="${f.padL}" x2="${width - f.padR}" y1="${f.base + 0.5}" y2="${f.base + 0.5}"/>`;
     const dots = days.length <= 31;
+    const ys = {};
     for (const c of spec.series) {
-      const pts = rows.map((r, i) => (f.padL + f.slot * (i + 0.5)).toFixed(1) + "," + f.y(n0(r[c.key])).toFixed(1));
+      ys[c.key] = rows.map((r) => f.y(n0(r[c.key])));
+      const pts = rows.map((r, i) => (f.padL + f.slot * (i + 0.5)).toFixed(1) + "," + ys[c.key][i].toFixed(1));
       svg += `<polyline class="${c.line}" points="${pts.join(" ")}"/>`;
       if (dots) pts.forEach((p) => {
         const [x, y] = p.split(",");
         svg += `<circle class="${c.dot}" cx="${x}" cy="${y}" r="2.5"/>`;
       });
     }
-    rows.forEach((r, i) => {
-      const tip = dayLabel(r.day) + ": " + spec.series.map((c) => fmtN(n0(r[c.key])) + " " + c.name).join(", ");
-      svg += `<rect class="hit" x="${(f.padL + f.slot * i).toFixed(1)}" y="${f.padT}" width="${f.slot.toFixed(1)}" height="${f.plotH}"><title>${esc(tip)}</title></rect>`;
-    });
-    return `<svg viewBox="0 0 ${width} ${height}" height="${height}" role="img" aria-label="${esc(spec.label)}">${svg}</svg>`;
+    return { svg: svgRoot(width, height, spec.label, svg), x0: f.padL, x1: width - f.padR, top: f.padT, bottom: f.base, ys };
   }
 
   // Bucket bars with their label under each and the count above.
@@ -686,28 +754,144 @@ tr:last-child td { border-bottom: 0; }
       const cx = slot * (i + 0.5);
       const h = v > 0 ? Math.max(1, (v / max) * plotH) : 0;
       const y = padT + plotH - h;
-      if (h) svg += `<rect class="b1" x="${(cx - bw / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5"><title>${esc(spec.labels[i] + ": " + fmtN(v))}</title></rect>`;
+      if (h) svg += `<rect class="b1" data-i="${i}" x="${(cx - bw / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5"/>`;
       svg += `<text class="val" x="${cx.toFixed(1)}" y="${(y - 5).toFixed(1)}" text-anchor="middle">${fmtN(v)}</text>`;
       svg += `<text x="${cx.toFixed(1)}" y="${height - 5}" text-anchor="middle">${esc(spec.labels[i])}</text>`;
     });
     svg += `<line class="base" x1="0" x2="${width}" y1="${padT + plotH + 0.5}" y2="${padT + plotH + 0.5}"/>`;
-    return `<svg viewBox="0 0 ${width} ${height}" height="${height}" role="img" aria-label="${esc(spec.label)}">${svg}</svg>`;
+    return { svg: svgRoot(width, height, spec.label, svg), x0: 0, x1: width, top: padT, bottom: padT + plotH, ys: {} };
+  }
+
+  // ---- readout ---------------------------------------------------------
+  // One readout per chart: a tap, click, drag or hover over the plot picks
+  // the nearest slot, marks it with a guide line (and a dot on each line
+  // series), and lists every series' value for it in the box under the
+  // chart. With nothing picked the box shows opts.def (the latest day).
+  // series: [{ name, sw, values, est?, key?, dot? }]; opts: { box, width,
+  // head(day) -> label, def, geo: a draw's result }.
+  function attachReadout(svg, days, series, opts) {
+    const box = opts.box, geo = opts.geo, n = days.length;
+    if (!svg || !box || !n) return null;
+    const slot = (geo.x1 - geo.x0) / n;
+    const xs = days.map((_, i) => geo.x0 + slot * (i + 0.5));
+    const def = opts.def == null ? n - 1 : opts.def;
+    const lines = series.map((s) => (s.key && geo.ys[s.key] ? s : null)).filter(Boolean);
+    const under = document.createElementNS(svg.namespaceURI, "g");
+    const over = document.createElementNS(svg.namespaceURI, "g");
+    under.setAttribute("pointer-events", "none");
+    over.setAttribute("pointer-events", "none");
+    // The guide sits under the bars (after the grid), the dots on top of the lines.
+    const firstMark = svg.querySelector(":scope > rect[data-i], :scope > polyline");
+    svg.insertBefore(under, firstMark || null);
+    svg.appendChild(over);
+    let sel = -1, pinned = false, dragging = false, pendingClear = false, before = null;
+
+    function paint(i) {
+      const k = i < 0 ? def : i;
+      box.innerHTML = `<b>${esc(opts.head(days[k], k))}</b>` + readoutLines(series, k).map((e) =>
+        `<span>${e.sw ? `<i class="${e.sw}"></i>` : ""}${esc(e.name)} <b>${esc(e.text)}</b></span>`).join("");
+    }
+    function show(i) {
+      sel = i;
+      svg.classList.toggle("has-sel", i >= 0);
+      svg.querySelectorAll("[data-i].on").forEach((el) => el.classList.remove("on"));
+      under.innerHTML = "";
+      over.innerHTML = "";
+      if (i >= 0) {
+        svg.querySelectorAll(`[data-i="${i}"]`).forEach((el) => el.classList.add("on"));
+        const x = xs[i].toFixed(1);
+        under.innerHTML = `<line class="guide" x1="${x}" x2="${x}" y1="${geo.top}" y2="${geo.bottom}"/>`;
+        over.innerHTML = lines.filter((s) => s.values[i] != null).map((s) =>
+          `<circle class="ro-dot ${s.dot}" cx="${x}" cy="${geo.ys[s.key][i].toFixed(1)}" r="4"/>`).join("");
+      }
+      paint(i);
+    }
+    function clear() { pinned = false; pendingClear = false; show(-1); }
+    function indexAt(e) {
+      const r = svg.getBoundingClientRect();
+      const x = (e.clientX - r.left) * (r.width ? opts.width / r.width : 1);
+      return x < geo.x0 || x > geo.x1 ? -1 : nearestIndex(xs, x);
+    }
+
+    svg.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      const i = indexAt(e);
+      if (i < 0) return clear();
+      before = { sel, pinned };
+      dragging = true;
+      try { svg.setPointerCapture(e.pointerId); } catch (err) {}
+      pendingClear = pinned && i === sel;
+      pinned = true;
+      show(i);
+    });
+    svg.addEventListener("pointermove", (e) => {
+      const i = indexAt(e);
+      if (dragging) {
+        if (i >= 0 && i !== sel) { pendingClear = false; show(i); }
+      } else if (e.pointerType === "mouse" && !pinned && i !== sel) show(i);
+    });
+    svg.addEventListener("pointerup", () => {
+      if (!dragging) return;
+      dragging = false;
+      if (pendingClear) clear();
+    });
+    // A vertical swipe that turns into a page scroll undoes its pointerdown.
+    svg.addEventListener("pointercancel", () => {
+      if (!dragging) return;
+      dragging = false;
+      pendingClear = false;
+      pinned = before.pinned;
+      show(before.sel);
+    });
+    svg.addEventListener("pointerleave", (e) => {
+      if (e.pointerType === "mouse" && !pinned && !dragging) show(-1);
+    });
+    svg.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") return clear();
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      const from = sel < 0 ? def : sel;
+      pinned = true;
+      show(Math.max(0, Math.min(n - 1, from + (e.key === "ArrowLeft" ? -1 : 1))));
+    });
+
+    // Reserve the tallest any slot needs, then show the default.
+    box.style.minHeight = "";
+    let tallest = 0;
+    for (let k = 0; k < n; k++) { paint(k); tallest = Math.max(tallest, box.offsetHeight); }
+    if (tallest) box.style.minHeight = tallest + "px";
+    show(-1);
+    return { svg, clear: () => { if (pinned) clear(); } };
   }
 
   const DRAW = { bar: barChart, line: lineChart, hist: histChart };
+  // spec.ro: { series, labels?, def? }; day charts read their days off spec.rows.
   function chart(spec) {
     state.charts.push(spec);
-    return `<div class="chart" data-chart="${state.charts.length - 1}"></div>`;
+    const i = state.charts.length - 1;
+    return `<div class="chart" data-chart="${i}"></div><div class="readout" data-readout="${i}" aria-live="polite"></div>`;
   }
   let drawnWidth = 0;
+  let readouts = [];
   function drawCharts() {
     drawnWidth = document.documentElement.clientWidth;
+    readouts = [];
     document.querySelectorAll("[data-chart]").forEach((el) => {
       const spec = state.charts[Number(el.dataset.chart)];
       const w = Math.max(120, Math.floor(el.clientWidth));
-      el.innerHTML = DRAW[spec.type](spec, w);
+      const geo = DRAW[spec.type](spec, w);
+      el.innerHTML = geo.svg;
+      const days = spec.rows ? spec.rows.map((r) => r.day) : spec.ro.labels;
+      const r = attachReadout(el.querySelector("svg"), days, spec.ro.series, {
+        box: document.querySelector(`[data-readout="${el.dataset.chart}"]`), width: w, geo, def: spec.ro.def,
+        head: spec.rows ? readoutDay : String });
+      if (r) readouts.push(r);
     });
   }
+  // A tap or click anywhere off a chart drops its pinned selection.
+  document.addEventListener("pointerdown", (e) => {
+    for (const r of readouts) if (!r.svg.contains(e.target)) r.clear();
+  });
 
   // ---- pieces ----------------------------------------------------------
   function tiles(list, cols) {
@@ -753,7 +937,9 @@ tr:last-child td { border-bottom: 0; }
     if (!n0(t.sessions) && !n0(t.people_sum) && !devices) body = EMPTY;
     else body = chart({ type: "bar", rows, label: "People per day",
         series: [{ key: "people", cls: "b1", name: "people" }],
-        line: devices ? { key: "version_ips", cls: "l3", dot: "d3", name: "devices checking for updates (Cloudflare)" } : null }) +
+        line: devices ? { key: "version_ips", cls: "l3", dot: "d3", name: "devices checking for updates (Cloudflare)" } : null,
+        ro: { series: [{ name: "People", sw: "sw-1", values: rows.map((r) => r.people) }].concat(devices
+          ? [{ name: "Devices checking for updates", sw: "sw-line3", key: "version_ips", dot: "d3", values: rows.map((r) => r.version_ips) }] : []) } }) +
       tiles([
         [`People, ${(d.range || {}).days || days} days`, peopleRangeText(peopleRange(app.days, t), fmtN)],
         ["Sessions", fmtN(t.sessions)],
@@ -773,13 +959,18 @@ tr:last-child td { border-bottom: 0; }
     const ht = historyTotals(histDays);
     const cfAny = ht.installer_runs > 0 || ht.tarball_fetches > 0;
     const any = D1_FETCH.some((k) => n0(t[k])) || cfAny;
-    const tip = (r) => dayLabel(r.day) + ": " + (r.source === "cloudflare"
-      ? "from Cloudflare (estimate), " + fmtN(r.cf_tarballs) + " tarball downloads, " + fmtN(r.cf_runs) + " installer runs, " + fmtN(r.cf_ips) + " distinct machines"
-      : fmtN(r.installs) + " installs, " + fmtN(r.updates) + " updates");
+    // A Cloudflare day shows its estimate, an app day its own counts.
+    const of = (src, k) => merged.rows.map((r) => (r.source === src ? r[k] : null));
     const body = !any ? EMPTY :
-      chart({ type: "bar", rows: merged.rows, label: "Installs and updates per day", tip,
+      chart({ type: "bar", rows: merged.rows, label: "Installs and updates per day",
         series: [{ key: "installs", cls: "b1", name: "installs" }, { key: "updates", cls: "b2", name: "updates" },
-                 { key: "cf_tarballs", cls: "b3", name: "tarball downloads (Cloudflare)" }] }) +
+                 { key: "cf_tarballs", cls: "b3", name: "tarball downloads (Cloudflare)" }],
+        ro: { series: [
+          { name: "Installs", sw: "sw-1", values: of("app", "installs") },
+          { name: "Updates", sw: "sw-2", values: of("app", "updates") },
+          { name: "Tarball downloads", sw: "sw-3", est: true, values: of("cloudflare", "cf_tarballs") },
+          { name: "Installer runs", est: true, values: of("cloudflare", "cf_runs") },
+          { name: "Machines", est: true, values: of("cloudflare", "cf_ips") }] } }) +
       tiles([
         ["Installs", fmtN(t.installs)],
         ["Updates", fmtN(t.updates)],
@@ -810,9 +1001,13 @@ tr:last-child td { border-bottom: 0; }
     if (!n0(t.installs_seen) && !weekly.length && !monthly.length) {
       return card("Returning users", EMPTY + note("Only browsers that said yes to the returning-user question; each browser is its own id."), { id: "s-returning", wide: true });
     }
-    let body = chart({ type: "line", rows: app.days || [], label: "New and returning ids per day",
+    const rdays = app.days || [];
+    let body = chart({ type: "line", rows: rdays, label: "New and returning ids per day",
       series: [{ key: "new_installs", line: "l2", dot: "d2", name: "new" },
-               { key: "returning_installs", line: "l1", dot: "d1", name: "returning" }] });
+               { key: "returning_installs", line: "l1", dot: "d1", name: "returning" }],
+      ro: { series: [
+        { name: "New", sw: "sw-line2", key: "new_installs", dot: "d2", values: rdays.map((r) => n0(r.new_installs)) },
+        { name: "Returning", sw: "sw-1", key: "returning_installs", dot: "d1", values: rdays.map((r) => n0(r.returning_installs)) }] } });
     body += tiles([
       ["Ids seen", fmtN(t.installs_seen)],
       ["New", fmtN(t.new_installs)],
@@ -841,7 +1036,9 @@ tr:last-child td { border-bottom: 0; }
     const hist = len.hist || [];
     const total = hist.reduce((s, b) => s + n0(b.n), 0);
     const body = !total ? EMPTY :
-      chart({ type: "hist", values: hist.map((b) => b.n), labels: LEN_LABELS, label: "Session length" }) +
+      chart({ type: "hist", values: hist.map((b) => b.n), labels: LEN_LABELS, label: "Session length",
+        ro: { labels: LEN_RANGES.slice(0, hist.length), series: [{ name: "Sessions", sw: "sw-1", values: hist.map((b) => n0(b.n)) }],
+          def: hist.reduce((m, b, i) => (n0(b.n) > n0(hist[m].n) ? i : m), 0) } }) +
       tiles([["Median", fmtSecs(len.median)], ["90th percentile", fmtSecs(len.p90)], ["Sessions", fmtN(total)]]);
     return card("Session length", body + note("Time from opening the app (or coming back to it) to leaving it. Visits under 5 s are not sent."), { id: "s-length" });
   }
@@ -879,7 +1076,8 @@ tr:last-child td { border-bottom: 0; }
       const text = (visits ? "Live landing numbers" : "Landing numbers") + " are not available" +
         (why.length ? ": " + why.map((e) => e.replace(/^landing:\s*/, "")).join("; ") : "") + ".";
       if (!visits) return card("Landing", `<p class="landing-off">${esc(text)}</p>`, { id: "s-landing", wide: true });
-      const body = chart({ type: "bar", rows: fallback, label: "Landing visits per day", series: [{ key: "visits", cls: "b1", name: "visits" }] }) +
+      const body = chart({ type: "bar", rows: fallback, label: "Landing visits per day", series: [{ key: "visits", cls: "b1", name: "visits" }],
+        ro: { series: [{ name: "Visits", sw: "sw-1", values: fallback.map((r) => r.visits) }] } }) +
         tiles([["Visits", fmtN(visits)]], 3) +
         `<p class="landing-off">${esc(text)}</p>` +
         `<div class="tables">` + topTable("Referrers", [], 0) + topTable("Countries", [], 0) + topTable("Devices", [], 0) + `</div>`;
@@ -890,7 +1088,8 @@ tr:last-child td { border-bottom: 0; }
     const visits = days.reduce((s, r) => s + n0(r.visits), 0);
     const views = days.reduce((s, r) => s + n0(r.views), 0);
     const body = !visits && !views ? EMPTY :
-      chart({ type: "bar", rows: days, label: "Landing visits per day", series: [{ key: "visits", cls: "b1", name: "visits" }] }) +
+      chart({ type: "bar", rows: days, label: "Landing visits per day", series: [{ key: "visits", cls: "b1", name: "visits" }],
+        ro: { series: [{ name: "Visits", sw: "sw-1", values: days.map((r) => n0(r.visits)) }] } }) +
       tiles([["Visits", fmtN(visits)], ["Page views", fmtN(views)], ["Views per visit", visits ? fmtN(Math.round(views / visits * 10) / 10) : "–"]]) +
       `<div class="tables">` +
       topTable("Referrers", land.referrer, visits, null, "visits") +
