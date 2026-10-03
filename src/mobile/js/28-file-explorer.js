@@ -2145,7 +2145,9 @@ async function openRendered(path) {
 // whichever of the two is showing it.
 async function openPdf(path) {
   if (demoApiOn()) { toast("Not in the demo"); return; }
+  // showImage counts the docked case itself.
   if (isWideLayout()) { showImage(path, self()); return; }
+  usageCount("viewer");
   let url;
   try {
     const r = await fetch(apiURL("api/file_link?path=" + encodeURIComponent(path)),
@@ -2855,6 +2857,7 @@ sideMakers.files = (id) => !!filesPaneAt(id);
 // button on the session list, a path tapped in the terminal, the editor's parent
 // folder. With nothing pressed in it is the markup's own pane.
 function openExplorer(path, opts) {
+  usageCount("explorer");
   const pane = filesPanes[sideFocusedOf("files")] || filesPanes.files;
   return pane.open(path, opts);
 }

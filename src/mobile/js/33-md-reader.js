@@ -536,6 +536,7 @@ async function mdTypeset(root) {
 // ---- the reader screen -----------------------------------------------------
 
 async function openReader(path, pane) {
+  usageCount("reader");
   const data = await fsReadText(path);
   if (!data) return;
   readerPath = path;

@@ -2023,3 +2023,267 @@ console.log(JSON.stringify({ inRepo, asked }));
 """)
     assert out == {"inRepo": {"asked": ["/r/a"], "root": "/r"},
                    "asked": ["/r/a", "/s/x", "/t/y"]}
+
+
+# ---- the anonymous usage summary (45-usage.js) ------------------------------
+
+USAGE_HOOKS = (
+    ("function openExplorer(path, opts) {", "explorer"),
+    ("function openBrowser(url, tabs, at, id, opts) {", "browser"),
+    ("function toggleDiffPane() {", "diff"),
+    ("function sideClaim(id, opts) {", "side2"),
+    ("function startRecording() {", "voice"),
+    ("function openSettings(firstRun, tab) {", "settings"),
+    ("async function openReader(path, pane) {", "reader"),
+    ("async function openEditor(path, opts) {", "editor"),
+    ("function showImage(path, pane) {", "viewer"),
+    ("async function openPdf(path) {", "viewer"),
+    ("function openSearch() {", "search"),
+    ("async function createAndOpenSession(base, exact) {", "newsess"),
+)
+
+
+def test_usage_counter_is_declared_before_any_fragment_counts(doc):
+    """The counters are called at load (sideBootOpen, boot opening a session),
+    so they must be declared ahead of every call site; and the sender reads
+    every fragment it depends on at load, so it comes after all of them."""
+    assert doc.index("\nfunction usageCount(") < doc.index('usageCount("')
+    assert doc.index("\nconst usageCounts") < doc.index("usageSeen.add(")
+    frags = list(build_mobile.JS_FRAGMENTS)
+    at = frags.index("45-usage.js")
+    for dep in ("01-helpers.js", "02-debug-log.js", "03-a2hs-hint.js", "31-wide-layout.js",
+                "35-report.js", "36-server-version.js"):
+        assert frags.index(dep) < at, dep
+    # Nothing earlier reads the sender's own bindings at load: they appear in
+    # no fragment before it.
+    before = "".join((SRC / "js" / f).read_text(encoding="utf-8") for f in frags[:at])
+    for name in ("USAGE_URL", "USAGE_TEXT_VERSION", "usageStart", "usageSent", "usageHidden"):
+        assert name not in before, name
+
+
+@pytest.mark.parametrize("head,key", USAGE_HOOKS, ids=[h[0] for h in USAGE_HOOKS])
+def test_each_way_in_is_counted(doc, head, key):
+    assert f'usageCount("{key}")' in _js_chunk(doc, head)
+
+
+def test_sessions_seen_and_reconnects_are_counted(doc):
+    opener = _js_chunk(doc, "function openTerminal(name, resumed) {")
+    assert "if (!demoMode) usageSeen.add(name);" in opener
+    retry = _js_chunk(doc, "function scheduleReconnect() {")
+    # After both early returns: a hidden page and an offline one do not retry.
+    assert retry.index("usageReconnects += 1;") > retry.index("if (netOffline()) {")
+    assert _js_chunk(doc, "function sideClaim(id, opts) {").count('usageCount("side2")') == 1
+
+
+def test_the_cloudflare_beacon_is_gone_and_the_about_rows_exist(doc):
+    assert "cloudflareinsights" not in doc
+    about = doc[doc.index('id="panel-about"'):]
+    about = about[:about.index('id="dbg-toggle"')]
+    assert '<label for="usage-toggle">Usage statistics</label>' in about
+    assert '<input id="usage-toggle" type="checkbox">' in about
+    assert '<label for="usage-id-toggle">Count me as a returning user</label>' in about
+    assert '<input id="usage-id-toggle" type="checkbox">' in about
+    assert "Your terminal is never routed through our servers." in about
+
+
+def _usage_harness(doc):
+    """The real usage code under node: the 01 counters, cfg's three usage keys,
+    parseUA, and the whole 45 fragment, over stubbed browser globals."""
+    counters = doc[doc.index("\nconst usageCounts") + 1:]
+    counters = counters[:counters.index("\n", counters.index("function usageCount(")) + 1]
+    keys = doc[doc.index("  // The anonymous usage summary (45-usage.js)."):]
+    keys = keys[:keys.index("\n};\n")]
+    frag = (SRC / "js" / "45-usage.js").read_text(encoding="utf-8")
+    assert frag in doc
+    return f"""
+const ls = {{}};
+const localStorage = {{ getItem: (k) => (k in ls ? ls[k] : null),
+  setItem: (k, v) => {{ ls[k] = String(v); }}, removeItem: (k) => {{ delete ls[k]; }} }};
+const listeners = {{}};
+const on = (t, fn) => {{ (listeners[t] = listeners[t] || []).push(fn); }};
+const fire = (t, e) => (listeners[t] || []).forEach((fn) => fn(e || {{}}));
+const document = {{ visibilityState: "visible", addEventListener: on }};
+const window = {{ addEventListener: on }};
+const beacons = [];
+const navigator = {{ userAgent: "", maxTouchPoints: 0,
+  sendBeacon: (url, blob) => {{ beacons.push({{ url, blob }}); return true; }} }};
+let location = {{ hostname: "pockettui.com" }};
+let SAME_ORIGIN = false;
+let demoMode = false;
+let paired = true;
+function needsSetup() {{ return !paired; }}
+let currentSession = null;
+let appV = "0.9.210", serverVersion = "0.9.209";
+function appVersion() {{ return appV; }}
+let wide = false;
+function isWideLayout() {{ return wide; }}
+let pwa = false;
+function a2hsInstalled() {{ return pwa; }}
+{counters}
+const cfg = {{
+{keys}
+}};
+{_js_chunk(doc, "const REPORT_BROWSERS")}
+{_js_chunk(doc, "function parseUA(")}
+{frag}
+"""
+
+
+UA_IPHONE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
+             "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
+UA_ANDROID = ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/129.0.0.0 Mobile Safari/537.36")
+UA_MAC = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+          "(KHTML, like Gecko) Version/18.0 Safari/605.1.15")
+UA_OLD_IPAD = ("Mozilla/5.0 (iPad; CPU OS 12_5 like Mac OS X) AppleWebKit/605.1.15 "
+               "(KHTML, like Gecko) Version/12.1 Mobile/15E148 Safari/604.1")
+UA_WIN = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129.0 Safari/537.36"
+UA_CROS = "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 Chrome/129.0 Safari/537.36"
+UA_LINUX = "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0"
+
+
+def test_usage_payload_carries_only_the_allowed_fields(doc, tmp_path):
+    uas = {"iphone": [UA_IPHONE, 5], "android": [UA_ANDROID, 5], "mac": [UA_MAC, 0],
+           "ipad": [UA_MAC, 5], "oldipad": [UA_OLD_IPAD, 5], "win": [UA_WIN, 0],
+           "cros": [UA_CROS, 0], "linux": [UA_LINUX, 0], "odd": ["curl/8", 0]}
+    out = _node_json(tmp_path, "payload.mjs", _usage_harness(doc) + f"""
+const got = {{}};
+usageCount("explorer"); usageCount("explorer"); usageCount("voice"); usageCount("nope");
+usageSeen.add("a"); usageSeen.add("b"); usageSeen.add("a");
+usageReconnects = 3;
+got.plain = usagePayload(usageStart + 12900);
+cfg.usageId = "0b8f5e1c-2d3a-4b5c-9d6e-7f8091a2b3c4";
+got.withId = usagePayload(usageStart + 1000).id;
+cfg.usageId = "";
+got.shellHosted = usageShell();
+location = {{ hostname: "example.net" }};
+got.shellOther = usageShell();
+SAME_ORIGIN = true;
+got.shellSelf = usageShell();
+got.os = {{}};
+for (const [k, [ua, mtp]] of Object.entries({json.dumps(uas)})) {{
+  navigator.userAgent = ua; navigator.maxTouchPoints = mtp;
+  got.os[k] = usagePayload().os;
+}}
+appV = "0.9.1 <b>/x"; serverVersion = "a".repeat(40);
+wide = true; pwa = true;
+const p = usagePayload();
+got.app = p.app; got.srv = p.srv; got.layout = p.layout; got.pwa = p.pwa;
+console.log(JSON.stringify(got));
+""")
+    plain = out["plain"]
+    assert sorted(plain) == sorted(["v", "app", "srv", "shell", "os", "layout", "pwa",
+                                    "secs", "rc", "seen", "f"])
+    assert plain["v"] == 1 and plain["app"] == "0.9.210" and plain["srv"] == "0.9.209"
+    assert plain["shell"] == "hosted" and plain["layout"] == "phone" and plain["pwa"] == 0
+    assert plain["secs"] == 12 and plain["rc"] == 3 and plain["seen"] == 2
+    assert plain["f"] == {"explorer": 2, "browser": 0, "diff": 0, "side2": 0, "voice": 1,
+                          "settings": 0, "reader": 0, "editor": 0, "viewer": 0,
+                          "search": 0, "newsess": 0}
+    assert out["withId"] == "0b8f5e1c-2d3a-4b5c-9d6e-7f8091a2b3c4"
+    assert (out["shellHosted"], out["shellOther"], out["shellSelf"]) == ("hosted", "other", "self")
+    assert out["os"] == {"iphone": "ios", "android": "android", "mac": "mac", "ipad": "ipados",
+                         "oldipad": "ipados", "win": "windows", "cros": "chromeos",
+                         "linux": "linux", "odd": "other"}
+    assert out["app"] == "0.9.1bx" and out["srv"] == "a" * 20
+    assert out["layout"] == "desktop" and out["pwa"] == 1
+
+
+def test_usage_sends_once_per_stint_and_only_when_it_should(doc, tmp_path):
+    out = _node_json(tmp_path, "stint.mjs", _usage_harness(doc) + """
+const got = {};
+const back = (s) => { usageStart = Date.now() - s * 1000; };
+back(6);
+got.first = usageFlush();
+got.second = usageFlush();
+got.afterTwo = beacons.length;
+// Both backgrounding events on one hide: one beacon.
+usageResume(); back(6);
+document.visibilityState = "hidden"; fire("visibilitychange"); fire("pagehide");
+got.afterHide = beacons.length;
+// Coming back starts a new stint with zeroed counters.
+usageCount("diff"); usageSeen.add("x"); usageReconnects = 4;
+document.visibilityState = "visible"; fire("visibilitychange");
+got.zeroed = usageCounts.diff === 0 && usageSeen.size === 0 && usageReconnects === 0 && !usageSent;
+back(7);
+fire("pagehide");
+got.afterReturn = beacons.length;
+// A bfcache restore is a new stint too, and the open session is part of it.
+currentSession = "s1";
+fire("pageshow", { persisted: true });
+got.seenOnResume = usageSeen.size;
+back(6);
+cfg.usageOff = true; got.off = usageFlush(); cfg.usageOff = false;
+demoMode = true; got.demo = usageFlush(); demoMode = false;
+paired = false; got.unpaired = usageFlush(); paired = true;
+back(4); got.short = usageFlush();
+got.suppressed = beacons.length;
+const b = beacons[0];
+got.url = b.url; got.type = b.blob.type;
+got.body = JSON.parse(await b.blob.text());
+// No beacon: the no-cors text/plain fetch carries it.
+const fetches = [];
+globalThis.fetch = (u, o) => { fetches.push({ u, o }); return Promise.resolve(); };
+navigator.sendBeacon = () => false;
+usageResume(); back(6); usageFlush();
+got.fetch = fetches.map((x) => ({ u: x.u, method: x.o.method, mode: x.o.mode,
+  keepalive: x.o.keepalive, ct: x.o.headers["Content-Type"], v: JSON.parse(x.o.body).v }));
+console.log(JSON.stringify(got));
+""")
+    assert out["first"] is True and out["second"] is False and out["afterTwo"] == 1
+    assert out["afterHide"] == 2
+    assert out["zeroed"] is True
+    assert out["afterReturn"] == 3
+    assert out["seenOnResume"] == 1
+    assert not any(out[k] for k in ("off", "demo", "unpaired", "short"))
+    assert out["suppressed"] == 3
+    assert out["url"] == "https://pockettui.com/api/wave" and out["type"] == "text/plain"
+    assert out["body"]["v"] == 1 and out["body"]["secs"] >= 5
+    assert out["fetch"] == [{"u": "https://pockettui.com/api/wave", "method": "POST",
+                             "mode": "no-cors", "keepalive": True, "ct": "text/plain", "v": 1}]
+
+
+def test_usage_id_lifecycle_and_consent(doc, tmp_path):
+    out = _node_json(tmp_path, "consent.mjs", _usage_harness(doc) + """
+const got = {};
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+got.dueNone = usageConsentDue();
+ls.pockettui_usage_consent = "{nope";
+got.dueBad = usageConsentDue();
+ls.pockettui_usage_consent = JSON.stringify({ consent: true, at: "x", v: 0 });
+got.dueOld = usageConsentDue();
+delete ls.pockettui_usage_consent;
+usageGrant();
+const id1 = ls.pockettui_usage_id;
+const rec1 = JSON.parse(ls.pockettui_usage_consent);
+got.grant = { uuid: UUID.test(id1), consent: rec1.consent, v: rec1.v,
+  at: !isNaN(Date.parse(rec1.at)), due: usageConsentDue(), cfgId: cfg.usageId === id1 };
+usageRevoke();
+const rec2 = JSON.parse(ls.pockettui_usage_consent);
+got.revoke = { gone: !("pockettui_usage_id" in ls), consent: rec2.consent, v: rec2.v,
+  due: usageConsentDue() };
+usageGrant();
+got.regrant = UUID.test(ls.pockettui_usage_id) && ls.pockettui_usage_id !== id1;
+usageSetOff(true);
+got.offDeletes = !("pockettui_usage_id" in ls) && ls.pockettui_usage_off === "1" &&
+  JSON.parse(ls.pockettui_usage_consent).consent === false;
+usageSetOff(false);
+got.onAgain = !("pockettui_usage_off" in ls) && !("pockettui_usage_id" in ls);
+// The fallback for a plain-http LAN shell, where randomUUID does not exist.
+const real = crypto.randomUUID;
+Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+const minted = new Set();
+for (let i = 0; i < 50; i++) minted.add(usageMintId());
+Object.defineProperty(crypto, "randomUUID", { value: real, configurable: true });
+got.fallback = minted.size === 50 && [...minted].every((u) => UUID.test(u));
+ls.pockettui_usage_id = "not-a-uuid";
+got.badIdIgnored = cfg.usageId === "";
+console.log(JSON.stringify(got));
+""")
+    assert out["dueNone"] is True and out["dueBad"] is True and out["dueOld"] is True
+    assert out["grant"] == {"uuid": True, "consent": True, "v": 1, "at": True,
+                            "due": False, "cfgId": True}
+    assert out["revoke"] == {"gone": True, "consent": False, "v": 1, "due": False}
+    assert out["regrant"] is True
+    assert out["offDeletes"] is True and out["onAgain"] is True
+    assert out["fallback"] is True and out["badIdIgnored"] is True

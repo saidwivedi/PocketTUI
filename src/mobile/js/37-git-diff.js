@@ -1052,7 +1052,7 @@ function diffSetOpen(open, id, rec, opts) {
 function toggleDiffPane() {
   const id = sideFocusedOf("diff");
   if (id) diffSetOpen(false, id);
-  else diffSetOpen(true);
+  else { usageCount("diff"); diffSetOpen(true); }
 }
 
 // The pane is a view of one computer's repo, so a switch to another closes every
