@@ -112,6 +112,7 @@ function searchStep(back) {
 }
 
 function openSearch() {
+  usageCount("search");
   // A computer too old to have the route serves 404s to it, so the chord does
   // nothing there rather than opening a bar that can never count anything.
   if (!hasCap("search")) return;

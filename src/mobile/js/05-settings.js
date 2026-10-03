@@ -195,6 +195,7 @@ function showSetupStep(step) {
 }
 
 function openSettings(firstRun, tab) {
+  if (!firstRun) usageCount("settings");
   setupMode = !!firstRun;
   // The Connection tab edits one computer, and opening the sheet is always
   // about the one the app is talking to — the blank fields are a row in the
@@ -211,6 +212,7 @@ function openSettings(firstRun, tab) {
   fetchVoiceStatus(true).then(syncVoicePicker);
   refreshLearned();
   $("dbg-toggle").checked = cfg.debug;
+  syncUsageRows();
   syncReportEntry();
   // Same lazy reason as voice status above: an update run on the computer while
   // this app sat in the background should show up the next time the sheet is
@@ -624,6 +626,22 @@ $("dbg-toggle").addEventListener("change", (e) => {
   cfg.debug = e.target.checked;
   setDebug(e.target.checked, true);
   if (!e.target.checked) offerDebugLog();
+});
+// The usage switches apply on the tap too: an off that waited for Save could
+// still send the summary of the visit it was turned off in. The returning-user
+// box only means something while statistics are on, so it follows the first.
+function syncUsageRows() {
+  $("usage-toggle").checked = !cfg.usageOff;
+  $("usage-id-toggle").checked = !!cfg.usageId;
+  $("usage-id-toggle").disabled = cfg.usageOff;
+}
+$("usage-toggle").addEventListener("change", (e) => {
+  usageSetOff(!e.target.checked);
+  syncUsageRows();
+});
+$("usage-id-toggle").addEventListener("change", (e) => {
+  if (e.target.checked) usageGrant(); else usageRevoke();
+  syncUsageRows();
 });
 // Applies on the tap, same as the switches above: the key it adds or drops is
 // this sheet's scrim sitting over the key bar, so nothing can be mid-press

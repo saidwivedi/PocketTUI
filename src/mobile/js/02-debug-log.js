@@ -886,6 +886,36 @@ const cfg = {
       localStorage.removeItem("pockettui_files_sort");
     }
   },
+  // The anonymous usage summary (45-usage.js). On unless turned off, and off
+  // means nothing is sent at all.
+  get usageOff() { return localStorage.getItem("pockettui_usage_off") === "1"; },
+  set usageOff(v) {
+    if (v) localStorage.setItem("pockettui_usage_off", "1");
+    else localStorage.removeItem("pockettui_usage_off");
+  },
+  // The random install id the summary carries once the user has agreed to be
+  // counted as returning. Anything that is not a v4 uuid reads as none, since
+  // the endpoint would refuse the whole summary over it.
+  get usageId() {
+    const v = localStorage.getItem("pockettui_usage_id") || "";
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v) ? v : "";
+  },
+  set usageId(v) {
+    if (v) localStorage.setItem("pockettui_usage_id", v);
+    else localStorage.removeItem("pockettui_usage_id");
+  },
+  // The last answer to the returning-user question, {consent, at, v}, where v
+  // is the version of the text it answered. Null when never asked or when what
+  // is stored cannot be read.
+  get usageConsent() {
+    let v = null;
+    try { v = JSON.parse(localStorage.getItem("pockettui_usage_consent")); } catch (e) {}
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  },
+  set usageConsent(v) {
+    if (v) localStorage.setItem("pockettui_usage_consent", JSON.stringify(v));
+    else localStorage.removeItem("pockettui_usage_consent");
+  },
 };
 
 // The name becomes a tmux session name, so it is held to what tmux and the

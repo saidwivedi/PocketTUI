@@ -257,3 +257,17 @@ function classifyFailure(err, response, probe) {
     command: typeof c.command === "function" ? c.command() : (c.command || ""),
   };
 }
+
+// ============================================================
+// Usage counters
+// ============================================================
+// What the anonymous usage summary counts (45-usage.js sends it). Here rather
+// than there because the counting is called from fragments that run at load —
+// sideBootOpen restoring a pane, boot opening a session — and a const declared
+// in a later fragment is still in its dead zone then. Only counts leave the
+// device: the session names in usageSeen are reduced to the set's size.
+const usageCounts = { explorer: 0, browser: 0, diff: 0, side2: 0, voice: 0, settings: 0,
+  reader: 0, editor: 0, viewer: 0, search: 0, newsess: 0 };
+const usageSeen = new Set();
+let usageReconnects = 0;
+function usageCount(key) { if (key in usageCounts) usageCounts[key]++; }
