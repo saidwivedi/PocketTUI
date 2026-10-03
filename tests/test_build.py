@@ -2413,8 +2413,8 @@ console.log(JSON.stringify(got));
 
 
 USAGE_SHEET_LINES = (
-    "The app already sends one anonymous summary per use: app and server version, "
-    "platform, how long, how many sessions and reconnects, and which panes were opened.",
+    "The app already sends one anonymous summary per use: app version, device type, "
+    "time used and which panes were opened. Never what was in them.",
     "Saying yes adds a random id so returning use can be counted. It is never linked "
     "to your name, address, hostnames, folders, commands or text.",
     "Change your mind any time in Settings, About.",
@@ -2481,9 +2481,11 @@ def test_console_about_row_markup(doc):
     assert about.index('id="console-row"') > about.index('id="usage-id-toggle"')
 
 
-def test_console_row_shows_only_with_a_stored_url(doc, tmp_path):
+def test_console_row_shows_with_a_stored_url_or_the_test_gate(doc, tmp_path):
     """syncUsageRows (05) unhides the row exactly when the console's stored
-    object carries a string url; Open is a synchronous anchor click to it."""
+    object carries a string url, or the test gate is active (then Open falls
+    back to console.html beside the shell); Open is a synchronous anchor click
+    and a stored url wins."""
     at = doc.index('$("btn-console").addEventListener("click"')
     opener = doc[at:doc.index("\n});\n", at) + 4]
     out = _node_json(tmp_path, "console-row.mjs", f"""
@@ -2502,6 +2504,9 @@ const document = {{
 }};
 const window = {{ open() {{ throw new Error("window.open used"); }} }};
 const cfg = {{ usageOff: false, usageId: "" }};
+let gate = false;
+function testGateActive() {{ return gate; }}
+const location = {{ href: "https://apps.example.net/ptui-test/index.html?x=1#y" }};
 {_js_chunk(doc, "function syncUsageRows(")}
 {_js_chunk(doc, "function usageConsoleUrl(")}
 {_js_chunk(doc, "function syncConsoleRow(")}
@@ -2524,15 +2529,29 @@ for (const [name, v] of Object.entries(cases)) {{
   syncUsageRows();
   got[name] = $("console-row").hidden;
 }}
+for (const g of [true, false]) {{
+  for (const k of Object.keys(ls)) delete ls[k];
+  gate = g;
+  $("console-row").hidden = !g;
+  syncUsageRows();
+  got[g ? "gate_none" : "nogate_none"] = $("console-row").hidden;
+}}
+gate = true;
+btn.on.click();
 ls.pockettui_console = cases.prod;
+btn.on.click();
+gate = false;
 btn.on.click();
 got.clicks = clicks;
 console.log(JSON.stringify(got));
 """)
-    assert out.pop("clicks") == [{"href": "https://pockettui.com/console/",
-                                  "target": "_blank", "rel": "noopener"}]
+    prod = {"href": "https://pockettui.com/console/", "target": "_blank", "rel": "noopener"}
+    gated = {"href": "https://apps.example.net/ptui-test/console.html",
+             "target": "_blank", "rel": "noopener"}
+    assert out.pop("clicks") == [gated, prod, prod]
     assert out == {"none": True, "junk": True, "nourl": True, "numurl": True,
-                   "jsurl": True, "prod": False, "test": False}
+                   "jsurl": True, "prod": False, "test": False,
+                   "gate_none": False, "nogate_none": True}
 
 
 # ---- the test deployment's password gate ------------------------------------

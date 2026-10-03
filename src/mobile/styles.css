@@ -2740,6 +2740,7 @@ html.term-open, body.term-open {
 }
 /* .sheet .toggle-row's display: flex would otherwise outrank the attribute. */
 #report-log-row[hidden] { display: none; }
+#console-row[hidden] { display: none; }
 #report-diag-details { margin-top: 12px; }
 #report-diag-details summary {
   font-size: 12px;
