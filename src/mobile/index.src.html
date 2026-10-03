@@ -45,6 +45,12 @@
       <circle cx="9.4" cy="7.7" r="1.2" fill="currentColor" stroke="none"/>
       <circle cx="14.4" cy="7.4" r="1.2" fill="currentColor" stroke="none"/>
     </symbol>
+    <!-- The session list's usage console key (test build only, 45-usage.js). -->
+    <symbol id="i-bar-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.75" y="12" width="3.5" height="8.25" rx="1"/>
+      <rect x="10.25" y="3.75" width="3.5" height="16.5" rx="1"/>
+      <rect x="16.75" y="8" width="3.5" height="12.25" rx="1"/>
+    </symbol>
     <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="3.2"/>
       <path d="M19.4 15a1.6 1.6 0 0 0 .32 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.32 1.6 1.6 0 0 0-1 1.47V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1.05-1.46 1.6 1.6 0 0 0-1.77.32l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .32-1.77 1.6 1.6 0 0 0-1.47-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.46-1.05 1.6 1.6 0 0 0-.32-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.32H9a1.6 1.6 0 0 0 1-1.47V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.47 1.6 1.6 0 0 0 1.77-.32l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.32 1.77V9a1.6 1.6 0 0 0 1.47 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.47 1z"/>
@@ -394,7 +400,13 @@
       </a>
     </div>
     <div class="right">
+      <!-- Never displayed on either layout (styles.css); the explorer is
+           reached from inside a session. Kept for its listener in
+           28-file-explorer.js. -->
       <button class="icon-btn" id="btn-files" aria-label="Browse files"><svg><use href="#i-folder"/></svg></button>
+      <!-- The private test build's way to the usage console, in the folder
+           key's old place; shown at boot only there (syncUsageKey, 45-usage.js). -->
+      <button class="icon-btn" id="btn-usage" aria-label="Usage console" title="Usage console" hidden><svg><use href="#i-bar-chart"/></svg></button>
       <!-- Not a control: never displayed on either layout (styles.css), and
            here only because buildKeybar() reads the browse capability off this
            button's hidden state, which syncBrowseCap() keeps in step. The way

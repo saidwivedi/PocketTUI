@@ -215,7 +215,7 @@ function syncConsoleRow() {
 }
 
 // A synchronous anchor click, not window.open, which returns null on iOS Safari.
-$("btn-console").addEventListener("click", () => {
+function openUsageConsole() {
   const url = usageConsoleUrl();
   if (!url) return syncConsoleRow();
   const a = document.createElement("a");
@@ -226,7 +226,17 @@ $("btn-console").addEventListener("click", () => {
   document.body.appendChild(a);
   a.click();
   a.remove();
-});
+}
+$("btn-console").addEventListener("click", openUsageConsole);
+
+// The session list header's usage key: the private test build's only, so the
+// public build leaves it hidden and unwired.
+function syncUsageKey() {
+  const on = testGateActive();
+  $("btn-usage").hidden = !on;
+  if (on) $("btn-usage").addEventListener("click", openUsageConsole);
+}
+syncUsageKey();
 
 // ---- when it is sent -------------------------------------------------------
 
