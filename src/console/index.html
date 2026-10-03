@@ -97,7 +97,7 @@ button { cursor: pointer; }
 }
 .top h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
 .top .range { margin: 2px 0 0; color: var(--secondary); font-size: 13px; }
-.controls { display: flex; align-items: center; gap: 8px; }
+.controls, .acts { display: flex; align-items: center; gap: 8px; }
 .seg {
   display: inline-flex;
   padding: 2px;
@@ -309,6 +309,24 @@ tr:last-child td { border-bottom: 0; }
 }
 .gate .err { margin: 10px 0 0; color: var(--bad); font-size: 12px; }
 
+@media (max-width: 599.98px) {
+  /* Controls get their own row: the segments share it evenly, and Refresh /
+     Forget key sit at its right end or wrap to a right-aligned row below. */
+  .controls { flex: 1 1 100%; flex-wrap: wrap; row-gap: 8px; }
+  .seg { flex: 1 1 auto; }
+  .seg button { flex: 1 1 0; white-space: nowrap; }
+  .acts { margin-left: auto; }
+  .btn, .link { white-space: nowrap; }
+  /* Columns sized to their labels, sharing what is left, so "People per day"
+     stays on one line; a label wraps only when the row truly cannot hold it. */
+  .tiles { grid-template-columns: repeat(3, auto); }
+  .tile { min-width: auto; }
+}
+@media (max-width: 374.98px) {
+  .tiles { gap: 6px; }
+  .tile { padding: 8px; }
+  .tile .k { font-size: 10px; }
+}
 @media (min-width: 600px) {
   .tables { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tiles { grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr)); }
@@ -348,8 +366,10 @@ tr:last-child td { border-bottom: 0; }
           <button type="button" data-days="28">28 days</button>
           <button type="button" data-days="90">90 days</button>
         </div>
-        <button type="button" class="btn" id="refresh">Refresh</button>
-        <button type="button" class="link" id="forget">Forget key</button>
+        <div class="acts">
+          <button type="button" class="btn" id="refresh">Refresh</button>
+          <button type="button" class="link" id="forget">Forget key</button>
+        </div>
       </div>
     </header>
     <p class="status" id="status"></p>
