@@ -2735,7 +2735,7 @@
   "id": "hood.privacy-direct",
   "group": "Under the hood",
   "title": "Your terminal stays between your devices",
-  "outcome": "Your device talks straight to your computer; sessions, keystrokes and files never pass through PocketTUI's servers. The app sends one anonymous usage summary per use, with no hostnames, paths or terminal text, and the Usage statistics switch in Settings, About turns it off.",
+  "outcome": "Your device talks straight to your computer; sessions, keystrokes and files never pass through PocketTUI's servers. The app sends one anonymous usage summary per use, with no hostnames, paths or terminal text, and the Share anonymous usage statistics switch in Settings, About turns it off.",
   "where": "Automatic",
   "surface": "both",
   "gates": [],

@@ -2079,9 +2079,9 @@ def test_the_cloudflare_beacon_is_gone_and_the_about_rows_exist(doc):
     assert "cloudflareinsights" not in doc
     about = doc[doc.index('id="panel-about"'):]
     about = about[:about.index('id="dbg-toggle"')]
-    assert '<label for="usage-toggle">Usage statistics</label>' in about
+    assert '<label for="usage-toggle">Share anonymous usage statistics</label>' in about
     assert '<input id="usage-toggle" type="checkbox">' in about
-    assert '<label for="usage-id-toggle">Count me as a returning user</label>' in about
+    assert '<label for="usage-id-toggle">Count return visits</label>' in about
     assert '<input id="usage-id-toggle" type="checkbox">' in about
     assert "Your terminal is never routed through our servers." in about
 
@@ -2419,24 +2419,28 @@ console.log(JSON.stringify(got));
 
 
 USAGE_SHEET_LINES = (
-    "The app already sends one anonymous summary per use: app version, device type, "
-    "time used and which panes were opened. Never what was in them.",
-    "Saying yes adds a random id so returning use can be counted. It is never linked "
-    "to your name, address, hostnames, folders, commands or text.",
-    "Change your mind any time in Settings, About.",
+    "PocketTUI sends basic anonymous usage statistics to help us understand how it’s "
+    "being used, such as device type, app version, session duration, features used, "
+    "and country.",
+    "We never collect terminal content, commands, paths, hostnames, session names, "
+    "pairing codes, or IP addresses. You can turn usage statistics off anytime in Settings.",
+    "Allow PocketTUI to store a random ID in this browser so we can tell whether someone "
+    "comes back. The ID contains no personal or terminal information and is deleted if "
+    "you turn this off.",
 )
 
 
 def test_usage_sheet_markup_and_the_pairing_trigger(doc):
     at = doc.index('<div class="sheet" id="sheet-usage"')
     sheet = doc[at:doc.index("\n</div>\n", at)]
-    assert "<h2" in sheet and "Help count PocketTUI users</h2>" in sheet
+    assert "<h2" in sheet and "Help improve PocketTUI</h2>" in sheet
+    assert "<h3>Help us understand repeat usage?</h3>" in sheet
     for line in USAGE_SHEET_LINES:
         assert f"<p>{line}</p>" in sheet, line
     assert ('<a href="https://pockettui.com/#privacy" target="_blank" rel="noopener">'
             "What is sent</a>") in sheet
     buttons = re.findall(r'<button type="button" class="([^"]*)" id="btn-usage-(yes|no)">([^<]*)<', sheet)
-    assert {(b[1], b[2]) for b in buttons} == {("yes", "Share anonymous usage"), ("no", "Not now")}
+    assert {(b[1], b[2]) for b in buttons} == {("yes", "Allow"), ("no", "Not now")}
     assert len({b[0] for b in buttons}) == 1
     assert "primary" not in buttons[0][0] and "primary" not in sheet
     assert 'id="btn-usage-close"' in sheet
