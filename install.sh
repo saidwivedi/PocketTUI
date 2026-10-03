@@ -617,7 +617,14 @@ else
     # so name the file in full ourselves and let mktemp fill only the X's.
     TMP_TGZ="$(mktemp "${TMPDIR:-/tmp}/pockettui.XXXXXX")" || die "could not create a temp file"
     trap 'rm -f "$TMP_TGZ"' EXIT
-    curl -fsSL "$TARBALL_URL" -o "$TMP_TGZ" || die "could not download $TARBALL_URL"
+    # The query tells the site's download count a first install from an update.
+    # It is decided here, after a fresh directory has cleared UPDATE, and a
+    # plain static mirror at POCKETTUI_BASE_URL serves the file regardless.
+    TARBALL_MODE=install
+    if [[ "$UPDATE" == "1" ]]; then
+        TARBALL_MODE=update
+    fi
+    curl -fsSL "$TARBALL_URL?m=$TARBALL_MODE" -o "$TMP_TGZ" || die "could not download $TARBALL_URL"
     tar -xzf "$TMP_TGZ" -C "$INSTALL_DIR" || die "could not extract the tarball"
     vsay "  -> $INSTALL_DIR"
 fi
@@ -1005,7 +1012,7 @@ INSTALLER_ENV=(POCKETTUI_DIR="$INSTALL_DIR" POCKETTUI_BASE_URL="$BASE_URL"
 
 run_installer() {
     FRESH_INSTALLER="${TMPDIR:-/tmp}/pockettui-install.$$.sh"
-    if command -v curl >/dev/null 2>&1 && curl -fsSL --max-time 30 "$BASE_URL/install.sh" -o "$FRESH_INSTALLER" 2>/dev/null; then
+    if command -v curl >/dev/null 2>&1 && curl -fsSL --max-time 30 "$BASE_URL/install.sh?m=update" -o "$FRESH_INSTALLER" 2>/dev/null; then
         env "${INSTALLER_ENV[@]}" bash "$FRESH_INSTALLER" --update ${@+"$@"}
     elif [[ -f "$INSTALL_DIR/install.sh" ]]; then
         echo "Could not fetch $BASE_URL/install.sh — using the copy in $INSTALL_DIR." >&2
