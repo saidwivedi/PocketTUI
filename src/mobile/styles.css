@@ -214,6 +214,12 @@ body {
 .icon-btn:hover { color: var(--ink); background: var(--umber-tint); }
 .icon-btn:active { transform: scale(0.94); }
 .icon-btn.spin svg { animation: spin 0.7s linear infinite; }
+/* No folder key on the session list on either layout: the explorer is reached
+   from inside a session (the key bar's folder key, and the paths the terminal
+   prints are links). */
+#screen-list #btn-files { display: none; }
+/* .icon-btn's display: inline-flex would otherwise outrank the attribute. */
+#btn-usage[hidden] { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* The one control that creates something is labelled — a bare + never says what
@@ -5047,11 +5053,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-list .brand .glyph { width: 18px; height: 18px; }
   #screen-list .icon-btn { padding: 6px; }
   #screen-list .icon-btn svg { width: 17px; height: 17px; }
-  /* No folder button on the rail: the terminal beside it has the key bar's
-     folder key and, since paths in it are links, the folders it prints. The
-     phone's list keeps its button — there the list is a screen of its own.
+  /* The usage console key is the phone list's only (the founder's ask); the
+     rail reaches the console from Settings, About.
      (#btn-browser is hidden on both layouts, in the browser section below.) */
-  #screen-list #btn-files { display: none; }
+  #screen-list #btn-usage { display: none; }
   @container (max-width: 280px) {
     #screen-list .right { gap: 0; padding-left: 4px; }
   }

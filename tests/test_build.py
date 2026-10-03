@@ -2496,8 +2496,9 @@ def test_console_row_shows_with_a_stored_url_or_the_test_gate(doc, tmp_path):
     object carries a string url, or the test gate is active (then Open falls
     back to console.html beside the shell); Open is a synchronous anchor click
     and a stored url wins."""
-    at = doc.index('$("btn-console").addEventListener("click"')
-    opener = doc[at:doc.index("\n});\n", at) + 4]
+    assert '\n$("btn-console").addEventListener("click", openUsageConsole);\n' in doc
+    opener = (_js_chunk(doc, "function openUsageConsole(")
+              + '\nbtn.on.click = openUsageConsole;\n')
     out = _node_json(tmp_path, "console-row.mjs", f"""
 const els = {{}};
 function $(id) {{
@@ -2562,6 +2563,75 @@ console.log(JSON.stringify(got));
     assert out == {"none": True, "junk": True, "nourl": True, "numurl": True,
                    "jsurl": True, "prod": False, "test": False,
                    "gate_none": False, "nogate_none": True}
+
+
+def test_session_list_header_has_no_folder_key(doc):
+    """The folder key leaves the session list on both layouts (the explorer
+    is reached from inside a session); the rule sits outside every media
+    query, and the usage key takes its place in the header."""
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    rule = "\n#screen-list #btn-files { display: none; }\n"
+    assert rule in css
+    right = doc[doc.index('<div class="right">'):]
+    right = right[:right.index("</div>\n  </div>")]
+    assert right.index('id="btn-files"') < right.index('id="btn-usage"') < right.index('id="btn-reload"')
+
+
+def test_usage_key_markup_and_hidden_rule(doc):
+    at = doc.index('id="btn-usage"')
+    tag = doc[doc.rindex("<button", 0, at):doc.index("</button>", at)]
+    assert tag == ('<button class="icon-btn" id="btn-usage" aria-label="Usage console" '
+                   'title="Usage console" hidden><svg><use href="#i-bar-chart"/></svg>')
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    assert "\n#btn-usage[hidden] { display: none; }\n" in css
+    sym = doc[doc.index('<symbol id="i-bar-chart"'):]
+    sym = sym[:sym.index("</symbol>")]
+    palette = doc[doc.index('<symbol id="i-theme-palette"'):]
+    assert 'stroke="currentColor" stroke-width="1.5"' in sym
+    assert 'stroke="currentColor" stroke-width="1.5"' in palette[:palette.index(">")]
+
+
+def test_usage_key_shows_and_wires_only_under_the_test_gate(doc, tmp_path):
+    """syncUsageKey unhides the header key and wires it to openUsageConsole
+    only when testGateActive(); the public build leaves it hidden with no
+    listener. The key and the About row's Open share one opener."""
+    assert '\nsyncUsageKey();\n' in doc
+    out = _node_json(tmp_path, "usage-key.mjs", f"""
+let els = {{}};
+function $(id) {{
+  if (!els[id]) els[id] = {{ id, hidden: true, on: {{}},
+    addEventListener(t, fn) {{ this.on[t] = fn; }} }};
+  return els[id];
+}}
+const localStorage = {{ getItem: () => null }};
+const clicks = [];
+const document = {{
+  createElement: () => ({{ style: {{}}, click() {{ clicks.push(this.href); }}, remove() {{}} }}),
+  body: {{ appendChild() {{}} }},
+}};
+const location = {{ href: "https://apps.example.net/ptui-test/index.html" }};
+let gate = false;
+function testGateActive() {{ return gate; }}
+function syncConsoleRow() {{}}
+{_js_chunk(doc, "function usageConsoleUrl(")}
+{_js_chunk(doc, "function openUsageConsole(")}
+{_js_chunk(doc, "function syncUsageKey(")}
+const got = {{}};
+for (const g of [false, true]) {{
+  els = {{}};
+  gate = g;
+  syncUsageKey();
+  const k = $("btn-usage");
+  got[g ? "gate" : "public"] = {{ hidden: k.hidden, listeners: Object.keys(k.on),
+                                  shared: k.on.click === openUsageConsole }};
+  if (k.on.click) k.on.click();
+}}
+got.clicks = clicks;
+console.log(JSON.stringify(got));
+""")
+    assert out == {"public": {"hidden": True, "listeners": [], "shared": False},
+                   "gate": {"hidden": False, "listeners": ["click"], "shared": True},
+                   "clicks": ["https://apps.example.net/ptui-test/console.html"]}
 
 
 # ---- the test deployment's password gate ------------------------------------
