@@ -1,0 +1,15 @@
+# Cloudflare Pages config for pockettui.com. With this file present, wrangler
+# takes the project's bindings from here rather than from the dashboard.
+name = "pockettui"
+# Must equal the directory deploy_cloudflare.sh passes to `wrangler pages
+# deploy`: wrangler refuses a config whose output dir disagrees with it.
+pages_build_output_dir = "cloudflare_build"
+compatibility_date = "2026-09-01"
+
+# Anonymous usage counts (functions/api/wave.js, functions/_middleware.js).
+# Schema in migrations/; apply with
+#   npx wrangler d1 migrations apply pockettui-usage --remote
+[[d1_databases]]
+binding = "DB"
+database_name = "pockettui-usage"
+database_id = "42dfe313-5db0-4b3f-bb4d-816ebf8d73d2"
