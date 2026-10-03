@@ -1203,6 +1203,77 @@ def test_the_lan_summary_sends_this_computer_to_the_backend_itself(tmp_path):
 # ---------------------------------------------------------------------------
 # (i) the browser the browser pane streams from
 # ---------------------------------------------------------------------------
+# The site counts first installs and updates apart from a query on the fetch:
+# the tarball says which this run is, and the wrapper's fresh copy of
+# install.sh is only ever fetched to update.
+
+TARBALL_SECTION = ('if [[ "$FRESH_DIR" == "1" ]]; then',
+                   '    tar -xzf "$TMP_TGZ" -C "$INSTALL_DIR" || die "could not extract the tarball"')
+RUN_INSTALLER_SECTION = ("run_installer() {", 'case "${1:-}" in')
+
+
+def recording_curl(tmp_path):
+    """A curl that logs its URL argument and writes a stub to its -o target."""
+    d = tmp_path / "reccurl"
+    make_exe(d / "curl", (
+        "#!/bin/bash\n"
+        "out=''\n"
+        "while [[ $# -gt 0 ]]; do\n"
+        "  case \"$1\" in\n"
+        "    -o) out=\"$2\"; shift ;;\n"
+        f"    http*) printf '%s\\n' \"$1\" >> \"{tmp_path}/curl-urls.txt\" ;;\n"
+        "  esac\n"
+        "  shift\n"
+        "done\n"
+        "[[ -n \"$out\" ]] && printf 'echo RAN \"$*\"\\n' > \"$out\"\n"
+        "exit 0\n"))
+    return {"PATH": f"{d}:{os.environ['PATH']}", "TMPDIR": str(tmp_path)}
+
+
+def curl_urls(tmp_path):
+    return (tmp_path / "curl-urls.txt").read_text().splitlines()
+
+
+@pytest.mark.parametrize("fresh,update,mode", [
+    ("1", "0", "install"),
+    # --update on a machine with nothing installed is still a first install.
+    ("1", "1", "install"),
+    ("0", "1", "update"),
+    # POCKETTUI_FORCE over an existing install replaces it rather than updating.
+    ("0", "0", "install"),
+])
+def test_the_tarball_fetch_says_install_or_update(tmp_path, fresh, update, mode):
+    inst = install_dir(tmp_path)
+    body = (
+        f'INSTALL_DIR="{inst}"\n'
+        'TARBALL_URL="https://pockettui.example.net/pockettui.tar.gz"\n'
+        f"FRESH_DIR={fresh}\nUPDATE={update}\nLOCAL_CHECKOUT=0\n"
+        + slice_sh(*TARBALL_SECTION)
+        + "fi\n"
+        'printf "TARBALL_URL=%s\\n" "$TARBALL_URL"\n'
+    )
+    r = run_bash(tmp_path, body, env=recording_curl(tmp_path), name="tarball.sh")
+    assert r.returncode == 0, r.stderr
+    assert curl_urls(tmp_path) == [f"https://pockettui.example.net/pockettui.tar.gz?m={mode}"]
+    assert "TARBALL_URL=https://pockettui.example.net/pockettui.tar.gz\n" in r.stdout
+
+
+def test_the_wrappers_installer_refetch_says_update(tmp_path):
+    inst = install_dir(tmp_path)
+    body = (
+        f'INSTALL_DIR="{inst}"\n'
+        'BASE_URL="https://pockettui.example.net"\n'
+        "INSTALLER_ENV=(POCKETTUI_DIR=x)\n"
+        + slice_sh(*RUN_INSTALLER_SECTION)
+        + "run_installer --no-browser\n"
+    )
+    r = run_bash(tmp_path, body, env=recording_curl(tmp_path), name="refetch.sh")
+    assert r.returncode == 0, r.stderr
+    assert curl_urls(tmp_path) == ["https://pockettui.example.net/install.sh?m=update"]
+    assert "RAN --update --no-browser" in r.stdout
+
+
+# ---------------------------------------------------------------------------
 # The installer never decides anything about a browser itself: chromium.py
 # finds one, says whether it can start here, and downloads one. What is tested
 # is the step around it — the flag that skips it, the one summary line each
