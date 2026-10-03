@@ -81,14 +81,35 @@ Useful environment variables: `PORT` (default 5560), `POCKETTUI_DIR` (install di
 
 ## Privacy
 
-Your terminal never passes through our servers: the app talks straight to `app.py` on your computer. What does reach pockettui.com:
+PocketTUI sends a small anonymous usage summary by default and never collects terminal content. If you opt in to return-visit counting, PocketTUI additionally stores a random ID in your browser.
 
-- **One anonymous usage summary per use** ([`functions/api/wave.js`](functions/api/wave.js), sent by [`src/mobile/js/45-usage.js`](src/mobile/js/45-usage.js)): app and server version, hosted or self-served shell, layout, OS, installed-as-app flag, seconds open, reconnect count, number of sessions shown, and per-pane open counts. The server adds the country. No hostnames, paths, session names, commands, terminal text or pairing code.
-- **A daily person hash** in place of an address: SHA-256 over a key that changes every day, the IP and the user agent ([`functions/_lib/usage.js`](functions/_lib/usage.js)). The address is never stored, and the hash does not link one day to the next.
-- **An optional random id**, only after you turn on *Count me as a returning user* in Settings, About. Turning it off deletes the id. *Usage statistics* off sends nothing at all.
-- **Download counts** for `install.sh`, the tarball and `version.txt` ([`functions/_middleware.js`](functions/_middleware.js)): install or update, country, curl or browser, and for update checks a keyed hash of the backend host. No address.
+### Usage statistics
 
-Rows are stored in Cloudflare D1 (Western Europe) and deleted after 400 days. The landing page uses Cloudflare Web Analytics (no cookie) and no Google Analytics.
+By default, PocketTUI collects:
+
+- App and server versions
+- Device type
+- Session duration
+- Session and feature counts
+- Country
+
+PocketTUI does **not** collect:
+
+- Terminal text or commands
+- Hostnames or paths
+- Session names
+- Pairing codes
+- IP addresses
+
+Usage statistics can be disabled in Settings.
+
+### Return visits
+
+If you opt in, PocketTUI stores a random ID in your browser so we can determine whether the same browser uses PocketTUI again.
+
+The ID contains no personal or terminal information. Turning return-visit counting off deletes it.
+
+Usage data is stored in Cloudflare's EU region and deleted after 400 days. The exact fields are in [`functions/api/wave.js`](functions/api/wave.js); installer and tarball downloads are counted in [`functions/_middleware.js`](functions/_middleware.js).
 
 ## Self-hosting the app shell
 

@@ -1486,17 +1486,17 @@
          off sends nothing and deletes the id. The second only adds a random id
          to the same summary, and stays off until it is asked for. -->
     <div class="toggle-row">
-      <label for="usage-toggle">Usage statistics</label>
+      <label for="usage-toggle">Share anonymous usage statistics</label>
       <input id="usage-toggle" type="checkbox">
     </div>
-    <p class="row-hint">One anonymous summary per use: app version, platform,
-      how long, which panes were opened. Never what was in them.</p>
+    <p class="row-hint">Share basic information about how PocketTUI is used.
+      Never includes terminal content.</p>
     <div class="toggle-row">
-      <label for="usage-id-toggle">Count me as a returning user</label>
+      <label for="usage-id-toggle">Count return visits</label>
       <input id="usage-id-toggle" type="checkbox">
     </div>
-    <p class="row-hint">Adds a random id so returning use can be counted. Off
-      deletes the id.</p>
+    <p class="row-hint">Stores a random ID in this browser so we can understand
+      repeat usage. Turning this off deletes it.</p>
     <!-- The founder's usage console (src/console/), offered only on a browser
          where that page has stored its key: same origin, so the console at
          /console/ and this shell at /app/ share localStorage (45-usage.js). -->
@@ -1727,14 +1727,15 @@
      reads as the expected one. The cross and the scrim answer nothing: the
      question comes back on the next load. -->
 <div class="sheet" id="sheet-usage" role="dialog" aria-modal="true" aria-labelledby="usage-title">
-  <h2 id="usage-title">Help count PocketTUI users</h2>
+  <h2 id="usage-title">Help improve PocketTUI</h2>
   <button type="button" class="icon-btn" id="btn-usage-close" aria-label="Close"><svg><use href="#i-close"/></svg></button>
-  <p>The app already sends one anonymous summary per use: app version, device type, time used and which panes were opened. Never what was in them.</p>
-  <p>Saying yes adds a random id so returning use can be counted. It is never linked to your name, address, hostnames, folders, commands or text.</p>
-  <p>Change your mind any time in Settings, About.</p>
-  <p><a href="https://pockettui.com/#privacy" target="_blank" rel="noopener">What is sent</a></p>
+  <p>PocketTUI sends basic anonymous usage statistics to help us understand how it’s being used, such as device type, app version, session duration, features used, and country.</p>
+  <p>We never collect terminal content, commands, paths, hostnames, session names, pairing codes, or IP addresses. You can turn usage statistics off anytime in Settings.</p>
+  <h3>Help us understand repeat usage?</h3>
+  <p>Allow PocketTUI to store a random ID in this browser so we can tell whether someone comes back. The ID contains no personal or terminal information and is deleted if you turn this off.</p>
+  <p class="usage-more"><a href="https://pockettui.com/#privacy" target="_blank" rel="noopener">What is sent</a></p>
   <div class="actions usage-actions">
-    <button type="button" class="usage-answer" id="btn-usage-yes">Share anonymous usage</button>
+    <button type="button" class="usage-answer" id="btn-usage-yes">Allow</button>
     <button type="button" class="usage-answer" id="btn-usage-no">Not now</button>
   </div>
 </div>

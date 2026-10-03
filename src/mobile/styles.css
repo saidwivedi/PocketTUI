@@ -2720,9 +2720,10 @@ html.term-open, body.term-open {
 /* Under the action row, aligned with it: it is the way out when the send is
    what failed, so it sits where the eye already is. */
 #report-fallback { margin-top: 12px; text-align: right; }
-/* The returning-user question: three short lines, a link, two answers. The
-   answers split the row evenly (flex: 1 1 0) so the longer label does not make
-   its button the bigger, more expected one. */
+/* The returning-user question: what is sent, then the id question under its
+   own smaller heading, a link, two answers. The answers split the row evenly
+   (flex: 1 1 0) so the longer label does not make its button the bigger, more
+   expected one. */
 #sheet-usage h2 { padding-right: 36px; }
 #btn-usage-close { position: absolute; top: 13px; right: 12px; }
 #sheet-usage p {
@@ -2732,6 +2733,14 @@ html.term-open, body.term-open {
   color: var(--secondary);
 }
 #sheet-usage p a { color: var(--umber); text-decoration: underline; }
+#sheet-usage h3 {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 500;
+  margin: 18px 0 8px;
+  color: var(--ink);
+}
+#sheet-usage p.usage-more { font-size: 12px; }
 .sheet .usage-actions button { flex: 1 1 0; min-width: 0; padding-left: 12px; padding-right: 12px; }
 /* Side by side the longer label wraps on a phone; stacked, both stay one line
    and still share one width. */
