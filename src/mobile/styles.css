@@ -2408,7 +2408,7 @@ html.term-open, body.term-open {
      pill. */
   #alt-row { display: none; }
 }
-#btn-report, #btn-features-about, #btn-update-server, #btn-update-type {
+#btn-report, #btn-features-about, #btn-console, #btn-update-server, #btn-update-type {
   flex-shrink: 0;
   font-family: var(--sans);
   font-size: 12px;
@@ -2422,6 +2422,7 @@ html.term-open, body.term-open {
 }
 #btn-report:active,
 #btn-features-about:active,
+#btn-console:active,
 #btn-update-server:active,
 #btn-update-type:active { transform: scale(0.96); }
 /* Three stacked rows rather than a segmented control: the names are words of

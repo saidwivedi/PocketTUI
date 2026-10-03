@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>PocketTUI usage</title>
+<!-- The founder's usage console: one static page that reads the aggregates
+     at /api/console behind a key. No build step and nothing external, so the
+     file deployed is the file written. The key lives in this origin's
+     localStorage under pockettui_console, next to the address of this page,
+     which is how the app's About tab on the same origin knows to offer it. -->
+<style>
+:root {
+  color-scheme: light;
+  --paper: #FAF8F3;
+  --card: #FFFDF7;
+  --well: #F4EFE3;
+  --hair: #ECE6D8;
+  --hair-strong: #DDD4BE;
+  --ink: #1a1814;
+  --ink-2: #3d362d;
+  --secondary: #6b6357;
+  --tertiary: #8a8073;
+  --accent: #b85c38;
+  --accent-rgb: 184, 92, 56;
+  --bar2: #cdc3ae;
+  --bad: #9c4439;
+  --on-accent: #fff;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #16140f;
+    --card: #1f1c16;
+    --well: #1a1813;
+    --hair: #2e2a21;
+    --hair-strong: #3b362a;
+    --ink: #f3ede0;
+    --ink-2: #d8d1c0;
+    --secondary: #a89e8c;
+    --tertiary: #7d7466;
+    --accent: #d4865a;
+    --accent-rgb: 212, 134, 90;
+    --bar2: #574f41;
+    --bad: #c46a5e;
+    --on-accent: #16140f;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #16140f;
+  --card: #1f1c16;
+  --well: #1a1813;
+  --hair: #2e2a21;
+  --hair-strong: #3b362a;
+  --ink: #f3ede0;
+  --ink-2: #d8d1c0;
+  --secondary: #a89e8c;
+  --tertiary: #7d7466;
+  --accent: #d4865a;
+  --accent-rgb: 212, 134, 90;
+  --bar2: #574f41;
+  --bad: #c46a5e;
+  --on-accent: #16140f;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 14px/1.45 var(--sans);
+  font-variant-numeric: tabular-nums;
+}
+[hidden] { display: none !important; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+.wrap {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+}
+
+/* ---- header ---- */
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px 16px;
+  margin: 8px 0 16px;
+}
+.top h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+.top .range { margin: 2px 0 0; color: var(--secondary); font-size: 13px; }
+.controls { display: flex; align-items: center; gap: 8px; }
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--well);
+  border: 1px solid var(--hair);
+}
+.seg button {
+  border: 0;
+  background: transparent;
+  padding: 5px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--secondary);
+}
+.seg button[aria-pressed="true"] {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--hair-strong);
+}
+.btn {
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--ink-2);
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.btn:active, .seg button:active { transform: scale(0.97); }
+.status { margin: -6px 0 14px; font-size: 12px; color: var(--tertiary); min-height: 17px; }
+.status.err { color: var(--bad); }
+
+/* ---- sections ---- */
+.dash { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.card {
+  min-width: 0;
+  background: var(--card);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  padding: 14px 14px 12px;
+}
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  min-height: 20px;
+}
+.card h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.card h3 {
+  margin: 14px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--tertiary);
+}
+.legend { display: flex; gap: 12px; font-size: 12px; color: var(--secondary); white-space: nowrap; }
+.legend i {
+  display: inline-block;
+  width: 9px; height: 9px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: -1px;
+}
+.sw-1 { background: var(--accent); }
+.sw-2 { background: var(--bar2); }
+.sw-line2 { background: var(--secondary); }
+.note { margin: 10px 0 0; font-size: 12px; color: var(--tertiary); }
+.empty {
+  margin: 0;
+  padding: 22px 0;
+  text-align: center;
+  color: var(--tertiary);
+  font-size: 13px;
+}
+.landing-off { margin: 0; padding: 14px 0; color: var(--secondary); font-size: 13px; }
+
+/* tiles: same size in a row, label on top, value at the foot */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--well);
+  min-width: 0;
+}
+.tile .k { font-size: 11px; color: var(--secondary); line-height: 1.3; }
+.tile .v { font-size: 19px; font-weight: 600; color: var(--ink); line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* charts */
+.chart { width: 100%; min-height: 1px; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart text { font: 11px var(--sans); fill: var(--tertiary); font-variant-numeric: tabular-nums; }
+.chart text.val { fill: var(--secondary); }
+.chart .grid { stroke: var(--hair); stroke-width: 1; }
+.chart .base { stroke: var(--hair-strong); stroke-width: 1; }
+.chart .b1 { fill: var(--accent); }
+.chart .b2 { fill: var(--bar2); }
+.chart .l1 { stroke: var(--accent); stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+.chart .l2 { stroke: var(--secondary); stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+.chart .d1 { fill: var(--accent); }
+.chart .d2 { fill: var(--secondary); }
+.chart .hit { fill: transparent; }
+.chart .hit:hover { fill: rgba(var(--accent-rgb), 0.08); }
+
+/* horizontal share bars */
+.hbars { display: grid; gap: 7px; }
+.hbar {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) 84px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.hbar .name { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hbar .track { height: 10px; border-radius: 3px; background: var(--well); overflow: hidden; }
+.hbar .fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.hbar .num { text-align: right; white-space: nowrap; color: var(--ink-2); }
+.hbar .num span { color: var(--tertiary); }
+
+/* tables */
+.tables { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px 20px; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; }
+th, td { padding: 5px 0; border-bottom: 1px solid var(--hair); text-align: right; white-space: nowrap; }
+th { font-size: 11px; font-weight: 500; color: var(--tertiary); }
+th:first-child, td:first-child { text-align: left; overflow: hidden; text-overflow: ellipsis; padding-right: 8px; }
+td { color: var(--ink-2); }
+td.dim { color: var(--tertiary); }
+tr:last-child td { border-bottom: 0; }
+.top-table col.c-n { width: 64px; }
+.top-table col.c-s { width: 52px; }
+.cohort col.c-k { width: 26%; }
+.cohort td:nth-child(2), .cohort th:nth-child(2) { padding-right: 10px; }
+.cohort td.pct { text-align: center; border-radius: 4px; border-bottom-color: var(--card); }
+.cohort th.pct { text-align: center; }
+.cohort td.na { color: var(--hair-strong); text-align: center; }
+
+.cohorts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 20px; }
+
+/* footer */
+.foot { margin-top: 16px; font-size: 12px; color: var(--tertiary); }
+.foot p { margin: 0 0 4px; }
+.foot ul { margin: 6px 0 0; padding-left: 18px; color: var(--bad); }
+
+/* ---- key prompt ---- */
+.gate {
+  max-width: 360px;
+  margin: 18vh auto 0;
+  padding: 22px 20px 20px;
+  background: var(--card);
+  border: 1px solid var(--hair);
+  border-radius: 14px;
+}
+.gate h1 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
+.gate p { margin: 0 0 14px; color: var(--secondary); font-size: 13px; }
+.gate form { display: flex; gap: 8px; }
+.gate input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--hair-strong);
+  background: var(--well);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.gate input:focus { outline: 2px solid rgba(var(--accent-rgb), 0.45); outline-offset: 0; border-color: var(--accent); }
+.gate button {
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 16px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  font-size: 13px;
+}
+.gate .err { margin: 10px 0 0; color: var(--bad); font-size: 12px; }
+
+@media (min-width: 600px) {
+  .tables { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tiles { grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr)); }
+}
+@media (min-width: 900px) {
+  .wrap { padding-left: 24px; padding-right: 24px; }
+  .dash { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .card.wide { grid-column: 1 / -1; }
+  .card { padding: 16px 18px 14px; }
+  .tables { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .cohorts { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="gate" id="gate" hidden>
+    <h1>PocketTUI usage</h1>
+    <p>Enter the console key to read the usage numbers.</p>
+    <form id="gate-form" autocomplete="off">
+      <input id="gate-key" type="password" autocomplete="off" spellcheck="false"
+             autocapitalize="off" placeholder="Key" aria-label="Console key">
+      <button type="submit">Save</button>
+    </form>
+    <p class="err" id="gate-err" hidden></p>
+  </div>
+
+  <div id="app" hidden>
+    <header class="top">
+      <div>
+        <h1>PocketTUI usage</h1>
+        <p class="range" id="range">&nbsp;</p>
+      </div>
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Window">
+          <button type="button" data-days="7">7 days</button>
+          <button type="button" data-days="28">28 days</button>
+          <button type="button" data-days="90">90 days</button>
+        </div>
+        <button type="button" class="btn" id="refresh">Refresh</button>
+      </div>
+    </header>
+    <p class="status" id="status"></p>
+    <main class="dash" id="dash"></main>
+    <footer class="foot" id="foot"></footer>
+  </div>
+</div>
+<script>
+"use strict";
+(function () {
+  const API = "https://pockettui.com/api/console";
+  const STORE = "pockettui_console";
+  const DAY_CHOICES = [7, 28, 90];
+  const REFRESH_MS = 5 * 60 * 1000;
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const FEATURE_NAMES = {
+    explorer: "Files", browser: "Browser", diff: "Diff", side2: "Second pane",
+    voice: "Voice", settings: "Settings", reader: "Reader", editor: "Editor",
+    viewer: "Viewer", search: "Search", newsess: "New session",
+  };
+  const OS_NAMES = { ios: "iOS", ipados: "iPadOS", android: "Android", mac: "macOS",
+    windows: "Windows", linux: "Linux", chromeos: "ChromeOS", other: "Other" };
+  const SHELL_NAMES = { hosted: "Hosted", self: "Self-served", other: "Other host" };
+  const LAYOUT_NAMES = { phone: "Phone", desktop: "Desktop" };
+  const LEN_LABELS = ["<30 s", "1 m", "2 m", "5 m", "15 m", "1 h", ">1 h"];
+
+  const $ = (id) => document.getElementById(id);
+
+  // ---- storage ---------------------------------------------------------
+  function readStore() {
+    try {
+      const o = JSON.parse(localStorage.getItem(STORE));
+      return o && typeof o === "object" ? o : null;
+    } catch (e) { return null; }
+  }
+  function writeStore(o) {
+    try { localStorage.setItem(STORE, JSON.stringify(o)); } catch (e) {}
+  }
+  function clearStore() {
+    try { localStorage.removeItem(STORE); } catch (e) {}
+  }
+
+  const stored = readStore() || {};
+  const state = {
+    key: typeof stored.key === "string" ? stored.key : "",
+    days: DAY_CHOICES.includes(stored.days) ? stored.days : 28,
+    data: null,
+    fetchedAt: 0,
+    seq: 0,
+    charts: [],
+  };
+
+  // ---- formatting ------------------------------------------------------
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  }
+  function n0(v) { return Number(v) || 0; }
+  function trim0(s) { return s.replace(/\.0$/, ""); }
+  function fmtN(v) {
+    v = n0(v);
+    const a = Math.abs(v);
+    if (a >= 1e6) return trim0((v / 1e6).toFixed(a >= 1e7 ? 0 : 1)) + "M";
+    if (a >= 1e3) return trim0((v / 1e3).toFixed(a >= 1e4 ? 0 : 1)) + "k";
+    if (Number.isInteger(v)) return String(v);
+    return trim0(v.toFixed(1));
+  }
+  function fmtPct(x) {
+    x = n0(x);
+    if (x > 0 && x < 0.01) return "<1%";
+    return Math.round(x * 100) + "%";
+  }
+  function fmtSecs(s) {
+    if (s == null) return "–";
+    s = Math.round(n0(s));
+    if (s < 60) return s + " s";
+    if (s < 3600) {
+      const m = Math.floor(s / 60), r = s % 60;
+      return r ? m + " m " + r + " s" : m + " m";
+    }
+    const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+    return m ? h + " h " + m + " m" : h + " h";
+  }
+  function dayLabel(day) {
+    const p = String(day).split("-");
+    return MONTHS[Number(p[1]) - 1] + " " + Number(p[2]);
+  }
+  function monthLabel(mo) {
+    const p = String(mo).split("-");
+    return MONTHS[Number(p[1]) - 1] + " " + p[0];
+  }
+  function rangeLabel(r) {
+    if (!r || !r.from) return "";
+    const y = String(r.to).slice(0, 4);
+    return dayLabel(r.from) + " – " + dayLabel(r.to) + ", " + y + " · UTC days";
+  }
+  function addDays(day, n) {
+    return new Date(Date.parse(day + "T00:00:00Z") + n * 86400000).toISOString().slice(0, 10);
+  }
+  function addMonths(mo, n) {
+    const p = mo.split("-").map(Number);
+    return new Date(Date.UTC(p[0], p[1] - 1 + n, 1)).toISOString().slice(0, 7);
+  }
+  function stamp(d) {
+    const p2 = (x) => String(x).padStart(2, "0");
+    return d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear() + ", " +
+      p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+  }
+  function plural(n, one, many) { return fmtN(n) + " " + (n === 1 ? one : many); }
+
+  // ---- charts ----------------------------------------------------------
+  // Drawn at the container's own pixel width (viewBox = that width), so the
+  // labels stay 11 px on a phone instead of shrinking with the drawing.
+  function niceMax(v) {
+    if (!(v > 0)) return 1;
+    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    for (const m of [1, 2, 5, 10]) if (m * p >= v) return Math.max(1, m * p);
+    return 10 * p;
+  }
+  function textW(s) { return String(s).length * 6.3; }
+  function labelStep(n, plotW) {
+    const fit = Math.max(1, Math.floor(plotW / 52));
+    const need = Math.ceil(n / fit);
+    for (const s of [1, 2, 7, 14, 28]) if (s >= need) return s;
+    return need;
+  }
+  function frame(width, height, max, days) {
+    const padL = Math.ceil(textW(fmtN(max))) + 8;
+    const padR = 4, padT = 8, padB = 20;
+    const plotW = Math.max(10, width - padL - padR);
+    const plotH = height - padT - padB;
+    const slot = plotW / days.length;
+    const y = (v) => padT + plotH - (v / max) * plotH;
+    let svg = "";
+    svg += `<line class="grid" x1="${padL}" x2="${width - padR}" y1="${padT + 0.5}" y2="${padT + 0.5}"/>`;
+    svg += `<line class="grid" x1="${padL}" x2="${width - padR}" y1="${Math.round(padT + plotH / 2) + 0.5}" y2="${Math.round(padT + plotH / 2) + 0.5}"/>`;
+    svg += `<text x="${padL - 6}" y="${padT + 4}" text-anchor="end">${fmtN(max)}</text>`;
+    svg += `<text x="${padL - 6}" y="${padT + plotH + 4}" text-anchor="end">0</text>`;
+    // Labels counted back from the last day, so today always has one.
+    const step = labelStep(days.length, plotW);
+    for (let i = days.length - 1; i >= 0; i -= step) {
+      const s = dayLabel(days[i]);
+      const half = textW(s) / 2;
+      const cx = padL + slot * (i + 0.5);
+      const x = Math.min(width - padR - half, Math.max(padL + half, cx));
+      svg += `<text x="${x.toFixed(1)}" y="${height - 5}" text-anchor="middle">${esc(s)}</text>`;
+    }
+    return { padL, padR, padT, plotW, plotH, slot, y, svg, base: padT + plotH };
+  }
+
+  // series: [{ key, cls, name }]; stacked bottom-up in the order given.
+  function barChart(spec, width) {
+    const height = spec.height || 150;
+    const rows = spec.rows;
+    const days = rows.map((r) => r.day);
+    const totals = rows.map((r) => spec.series.reduce((s, c) => s + n0(r[c.key]), 0));
+    const max = niceMax(Math.max(0, ...totals));
+    const f = frame(width, height, max, days);
+    const gap = f.slot > 6 ? Math.max(1, f.slot * 0.28) : 1;
+    const bw = Math.max(1, f.slot - gap);
+    let svg = f.svg;
+    rows.forEach((r, i) => {
+      const x = f.padL + f.slot * i + (f.slot - bw) / 2;
+      let acc = 0;
+      const tip = dayLabel(r.day) + ": " + spec.series.map((c) => fmtN(n0(r[c.key])) + " " + c.name).join(", ");
+      for (const c of spec.series) {
+        const v = n0(r[c.key]);
+        if (v <= 0) continue;
+        const y0 = f.y(acc), y1 = f.y(acc + v);
+        svg += `<rect class="${c.cls}" x="${x.toFixed(1)}" y="${y1.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, y0 - y1).toFixed(1)}" rx="${bw > 6 ? 1.5 : 0}"/>`;
+        acc += v;
+      }
+      svg += `<rect class="hit" x="${(f.padL + f.slot * i).toFixed(1)}" y="${f.padT}" width="${f.slot.toFixed(1)}" height="${f.plotH}"><title>${esc(tip)}</title></rect>`;
+    });
+    svg += `<line class="base" x1="${f.padL}" x2="${width - f.padR}" y1="${f.base + 0.5}" y2="${f.base + 0.5}"/>`;
+    return `<svg viewBox="0 0 ${width} ${height}" height="${height}" role="img" aria-label="${esc(spec.label)}">${svg}</svg>`;
+  }
+
+  function lineChart(spec, width) {
+    const height = spec.height || 150;
+    const rows = spec.rows;
+    const days = rows.map((r) => r.day);
+    const max = niceMax(Math.max(0, ...rows.flatMap((r) => spec.series.map((c) => n0(r[c.key])))));
+    const f = frame(width, height, max, days);
+    let svg = f.svg;
+    svg += `<line class="base" x1="${f.padL}" x2="${width - f.padR}" y1="${f.base + 0.5}" y2="${f.base + 0.5}"/>`;
+    const dots = days.length <= 31;
+    for (const c of spec.series) {
+      const pts = rows.map((r, i) => (f.padL + f.slot * (i + 0.5)).toFixed(1) + "," + f.y(n0(r[c.key])).toFixed(1));
+      svg += `<polyline class="${c.line}" points="${pts.join(" ")}"/>`;
+      if (dots) pts.forEach((p) => {
+        const [x, y] = p.split(",");
+        svg += `<circle class="${c.dot}" cx="${x}" cy="${y}" r="2.5"/>`;
+      });
+    }
+    rows.forEach((r, i) => {
+      const tip = dayLabel(r.day) + ": " + spec.series.map((c) => fmtN(n0(r[c.key])) + " " + c.name).join(", ");
+      svg += `<rect class="hit" x="${(f.padL + f.slot * i).toFixed(1)}" y="${f.padT}" width="${f.slot.toFixed(1)}" height="${f.plotH}"><title>${esc(tip)}</title></rect>`;
+    });
+    return `<svg viewBox="0 0 ${width} ${height}" height="${height}" role="img" aria-label="${esc(spec.label)}">${svg}</svg>`;
+  }
+
+  // Bucket bars with their label under each and the count above.
+  function histChart(spec, width) {
+    const height = 150, padT = 18, padB = 22;
+    const vals = spec.values.map(n0);
+    const max = Math.max(1, ...vals);
+    const plotH = height - padT - padB;
+    const slot = width / vals.length;
+    const bw = Math.min(56, slot * 0.7);
+    let svg = "";
+    vals.forEach((v, i) => {
+      const cx = slot * (i + 0.5);
+      const h = v > 0 ? Math.max(1, (v / max) * plotH) : 0;
+      const y = padT + plotH - h;
+      if (h) svg += `<rect class="b1" x="${(cx - bw / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5"><title>${esc(spec.labels[i] + ": " + fmtN(v))}</title></rect>`;
+      svg += `<text class="val" x="${cx.toFixed(1)}" y="${(y - 5).toFixed(1)}" text-anchor="middle">${fmtN(v)}</text>`;
+      svg += `<text x="${cx.toFixed(1)}" y="${height - 5}" text-anchor="middle">${esc(spec.labels[i])}</text>`;
+    });
+    svg += `<line class="base" x1="0" x2="${width}" y1="${padT + plotH + 0.5}" y2="${padT + plotH + 0.5}"/>`;
+    return `<svg viewBox="0 0 ${width} ${height}" height="${height}" role="img" aria-label="${esc(spec.label)}">${svg}</svg>`;
+  }
+
+  const DRAW = { bar: barChart, line: lineChart, hist: histChart };
+  function chart(spec) {
+    state.charts.push(spec);
+    return `<div class="chart" data-chart="${state.charts.length - 1}"></div>`;
+  }
+  let drawnWidth = 0;
+  function drawCharts() {
+    drawnWidth = document.documentElement.clientWidth;
+    document.querySelectorAll("[data-chart]").forEach((el) => {
+      const spec = state.charts[Number(el.dataset.chart)];
+      const w = Math.max(120, Math.floor(el.clientWidth));
+      el.innerHTML = DRAW[spec.type](spec, w);
+    });
+  }
+
+  // ---- pieces ----------------------------------------------------------
+  function tiles(list) {
+    return `<div class="tiles" style="--n: ${list.length}">` + list.map(([k, v, title]) =>
+      `<div class="tile"${title ? ` title="${esc(title)}"` : ""}><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("") + `</div>`;
+  }
+  function legend(items) {
+    return `<div class="legend">` + items.map(([cls, name]) =>
+      `<span><i class="${cls}"></i>${esc(name)}</span>`).join("") + `</div>`;
+  }
+  function card(title, body, opts) {
+    opts = opts || {};
+    return `<section class="card${opts.wide ? " wide" : ""}" id="${opts.id || ""}">` +
+      `<div class="card-head"><h2>${esc(title)}</h2>${opts.aside || ""}</div>${body}</section>`;
+  }
+  function note(s) { return `<p class="note">${esc(s)}</p>`; }
+  const EMPTY = `<p class="empty">No data yet</p>`;
+
+  // A top-N table: name, count, share of the given total.
+  function topTable(title, rows, total, nameOf, valKey) {
+    valKey = valKey || "n";
+    const list = (rows || []).slice(0, 10);
+    let body;
+    if (!list.length) {
+      body = `<tr><td class="dim" colspan="3">No data yet</td></tr>`;
+    } else {
+      body = list.map((r) => {
+        const name = nameOf ? nameOf(r.k) : (r.k == null || r.k === "" ? "unknown" : r.k);
+        const v = n0(r[valKey]);
+        return `<tr><td title="${esc(name)}">${esc(name)}</td><td>${fmtN(v)}</td><td class="dim">${total ? fmtPct(v / total) : "–"}</td></tr>`;
+      }).join("");
+    }
+    return `<div><h3>${esc(title)}</h3><table class="top-table"><colgroup><col><col class="c-n"><col class="c-s"></colgroup><tbody>${body}</tbody></table></div>`;
+  }
+
+  // ---- sections --------------------------------------------------------
+  function secPeople(d) {
+    const app = d.app || {}, t = app.totals || {};
+    const days = (app.days || []).length || 1;
+    let body;
+    if (!n0(t.sessions) && !n0(t.people_sum)) body = EMPTY;
+    else body = chart({ type: "bar", rows: app.days || [], label: "People per day",
+        series: [{ key: "people", cls: "b1", name: "people" }] }) +
+      tiles([
+        ["Sessions", fmtN(t.sessions)],
+        ["People per day", fmtN(Math.round(n0(t.people_sum) / days * 10) / 10)],
+        ["Consent share", fmtPct(app.consent_share), "Share of sessions that carried a returning-user id"],
+      ]);
+    return card("People", body + note("People are counted per day by a hash that changes daily, so the window total over-counts anyone who came on several days."), { id: "s-people" });
+  }
+
+  function secInstalls(d) {
+    const ins = d.installs || {}, t = ins.totals || {};
+    const any = ["attempts", "installs", "updates", "version_checks", "active_self"].some((k) => n0(t[k]));
+    const body = !any ? EMPTY :
+      chart({ type: "bar", rows: ins.days || [], label: "Installs and updates per day",
+        series: [{ key: "installs", cls: "b1", name: "installs" }, { key: "updates", cls: "b2", name: "updates" }] }) +
+      tiles([
+        ["Installs", fmtN(t.installs)],
+        ["Updates", fmtN(t.updates)],
+        ["Installer runs", fmtN(t.attempts), "install.sh fetched by curl"],
+        ["Version checks", fmtN(t.version_checks)],
+        ["Active self-served", fmtN(t.active_self), "Distinct self-served shells that checked for a version"],
+      ]);
+    return card("Installs", body + note("Installs and updates are tarball downloads by the installer. Installer runs are install.sh fetches; active self-served counts distinct self-served shells that checked for a new version."),
+      { id: "s-installs", aside: any ? legend([["sw-1", "Installs"], ["sw-2", "Updates"]]) : "" });
+  }
+
+  function cohortCell(back, base, available) {
+    if (!available) return `<td class="na" title="Not reached yet">·</td>`;
+    if (!base) return `<td class="na">–</td>`;
+    const x = back / base;
+    const a = (0.06 + 0.5 * x).toFixed(3);
+    return `<td class="pct" style="background: rgba(var(--accent-rgb), ${a})" title="${esc(back + " of " + base)}">${fmtPct(x)}</td>`;
+  }
+
+  function secReturning(d) {
+    const app = d.app || {}, t = app.totals || {}, ret = d.retention || {};
+    const to = (d.range || {}).to || "";
+    const weekly = ret.weekly || [], monthly = ret.monthly || [];
+    if (!n0(t.installs_seen) && !weekly.length && !monthly.length) {
+      return card("Returning users", EMPTY + note("Only browsers that said yes to the returning-user question; each browser is its own id."), { id: "s-returning", wide: true });
+    }
+    let body = chart({ type: "line", rows: app.days || [], label: "New and returning ids per day",
+      series: [{ key: "new_installs", line: "l2", dot: "d2", name: "new" },
+               { key: "returning_installs", line: "l1", dot: "d1", name: "returning" }] });
+    body += tiles([
+      ["Ids seen", fmtN(t.installs_seen)],
+      ["New", fmtN(t.new_installs)],
+      ["Returning", fmtN(t.returning_installs)],
+    ]);
+    const wk = weekly.length ? weekly.map((r) =>
+      `<tr><td>${esc(dayLabel(r.week))}</td><td>${fmtN(r.new)}</td>` +
+      [1, 2, 3, 4].map((n) => cohortCell(n0(r["back" + n]), n0(r.new), addDays(r.week, 7 * n) <= to)).join("") + `</tr>`).join("")
+      : `<tr><td class="dim" colspan="6">No data yet</td></tr>`;
+    const mo = monthly.length ? monthly.map((r) =>
+      `<tr><td>${esc(monthLabel(r.month))}</td><td>${fmtN(r.new)}</td>` +
+      [1, 2].map((n) => cohortCell(n0(r["back" + n]), n0(r.new), addMonths(r.month, n) <= to.slice(0, 7))).join("") + `</tr>`).join("")
+      : `<tr><td class="dim" colspan="4">No data yet</td></tr>`;
+    body += `<div class="cohorts">` +
+      `<div><h3>Weekly cohorts</h3><table class="cohort"><colgroup><col class="c-k"><col><col><col><col><col></colgroup>` +
+      `<thead><tr><th>Week of</th><th>New</th><th class="pct">+1 w</th><th class="pct">+2 w</th><th class="pct">+3 w</th><th class="pct">+4 w</th></tr></thead><tbody>${wk}</tbody></table></div>` +
+      `<div><h3>Monthly cohorts</h3><table class="cohort"><colgroup><col class="c-k"><col><col><col></colgroup>` +
+      `<thead><tr><th>Month</th><th>New</th><th class="pct">+1 m</th><th class="pct">+2 m</th></tr></thead><tbody>${mo}</tbody></table></div>` +
+      `</div>`;
+    return card("Returning users", body + note("Only browsers that said yes to the returning-user question; each browser is its own id. A cohort is the ids first seen that week or month; +1 w is the share of them seen again the week after."),
+      { id: "s-returning", wide: true, aside: legend([["sw-line2", "New"], ["sw-1", "Returning"]]) });
+  }
+
+  function secLength(d) {
+    const len = (d.app || {}).len || {};
+    const hist = len.hist || [];
+    const total = hist.reduce((s, b) => s + n0(b.n), 0);
+    const body = !total ? EMPTY :
+      chart({ type: "hist", values: hist.map((b) => b.n), labels: LEN_LABELS, label: "Session length" }) +
+      tiles([["Median", fmtSecs(len.median)], ["90th percentile", fmtSecs(len.p90)], ["Sessions", fmtN(total)]]);
+    return card("Session length", body + note("Time from opening the app (or coming back to it) to leaving it. Visits under 5 s are not sent."), { id: "s-length" });
+  }
+
+  function secFeatures(d) {
+    const app = d.app || {}, sessions = n0((app.totals || {}).sessions);
+    const feats = Object.entries(app.feats || {}).map(([k, v]) => ({ k, n: n0(v && v.sessions), share: n0(v && v.share) }));
+    feats.sort((a, b) => b.share - a.share || b.n - a.n || a.k.localeCompare(b.k));
+    const body = !sessions ? EMPTY : `<div class="hbars">` + feats.map((f) =>
+      `<div class="hbar"><span class="name">${esc(FEATURE_NAMES[f.k] || f.k)}</span>` +
+      `<span class="track"><span class="fill" style="display:block;width:${(Math.min(1, f.share) * 100).toFixed(1)}%"></span></span>` +
+      `<span class="num">${fmtPct(f.share)} <span>· ${fmtN(f.n)}</span></span></div>`).join("") + `</div>`;
+    return card("Features", body + note("Share of sessions that opened each pane at least once, with the session count."), { id: "s-features" });
+  }
+
+  function secPlatforms(d) {
+    const app = d.app || {}, total = n0((app.totals || {}).sessions);
+    const name = (map) => (k) => (k == null || k === "" ? "unknown" : map[k] || k);
+    const body = !total ? EMPTY : `<div class="tables">` +
+      topTable("Operating system", app.os, total, name(OS_NAMES)) +
+      topTable("Layout", app.layout, total, name(LAYOUT_NAMES)) +
+      topTable("Shell", app.shell, total, name(SHELL_NAMES)) +
+      topTable("App version", app.versions, total) +
+      topTable("Server version", app.srv, total) +
+      topTable("Country", app.country, total) + `</div>`;
+    return card("Platforms", body + note("Sessions per value, top ten each; the share is of all sessions in the window."), { id: "s-platforms", wide: true });
+  }
+
+  function secLanding(d) {
+    const land = d.landing;
+    if (!land) {
+      const why = (d.errors || []).filter((e) => /^landing:/.test(e));
+      const text = "Landing numbers are not available" +
+        (why.length ? ": " + why.map((e) => e.replace(/^landing:\s*/, "")).join("; ") : "") + ".";
+      return card("Landing", `<p class="landing-off">${esc(text)}</p>`, { id: "s-landing", wide: true });
+    }
+    const days = land.days || [];
+    const visits = days.reduce((s, r) => s + n0(r.visits), 0);
+    const views = days.reduce((s, r) => s + n0(r.views), 0);
+    const body = !visits && !views ? EMPTY :
+      chart({ type: "bar", rows: days, label: "Landing visits per day", series: [{ key: "visits", cls: "b1", name: "visits" }] }) +
+      tiles([["Visits", fmtN(visits)], ["Page views", fmtN(views)], ["Views per visit", visits ? fmtN(Math.round(views / visits * 10) / 10) : "–"]]) +
+      `<div class="tables">` +
+      topTable("Referrers", land.referrer, visits, null, "visits") +
+      topTable("Countries", land.country, visits, null, "visits") +
+      topTable("Devices", land.device, visits, (k) => (k ? k.charAt(0).toUpperCase() + k.slice(1) : "unknown"), "visits") +
+      `</div>`;
+    return card("Landing", body + note("pockettui.com/ from Cloudflare Web Analytics. A visit is a page view that did not come from the site itself."), { id: "s-landing", wide: true });
+  }
+
+  function render() {
+    const d = state.data;
+    state.charts = [];
+    $("range").textContent = rangeLabel(d.range);
+    $("dash").innerHTML = secPeople(d) + secInstalls(d) + secReturning(d) +
+      secLength(d) + secFeatures(d) + secPlatforms(d) + secLanding(d);
+    const r = d.range || {};
+    const when = new Date(state.fetchedAt);
+    const errs = (d.errors || []);
+    $("foot").innerHTML =
+      `<p>Range ${esc(r.from || "?")} to ${esc(r.to || "?")} (UTC), ${esc(plural(n0(r.days), "day", "days"))}. ` +
+      `Generated ${esc(stamp(when))}.</p>` +
+      (errs.length ? `<ul>${errs.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : "");
+    drawCharts();
+  }
+
+  // ---- fetching --------------------------------------------------------
+  function setStatus(text, isErr) {
+    const el = $("status");
+    el.textContent = text;
+    el.classList.toggle("err", !!isErr);
+  }
+  function syncSeg() {
+    document.querySelectorAll(".seg button").forEach((b) =>
+      b.setAttribute("aria-pressed", String(Number(b.dataset.days) === state.days)));
+  }
+
+  function showGate(err) {
+    $("app").hidden = true;
+    $("gate").hidden = false;
+    const e = $("gate-err");
+    e.textContent = err || "";
+    e.hidden = !err;
+    const input = $("gate-key");
+    input.value = "";
+    input.focus();
+  }
+  function showApp() {
+    $("gate").hidden = true;
+    $("app").hidden = false;
+    syncSeg();
+  }
+
+  async function refresh() {
+    if (!state.key) return showGate();
+    const seq = ++state.seq;
+    setStatus(state.data ? "Refreshing…" : "Loading…");
+    let res;
+    try {
+      res = await fetch(API + "?days=" + state.days, {
+        headers: { Authorization: "Bearer " + state.key }, cache: "no-store" });
+    } catch (e) {
+      if (seq === state.seq) setStatus("Could not reach pockettui.com.", true);
+      return;
+    }
+    if (seq !== state.seq) return;
+    if (res.status === 401) {
+      state.key = "";
+      state.data = null;
+      clearStore();
+      showGate("That key was not accepted.");
+      return;
+    }
+    if (res.status === 503) return setStatus("The console is not configured on the server.", true);
+    if (!res.ok) return setStatus("The server answered " + res.status + ".", true);
+    let data;
+    try { data = await res.json(); } catch (e) { return setStatus("The server sent something that is not JSON.", true); }
+    if (seq !== state.seq) return;
+    state.data = data;
+    state.fetchedAt = Date.now();
+    render();
+    setStatus("Updated " + new Date(state.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " · refreshes every 5 minutes");
+  }
+
+  // ---- wiring ----------------------------------------------------------
+  $("gate-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const key = $("gate-key").value.trim();
+    if (!key) return;
+    state.key = key;
+    writeStore({ key, url: location.href, days: state.days });
+    showApp();
+    refresh();
+  });
+  document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => {
+    const days = Number(b.dataset.days);
+    if (days === state.days) return;
+    state.days = days;
+    writeStore(Object.assign({}, readStore() || { key: state.key, url: location.href }, { days }));
+    syncSeg();
+    refresh();
+  }));
+  $("refresh").addEventListener("click", refresh);
+  setInterval(() => {
+    if (document.visibilityState === "visible" && state.key) refresh();
+  }, REFRESH_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && state.key && Date.now() - state.fetchedAt > REFRESH_MS) refresh();
+  });
+  let resizeTimer = 0;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (state.data && document.documentElement.clientWidth !== drawnWidth) drawCharts();
+    }, 120);
+  });
+
+  if (state.key) { showApp(); refresh(); } else showGate();
+})();
+</script>
+</body>
+</html>

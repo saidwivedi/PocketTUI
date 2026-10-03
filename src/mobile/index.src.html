@@ -1480,6 +1480,13 @@
     </div>
     <p class="row-hint">Adds a random id so returning use can be counted. Off
       deletes the id.</p>
+    <!-- The founder's usage console (src/console/), offered only on a browser
+         where that page has stored its key: same origin, so the console at
+         /console/ and this shell at /app/ share localStorage (45-usage.js). -->
+    <div class="toggle-row" id="console-row" hidden>
+      <label>Usage console</label>
+      <button type="button" id="btn-console">Open</button>
+    </div>
     <div class="toggle-row">
       <label for="dbg-toggle">Debug log</label>
       <input id="dbg-toggle" type="checkbox">
