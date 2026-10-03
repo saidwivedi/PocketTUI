@@ -118,8 +118,9 @@ def assemble() -> str:
     index.src.html is copied through line by line; a line that is exactly
     `@include NAME` is replaced by that fragment's bytes. `@include js` expands
     to every JS_FRAGMENTS entry in order. Placeholders (__CACHE_VERSION__,
-    __BACKEND_URL__, __APP_VERSION__) pass through untouched — substituting them is the caller's
-    job, here and in app.py, on the assembled result.
+    __BACKEND_URL__, __APP_VERSION__, __TEST_GATE__) pass through untouched —
+    substituting them is the caller's job, here and in app.py, on the
+    assembled result.
     """
     def read(rel: Path) -> str:
         return rel.read_text(encoding="utf-8")
@@ -187,6 +188,12 @@ def main() -> int:
     parser.add_argument("--version", default="",
                         help="Stamp this release version into the shell "
                              "(mobile_build/ only). Omit for a checkout build.")
+    # The founder's private test deployment only (deploy_test.sh): the sha256
+    # of the test password, which makes the shell ask for it before booting.
+    # Empty by default, so the public build has no gate.
+    parser.add_argument("--test-gate", default="",
+                        help="Bake in a test-build password hash (64 hex; "
+                             "mobile_build/ only). Omit for every real build.")
     parser.add_argument("--emit-runtime", metavar="DIR",
                         help="Also write the flat runtime set (mobile_app.html, "
                              "sw.js, icons) into DIR. Used by install.sh when "
@@ -231,6 +238,7 @@ def main() -> int:
     html = template.replace("__BACKEND_URL__", backend)
     html = html.replace("__CACHE_VERSION__", cache_version)
     html = html.replace("__APP_VERSION__", args.version.strip())
+    html = html.replace("__TEST_GATE__", args.test_gate.strip())
     (BUILD_DIR / "index.html").write_text(html, encoding="utf-8")
 
     sw = sw_template.replace("__CACHE_VERSION__", cache_version)
@@ -248,6 +256,8 @@ def main() -> int:
     print(f"Backend baked in: {backend or '(none — app asks on first run)'}")
     print(f"Cache version:    {cache_version}")
     print(f"App version:      {args.version.strip() or '(none — shell says unknown)'}")
+    if args.test_gate.strip():
+        print("Test gate:        set")
     for f in sorted(BUILD_DIR.rglob("*")):
         if f.is_file():
             print(f"  {str(f.relative_to(BUILD_DIR)):24s} {f.stat().st_size:>8d} B")
