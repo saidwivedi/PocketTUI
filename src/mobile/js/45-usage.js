@@ -193,6 +193,38 @@ $("btn-usage-close").addEventListener("click", () => showSheet(false));
 // first run's Confirm, and a device paired before the question existed.
 setTimeout(() => usageAskIfDue("boot"), 800);
 
+// ---- the usage console row -------------------------------------------------
+
+// The address the usage console stored next to its key (src/console/), or ""
+// when this browser has never opened it. Same-origin storage is the whole
+// scope: only a browser that unlocked the console sees the row. The key name
+// is spelled inline so this function, called from syncUsageRows (05), reads
+// no binding of this fragment.
+function usageConsoleUrl() {
+  let o = null;
+  try { o = JSON.parse(localStorage.getItem("pockettui_console")); } catch (e) {}
+  if (!o || typeof o !== "object" || typeof o.url !== "string") return "";
+  return /^https?:\/\//.test(o.url) ? o.url : "";
+}
+
+function syncConsoleRow() {
+  $("console-row").hidden = !usageConsoleUrl();
+}
+
+// A synchronous anchor click, not window.open, which returns null on iOS Safari.
+$("btn-console").addEventListener("click", () => {
+  const url = usageConsoleUrl();
+  if (!url) return syncConsoleRow();
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+
 // ---- when it is sent -------------------------------------------------------
 
 // Both, because a backgrounding standalone PWA on iOS fires pagehide and not

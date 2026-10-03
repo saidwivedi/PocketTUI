@@ -2433,3 +2433,98 @@ def test_usage_sheet_markup_and_the_pairing_trigger(doc):
     confirm = doc[doc.index('$("btn-voice-confirm").addEventListener("click"'):]
     confirm = confirm[:confirm.index("\n});\n")]
     assert confirm.index('usageAskIfDue("pairing")') > confirm.index("showSheet(false);")
+
+
+# ---- the usage console (src/console/) --------------------------------------
+
+CONSOLE_SRC = REPO / "src" / "console" / "index.html"
+
+
+def test_console_page_is_one_self_contained_file():
+    """No build step and nothing fetched from elsewhere: the deployed page is the
+    file written, and the only network call is the console API itself."""
+    page = CONSOLE_SRC.read_text(encoding="utf-8")
+    assert "<title>PocketTUI usage</title>" in page
+    assert "<script src=" not in page
+    assert "<link" not in page
+    assert "http://" not in page
+    assert 'const API = "https://pockettui.com/api/console";' in page
+    assert 'const STORE = "pockettui_console";' in page
+    assert "url: location.href" in page
+
+
+def test_console_is_built_beside_the_shell_but_not_into_the_runtime(tmp_path, doc, monkeypatch):
+    build = tmp_path / "mobile_build"
+    monkeypatch.setattr(build_mobile, "BUILD_DIR", build)
+    monkeypatch.setattr(sys, "argv", ["build_mobile.py", "--version", "0.9.999"])
+    assert build_mobile.main() == 0
+    assert (build / "console.html").read_bytes() == CONSOLE_SRC.read_bytes()
+    runtime = tmp_path / "runtime"
+    # The runtime set is what install.sh and the tarball carry to a self-hosted
+    # install; the console is the founder's page and stays out of it.
+    build_mobile.emit_runtime(runtime, doc, "// sw")
+    assert not any("console" in p.name for p in runtime.rglob("*"))
+
+
+def test_console_about_row_markup(doc):
+    about = doc[doc.index('id="panel-about"'):]
+    about = about[:about.index('id="dbg-toggle"')]
+    row = about[about.index('<div class="toggle-row" id="console-row" hidden>'):]
+    row = row[:row.index("</div>")]
+    assert "<label>Usage console</label>" in row
+    assert '<button type="button" id="btn-console">Open</button>' in row
+    assert about.index('id="console-row"') > about.index('id="usage-id-toggle"')
+
+
+def test_console_row_shows_only_with_a_stored_url(doc, tmp_path):
+    """syncUsageRows (05) unhides the row exactly when the console's stored
+    object carries a string url; Open is a synchronous anchor click to it."""
+    at = doc.index('$("btn-console").addEventListener("click"')
+    opener = doc[at:doc.index("\n});\n", at) + 4]
+    out = _node_json(tmp_path, "console-row.mjs", f"""
+const els = {{}};
+function $(id) {{
+  if (!els[id]) els[id] = {{ id, hidden: true, checked: false, disabled: false, on: {{}},
+    addEventListener(t, fn) {{ this.on[t] = fn; }} }};
+  return els[id];
+}}
+const ls = {{}};
+const localStorage = {{ getItem: (k) => (k in ls ? ls[k] : null) }};
+const clicks = [];
+const document = {{
+  createElement: () => ({{ style: {{}}, click() {{ clicks.push({{ href: this.href, target: this.target, rel: this.rel }}); }}, remove() {{}} }}),
+  body: {{ appendChild() {{}} }},
+}};
+const window = {{ open() {{ throw new Error("window.open used"); }} }};
+const cfg = {{ usageOff: false, usageId: "" }};
+{_js_chunk(doc, "function syncUsageRows(")}
+{_js_chunk(doc, "function usageConsoleUrl(")}
+{_js_chunk(doc, "function syncConsoleRow(")}
+const btn = $("btn-console");
+{opener}
+const got = {{}};
+const cases = {{
+  none: null,
+  junk: "not json",
+  nourl: JSON.stringify({{ key: "k" }}),
+  numurl: JSON.stringify({{ key: "k", url: 5 }}),
+  jsurl: JSON.stringify({{ key: "k", url: "javascript:alert(1)" }}),
+  prod: JSON.stringify({{ key: "k", url: "https://pockettui.com/console/" }}),
+  test: JSON.stringify({{ url: "https://test.example.net/pockettui/console.html" }}),
+}};
+for (const [name, v] of Object.entries(cases)) {{
+  for (const k of Object.keys(ls)) delete ls[k];
+  if (v !== null) ls.pockettui_console = v;
+  $("console-row").hidden = name !== "none";
+  syncUsageRows();
+  got[name] = $("console-row").hidden;
+}}
+ls.pockettui_console = cases.prod;
+btn.on.click();
+got.clicks = clicks;
+console.log(JSON.stringify(got));
+""")
+    assert out.pop("clicks") == [{"href": "https://pockettui.com/console/",
+                                  "target": "_blank", "rel": "noopener"}]
+    assert out == {"none": True, "junk": True, "nourl": True, "numurl": True,
+                   "jsurl": True, "prod": False, "test": False}
