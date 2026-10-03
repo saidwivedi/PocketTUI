@@ -2,7 +2,7 @@
 
 Run under node. D1 is either a fake that answers each statement with rows
 picked by a substring of its (whitespace-collapsed) SQL, or a real SQLite
-database (node:sqlite) built from migrations/0001_usage.sql and seeded per
+database (node:sqlite) built from migrations/0001 and 0002 and seeded per
 case, so the SQL itself is checked against the schema. The Web Analytics call
 goes to a stubbed global fetch. Nothing leaves the machine.
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 FUNCTION = REPO / "functions" / "api" / "console.js"
-MIGRATION = REPO / "migrations" / "0001_usage.sql"
+MIGRATIONS = [REPO / "migrations" / "0001_usage.sql", REPO / "migrations" / "0002_external_daily.sql"]
 
 RUNNER = r"""
 import { readFileSync } from "node:fs";
@@ -81,7 +81,9 @@ KEY = {"Authorization": "Bearer s3cret-key"}
 NOW = 1791028800000
 HEX32 = re.compile(r"[0-9a-f]{32}")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-TOP = ["range", "landing", "installs", "app", "retention", "errors"]
+TOP = ["range", "landing", "installs", "app", "retention", "history", "errors"]
+HISTORY = ["landing_visits", "app_visits", "installer_runs", "installer_ips",
+           "tarball_fetches", "tarball_ips", "version_checks", "version_ips"]
 
 
 def run_cases(tmp_path, cases):
@@ -92,7 +94,9 @@ def run_cases(tmp_path, cases):
     runner.write_text(RUNNER, encoding="utf-8")
     data = tmp_path / "cases.json"
     data.write_text(json.dumps(cases), encoding="utf-8")
-    p = subprocess.run([node, "--no-warnings", str(runner), FUNCTION.as_uri(), str(data), str(MIGRATION)],
+    schema = tmp_path / "schema.sql"
+    schema.write_text("\n".join(m.read_text(encoding="utf-8") for m in MIGRATIONS), encoding="utf-8")
+    p = subprocess.run([node, "--no-warnings", str(runner), FUNCTION.as_uri(), str(data), str(schema)],
                        check=True, capture_output=True, text=True)
     return json.loads(p.stdout)
 
@@ -202,6 +206,8 @@ FAKE_ROWS = [
     ["SELECT os AS k", [{"k": "mac", "n": 3}, {"k": "ios", "n": 2}]],
     ["AS week", [{"week": "2026-09-21", "new": 2, "back1": 1, "back2": 0, "back3": 0, "back4": 0}]],
     ["AS month", [{"month": "2026-09", "new": 2, "back1": 1, "back2": 0}]],
+    ["FROM external_daily", [{"day": "2026-09-29", "metric": "installer_runs", "v": 3},
+                             {"day": "2026-09-29", "metric": "version_ips", "v": 12}]],
 ]
 
 
@@ -234,9 +240,15 @@ def test_shapes_from_fake_rows(tmp_path):
         assert app[k] == []
     assert b["retention"]["weekly"] == FAKE_ROWS[8][1]
     assert b["retention"]["monthly"] == FAKE_ROWS[9][1]
+    hist = b["history"]["days"]
+    assert [d["day"] for d in hist] == [d["day"] for d in b["installs"]["days"]]
+    assert all(list(d) == ["day"] + HISTORY for d in hist)
+    d29 = next(d for d in hist if d["day"] == "2026-09-29")
+    assert d29["installer_runs"] == 3 and d29["version_ips"] == 12 and d29["landing_visits"] == 0
+    assert hist[0] == dict({"day": "2026-09-27"}, **{k: 0 for k in HISTORY})
     # Fetches by day and total, events by day, installs by day and total,
-    # features, lengths, six group-bys, two retention tables.
-    assert len(r["stmts"]) == 15 and r["batches"] == 1
+    # features, lengths, six group-bys, two retention tables, history.
+    assert len(r["stmts"]) == 16 and r["batches"] == 1
 
 
 def test_empty_window_has_no_division_by_zero(tmp_path):
@@ -334,6 +346,13 @@ def test_real_sql_against_schema(tmp_path):
         ins("fetches", ts=1, day="2026-09-29", kind="version", ref_host=P[5], agent="browser"),
         ins("fetches", ts=1, day="2026-09-29", kind="version", ref_host=None, agent="browser"),
         ins("fetches", ts=1, day="2026-09-20", kind="install_sh", agent="curl"),   # outside the window
+        ins("external_daily", day="2026-09-28", metric="installer_runs", key="", value=4, pulled_at=1),
+        ins("external_daily", day="2026-09-28", metric="tarball_ips", key="", value=2, pulled_at=1),
+        ins("external_daily", day="2026-09-28", metric="landing_visits", key="", value=9, pulled_at=1),
+        # A per-country split does not leak into the totals.
+        ins("external_daily", day="2026-09-28", metric="landing_visits", key="DE", value=5, pulled_at=1),
+        ins("external_daily", day="2026-09-28", metric="tarball_country", key="DE", value=2, pulled_at=1),
+        ins("external_daily", day="2026-09-20", metric="installer_runs", key="", value=7, pulled_at=1),
     ]
     r = one(tmp_path, headers=KEY, query="?days=7", sqlite=seed, fetch=RUM_OK)
     assert r["status"] == 200, r["text"]
@@ -366,6 +385,11 @@ def test_real_sql_against_schema(tmp_path):
                                     "back3": 1, "back4": 0}
     assert weekly["2026-09-28"] == {"week": "2026-09-28", "new": 1, "back1": 0, "back2": 0,
                                     "back3": 0, "back4": 0}
+    hist = {d["day"]: d for d in b["history"]["days"]}
+    assert len(hist) == 7 and "2026-09-20" not in hist
+    assert hist["2026-09-28"] == dict({k: 0 for k in HISTORY}, day="2026-09-28",
+                                      installer_runs=4, tarball_ips=2, landing_visits=9)
+    assert hist["2026-09-29"] == dict({k: 0 for k in HISTORY}, day="2026-09-29")
     monthly = {m["month"]: m for m in b["retention"]["monthly"]}
     assert monthly["2026-09"] == {"month": "2026-09", "new": 2, "back1": 1, "back2": 0}
     # No person hash, install id or ref_host pseudonym reaches the answer.

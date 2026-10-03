@@ -1,6 +1,7 @@
-"""migrations/0001_usage.sql, the D1 schema for the anonymous usage counts.
+"""migrations/, the D1 schema for the anonymous usage counts and the daily
+Cloudflare analytics copy.
 
-D1 is SQLite, so the migration is applied to an in-memory SQLite database: what
+D1 is SQLite, so the migrations are applied in order to an in-memory SQLite database: what
 is checked is that it parses, creates what the Functions write to, and keeps
 the partial index partial.
 """
@@ -11,13 +12,14 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-MIGRATION = REPO / "migrations" / "0001_usage.sql"
+MIGRATIONS = sorted((REPO / "migrations").glob("*.sql"))
 
 
 @pytest.fixture
 def db():
     con = sqlite3.connect(":memory:")
-    con.executescript(MIGRATION.read_text(encoding="utf-8"))
+    for m in MIGRATIONS:
+        con.executescript(m.read_text(encoding="utf-8"))
     yield con
     con.close()
 
@@ -28,7 +30,8 @@ def names(db, kind):
 
 
 def test_tables_and_indexes(db):
-    assert names(db, "table") == {"events", "installs", "fetches"}
+    assert [m.name for m in MIGRATIONS] == ["0001_usage.sql", "0002_external_daily.sql"]
+    assert names(db, "table") == {"events", "installs", "fetches", "external_daily"}
     assert {"events_day", "events_install_day", "fetches_day_kind"} <= names(db, "index")
     # installs.id is a TEXT primary key, which SQLite backs with an automatic
     # index; together with the three named ones that is the four the schema has.
@@ -62,3 +65,18 @@ def test_sample_rows(db):
 def test_required_columns_are_enforced(db):
     with pytest.raises(sqlite3.IntegrityError):
         db.execute("INSERT INTO events (ts, day, person) VALUES (1, '2026-10-01', 'p')")
+
+
+def test_external_daily_upsert(db):
+    up = ("INSERT INTO external_daily (day, metric, key, value, pulled_at) VALUES (?, ?, ?, ?, ?)"
+          " ON CONFLICT(day, metric, key) DO UPDATE SET value = excluded.value, pulled_at = excluded.pulled_at")
+    db.execute(up, ("2026-10-01", "installer_runs", "", 3, 1))
+    db.execute(up, ("2026-10-01", "installer_runs", "", 5, 2))
+    db.execute(up, ("2026-10-01", "tarball_country", "DE", 2, 2))
+    db.execute("INSERT INTO external_daily (day, metric, value, pulled_at) VALUES ('2026-10-02', 'app_views', 1, 3)")
+    assert db.execute("SELECT day, metric, key, value, pulled_at FROM external_daily ORDER BY day, metric").fetchall() == [
+        ("2026-10-01", "installer_runs", "", 5.0, 2), ("2026-10-01", "tarball_country", "DE", 2.0, 2),
+        ("2026-10-02", "app_views", "", 1.0, 3)]
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("INSERT INTO external_daily (day, metric, key, value, pulled_at)"
+                   " VALUES ('2026-10-01', 'installer_runs', '', 1, 4)")

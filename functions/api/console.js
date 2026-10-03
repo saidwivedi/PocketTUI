@@ -38,6 +38,11 @@ const FEATURES = ["explorer", "browser", "diff", "side2", "voice", "settings",
 // Columns that may be grouped on; the names are interpolated into SQL, so
 // they come from this list only, never from the request.
 const GROUPS = { versions: "app", srv: "srv", os: "os", layout: "layout", shell: "shell", country: "country" };
+// Daily totals copied from Cloudflare's analytics by pull_cf_stats.py into
+// external_daily, so they outlast Cloudflare's own ~30-day window. Zone
+// counts are Cloudflare's sampled estimates; *_ips are distinct per UTC day.
+const HISTORY = ["landing_visits", "app_visits", "installer_runs", "installer_ips",
+  "tarball_fetches", "tarball_ips", "version_checks", "version_ips"];
 
 function corsHeaders(request) {
   const origin = request.headers.get("Origin");
@@ -198,6 +203,10 @@ function buildStatements(db, from, to, weekFrom, monthFrom) {
     FROM c LEFT JOIN a ON a.install = c.id
     GROUP BY c.mo ORDER BY c.mo`, monthFrom + "-01", to, monthFrom + "-01", to);
 
+  stmts.history = q(`SELECT day, metric, SUM(value) AS v FROM external_daily
+    WHERE day BETWEEN ? AND ? AND key = '' AND metric IN (${HISTORY.map((m) => `'${m}'`).join(", ")})
+    GROUP BY day, metric`, from, to);
+
   return stmts;
 }
 
@@ -275,7 +284,13 @@ function shapeD1(res, days) {
     monthly: res.monthly.map((r) => ({
       month: r.month, new: num(r.new), back1: num(r.back1), back2: num(r.back2) })),
   };
-  return { installs, app, retention };
+  const hist = new Map();
+  for (const r of res.history) {
+    if (!hist.has(r.day)) hist.set(r.day, {});
+    hist.get(r.day)[r.metric] = num(r.v);
+  }
+  const history = { days: days.map((day) => Object.assign({ day }, pick(hist.get(day), HISTORY))) };
+  return { installs, app, retention, history };
 }
 
 async function queryD1(db, from, to) {
