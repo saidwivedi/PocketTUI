@@ -129,6 +129,17 @@ button { cursor: pointer; }
   font-weight: 500;
 }
 .btn:active, .seg button:active { transform: scale(0.97); }
+.link {
+  border: 0;
+  background: transparent;
+  padding: 5px 2px;
+  font-size: 13px;
+  color: var(--secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.note + .note { margin-top: 4px; }
+.tiles + .note.sub { margin-top: 8px; color: var(--secondary); }
 .status { margin: -6px 0 14px; font-size: 12px; color: var(--tertiary); min-height: 17px; }
 .status.err { color: var(--bad); }
 
@@ -158,7 +169,8 @@ button { cursor: pointer; }
   text-transform: uppercase;
   color: var(--tertiary);
 }
-.legend { display: flex; gap: 12px; font-size: 12px; color: var(--secondary); white-space: nowrap; }
+.legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 12px; font-size: 12px; color: var(--secondary); }
+.legend span { white-space: nowrap; }
 .legend i {
   display: inline-block;
   width: 9px; height: 9px;
@@ -169,6 +181,8 @@ button { cursor: pointer; }
 .sw-1 { background: var(--accent); }
 .sw-2 { background: var(--bar2); }
 .sw-line2 { background: var(--secondary); }
+.sw-3 { background: repeating-linear-gradient(135deg, var(--accent) 0 1.5px, rgba(var(--accent-rgb), 0.18) 1.5px 3.5px); }
+.legend i.sw-line3 { height: 2px; border-radius: 1px; vertical-align: 3px; background: var(--ink-2); }
 .note { margin: 10px 0 0; font-size: 12px; color: var(--tertiary); }
 .empty {
   margin: 0;
@@ -208,10 +222,15 @@ button { cursor: pointer; }
 .chart .base { stroke: var(--hair-strong); stroke-width: 1; }
 .chart .b1 { fill: var(--accent); }
 .chart .b2 { fill: var(--bar2); }
+.chart .b3 { fill: url(#cf-hatch); }
+.chart .hatch-bg { fill: rgba(var(--accent-rgb), 0.18); }
+.chart .hatch-ln { stroke: var(--accent); stroke-width: 1.5; }
 .chart .l1 { stroke: var(--accent); stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
 .chart .l2 { stroke: var(--secondary); stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
 .chart .d1 { fill: var(--accent); }
 .chart .d2 { fill: var(--secondary); }
+.chart .l3 { stroke: var(--ink-2); stroke-width: 1.5; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+.chart .d3 { fill: var(--ink-2); }
 .chart .hit { fill: transparent; }
 .chart .hit:hover { fill: rgba(var(--accent-rgb), 0.08); }
 
@@ -328,6 +347,7 @@ tr:last-child td { border-bottom: 0; }
           <button type="button" data-days="90">90 days</button>
         </div>
         <button type="button" class="btn" id="refresh">Refresh</button>
+        <button type="button" class="link" id="forget">Forget key</button>
       </div>
     </header>
     <p class="status" id="status"></p>
@@ -438,6 +458,74 @@ tr:last-child td { border-bottom: 0; }
   }
   function plural(n, one, many) { return fmtN(n) + " " + (n === 1 ? one : many); }
 
+  // ---- data shaping ----------------------------------------------------
+  // Pure functions of the API response, run by tests/test_console_page.py
+  // between these two markers.
+  // BEGIN SHAPING
+  const D1_FETCH = ["attempts", "installs", "updates", "version_checks", "active_self"];
+  const HISTORY_KEYS = ["landing_visits", "app_visits", "installer_runs", "installer_ips",
+    "tarball_fetches", "tarball_ips", "version_checks", "version_ips"];
+  function num(v) { return Number(v) || 0; }
+  function byDay(rows) {
+    const m = new Map();
+    for (const r of rows || []) m.set(r.day, r);
+    return m;
+  }
+
+  // One row per installs day. A day the app's own counting has nothing for
+  // (every D1 column zero) but Cloudflare's nightly copy has installer runs or
+  // tarball downloads for is drawn from Cloudflare and tagged so; every other
+  // day is the app's. Totals are summed per source over the tagged days.
+  function mergeInstallDays(installsDays, historyDays) {
+    const hist = byDay(historyDays);
+    const totals = {
+      app: { days: 0, attempts: 0, installs: 0, updates: 0 },
+      cloudflare: { days: 0, installer_runs: 0, tarball_fetches: 0, tarball_ips: 0 },
+    };
+    const rows = (installsDays || []).map((r) => {
+      const h = hist.get(r.day) || {};
+      const d1Empty = D1_FETCH.every((k) => !num(r[k]));
+      const cf = num(h.installer_runs) || num(h.tarball_fetches);
+      const row = { day: r.day, source: d1Empty && cf ? "cloudflare" : "app",
+        installs: 0, updates: 0, attempts: 0, cf_runs: 0, cf_tarballs: 0, cf_ips: 0 };
+      if (row.source === "cloudflare") {
+        row.cf_runs = num(h.installer_runs);
+        row.cf_tarballs = num(h.tarball_fetches);
+        row.cf_ips = num(h.tarball_ips);
+        const t = totals.cloudflare;
+        t.days++; t.installer_runs += row.cf_runs; t.tarball_fetches += row.cf_tarballs; t.tarball_ips += row.cf_ips;
+      } else {
+        row.installs = num(r.installs);
+        row.updates = num(r.updates);
+        row.attempts = num(r.attempts);
+        const t = totals.app;
+        t.days++; t.attempts += row.attempts; t.installs += row.installs; t.updates += row.updates;
+      }
+      return row;
+    });
+    return { rows, totals };
+  }
+
+  // Every history column summed over the window. The *_ips columns are
+  // distinct per day, so their sum counts a machine once per day it showed up.
+  function historyTotals(historyDays) {
+    const t = Object.fromEntries(HISTORY_KEYS.map((k) => [k, 0]));
+    for (const r of historyDays || []) for (const k of HISTORY_KEYS) t[k] += num(r[k]);
+    return t;
+  }
+
+  // App people per day beside Cloudflare's distinct version.txt addresses.
+  function peopleRows(appDays, historyDays) {
+    const hist = byDay(historyDays);
+    return (appDays || []).map((r) => ({ day: r.day, people: num(r.people),
+      version_ips: num((hist.get(r.day) || {}).version_ips) }));
+  }
+
+  function landingFallbackDays(historyDays) {
+    return (historyDays || []).map((r) => ({ day: r.day, visits: num(r.landing_visits) }));
+  }
+  // END SHAPING
+
   // ---- charts ----------------------------------------------------------
   // Drawn at the container's own pixel width (viewBox = that width), so the
   // labels stay 11 px on a phone instead of shrinking with the drawing.
@@ -484,15 +572,21 @@ tr:last-child td { border-bottom: 0; }
     const rows = spec.rows;
     const days = rows.map((r) => r.day);
     const totals = rows.map((r) => spec.series.reduce((s, c) => s + n0(r[c.key]), 0));
-    const max = niceMax(Math.max(0, ...totals));
+    const lineVals = spec.line ? rows.map((r) => n0(r[spec.line.key])) : [];
+    const max = niceMax(Math.max(0, ...totals, ...lineVals));
     const f = frame(width, height, max, days);
     const gap = f.slot > 6 ? Math.max(1, f.slot * 0.28) : 1;
     const bw = Math.max(1, f.slot - gap);
     let svg = f.svg;
+    if (spec.series.some((c) => c.cls === "b3")) {
+      svg = `<defs><pattern id="cf-hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)">` +
+        `<rect class="hatch-bg" width="4" height="4"/><line class="hatch-ln" x1="1" y1="0" x2="1" y2="4"/></pattern></defs>` + svg;
+    }
     rows.forEach((r, i) => {
       const x = f.padL + f.slot * i + (f.slot - bw) / 2;
       let acc = 0;
-      const tip = dayLabel(r.day) + ": " + spec.series.map((c) => fmtN(n0(r[c.key])) + " " + c.name).join(", ");
+      const tip = spec.tip ? spec.tip(r) : dayLabel(r.day) + ": " +
+        spec.series.concat(spec.line ? [spec.line] : []).map((c) => fmtN(n0(r[c.key])) + " " + c.name).join(", ");
       for (const c of spec.series) {
         const v = n0(r[c.key]);
         if (v <= 0) continue;
@@ -503,6 +597,16 @@ tr:last-child td { border-bottom: 0; }
       svg += `<rect class="hit" x="${(f.padL + f.slot * i).toFixed(1)}" y="${f.padT}" width="${f.slot.toFixed(1)}" height="${f.plotH}"><title>${esc(tip)}</title></rect>`;
     });
     svg += `<line class="base" x1="${f.padL}" x2="${width - f.padR}" y1="${f.base + 0.5}" y2="${f.base + 0.5}"/>`;
+    if (spec.line && lineVals.some((v) => v > 0)) {
+      // Drawn after the hit areas with pointer-events off, so the bars' tips still show.
+      const pts = lineVals.map((v, i) => (f.padL + f.slot * (i + 0.5)).toFixed(1) + "," + f.y(v).toFixed(1));
+      svg += `<g pointer-events="none"><polyline class="${spec.line.cls}" points="${pts.join(" ")}"/>`;
+      if (days.length <= 31) pts.forEach((p) => {
+        const [x, y] = p.split(",");
+        svg += `<circle class="${spec.line.dot}" cx="${x}" cy="${y}" r="2"/>`;
+      });
+      svg += `</g>`;
+    }
     return `<svg viewBox="0 0 ${width} ${height}" height="${height}" role="img" aria-label="${esc(spec.label)}">${svg}</svg>`;
   }
 
@@ -567,8 +671,8 @@ tr:last-child td { border-bottom: 0; }
   }
 
   // ---- pieces ----------------------------------------------------------
-  function tiles(list) {
-    return `<div class="tiles" style="--n: ${list.length}">` + list.map(([k, v, title]) =>
+  function tiles(list, cols) {
+    return `<div class="tiles" style="--n: ${cols || list.length}">` + list.map(([k, v, title]) =>
       `<div class="tile"${title ? ` title="${esc(title)}"` : ""}><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("") + `</div>`;
   }
   function legend(items) {
@@ -604,33 +708,51 @@ tr:last-child td { border-bottom: 0; }
   function secPeople(d) {
     const app = d.app || {}, t = app.totals || {};
     const days = (app.days || []).length || 1;
+    const rows = peopleRows(app.days, (d.history || {}).days);
+    const devices = rows.some((r) => r.version_ips > 0);
     let body;
-    if (!n0(t.sessions) && !n0(t.people_sum)) body = EMPTY;
-    else body = chart({ type: "bar", rows: app.days || [], label: "People per day",
-        series: [{ key: "people", cls: "b1", name: "people" }] }) +
+    if (!n0(t.sessions) && !n0(t.people_sum) && !devices) body = EMPTY;
+    else body = chart({ type: "bar", rows, label: "People per day",
+        series: [{ key: "people", cls: "b1", name: "people" }],
+        line: devices ? { key: "version_ips", cls: "l3", dot: "d3", name: "devices checking for updates (Cloudflare)" } : null }) +
       tiles([
         ["Sessions", fmtN(t.sessions)],
         ["People per day", fmtN(Math.round(n0(t.people_sum) / days * 10) / 10)],
         ["Consent share", fmtPct(app.consent_share), "Share of sessions that carried a returning-user id"],
       ]);
-    return card("People", body + note("People are counted per day by a hash that changes daily, so the window total over-counts anyone who came on several days."), { id: "s-people" });
+    return card("People", body + note("People are counted per day by a hash that changes daily, so the window total over-counts anyone who came on several days.") +
+      (devices ? note("Devices checking for updates is Cloudflare's count of distinct addresses per day that fetched version.txt. Phones change address often, so it over-counts a little, and it includes the founder's own devices.") : ""),
+      { id: "s-people", aside: devices ? legend([["sw-1", "People"], ["sw-line3", "Devices checking for updates (Cloudflare)"]]) : "" });
   }
 
   function secInstalls(d) {
     const ins = d.installs || {}, t = ins.totals || {};
-    const any = ["attempts", "installs", "updates", "version_checks", "active_self"].some((k) => n0(t[k]));
+    const histDays = (d.history || {}).days || [];
+    const merged = mergeInstallDays(ins.days, histDays);
+    const cfDays = merged.totals.cloudflare.days > 0;
+    const ht = historyTotals(histDays);
+    const cfAny = ht.installer_runs > 0 || ht.tarball_fetches > 0;
+    const any = D1_FETCH.some((k) => n0(t[k])) || cfAny;
+    const tip = (r) => dayLabel(r.day) + ": " + (r.source === "cloudflare"
+      ? "from Cloudflare (estimate), " + fmtN(r.cf_tarballs) + " tarball downloads, " + fmtN(r.cf_runs) + " installer runs, " + fmtN(r.cf_ips) + " distinct machines"
+      : fmtN(r.installs) + " installs, " + fmtN(r.updates) + " updates");
     const body = !any ? EMPTY :
-      chart({ type: "bar", rows: ins.days || [], label: "Installs and updates per day",
-        series: [{ key: "installs", cls: "b1", name: "installs" }, { key: "updates", cls: "b2", name: "updates" }] }) +
+      chart({ type: "bar", rows: merged.rows, label: "Installs and updates per day", tip,
+        series: [{ key: "installs", cls: "b1", name: "installs" }, { key: "updates", cls: "b2", name: "updates" },
+                 { key: "cf_tarballs", cls: "b3", name: "tarball downloads (Cloudflare)" }] }) +
       tiles([
         ["Installs", fmtN(t.installs)],
         ["Updates", fmtN(t.updates)],
         ["Installer runs", fmtN(t.attempts), "install.sh fetched by curl"],
         ["Version checks", fmtN(t.version_checks)],
         ["Active self-served", fmtN(t.active_self), "Distinct self-served shells that checked for a version"],
-      ]);
-    return card("Installs", body + note("Installs and updates are tarball downloads by the installer. Installer runs are install.sh fetches; active self-served counts distinct self-served shells that checked for a new version."),
-      { id: "s-installs", aside: any ? legend([["sw-1", "Installs"], ["sw-2", "Updates"]]) : "" });
+      ]) +
+      (cfAny ? `<p class="note sub">${esc("Cloudflare estimate: " + plural(ht.installer_runs, "installer run", "installer runs") + ", " +
+        plural(ht.tarball_fetches, "tarball download", "tarball downloads") + ", " +
+        plural(ht.tarball_ips, "distinct machine", "distinct machines") + " (counted per day).")}</p>` : "");
+    return card("Installs", body + note("Installs and updates are tarball downloads by the installer. Installer runs are install.sh fetches; active self-served counts distinct self-served shells that checked for a new version.") +
+      (cfAny ? note("Cloudflare's numbers are sampled estimates and count every tarball download, installs and updates alike. The app's own counts begin on the day the counting shipped; hatched days before that are drawn from Cloudflare.") : ""),
+      { id: "s-installs", aside: any ? legend([["sw-1", "Installs"], ["sw-2", "Updates"]].concat(cfDays ? [["sw-3", "From Cloudflare (estimate)"]] : [])) : "" });
   }
 
   function cohortCell(back, base, available) {
@@ -712,9 +834,17 @@ tr:last-child td { border-bottom: 0; }
     const land = d.landing;
     if (!land) {
       const why = (d.errors || []).filter((e) => /^landing:/.test(e));
-      const text = "Landing numbers are not available" +
+      const fallback = landingFallbackDays((d.history || {}).days);
+      const visits = fallback.reduce((s, r) => s + r.visits, 0);
+      const text = (visits ? "Live landing numbers" : "Landing numbers") + " are not available" +
         (why.length ? ": " + why.map((e) => e.replace(/^landing:\s*/, "")).join("; ") : "") + ".";
-      return card("Landing", `<p class="landing-off">${esc(text)}</p>`, { id: "s-landing", wide: true });
+      if (!visits) return card("Landing", `<p class="landing-off">${esc(text)}</p>`, { id: "s-landing", wide: true });
+      const body = chart({ type: "bar", rows: fallback, label: "Landing visits per day", series: [{ key: "visits", cls: "b1", name: "visits" }] }) +
+        tiles([["Visits", fmtN(visits)]], 3) +
+        `<p class="landing-off">${esc(text)}</p>` +
+        `<div class="tables">` + topTable("Referrers", [], 0) + topTable("Countries", [], 0) + topTable("Devices", [], 0) + `</div>`;
+      return card("Landing, from the nightly copy", body + note("Visits per day from the nightly copy of Cloudflare Web Analytics; referrers, countries and devices come only from the live numbers."),
+        { id: "s-landing", wide: true });
     }
     const days = land.days || [];
     const visits = days.reduce((s, r) => s + n0(r.visits), 0);
@@ -823,6 +953,14 @@ tr:last-child td { border-bottom: 0; }
     refresh();
   }));
   $("refresh").addEventListener("click", refresh);
+  $("forget").addEventListener("click", () => {
+    state.seq++;
+    state.key = "";
+    state.data = null;
+    clearStore();
+    setStatus("");
+    showGate();
+  });
   setInterval(() => {
     if (document.visibilityState === "visible" && state.key) refresh();
   }, REFRESH_MS);
