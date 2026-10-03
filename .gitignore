@@ -8,6 +8,7 @@ cloudflare_build/
 .cloudflare_token
 .cloudflare_token_email
 .cloudflare_analytics_token
+.test_gate_password
 .resend_api_key
 .dev.vars
 .turnstile_secret

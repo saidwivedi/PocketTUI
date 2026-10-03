@@ -306,6 +306,30 @@ const BUILD_BACKEND = "__BACKEND_URL__";
 const SAME_ORIGIN = BUILD_BACKEND === "same-origin" || BUILD_BACKEND.indexOf("__") === 0;
 const DEFAULT_BACKEND = SAME_ORIGIN ? "" : BUILD_BACKEND;
 
+// Build-time placeholder for the founder's private test deployment only:
+// deploy_test.sh passes build_mobile.py --test-gate, which bakes in
+// sha256("pockettui-test-gate|" + password) as 64 hex characters, and boot shows
+// a password panel before anything else (27-boot.js). Every other build — the
+// public pockettui.com shell, a self-hosted install's copy, a checkout — leaves
+// it empty or as the bare placeholder, and then the gate does not exist.
+const TEST_GATE = "__TEST_GATE__";
+const TEST_GATE_OK = "pockettui_test_gate_ok";
+function testGateActive() {
+  return /^[0-9a-f]{64}$/.test(TEST_GATE);
+}
+// The stored value is the hash itself, so a new password re-locks every device.
+function testGateLocked() {
+  if (!testGateActive()) return false;
+  try { return localStorage.getItem(TEST_GATE_OK) !== TEST_GATE; } catch (e) { return true; }
+}
+async function testGateCheck(entered) {
+  const bytes = new TextEncoder().encode("pockettui-test-gate|" + entered);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = Array.from(new Uint8Array(digest),
+                         b => b.toString(16).padStart(2, "0")).join("");
+  return hex === TEST_GATE;
+}
+
 // ============================================================
 // Connection profiles
 // ============================================================
