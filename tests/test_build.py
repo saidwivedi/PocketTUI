@@ -2086,16 +2086,45 @@ def test_the_cloudflare_beacon_is_gone_and_the_about_rows_exist(doc):
     assert "Your terminal is never routed through our servers." in about
 
 
-def _usage_harness(doc):
+def _usage_harness(doc, text_version=None):
     """The real usage code under node: the 01 counters, cfg's three usage keys,
-    parseUA, and the whole 45 fragment, over stubbed browser globals."""
+    parseUA, and the whole 45 fragment, over stubbed browser globals. The DOM is
+    a map of elements with a class list and click listeners, showSheet keeps
+    the one shown, and the load-time timer is parked in `timers` rather than
+    run. `text_version` rewrites the question's version constant, standing in
+    for a later build that changed the wording."""
     counters = doc[doc.index("\nconst usageCounts") + 1:]
     counters = counters[:counters.index("\n", counters.index("function usageCount(")) + 1]
     keys = doc[doc.index("  // The anonymous usage summary (45-usage.js)."):]
     keys = keys[:keys.index("\n};\n")]
     frag = (SRC / "js" / "45-usage.js").read_text(encoding="utf-8")
     assert frag in doc
+    if text_version is not None:
+        assert "const USAGE_TEXT_VERSION = 1;" in frag
+        frag = frag.replace("const USAGE_TEXT_VERSION = 1;",
+                            f"const USAGE_TEXT_VERSION = {text_version};")
     return f"""
+const els = {{}};
+function $(id) {{
+  if (!els[id]) {{
+    const cls = new Set(), on = {{}};
+    els[id] = {{ id, on, classList: {{ contains: (c) => cls.has(c),
+      toggle: (c, v) => {{ if (v) cls.add(c); else cls.delete(c); }} }},
+      addEventListener: (t, fn) => {{ on[t] = fn; }}, click() {{ if (on.click) on.click({{}}); }} }};
+  }}
+  return els[id];
+}}
+let shown = null, shows = 0;
+function showSheet(v, id = "sheet-settings") {{
+  shown = v ? id : null;
+  if (v) shows += 1;
+  $("sheet-scrim").classList.toggle("show", v);
+}}
+let setupMode = false, voiceStep = false, rowSyncs = 0;
+function syncUsageRows() {{ rowSyncs += 1; }}
+function dbg() {{}}
+const timers = [];
+const setTimeout = (fn, ms) => {{ timers.push({{ fn, ms }}); }};
 const ls = {{}};
 const localStorage = {{ getItem: (k) => (k in ls ? ls[k] : null),
   setItem: (k, v) => {{ ls[k] = String(v); }}, removeItem: (k) => {{ delete ls[k]; }} }};
@@ -2287,3 +2316,120 @@ console.log(JSON.stringify(got));
     assert out["regrant"] is True
     assert out["offDeletes"] is True and out["onAgain"] is True
     assert out["fallback"] is True and out["badIdIgnored"] is True
+
+
+ASK_JS = """
+const got = {};
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const fresh = () => { usageAsked = false; shown = null; shows = 0;
+  $("sheet-scrim").classList.toggle("show", false); };
+"""
+
+
+def test_usage_question_shows_once_per_load_and_only_on_a_quiet_screen(doc, tmp_path):
+    out = _node_json(tmp_path, "ask.mjs", _usage_harness(doc) + ASK_JS + """
+got.timer = timers.map((t) => t.ms);
+// Each guard on its own, from a fresh load where the question is due.
+cfg.usageOff = true; got.off = usageAskIfDue("t"); cfg.usageOff = false;
+demoMode = true; got.demo = usageAskIfDue("t"); demoMode = false;
+paired = false; got.unpaired = usageAskIfDue("t"); paired = true;
+setupMode = true; got.setup = usageAskIfDue("t"); setupMode = false;
+voiceStep = true; got.voice = usageAskIfDue("t"); voiceStep = false;
+showSheet(true, "sheet-settings"); got.overSheet = usageAskIfDue("t"); showSheet(false);
+got.noneShown = shows === 1 && shown === null;
+fresh();
+// The boot timer, once nothing stands in the way.
+timers[0].fn();
+got.boot = { shown, shows };
+got.second = usageAskIfDue("pairing");
+got.stillOne = shows;
+// The cross stores nothing.
+$("btn-usage-close").click();
+got.closed = { shown, consent: "pockettui_usage_consent" in ls, due: usageConsentDue() };
+// Not due: nothing to ask.
+fresh();
+ls.pockettui_usage_consent = JSON.stringify({ consent: false, at: "x", v: 1 });
+got.notDue = usageAskIfDue("t");
+console.log(JSON.stringify(got));
+""")
+    assert out["timer"] == [800]
+    for k in ("off", "demo", "unpaired", "setup", "voice", "overSheet"):
+        assert out[k] is False, k
+    assert out["noneShown"] is True
+    assert out["boot"] == {"shown": "sheet-usage", "shows": 1}
+    assert out["second"] is False and out["stillOne"] == 1
+    assert out["closed"] == {"shown": None, "consent": False, "due": True}
+    assert out["notDue"] is False
+
+
+def test_usage_question_answers(doc, tmp_path):
+    out = _node_json(tmp_path, "answer.mjs", _usage_harness(doc) + ASK_JS + """
+usageAskIfDue("t");
+$("btn-usage-no").click();
+const no = JSON.parse(ls.pockettui_usage_consent);
+got.no = { shown, consent: no.consent, v: no.v, at: !isNaN(Date.parse(no.at)),
+  id: "pockettui_usage_id" in ls, off: "pockettui_usage_off" in ls,
+  due: usageConsentDue(), rows: rowSyncs };
+fresh();
+got.askedAgain = usageAskIfDue("t");
+// A yes after an earlier no.
+delete ls.pockettui_usage_consent;
+fresh();
+usageAskIfDue("t");
+$("btn-usage-yes").click();
+const yes = JSON.parse(ls.pockettui_usage_consent);
+got.yes = { shown, consent: yes.consent, v: yes.v, uuid: UUID.test(ls.pockettui_usage_id),
+  due: usageConsentDue(), rows: rowSyncs };
+console.log(JSON.stringify(got));
+""")
+    assert out["no"] == {"shown": None, "consent": False, "v": 1, "at": True,
+                         "id": False, "off": False, "due": False, "rows": 1}
+    assert out["askedAgain"] is False
+    assert out["yes"] == {"shown": None, "consent": True, "v": 1, "uuid": True,
+                          "due": False, "rows": 2}
+
+
+def test_usage_question_returns_when_the_wording_version_rises(doc, tmp_path):
+    out = _node_json(tmp_path, "reask.mjs", _usage_harness(doc, text_version=2) + ASK_JS + """
+// A yes to the old wording: the id it minted must not outlive a no to the new.
+ls.pockettui_usage_consent = JSON.stringify({ consent: true, at: "x", v: 1 });
+ls.pockettui_usage_id = "0b8f5e1c-2d3a-4b5c-9d6e-7f8091a2b3c4";
+got.due = usageConsentDue();
+got.asked = usageAskIfDue("t");
+$("btn-usage-no").click();
+const rec = JSON.parse(ls.pockettui_usage_consent);
+got.rec = { consent: rec.consent, v: rec.v };
+got.idGone = !("pockettui_usage_id" in ls) && !("id" in usagePayload());
+got.after = usageConsentDue();
+console.log(JSON.stringify(got));
+""")
+    assert out == {"due": True, "asked": True, "rec": {"consent": False, "v": 2},
+                   "idGone": True, "after": False}
+
+
+USAGE_SHEET_LINES = (
+    "The app already sends one anonymous summary per use: app and server version, "
+    "platform, how long, how many sessions and reconnects, and which panes were opened.",
+    "Saying yes adds a random id so returning use can be counted. It is never linked "
+    "to your name, address, hostnames, folders, commands or text.",
+    "Change your mind any time in Settings, About.",
+)
+
+
+def test_usage_sheet_markup_and_the_pairing_trigger(doc):
+    at = doc.index('<div class="sheet" id="sheet-usage"')
+    sheet = doc[at:doc.index("\n</div>\n", at)]
+    assert "<h2" in sheet and "Help count PocketTUI users</h2>" in sheet
+    for line in USAGE_SHEET_LINES:
+        assert f"<p>{line}</p>" in sheet, line
+    assert ('<a href="https://pockettui.com/#privacy" target="_blank" rel="noopener">'
+            "What is sent</a>") in sheet
+    buttons = re.findall(r'<button type="button" class="([^"]*)" id="btn-usage-(yes|no)">([^<]*)<', sheet)
+    assert {(b[1], b[2]) for b in buttons} == {("yes", "Share anonymous usage"), ("no", "Not now")}
+    assert len({b[0] for b in buttons}) == 1
+    assert "primary" not in buttons[0][0] and "primary" not in sheet
+    assert 'id="btn-usage-close"' in sheet
+    assert '"sheet-usage"' in _js_chunk(doc, "const SHEET_IDS")
+    confirm = doc[doc.index('$("btn-voice-confirm").addEventListener("click"'):]
+    confirm = confirm[:confirm.index("\n});\n")]
+    assert confirm.index('usageAskIfDue("pairing")') > confirm.index("showSheet(false);")

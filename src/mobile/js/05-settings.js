@@ -4,7 +4,7 @@
 // One scrim serves every sheet, so closing means closing whichever is open.
 const SHEET_IDS = ["sheet-settings", "sheet-new", "sheet-session",
                    "sheet-file-actions", "sheet-files-add", "sheet-confirm",
-                   "sheet-prompt", "sheet-report"];
+                   "sheet-prompt", "sheet-report", "sheet-usage"];
 function showSheet(on, id="sheet-settings") {
   // The session list's computer switcher is a dropdown under this layer: a
   // sheet coming up over it has to take it down, or closing the sheet uncovers
@@ -512,6 +512,9 @@ $("btn-voice-confirm").addEventListener("click", () => {
   if (cfg.voiceEngine !== sel.value) cfg.voiceEngine = sel.value;
   showVoiceStep(false);
   showSheet(false);
+  // The device has just been paired: the one moment worth asking, with nothing
+  // else on screen.
+  usageAskIfDue("pairing");
 });
 // Paints the picker from the stored choice and whatever the backend last said.
 // Called twice per open — once from what is already known so the sheet is never
