@@ -169,8 +169,10 @@ button { cursor: pointer; }
   text-transform: uppercase;
   color: var(--tertiary);
 }
-.legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 12px; font-size: 12px; color: var(--secondary); }
-.legend span { white-space: nowrap; }
+/* A legend item may wrap inside itself: one long label ("Devices checking
+   for updates (Cloudflare)") kept on one line is wider than the card head
+   on a phone and pushes the whole page sideways. */
+.legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 12px; font-size: 12px; color: var(--secondary); text-align: right; }
 .legend i {
   display: inline-block;
   width: 9px; height: 9px;

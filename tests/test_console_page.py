@@ -130,3 +130,15 @@ def test_window_history_and_secondary_series(tmp_path):
     assert [r["version_ips"] for r in out["people"]] == [0, 30, 25, 0]
     assert [r["people"] for r in out["people"]] == [0, 0, 12, 20]
     assert out["landing"] == [{"day": d, "visits": v} for d, v in zip(DAYS, [5, 40, 0, 0])]
+
+
+def test_card_head_legend_can_wrap():
+    # A legend sits beside the card title; an item kept on one line ("Devices
+    # checking for updates (Cloudflare)") is wider than the head on a 320-375
+    # px phone and scrolls the whole page sideways. Nothing in the head may
+    # forbid wrapping.
+    css = re.search(r"<style>(.*?)</style>", page(), re.S).group(1)
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    offenders = [sel.strip() for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+                 if re.search(r"\.(legend|card-head)\b", sel) and re.search(r"white-space\s*:\s*nowrap", body)]
+    assert offenders == [], offenders
