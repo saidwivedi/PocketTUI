@@ -22,7 +22,7 @@
 const USAGE_URL = "https://pockettui.com/api/wave";
 // The version of the returning-user question's text. Raising it asks again
 // (usageConsentDue), since an answer to older wording is not an answer to this.
-const USAGE_TEXT_VERSION = 1;
+const USAGE_TEXT_VERSION = 2;
 const USAGE_MIN_SECS = 5;
 const USAGE_OS = { iOS: "ios", iPadOS: "ipados", Android: "android", macOS: "mac",
   Windows: "windows", Linux: "linux", ChromeOS: "chromeos" };
