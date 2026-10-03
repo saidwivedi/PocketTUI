@@ -198,14 +198,16 @@ setTimeout(() => usageAskIfDue("boot"), 800);
 
 // The address the usage console stored next to its key (src/console/), or ""
 // when this browser has never opened it. Same-origin storage is the whole
-// scope: only a browser that unlocked the console sees the row. The key name
-// is spelled inline so this function, called from syncUsageRows (05), reads
-// no binding of this fragment.
+// scope: only a browser that unlocked the console sees the row. The private
+// test build (testGateActive, 02) always has the row, falling back to the
+// console.html served beside its own index.html. The key name is spelled
+// inline so this function, called from syncUsageRows (05), reads no binding of
+// this fragment.
 function usageConsoleUrl() {
   let o = null;
   try { o = JSON.parse(localStorage.getItem("pockettui_console")); } catch (e) {}
-  if (!o || typeof o !== "object" || typeof o.url !== "string") return "";
-  return /^https?:\/\//.test(o.url) ? o.url : "";
+  if (o && typeof o === "object" && typeof o.url === "string" && /^https?:\/\//.test(o.url)) return o.url;
+  return testGateActive() ? new URL("console.html", location.href).href : "";
 }
 
 function syncConsoleRow() {
