@@ -1695,6 +1695,26 @@
     <a href="mailto:support@pockettui.com">support@pockettui.com</a></p>
 </div>
 
+<!-- ============================================================
+     RETURNING-USER QUESTION
+     ============================================================ -->
+<!-- Asked once per wording (usageAskIfDue, 45-usage.js), never over the first
+     run, the demo or another sheet. The two answers are cut alike so neither
+     reads as the expected one. The cross and the scrim answer nothing: the
+     question comes back on the next load. -->
+<div class="sheet" id="sheet-usage" role="dialog" aria-modal="true" aria-labelledby="usage-title">
+  <h2 id="usage-title">Help count PocketTUI users</h2>
+  <button type="button" class="icon-btn" id="btn-usage-close" aria-label="Close"><svg><use href="#i-close"/></svg></button>
+  <p>The app already sends one anonymous summary per use: app and server version, platform, how long, how many sessions and reconnects, and which panes were opened.</p>
+  <p>Saying yes adds a random id so returning use can be counted. It is never linked to your name, address, hostnames, folders, commands or text.</p>
+  <p>Change your mind any time in Settings, About.</p>
+  <p><a href="https://pockettui.com/#privacy" target="_blank" rel="noopener">What is sent</a></p>
+  <div class="actions usage-actions">
+    <button type="button" class="usage-answer" id="btn-usage-yes">Share anonymous usage</button>
+    <button type="button" class="usage-answer" id="btn-usage-no">Not now</button>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- The features guide: the hosted page at pockettui.com/features/, framed over

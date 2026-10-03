@@ -2719,6 +2719,24 @@ html.term-open, body.term-open {
 /* Under the action row, aligned with it: it is the way out when the send is
    what failed, so it sits where the eye already is. */
 #report-fallback { margin-top: 12px; text-align: right; }
+/* The returning-user question: three short lines, a link, two answers. The
+   answers split the row evenly (flex: 1 1 0) so the longer label does not make
+   its button the bigger, more expected one. */
+#sheet-usage h2 { padding-right: 36px; }
+#btn-usage-close { position: absolute; top: 13px; right: 12px; }
+#sheet-usage p {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--secondary);
+}
+#sheet-usage p a { color: var(--umber); text-decoration: underline; }
+.sheet .usage-actions button { flex: 1 1 0; min-width: 0; padding-left: 12px; padding-right: 12px; }
+/* Side by side the longer label wraps on a phone; stacked, both stay one line
+   and still share one width. */
+@media (max-width: 420px) {
+  .sheet .usage-actions { flex-direction: column; }
+}
 /* .sheet .toggle-row's display: flex would otherwise outrank the attribute. */
 #report-log-row[hidden] { display: none; }
 #report-diag-details { margin-top: 12px; }

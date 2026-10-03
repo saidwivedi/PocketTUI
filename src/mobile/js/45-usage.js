@@ -148,6 +148,51 @@ function usageSetOff(off) {
   if (off && cfg.usageId) usageRevoke();
 }
 
+// ---- the returning-user question -------------------------------------------
+
+let usageAsked = false;
+
+// Shows the question when it is due, once per page load, and only onto a quiet
+// screen: not with statistics off (the answer would mean nothing), not in the
+// demo or before pairing, and not over the first run, its voice step, or any
+// other sheet. A screen that is busy now is asked on a later load instead of
+// having a second sheet stacked on it. The reason is for the debug log only.
+function usageAskIfDue(reason) {
+  if (usageAsked || !usageConsentDue() || cfg.usageOff || demoMode || needsSetup()) return false;
+  if (setupMode || voiceStep || $("sheet-scrim").classList.contains("show")) return false;
+  usageAsked = true;
+  dbg("usage: ask", reason);
+  showSheet(true, "sheet-usage");
+  return true;
+}
+
+// The About rows show the answer the next time Settings opens either way
+// (openSettings syncs them); painting them now keeps the hidden sheet honest.
+function usageAnswered() {
+  showSheet(false);
+  syncUsageRows();
+}
+
+$("btn-usage-yes").addEventListener("click", () => {
+  usageGrant();
+  usageAnswered();
+});
+// A no to the id only: statistics stay as they were. On a first ask there is no
+// id; on a re-ask after new wording an earlier yes may have left one, and a no
+// to the new text has to stop it being sent.
+$("btn-usage-no").addEventListener("click", () => {
+  usageRevoke();
+  usageAnswered();
+});
+// Closing is not an answer, so nothing is stored and the next load asks again.
+$("btn-usage-close").addEventListener("click", () => showSheet(false));
+
+// After boot (27-boot.js runs after this fragment) has opened whatever it
+// opens, so the guards above see the first run, the demo or a deep-linked
+// session already on screen. Covers a pairing link, which pairs without the
+// first run's Confirm, and a device paired before the question existed.
+setTimeout(() => usageAskIfDue("boot"), 800);
+
 // ---- when it is sent -------------------------------------------------------
 
 // Both, because a backgrounding standalone PWA on iOS fires pagehide and not
