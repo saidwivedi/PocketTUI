@@ -5968,4 +5968,64 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #diff-toast .sep { flex: 0 0 auto; color: var(--whisper); }
   #diff-toast .diff-act { flex: 0 0 auto; opacity: 1; color: var(--umber); }
 }
+
+/* The test deployment's password panel (index.src.html #test-gate). Over
+   everything, since nothing behind it has booted yet; the field and the button
+   are the first run's own (.sheet input, #btn-setup-ran) said again. */
+#test-gate {
+  position: fixed; inset: 0;
+  z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  padding: calc(var(--safe-top) + 16px) 16px calc(var(--safe-bot) + 16px);
+  background: var(--paper);
+}
+#test-gate[hidden] { display: none; }
+.test-gate-box { width: 100%; max-width: 340px; }
+.test-gate-brand {
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  margin-bottom: 28px;
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.test-gate-brand .glyph { width: 26px; height: 26px; display: inline-flex; color: var(--umber); }
+.test-gate-brand .glyph svg { width: 100%; height: 100%; }
+.test-gate-box label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tertiary);
+  margin-bottom: 7px;
+}
+#test-gate-input {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--ink);
+  background: var(--paper-rec);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  padding: 12px 13px;
+}
+#test-gate-input:focus { border-color: var(--umber); outline: none; }
+#test-gate-err { margin: 8px 0 0; font-size: 13px; color: var(--bad); }
+#btn-test-gate {
+  display: block;
+  width: 100%;
+  margin-top: 18px;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 12px 20px;
+  border-radius: 12px;
+  cursor: pointer;
+  border: 1px solid var(--umber);
+  background: var(--umber);
+  color: var(--paper);
+}
+#btn-test-gate:active { transform: scale(0.96); }
 </style>

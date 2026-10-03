@@ -159,6 +159,7 @@ let usageAsked = false;
 // having a second sheet stacked on it. The reason is for the debug log only.
 function usageAskIfDue(reason) {
   if (usageAsked || !usageConsentDue() || cfg.usageOff || demoMode || needsSetup()) return false;
+  if (testGateLocked()) return false;
   if (setupMode || voiceStep || $("sheet-scrim").classList.contains("show")) return false;
   usageAsked = true;
   dbg("usage: ask", reason);

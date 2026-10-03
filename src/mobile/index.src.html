@@ -338,6 +338,23 @@
   </defs>
 </svg>
 
+<!-- The founder's test deployment only: a password before the app. Hidden in
+     every build; boot shows it only when the build carries a gate hash
+     (openTestGate, 27-boot.js). -->
+<div id="test-gate" hidden>
+  <form id="test-gate-form" class="test-gate-box" autocomplete="off">
+    <div class="test-gate-brand">
+      <span class="glyph"><svg><use href="#i-logo"/></svg></span>
+      <span class="name">PocketTUI</span>
+    </div>
+    <label for="test-gate-input">Test build password</label>
+    <input type="password" id="test-gate-input" autocomplete="current-password"
+           autocapitalize="off" spellcheck="false">
+    <p id="test-gate-err" hidden></p>
+    <button type="submit" id="btn-test-gate">Continue</button>
+  </form>
+</div>
+
 <!-- ============================================================
      SESSION LIST
      ============================================================ -->

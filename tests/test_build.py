@@ -2103,6 +2103,8 @@ def _usage_harness(doc, text_version=None):
         assert "const USAGE_TEXT_VERSION = 1;" in frag
         frag = frag.replace("const USAGE_TEXT_VERSION = 1;",
                             f"const USAGE_TEXT_VERSION = {text_version};")
+    gate = "\n".join(_js_chunk(doc, h) for h in (
+        "function testGateActive(", "function testGateLocked("))
     return f"""
 const els = {{}};
 function $(id) {{
@@ -2123,6 +2125,9 @@ function showSheet(v, id = "sheet-settings") {{
 let setupMode = false, voiceStep = false, rowSyncs = 0;
 function syncUsageRows() {{ rowSyncs += 1; }}
 function dbg() {{}}
+// The public build's gate (02-debug-log.js): empty, so never locked.
+const TEST_GATE = "";
+{gate}
 const timers = [];
 const setTimeout = (fn, ms) => {{ timers.push({{ fn, ms }}); }};
 const ls = {{}};
@@ -2528,3 +2533,83 @@ console.log(JSON.stringify(got));
                                   "target": "_blank", "rel": "noopener"}]
     assert out == {"none": True, "junk": True, "nourl": True, "numurl": True,
                    "jsurl": True, "prod": False, "test": False}
+
+
+# ---- the test deployment's password gate ------------------------------------
+
+def _build_with(tmp_path, monkeypatch, *args):
+    build = tmp_path / "mobile_build"
+    monkeypatch.setattr(build_mobile, "BUILD_DIR", build)
+    monkeypatch.setattr(sys, "argv", ["build_mobile.py", *args])
+    assert build_mobile.main() == 0
+    return (build / "index.html").read_text(encoding="utf-8")
+
+
+def test_a_build_without_a_gate_carries_an_empty_one(tmp_path, monkeypatch):
+    """The public build: the placeholder becomes "" and never survives as-is."""
+    html = _build_with(tmp_path, monkeypatch, "--version", "0.9.999")
+    assert html.count('const TEST_GATE = "";') == 1
+    assert "__TEST_GATE__" not in html
+
+
+def test_a_gated_build_embeds_the_hash(tmp_path, monkeypatch):
+    gate = "ab" * 32
+    html = _build_with(tmp_path, monkeypatch, "--test-gate", gate)
+    assert html.count(f'const TEST_GATE = "{gate}";') == 1
+    assert 'const TEST_GATE = "";' not in html
+
+
+def test_the_self_hosted_shell_substitutes_an_empty_gate():
+    src = (REPO / "app.py").read_text(encoding="utf-8")
+    assert 'html = html.replace("__TEST_GATE__", "")' in src
+
+
+def test_the_gate_panel_is_hidden_markup(doc):
+    assert doc.count('<div id="test-gate" hidden>') == 1
+    panel = doc[doc.index('<div id="test-gate" hidden>'):]
+    panel = panel[:panel.index("</form>")]
+    assert '<label for="test-gate-input">Test build password</label>' in panel
+    assert '<input type="password" id="test-gate-input"' in panel
+    assert '<p id="test-gate-err" hidden></p>' in panel
+    assert '<button type="submit" id="btn-test-gate">Continue</button>' in panel
+
+
+def test_boot_waits_for_the_gate(doc):
+    """Nothing boots before the gate: the demo, the pairing link, the first run
+    and the list all live inside bootApp, and the gate decides when it runs."""
+    boot = _js_chunk(doc, "function bootApp(")
+    for part in ('openDemo();', 'location.hash.indexOf("#pair=") === 0',
+                 'openSettings(true);', 'loadSessions().then('):
+        assert part in boot
+    assert "\nif (testGateLocked()) openTestGate(bootApp);\nelse bootApp();\n" in doc
+    assert "  if (testGateLocked()) return false;" in _js_chunk(doc, "function usageAskIfDue(")
+
+
+def _gate_code(doc):
+    return "\n".join(_js_chunk(doc, h) for h in (
+        "function testGateActive(", "async function testGateCheck("))
+
+
+@pytest.mark.parametrize("value,active", [
+    ("", False), ("__TEST_GATE__", False), ("ab" * 32, True),
+    ("a" * 63, False), ("AB" * 32, False)])
+def test_the_gate_is_active_only_for_a_hash(doc, tmp_path, value, active):
+    out = _node_json(tmp_path, "active.mjs", f"""
+const TEST_GATE = {json.dumps(value)};
+{_gate_code(doc)}
+console.log(JSON.stringify(testGateActive()));
+""")
+    assert out is active
+
+
+def test_the_gate_checks_the_salted_sha256(doc, tmp_path):
+    import hashlib
+    gate = hashlib.sha256(b"pockettui-test-gate|right horse").hexdigest()
+    out = _node_json(tmp_path, "check.mjs", f"""
+const TEST_GATE = {json.dumps(gate)};
+{_gate_code(doc)}
+console.log(JSON.stringify([await testGateCheck("right horse"),
+                            await testGateCheck("wrong horse"),
+                            await testGateCheck("")]));
+""")
+    assert out == [True, False, False]

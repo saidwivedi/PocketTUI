@@ -1286,6 +1286,9 @@ def index() -> Response:
     # string here and must ask the user for a backend instead of guessing that
     # its own origin serves the API.
     html = html.replace("__BACKEND_URL__", "same-origin")
+    # The test-build password gate belongs to the founder's static test host
+    # only; a self-hosted shell never carries one.
+    html = html.replace("__TEST_GATE__", "")
     return no_store(Response(html, media_type="text/html; charset=utf-8"))
 
 
