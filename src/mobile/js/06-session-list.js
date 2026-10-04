@@ -247,6 +247,7 @@ async function loadSessions(spin=false, quiet=false) {
     renderSessions(data.sessions || []);
     $("list-error").style.display = "none";
     sessionsEverLoaded = true;
+    noteActiveVerdict(null);
     syncReportEntry();
     featuresFirstListHint();
     // The fetched list rides back to callers with a session to verify
@@ -275,6 +276,7 @@ async function loadSessions(spin=false, quiet=false) {
 // The failure card, in three parts: what happened, why, and the one command to
 // type on the computer. The command is text to read; nothing here runs it.
 function renderListError(v) {
+  noteActiveVerdict(v.kind);
   const box = $("list-error");
   box.querySelector(".title").textContent = v.title;
   box.querySelector(".hint").textContent = v.hint || "";

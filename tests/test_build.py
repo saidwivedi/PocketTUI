@@ -2713,3 +2713,60 @@ console.log(JSON.stringify([await testGateCheck("right horse"),
                             await testGateCheck("")]));
 """)
     assert out == [True, False, False]
+
+
+def test_a_profile_check_sends_each_code_only_to_its_own_address(doc, tmp_path):
+    """The chooser's status line, run rather than read: each computer is asked
+    with its own address and its own code (never cfg's, which is the active
+    one's), redirects are not followed with the code on them, and the answer is
+    sorted into reachable, code rejected, unreachable, blocked by the browser
+    (https page, http address) and the timeout."""
+    src = "\n".join(_js_chunk(doc, name) for name in (
+        "function loopbackBackend", "function netOffline",
+        "const PROFILE_CHECK_MS", "function profileApiURL",
+        "function profileMixedContent", "async function checkProfile"))
+    out = _node_json(tmp_path, "check.mjs", f"""
+globalThis.location = {{ protocol: "https:" }};
+Object.defineProperty(globalThis, "navigator", {{ value: {{ onLine: true }}, configurable: true }});
+const DEFAULT_BACKEND = "";
+const BASE = "/app/";
+const cfg = {{ backend: "https://active.example.net", token: "ACTIVE" }};
+const calls = [];
+const answers = {{
+  "https://ok.example.net/api/version": {{ ok: true, status: 200 }},
+  "https://auth.example.net/api/version": {{ ok: false, status: 401,
+    json: async () => ({{ hint: "wrong code" }}) }},
+  "https://dead.example.net/api/version": {{ ok: false, status: 502 }},
+}};
+globalThis.fetch = (url, opts) => {{
+  calls.push([url, opts.headers["X-PocketTUI-Token"], opts.redirect]);
+  if (url.startsWith("https://slow.")) {{
+    return new Promise((_, rej) => opts.signal.addEventListener("abort",
+      () => rej(new Error("aborted"))));
+  }}
+  if (answers[url]) return Promise.resolve(answers[url]);
+  return Promise.reject(new TypeError("Failed to fetch"));
+}};
+{src}
+const got = {{}};
+got.ok = (await checkProfile({{ backend: "https://ok.example.net/", token: "T-OK" }})).kind;
+const a = await checkProfile({{ backend: "https://auth.example.net", token: "T-AUTH" }});
+got.auth = [a.kind, a.hint];
+got.dead = (await checkProfile({{ backend: "https://dead.example.net", token: "T-DEAD" }})).kind;
+got.down = (await checkProfile({{ backend: "https://gone.example.net", token: "T-GONE" }})).kind;
+got.mixed = (await checkProfile({{ backend: "http://lan.example.net:5560", token: "T-LAN" }})).kind;
+got.slow = (await checkProfile({{ backend: "https://slow.example.net", token: "T-SLOW" }}, 50)).kind;
+got.calls = calls;
+console.log(JSON.stringify(got));
+""")
+    assert out["ok"] == "ok"
+    assert out["auth"] == ["auth", "wrong code"]
+    assert out["dead"] == "proxy_dead"
+    assert out["down"] == "unreachable"
+    assert out["mixed"] == "mixed_content"
+    assert out["slow"] == "unreachable"
+    for url, token, redirect in out["calls"]:
+        host = url.split("/")[2].split(".")[0].split(":")[0]
+        assert token == "T-" + host.upper(), (url, token)
+        assert redirect == "manual"
+    assert not any(t == "ACTIVE" for _, t, _ in out["calls"])
