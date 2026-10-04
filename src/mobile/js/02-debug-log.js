@@ -352,6 +352,16 @@ const ACTIVE_PROFILE_KEY = "pockettui_profile";
 // same guard sockGen is for the terminal's socket.
 let profileGen = 0;
 
+// Whether each computer answers, for the status line on the chooser rows
+// (40-profiles.js). Declared up here rather than beside its readers because
+// the failure paths that write activeVerdict live in earlier fragments.
+// profileChecks: one record per non-active profile id, from its own check.
+// activeVerdict: a FAILURE_COPY kind (or "auth") for the computer in force,
+// set by whichever path saw it fail and cleared by the next success; null
+// while nothing has failed.
+const profileChecks = new Map();
+let activeVerdict = null;
+
 function newProfileId() {
   try { return crypto.randomUUID(); } catch (e) {}
   return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
