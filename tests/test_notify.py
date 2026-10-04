@@ -12,6 +12,7 @@ one of the guarantees under test.
 
 import asyncio
 import json
+import shlex
 import shutil
 import socket
 import subprocess
@@ -319,6 +320,144 @@ def test_messages_queued_behind_a_turn_are_not_a_chooser():
     ]
     kind, _, _ = A.detect_prompt(*claude_pane(queued, COMPOSER_QUEUED))
     assert kind == "ready"
+
+
+# ---------------------------------------------------------------------------
+# Claude Code at phone height
+# ---------------------------------------------------------------------------
+# Real `claude` (v2.1.289) run in an isolated `tmux -L` server at 45x18, the
+# size of a phone pane with the keyboard up, and captured with exactly the
+# calls capture_pane_state makes (`capture-pane -p -e`, cursor_y, title). Only
+# the machine name in the statusline and the paths are genericised. Before
+# the agent rules, these read:
+#   draft_question  waiting   — a draft that wraps puts the cursor on its
+#                               second row, which is not the `❯` row, and that
+#                               row ended in "?": the false "needs input"
+#                               badge and push while typing on the phone
+#   draft_ask       prompt    — same, with "are you sure" on the cursor row
+#   permission      menu ["3", "4"], quoting option 3 — four options and their
+#                               wrapped rows overflow a five-row tail
+#   startup, clear  ready     — quoting a hint line, as if a turn had ended
+CLAUDE_45X18 = json.loads(
+    (REPO / "tests/fixtures/claude_code_45x18.json").read_text("utf-8"))
+
+
+def shot_args(fx, title=None):
+    """detect_prompt's arguments for one captured pane."""
+    return dict(lines=fx["lines"], cursor_line=fx["lines"][fx["cursor_y"]],
+                title=fx["title"] if title is None else title, cmd=fx["cmd"],
+                cursor_y=fx["cursor_y"])
+
+
+@pytest.mark.parametrize("name,expect", [
+    ("draft_question", ("drafting", [], "")),
+    ("draft_ask", ("drafting", [], "")),
+    ("idle", ("ready", [], "a substantial share of world trade.")),
+    ("permission", ("menu", ["1", "2", "3", "4"], "Do you want to proceed?")),
+    ("startup", ("fresh", [], "")),
+    ("clear", ("fresh", [], "")),
+])
+def test_claude_code_at_45x18(name, expect):
+    assert A.detect_prompt(**shot_args(CLAUDE_45X18[name])) == expect
+
+
+@pytest.mark.parametrize("name", list(CLAUDE_45X18))
+def test_claude_rules_hold_when_the_command_is_unknown(name):
+    # An npm-installed Claude Code shows up as `node`: every agent's rules are
+    # tried, and Claude's still claim the pane.
+    fx = dict(CLAUDE_45X18[name], cmd="node")
+    shot = A.PaneShot(raw=fx["lines"],
+                      text=[A.strip_sgr(x) for x in fx["lines"]],
+                      cursor_y=fx["cursor_y"],
+                      cursor_raw=fx["lines"][fx["cursor_y"]],
+                      title=fx["title"], cmd="node")
+    assert A.classify_shot(shot)[3].startswith("claude:")
+
+
+def test_the_wrapped_draft_is_the_bug_the_old_cursor_rule_saw():
+    # Pin the mechanism, not just the verdict: the cursor row is the draft's
+    # second row and ends in a question mark — exactly what the generic
+    # trailing-question rule fires on when no agent rule claims the pane.
+    fx = CLAUDE_45X18["draft_question"]
+    cursor = A.strip_sgr(fx["lines"][fx["cursor_y"]])
+    assert not cursor.lstrip().startswith("❯") and cursor.rstrip()[-1] == "?"
+    generic = {"generic": A.agent_rules()["generic"]}
+    shot = A.PaneShot(raw=fx["lines"],
+                      text=[A.strip_sgr(x) for x in fx["lines"]],
+                      cursor_y=fx["cursor_y"], cursor_raw=fx["lines"][
+                          fx["cursor_y"]], title="", cmd="")
+    assert A.classify_shot(shot, generic)[0] == "waiting"
+
+
+@pytest.mark.parametrize("title", ["⠂ Canals essay", "◐ Canals essay"])
+def test_a_spinner_title_reads_as_working(title):
+    # Title glyphs from herdr's claude manifest: braille up to 2.1.227, half
+    # circles from 2.1.228. (2.1.289 under tmux kept the idle "✳" title for
+    # the whole turn on this box, so these two are not from a capture.)
+    fx = CLAUDE_45X18["idle"]
+    assert A.detect_prompt(**shot_args(fx, title))[0] == "working"
+    # The idle glyph is not a spinner.
+    assert A.detect_prompt(**shot_args(fx, "✳ Canals essay"))[0] == "ready"
+
+
+def test_a_dialog_outranks_a_spinning_title():
+    # A question on screen is worth a push even if the title still spins.
+    fx = CLAUDE_45X18["permission"]
+    assert A.detect_prompt(**shot_args(fx, "⠂ Canals essay"))[0] == "menu"
+
+
+def test_codex_title_rules():
+    # herdr's codex manifest: a braille spinner in the title is a turn in
+    # progress, "Action Required" is an approval waiting.
+    screen = ["› ", "  gpt-5 high · 100% left"]
+    assert A.detect_prompt(screen, "› ", title="⠙ codex", cmd="codex",
+                           cursor_y=0)[0] == "working"
+    assert A.detect_prompt(screen, "› ", title="Action Required", cmd="codex",
+                           cursor_y=0)[:2] == ("waiting", [])
+
+
+# ---------------------------------------------------------------------------
+# The rule files
+# ---------------------------------------------------------------------------
+
+def test_the_shipped_rule_files_all_load():
+    files = sorted(p.stem for p in A.AGENT_RULES_DIR.glob("*.json"))
+    sets = A.load_agent_rules()
+    # A file that failed to parse would be missing here, not raise.
+    assert sorted(sets) == files
+    assert {"claude", "codex", "generic"} <= set(sets)
+    for rs in sets.values():
+        assert rs.version and rs.rules
+        for rule in rs.rules:
+            assert rule.verdict in A.RULE_VERDICTS[rule.state]
+    assert "claude" in sets["claude"].commands
+
+
+def test_a_broken_rule_file_is_skipped_and_the_rest_still_load(tmp_path):
+    good = json.loads((A.AGENT_RULES_DIR / "generic.json").read_text("utf-8"))
+    (tmp_path / "generic.json").write_text(json.dumps(good))
+    bad = {"id": "bad", "version": "1", "engine": 1, "rules": [
+        {"id": "x", "state": "done", "verdict": "prompt", "priority": 1,
+         "region": "screen"}]}
+    (tmp_path / "bad.json").write_text(json.dumps(bad))
+    future = dict(good, id="future", engine=A.RULES_ENGINE + 1)
+    (tmp_path / "future.json").write_text(json.dumps(future))
+    typo = {"id": "typo", "version": "1", "engine": 1, "rules": [
+        {"id": "x", "state": "idle", "verdict": "quiet", "priority": 1,
+         "region": "bottom(3)"}]}
+    (tmp_path / "typo.json").write_text(json.dumps(typo))
+    assert list(A.load_agent_rules(tmp_path)) == ["generic"]
+
+
+def test_a_negative_guard_vetoes_a_rule():
+    # fresh_conversation's guard: once Claude has answered (a ● row above
+    # the box), the banner still being on screen does not make it fresh.
+    fx = CLAUDE_45X18["clear"]
+    lines = list(fx["lines"])
+    lines[9] = "\x1b[38;5;16m●\x1b[39m Cleared. What next?"
+    kind, _, line = A.detect_prompt(lines, lines[fx["cursor_y"]],
+                                    cmd="claude", cursor_y=fx["cursor_y"])
+    assert (kind, line) == ("ready", "● Cleared. What next?")
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +856,92 @@ def test_a_dialog_three_seconds_into_a_tool_call_still_pushes():
     assert A.watch_update(rows, [pane("work", t + 3, cmd="claude")], t + 12,
                           12.0, classify_boom) == []
     assert A.WATCHER["work"].state == "waiting"
+
+
+def classify_fixture(name):
+    """A classifier that runs the real rules over a 45x18 capture."""
+    fx = CLAUDE_45X18[name]
+    return lambda session: A.detect_prompt(**shot_args(fx))
+
+
+def test_typing_a_wrapped_draft_on_the_phone_never_pushes():
+    # The reported bug, end to end through the watcher: the user types into
+    # an idle Claude Code pane from the phone, every pause closes an episode,
+    # and the capture is the wrapped draft. Badge stays off, nothing is sent.
+    rows = [row("work", notify="on")]
+    for i, name in enumerate(["draft_question", "draft_ask"]):
+        A.watch_saw_input("work")
+        events = spin(rows, "work", 1000 + 200 * i, 200.0 * i,
+                      classify_fixture(name), cmd="claude")
+        assert kinds(events) == [("ws", "prompt")]
+        assert A.WATCHER["work"].state == "idle"
+
+
+def test_startup_and_clear_never_push_done_however_long_the_episode():
+    # /clear typed slowly from the phone, or a cold start on a slow mount, can
+    # run past READY_MIN_BUSY_S; with nothing answered yet it is not "done".
+    rows = [row("work", notify="on")]
+    for i, name in enumerate(["startup", "clear"]):
+        events = long_spin(rows, "work", 1000 + 200 * i, 200.0 * i,
+                           classify_fixture(name))
+        assert kinds(events) == [("ws", "prompt")]
+        assert A.WATCHER["work"].state == "idle"
+    # A real answer after that is the first task, and it does count.
+    events = long_spin(rows, "work", 1400, 400.0, classify_fixture("idle"))
+    assert ("push", "ready") in kinds(events)
+
+
+def test_a_working_title_keeps_the_episode_open_and_rereads():
+    rows = [row("work", notify="on")]
+    t = 1000
+    reads = []
+
+    def working_then_ready(name):
+        reads.append(name)
+        if len(reads) < 3:
+            return "working", [], ""
+        return "ready", [], "⏺ Rewrote the parser; all 89 tests pass."
+
+    A.watch_update(rows, [pane("work", t, cmd="claude")], t + 1, 0.0,
+                   classify_boom)
+    A.watch_update(rows, [pane("work", t + 40, cmd="claude")], t + 40, 39.0,
+                   classify_boom)
+    # Quiet, but the agent still says it is working: no badge change to done,
+    # no push, and the next quiet tick reads the pane again.
+    for tick in (50, 52):
+        assert A.watch_update(rows, [pane("work", t + 40, cmd="claude")],
+                              t + tick, tick - 1.0, working_then_ready) == []
+        assert A.WATCHER["work"].state == "active"
+    events = A.watch_update(rows, [pane("work", t + 40, cmd="claude")],
+                            t + 54, 53.0, working_then_ready)
+    assert ("push", "ready") in kinds(events)
+    assert len(reads) == 3
+
+
+def test_a_new_pane_is_first_sight_again():
+    # Session restore / respawn / window switch: the open episode belonged to
+    # the old pane, so the new pane is baselined, not classified.
+    rows = [row("work", notify="on")]
+    t = 1000
+    A.watch_update(rows, [dict(pane("work", t, cmd="claude"), pane="%1")],
+                   t + 1, 0.0, classify_boom)
+    A.watch_update(rows, [dict(pane("work", t + 40, cmd="claude"), pane="%1")],
+                   t + 40, 39.0, classify_boom)
+    assert A.watch_update(
+        rows, [dict(pane("work", t + 41, cmd="claude"), pane="%2")],
+        t + 50, 49.0, classify_boom) == []
+    w = A.WATCHER["work"]
+    assert (w.pane, w.state, w.busy_started) == ("%2", "idle", 0.0)
+    # The new pane's own next episode is read as usual.
+    events = long_spin(
+        rows, "work", 1100, 100.0, classify_ready)
+    assert ("push", "ready") in kinds(events)
+
+
+def test_watch_panes_carries_the_pane_id(monkeypatch):
+    monkeypatch.setattr(A, "tmux", lambda *a: (
+        0, "1\t1\twork\t1000\t0\t1\tclaude\t%12\n"))
+    assert A.watch_panes()[0]["pane"] == "%12"
 
 
 def test_non_representatives_and_vanished_sessions_are_dropped():
@@ -1312,4 +1537,41 @@ def test_notify_option_round_trips_through_session_rows(client, monkeypatch):
         assert panes[0]["window_active"] is True
     finally:
         subprocess.run([*TMUX_TEST_BIN, "kill-server"], capture_output=True,
+                       timeout=10)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
+@pytest.mark.parametrize("name,kind", [
+    ("draft_question", "drafting"), ("draft_ask", "drafting"),
+    ("idle", "ready"), ("permission", "menu"), ("clear", "fresh"),
+])
+def test_classify_session_on_a_real_45x18_pane(monkeypatch, tmp_path, name,
+                                               kind):
+    # The captures replayed into a real pane of the phone's size, then read
+    # back through capture_pane_state: the cursor row, the title and the
+    # escapes all make the round trip through tmux, not just the fixture.
+    fx = CLAUDE_45X18[name]
+    screen = tmp_path / "screen"
+    screen.write_text(
+        f"\x1b]2;{fx['title']}\x07" + "\n".join(fx["lines"])
+        + f"\x1b[{fx['cursor_y'] + 1};3H", "utf-8")
+    server = ["tmux", "-L", f"pockettui-test-rules-{name}", "-f", "/dev/null"]
+    monkeypatch.setattr(A, "TMUX_BIN", list(server))
+    try:
+        rc, _ = A.tmux("new-session", "-d", "-s", "rules", "-x", "45", "-y",
+                       "18", f"cat {shlex.quote(str(screen))}; exec sleep 60")
+        assert rc == 0
+        st = None
+        for _ in range(50):
+            st = A.capture_pane_state("rules")
+            if st and st["cmd"] == "sleep" and st["cursor_y"] == fx["cursor_y"]:
+                break
+            time.sleep(0.1)
+        assert st["title"] == fx["title"]
+        assert st["cursor_y"] == fx["cursor_y"]
+        assert [A.strip_sgr(x).rstrip() for x in st["lines"]] == \
+            [A.strip_sgr(x).rstrip() for x in fx["lines"]]
+        assert A.classify_session("rules")[0] == kind
+    finally:
+        subprocess.run([*server, "kill-server"], capture_output=True,
                        timeout=10)

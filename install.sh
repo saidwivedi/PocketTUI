@@ -528,7 +528,7 @@ elif [[ -e "$INSTALL_DIR" ]]; then
     if [[ "$UPDATE" == "1" ]]; then
         step_quiet "Updating the install at $INSTALL_DIR (from version $OLD_VERSION)"
         vsay "  The new copy replaces the program files:"
-        for f in app.py resolver.py chromium.py mobile_app.html sw.js pockettui.service \
+        for f in app.py resolver.py chromium.py agent_rules mobile_app.html sw.js pockettui.service \
                  install.sh setup_voice.sh requirements.txt qrcodegen.py \
                  icon-192.png icon-512.png vendor; do
             [[ -e "$INSTALL_DIR/$f" ]] && vsay "    $f"
@@ -546,7 +546,7 @@ elif [[ -e "$INSTALL_DIR" ]]; then
         # there is always exactly one install and never a merge of two.
         PREV_DIR="$INSTALL_DIR/.prev"
         if rm -rf "${PREV_DIR:?}" 2>/dev/null && mkdir -p "$PREV_DIR" 2>/dev/null; then
-            for f in app.py resolver.py chromium.py mobile_app.html sw.js pockettui.service \
+            for f in app.py resolver.py chromium.py agent_rules mobile_app.html sw.js pockettui.service \
                      install.sh setup_voice.sh requirements.txt qrcodegen.py \
                      icon-192.png icon-512.png vendor VERSION; do
                 [[ -e "$INSTALL_DIR/$f" ]] && cp -R "$INSTALL_DIR/$f" "$PREV_DIR/"
@@ -564,6 +564,11 @@ elif [[ -e "$INSTALL_DIR" ]]; then
         if [[ -d "$INSTALL_DIR/vendor" ]]; then
             rm -rf "${INSTALL_DIR:?}/vendor"
             vsay "  cleared vendor/ so removed files do not linger"
+        fi
+        # Same for the agent rule files: one left behind after upstream
+        # deleted it would keep classifying panes.
+        if [[ -d "$INSTALL_DIR/agent_rules" ]]; then
+            rm -rf "${INSTALL_DIR:?}/agent_rules"
         fi
     else
         step_quiet "Replacing existing install at $INSTALL_DIR (POCKETTUI_FORCE=1)"
@@ -600,7 +605,7 @@ if [[ "$LOCAL_CHECKOUT" == "1" ]]; then
     # mobile_app.html, sw.js and the icons are built into $INSTALL_DIR further
     # down, once there is a Python to run build_mobile.py with. app.py was
     # already checked.
-    for f in app.py resolver.py chromium.py requirements.txt vendor qrcodegen.py \
+    for f in app.py resolver.py chromium.py agent_rules requirements.txt vendor qrcodegen.py \
              pockettui.service install.sh run.sh setup_voice.sh; do
         [[ -e "$SRC_DIR/$f" ]] || continue
         # Installing from inside the install dir would be cp-onto-itself.

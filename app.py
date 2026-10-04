@@ -10583,6 +10583,7 @@ class WatchState:
     notified_at: float | None = None   # monotonic stamp of the last dispatch
     state: str = "idle"           # active|waiting|ready|idle (the badge)
     prompt: dict | None = None    # the prompt frame last published, if any
+    pane: str = ""                # active pane's tmux id (%N), last tick
 
 
 # Keyed by representative session name. Written by the watcher's worker
@@ -10681,7 +10682,7 @@ def strip_chrome(line: str) -> str:
     return line.replace("\xa0", " ").strip().strip(BOX_CHARS).strip()
 
 
-def composer_text(line: str) -> str | None:
+def composer_text(line: str, box_re: re.Pattern = PROMPT_BOX_RE) -> str | None:
     """What a composer line holds after its marker, or None if it is not one.
 
     "" means the box is empty and the program is waiting on its human; any
@@ -10693,7 +10694,7 @@ def composer_text(line: str) -> str | None:
     agent used to read as someone mid-sentence.
     """
     runs = dim_runs(line)
-    m = PROMPT_BOX_RE.match("".join(text for text, _ in runs))
+    m = box_re.match("".join(text for text, _ in runs))
     if m is None:
         return None
     rest, pos = [], 0
@@ -10729,168 +10730,541 @@ def last_substantive(lines: list[str]) -> str:
     return ""
 
 
-def detect_prompt(lines: list[str],
-                  cursor_line: str = "") -> tuple[str, list[str], str]:
-    """What the pane looks like it is asking. Pure — table-tested.
+def question_above(text: list[str], start: int, fallback: str) -> str:
+    """The question the chooser starting at row `start` belongs to.
 
-    `lines` is the visible pane, newest last, and `cursor_line` the row the
-    cursor sits on; both may carry the colour escapes a `-e` capture keeps,
-    which only the composer rule reads (see composer_text).
-
-    Returns (kind, options, line): kind "prompt" (a y/n question, options
-    ["y","n"]), "menu" (a numbered chooser, options its digits), "waiting" (a
-    question with nothing tappable — an arrow-key chooser, or a trailing "?"),
-    "ready" (an empty composer: the program has stopped talking and is waiting
-    on its human, with `line` the last thing it said), "drafting" (a composer
-    with a half-typed message in it) or "quiet" (no shape at all). `line` is
-    the text that becomes the notification body.
-
-    Where the reading stops is the whole difficulty. An empty composer splits
-    the pane: Claude Code draws its model, its context meter and its mode
-    hints *under* the box, so a five-line tail ending in those never sees the
-    question above them and quotes a token counter as news. Everything at and
-    below such a composer is therefore chrome, and the ask is looked for in the
-    last 5 non-empty lines above it. A composer with something in it cannot be
-    trusted to split anything — `❯ 1. Yes` is a chooser's marked row, not a
-    composer — so the boundary only moves for an empty one, and the cursor's
-    own line is weighted first, because that is where an interactive program
-    parks it.
-
-    The scan order is load-bearing. A menu is looked for before question
-    phrasing because Claude Code's permission dialog is both at once ("Do you
-    want to proceed?" over `❯ 1. Yes` / `2.` / `3.`), and a dialog that only
-    accepts digits must not put y/n under the user's thumb. The composer comes
-    after both, because a question is what the pane is asking and a composer is
-    merely where the answer would be typed.
+    It sits above the options, and on a tall pane that is outside the tail
+    they were found in — Claude Code puts "Do you want to create demo.txt?"
+    one row above `❯ 1. Yes`. The marked line only stands in when the chooser
+    asks nothing in so many words, because "❯ 1. Yes" on its own is a useless
+    thing to read on a phone.
     """
-    text = [strip_sgr(line) for line in lines]
-    cursor = strip_sgr(cursor_line)
-    composer = composer_text(cursor_line) if cursor.strip() else None
-    above = text
-    if composer == "":
-        for i in range(len(lines) - 1, -1, -1):
-            if lines[i] == cursor_line:
-                above = text[:i]
-                break
+    for line in reversed(text[max(0, start - 5):start]):
+        if (PROMPT_YN_RE.search(line) or PROMPT_ASK_RE.search(line)
+                or strip_chrome(line).endswith("?")):
+            return line
+    return fallback
 
-    marks = [(i, line) for i, line in enumerate(above) if line.strip()][-5:]
-    scan = [line for _, line in marks]
-    ordered = [line for line in reversed(scan) if line != cursor]
-    # A composer holding a draft is the user's own half-typed sentence, so it
-    # is not evidence that anything is being asked: it stays out of the scans,
-    # or someone typing "do you want me to rebase" would prompt themselves.
-    if cursor.strip() and not composer:
-        ordered.insert(0, cursor)
 
-    for line in ordered:
-        if PROMPT_YN_RE.search(line):
-            return "prompt", ["y", "n"], line.strip()
+# ---------------------------------------------------------------------------
+# Agent rules
+# ---------------------------------------------------------------------------
+# What a pane is doing is decided by rule files, one per agent, in
+# agent_rules/ next to this file (the layout herdr uses for its detection
+# manifests). JSON, because the installer supports Python 3.10 and tomllib
+# arrived in 3.11. A file is
+#
+#   {"id", "version", "engine", "commands": [pane_current_command, ...],
+#    "composer": optional regex for the composer's marker row,
+#    "rules": [rule, ...]}
+#
+# and a rule is
+#
+#   {"id", "state", "verdict", "priority", "region", "quote", conditions...}
+#
+# `state` is the agent's state in herdr's vocabulary (working / blocked /
+# done / idle); `verdict` is the kind detect_prompt has always returned and
+# the watcher and the client still consume, and it has to be one the state
+# allows (RULE_VERDICTS). The highest-priority rule whose conditions hold
+# wins. Conditions, all of which must hold:
+#
+#   contains    every string occurs in the region (case-insensitive)
+#   regex       every pattern searches the region's text (rows joined by \n)
+#   line_regex  some row of the region matches one of the patterns
+#   shape       a named shape the code recognises (RULE_SHAPES): what a
+#               pattern cannot say — a run of numbered options with wrapped
+#               rows, a chooser with exactly one marked row, a composer whose
+#               only text is dim
+#   any / all   lists of nested conditions
+#   not         nested conditions none of which may hold (negative guards)
+#
+# Regions (RULE_REGIONS) name the rows a rule reads: `title` (the pane title,
+# where Claude Code and Codex put their spinner), `screen`, `cursor_line`,
+# `bottom_lines(N)`, `after_last_rule` (below the last full-width ─ or ╌
+# rule: a Claude Code dialog), `prompt_box` (the rows between the two rules
+# around the composer), `above_prompt_box[(N)]`, and `tail(N)`, the window
+# the classifier read before rules existed. `quote` picks the line that
+# becomes the notification body. Which files apply: the one whose `commands`
+# names the pane's command; every agent file when the command is something
+# else (an agent run under node shows up as `node`); none at a shell. The
+# generic file is read last in every case.
 
-    def question_above(start: int, fallback: str) -> str:
-        """The question the chooser starting at `start` belongs to.
+AGENT_RULES_DIR = HERE / "agent_rules"
+# Bumped when the rule language gains something an older backend would
+# misread; a file asking for a newer engine is skipped, not half-applied.
+RULES_ENGINE = 1
+RULE_VERDICTS = {
+    "working": {"working"},
+    "blocked": {"prompt", "menu", "waiting"},
+    "done": {"ready"},
+    "idle": {"drafting", "fresh", "quiet"},
+}
+RULE_REGIONS = {"title", "screen", "cursor_line", "bottom_lines",
+                "after_last_rule", "prompt_box", "above_prompt_box", "tail"}
+RULE_SHAPES = {"menu", "chooser", "draft", "empty_composer"}
+RULE_QUOTES = {"", "match", "question", "last_said", "cursor", "title"}
+RULE_REGION_RE = re.compile(r"^([a-z_]+)(?:\((\d+)\))?$")
+# A full-width rule: Claude Code draws its composer between two of these and
+# heads its dialogs with them (solid for the frame, dashed inside a diff).
+RULE_LINE_RE = re.compile(r"^[─╌━]{20,}$")
 
-        It sits above the options, and on a tall pane that is outside the tail
-        they were found in — Claude Code puts "Do you want to create demo.txt?"
-        one row above `❯ 1. Yes`. The marked line only stands in when the
-        chooser asks nothing in so many words, because "❯ 1. Yes" on its own is
-        a useless thing to read on a phone.
+
+@dataclasses.dataclass
+class Rule:
+    id: str
+    state: str
+    verdict: str
+    priority: int
+    region: str
+    region_n: int | None
+    cond: dict
+    quote: str
+
+
+@dataclasses.dataclass
+class RuleSet:
+    id: str
+    version: str
+    commands: frozenset
+    composer: re.Pattern
+    rules: list[Rule]
+
+
+def _compile_cond(cond: dict, where: str) -> dict:
+    """`cond` with its patterns compiled and its keys checked."""
+    out: dict = {}
+    for key, value in cond.items():
+        if key in ("id", "state", "verdict", "priority", "region", "quote",
+                   "about"):
+            continue
+        if key == "contains":
+            out[key] = [str(v).lower() for v in value]
+        elif key in ("regex", "line_regex"):
+            out[key] = [re.compile(v, re.MULTILINE) for v in value]
+        elif key == "shape":
+            if value not in RULE_SHAPES:
+                raise ValueError(f"{where}: unknown shape {value!r}")
+            out[key] = value
+        elif key in ("any", "all", "not"):
+            out[key] = [_compile_cond(c, where) for c in value]
+        else:
+            raise ValueError(f"{where}: unknown key {key!r}")
+    return out
+
+
+def parse_rule_set(data: dict, where: str = "") -> RuleSet:
+    """One rule file, checked and compiled. Raises ValueError on anything off,
+    so a typo in a pattern fails at load and not on a pane months later."""
+    for key in ("id", "version", "engine", "rules"):
+        if key not in data:
+            raise ValueError(f"{where}: missing {key!r}")
+    if int(data["engine"]) > RULES_ENGINE:
+        raise ValueError(f"{where}: needs rule engine {data['engine']}, "
+                         f"this backend has {RULES_ENGINE}")
+    rules, seen = [], set()
+    for raw in data["rules"]:
+        rid = raw.get("id", "")
+        at = f"{where}:{rid or '?'}"
+        if not rid or rid in seen:
+            raise ValueError(f"{at}: missing or duplicate rule id")
+        seen.add(rid)
+        state, verdict = raw.get("state"), raw.get("verdict")
+        if verdict not in RULE_VERDICTS.get(state, ()):
+            raise ValueError(f"{at}: verdict {verdict!r} is not a {state!r} "
+                             "verdict")
+        m = RULE_REGION_RE.match(str(raw.get("region", "")))
+        if m is None or m.group(1) not in RULE_REGIONS:
+            raise ValueError(f"{at}: unknown region {raw.get('region')!r}")
+        quote = raw.get("quote", "")
+        if quote not in RULE_QUOTES:
+            raise ValueError(f"{at}: unknown quote {quote!r}")
+        rules.append(Rule(
+            id=rid, state=state, verdict=verdict,
+            priority=int(raw["priority"]), region=m.group(1),
+            region_n=int(m.group(2)) if m.group(2) else None,
+            cond=_compile_cond(raw, at), quote=quote))
+    rules.sort(key=lambda r: -r.priority)
+    composer = data.get("composer")
+    return RuleSet(id=data["id"], version=str(data["version"]),
+                   commands=frozenset(data.get("commands", [])),
+                   composer=re.compile(composer) if composer
+                   else PROMPT_BOX_RE,
+                   rules=rules)
+
+
+def load_agent_rules(path: Path | None = None) -> dict[str, RuleSet]:
+    """Every rule file in `path`, by id. A broken file is logged and left
+    out — the rest still classify — rather than taking the watcher down."""
+    path = AGENT_RULES_DIR if path is None else path
+    sets: dict[str, RuleSet] = {}
+    for f in sorted(path.glob("*.json")):
+        try:
+            rs = parse_rule_set(json.loads(f.read_text("utf-8")), f.name)
+        except (OSError, ValueError, TypeError, KeyError, re.error) as e:
+            log(f"agent rules: skipped {f.name}: {e}")
+            continue
+        sets[rs.id] = rs
+    if "generic" not in sets:
+        log(f"agent rules: no generic.json in {path}; panes will read quiet")
+    return sets
+
+
+_AGENT_RULES: dict[str, RuleSet] | None = None
+
+
+def agent_rules() -> dict[str, RuleSet]:
+    """The rule files, read once per process."""
+    global _AGENT_RULES
+    if _AGENT_RULES is None:
+        _AGENT_RULES = load_agent_rules()
+    return _AGENT_RULES
+
+
+@dataclasses.dataclass
+class PaneShot:
+    """One capture of a pane: rows as captured and as plain text, the cursor's
+    row, the title and the command. Regions are cut out of this."""
+
+    raw: list[str]
+    text: list[str]
+    cursor_y: int | None
+    cursor_raw: str
+    title: str
+    cmd: str
+
+    @property
+    def cursor(self) -> str:
+        return strip_sgr(self.cursor_raw)
+
+    def box(self, marker: re.Pattern) -> tuple[int, int] | None:
+        """(top, bottom) rule rows of the composer box, or None.
+
+        The pair around the cursor when there is one — Claude Code parks it in
+        the box, on whichever row of a wrapped draft it is typing — else the
+        lowest pair whose first row is composer-shaped.
         """
-        for line in reversed(above[max(0, start - 5):start]):
-            if (PROMPT_YN_RE.search(line) or PROMPT_ASK_RE.search(line)
-                    or strip_chrome(line).endswith("?")):
-                return line
-        return fallback
+        rules = [i for i, t in enumerate(self.text)
+                 if RULE_LINE_RE.match(t.strip())]
+        pairs = [(a, b) for a, b in zip(rules, rules[1:])
+                 if b > a + 1 and marker.match(self.text[a + 1])]
+        if self.cursor_y is not None:
+            for a, b in pairs:
+                if a < self.cursor_y < b:
+                    return a, b
+        return pairs[-1] if pairs else None
 
-    # A numbered menu is only a menu when at least two choices sit together —
-    # a lone "1." is prose.
+
+@dataclasses.dataclass
+class Region:
+    rows: list[tuple[int, str, str]]    # (row index, raw, plain), top down
+    order: list[tuple[int, str, str]]   # the same rows, in reading priority
+    composer: str | None                # what the composer in play holds
+    cut: int                            # where "above the composer" ends
+
+
+def _box_composer(shot: PaneShot, box: tuple[int, int],
+                  marker: re.Pattern) -> str | None:
+    """The whole box's text, dim placeholder left out; None if its first row
+    is not a composer. Every row counts: a draft that wraps puts the cursor
+    on its second row, which is not the marker row."""
+    top, bottom = box
+    first = composer_text(shot.raw[top + 1], marker)
+    if first is None:
+        return None
+    parts = [first]
+    for row in shot.raw[top + 2:bottom]:
+        parts.append(strip_chrome("".join(t for t, dim in dim_runs(row)
+                                          if not dim)))
+    return " ".join(p for p in parts if p)
+
+
+def _region(shot: PaneShot, rule: Rule, marker: re.Pattern) -> Region | None:
+    """The rows `rule` reads, or None when the pane has no such region."""
+    raw, text, n = shot.raw, shot.text, rule.region_n
+    every = len(text)
+
+    def rows_of(idx):
+        return [(i, raw[i], text[i]) for i in idx]
+
+    def nonempty(idx):
+        return [i for i in idx if text[i].strip()]
+
+    cursor_composer = (composer_text(shot.cursor_raw, marker)
+                       if shot.cursor.strip() else None)
+    cursor_cut = (shot.cursor_y if cursor_composer == ""
+                  and shot.cursor_y is not None else every)
+    name = rule.region
+    if name == "title":
+        rows = [(-1, shot.title, shot.title)] if shot.title.strip() else []
+        return Region(rows, rows, cursor_composer, every)
+    if name == "cursor_line":
+        if not shot.cursor.strip():
+            return None
+        rows = [(shot.cursor_y if shot.cursor_y is not None else -1,
+                 shot.cursor_raw, shot.cursor)]
+        return Region(rows, rows, cursor_composer, cursor_cut)
+    if name == "tail":
+        # The pre-rules window: an empty composer at the cursor splits the
+        # pane, the ask is looked for in the last N non-empty rows above it,
+        # the cursor's own row is read first — unless it holds a draft, which
+        # is the user's sentence and not something being asked.
+        rows = rows_of(nonempty(range(cursor_cut)))[-(n or 5):]
+        order = [r for r in reversed(rows) if r[2] != shot.cursor]
+        if shot.cursor.strip() and not cursor_composer:
+            order.insert(0, (shot.cursor_y if shot.cursor_y is not None
+                             else -1, shot.cursor_raw, shot.cursor))
+        return Region(rows, order, cursor_composer, cursor_cut)
+    if name in ("prompt_box", "above_prompt_box"):
+        box = shot.box(marker)
+        if box is None:
+            return None
+        composer = _box_composer(shot, box, marker)
+        if name == "prompt_box":
+            rows = rows_of(range(box[0] + 1, box[1]))
+        else:
+            rows = rows_of(nonempty(range(box[0])))
+            rows = rows[-n:] if n else rows
+        return Region(rows, list(reversed(rows)), composer, box[0])
+    if name == "screen":
+        idx = nonempty(range(every))
+    elif name == "bottom_lines":
+        idx = nonempty(range(every))[-(n or 5):]
+    elif name == "after_last_rule":
+        rules = [i for i, t in enumerate(text) if RULE_LINE_RE.match(t.strip())]
+        if not rules:
+            return None
+        idx = nonempty(range(rules[-1] + 1, every))
+    else:  # parse_rule_set admits nothing else
+        return None
+    rows = rows_of(idx)
+    return Region(rows, list(reversed(rows)), cursor_composer, cursor_cut)
+
+
+def _shape_menu(rows):
+    """A run of at least two numbered options — a lone "1." is prose — or
+    None. An option too long for the pane wraps onto rows indented past its
+    own digit, and those rows must not break the run: that is how "3. No"
+    went missing from a dialog whose second choice needed two lines."""
     run: list[tuple[int, str, bool, str]] = []
-    menu: list[tuple[int, str, bool, str]] | None = None
     indent = -1
-    for i, line in [*marks, (len(above), "")]:
+    for i, _, line in [*rows, (-1, "", "")]:
         m = PROMPT_MENU_RE.match(line)
         if m:
             run.append((i, m.group(2), bool(m.group(1)), line))
             indent = len(line) - len(line.lstrip())
             continue
-        # An option too long for the pane wraps onto the next row, indented
-        # past its own digit. Breaking the run there would drop every option
-        # under it — which is how "3. No" went missing from a permission
-        # dialog whose second choice needed two lines.
         if run and line.strip() and len(line) - len(line.lstrip()) > indent:
             continue
-        if len(run) >= 2 and menu is None:
-            menu = run
+        if len(run) >= 2:
+            marked = next((ln for _, _, sel, ln in run if sel), run[0][3])
+            return {"options": [d for _, d, _, _ in run][:4],
+                    "anchor": run[0][0], "line": marked}
         run = []
-    if menu:
-        options = [digit for _, digit, _, _ in menu][:4]
-        marked = next((line for _, _, sel, line in menu if sel), menu[0][3])
-        question = question_above(menu[0][0], marked)
-        return "menu", options, strip_chrome(question)
+    return None
 
-    # The same chooser without digits: one marked line with an unmarked sibling
-    # under it. Nothing is tappable, but something is very much being asked —
-    # and the marked row is composer-shaped, so without this the folder-trust
-    # dialog would read as a half-typed message. One marker, because a chooser
-    # pre-selects exactly one row: Claude Code lists messages queued behind a
-    # running turn with the same glyph on every one of them.
-    marked = [pos for pos, (_, line) in enumerate(marks)
+
+def _shape_chooser(rows):
+    """One marked row (`❯ Yes, I trust this folder`) with an unmarked sibling
+    under it, or None. Exactly one: Claude Code lists messages queued behind
+    a running turn with the same glyph on every one of them."""
+    marked = [pos for pos, (_, _, line) in enumerate(rows)
               if PROMPT_SEL_RE.match(line)]
-    if len(marked) == 1:
-        pos = marked[0]
-        sibling = marks[pos + 1][1] if pos + 1 < len(marks) else ""
-        if strip_chrome(sibling):
-            i, line = marks[pos]
-            return "waiting", [], strip_chrome(question_above(i, line))
-
-    for line in ordered:
-        if PROMPT_ASK_RE.search(line):
-            return "prompt", ["y", "n"], line.strip()
-
-    if composer is not None:
-        if composer:
-            return "drafting", [], ""
-        return ("ready", [],
-                last_substantive(above) or "ready for your next message")
-
-    if cursor.strip() and cursor.rstrip().endswith("?"):
-        return "waiting", [], cursor.strip()
-    return "quiet", [], ""
+    if len(marked) != 1:
+        return None
+    pos = marked[0]
+    sibling = rows[pos + 1][2] if pos + 1 < len(rows) else ""
+    if not strip_chrome(sibling):
+        return None
+    return {"anchor": rows[pos][0], "line": rows[pos][2]}
 
 
-def capture_visible(name: str) -> tuple[list[str], str]:
-    """The session's active pane exactly as it is on screen, and the cursor's
-    own row out of it.
+def _cond_holds(cond: dict, region: Region, found: dict) -> bool:
+    """Whether `cond` holds over `region`; what it matched goes in `found`
+    (the first line a line_regex hit, in reading order, and the shape)."""
+    body = "\n".join(line for _, _, line in region.rows)
+    lower = body.lower()
+    if "contains" in cond and not all(s in lower for s in cond["contains"]):
+        return False
+    if "regex" in cond and not all(p.search(body) for p in cond["regex"]):
+        return False
+    if "line_regex" in cond:
+        hit = next((line for _, _, line in region.order
+                    if any(p.search(line) for p in cond["line_regex"])), None)
+        if hit is None:
+            return False
+        found.setdefault("match", hit)
+    if "shape" in cond:
+        shape = cond["shape"]
+        if shape == "menu":
+            got = _shape_menu(region.rows)
+        elif shape == "chooser":
+            got = _shape_chooser(region.rows)
+        elif shape == "draft":
+            got = region.composer or None
+        else:  # empty_composer
+            got = "" if region.composer == "" else None
+        if got is None:
+            return False
+        found.setdefault("shape", got)
+    if "all" in cond and not all(_cond_holds(c, region, found)
+                                 for c in cond["all"]):
+        return False
+    if "any" in cond and not any(_cond_holds(c, region, found)
+                                 for c in cond["any"]):
+        return False
+    if "not" in cond and any(_cond_holds(c, region, {}) for c in cond["not"]):
+        return False
+    return True
+
+
+def _verdict(rule: Rule, shot: PaneShot, region: Region,
+             found: dict) -> tuple[str, list[str], str]:
+    """(kind, options, line) for a rule that matched."""
+    shape = found.get("shape")
+    if rule.verdict == "prompt":
+        options = ["y", "n"]
+    elif rule.verdict == "menu" and isinstance(shape, dict):
+        options = shape["options"]
+    else:
+        options = []
+    line = ""
+    if rule.quote == "match":
+        line = found.get("match", "").strip()
+    elif rule.quote == "question":
+        if isinstance(shape, dict):
+            anchor, fallback = shape["anchor"], shape["line"]
+        else:
+            anchor = shot.cursor_y if shot.cursor_y is not None else len(
+                shot.text)
+            fallback = shot.cursor
+        line = strip_chrome(question_above(shot.text, anchor, fallback))
+    elif rule.quote == "last_said":
+        line = (last_substantive(shot.text[:region.cut])
+                or "ready for your next message")
+    elif rule.quote == "cursor":
+        line = shot.cursor.strip()
+    elif rule.quote == "title":
+        line = strip_chrome(shot.title)
+    return rule.verdict, options, line
+
+
+def classify_shot(shot: PaneShot,
+                  sets: dict[str, RuleSet] | None = None
+                  ) -> tuple[str, list[str], str, str]:
+    """(kind, options, line, rule) for one capture: the agent's own rules
+    first, then the generic ones. `rule` is "<file>:<rule id>", or "" when
+    nothing matched and the pane reads quiet."""
+    sets = agent_rules() if sets is None else sets
+    agents = [rs for rs in sets.values() if rs.id != "generic"]
+    if shot.cmd in SHELL_COMMANDS:
+        chosen = []
+    else:
+        chosen = ([rs for rs in agents if shot.cmd in rs.commands]
+                  or agents)
+    if "generic" in sets:
+        chosen.append(sets["generic"])
+    for rs in chosen:
+        for rule in rs.rules:
+            region = _region(shot, rule, rs.composer)
+            if region is None or not region.rows:
+                continue
+            found: dict = {}
+            if _cond_holds(rule.cond, region, found):
+                return (*_verdict(rule, shot, region, found),
+                        f"{rs.id}:{rule.id}")
+    return "quiet", [], "", ""
+
+
+def detect_prompt(lines: list[str], cursor_line: str = "", title: str = "",
+                  cmd: str = "", cursor_y: int | None = None
+                  ) -> tuple[str, list[str], str]:
+    """What the pane is doing, read by the agent rules. Pure — table-tested.
+
+    `lines` is the visible pane, newest last, and `cursor_line` the row the
+    cursor sits on; both may carry the colour escapes a `-e` capture keeps,
+    which only the composer shapes read (see composer_text). `cursor_y`, when
+    known, says which row that is; without it the last row equal to
+    `cursor_line` is taken.
+
+    Returns (kind, options, line): kind "prompt" (a y/n question, options
+    ["y","n"]), "menu" (a numbered chooser, options its digits), "waiting" (a
+    question with nothing tappable), "ready" (an empty composer: the program
+    has stopped talking, with `line` the last thing it said), "drafting" (a
+    composer with a half-typed message in it), "fresh" (an agent that has
+    not answered anything yet: its startup screen, or /clear), "working" (the
+    agent says it is still at it — a spinner in its title) or "quiet" (no
+    shape at all).
+    `line` is the text that becomes the notification body.
+    """
+    if cursor_y is None and cursor_line:
+        cursor_y = next((i for i in range(len(lines) - 1, -1, -1)
+                         if lines[i] == cursor_line), None)
+    shot = PaneShot(raw=list(lines), text=[strip_sgr(x) for x in lines],
+                    cursor_y=cursor_y, cursor_raw=cursor_line,
+                    title=title or "", cmd=cmd or "")
+    return classify_shot(shot)[:3]
+
+
+def capture_pane_state(name: str) -> dict | None:
+    """The session's active pane exactly as it is on screen: rows, the
+    cursor's row, the title and the command, from two tmux calls.
 
     Colours and all (`-e`), because Claude Code's composer placeholder is only
     distinguishable from a typed draft by its dimness. Without `-S`, so the
     capture is exactly pane_height rows and the cursor's row is simply
     lines[cursor_y]: a capture carrying scrollback is history plus screen, and
     no arithmetic recovers which row the cursor is on once it has been
-    truncated to a fixed count.
+    truncated to a fixed count. The title goes last because it is the one
+    field that may itself hold a tab.
     """
     rc, out = tmux("list-panes", "-t", f"={name}", "-f", "#{pane_active}",
-                   "-F", "#{pane_id}\t#{cursor_y}")
+                   "-F", "#{pane_id}\t#{cursor_y}\t#{pane_current_command}"
+                   "\t#{pane_title}")
     if rc != 0 or not out.strip():
-        return [], ""
-    parts = out.strip().splitlines()[0].split("\t")
+        return None
+    parts = out.strip("\n").splitlines()[0].split("\t", 3)
     rc, out = tmux("capture-pane", "-p", "-e", "-t", parts[0])
     if rc != 0:
-        return [], ""
+        return None
     lines = out.splitlines()
     try:
         y = int(parts[1])
     except (IndexError, ValueError):
-        return lines, ""
-    return lines, lines[y] if 0 <= y < len(lines) else ""
+        y = None
+    if y is not None and not 0 <= y < len(lines):
+        y = None
+    return {"lines": lines, "cursor_y": y,
+            "cursor_line": lines[y] if y is not None else "",
+            "cmd": parts[2] if len(parts) > 2 else "",
+            "title": parts[3] if len(parts) > 3 else ""}
+
+
+def capture_visible(name: str) -> tuple[list[str], str]:
+    """The session's active pane as on screen, and the cursor's own row."""
+    st = capture_pane_state(name)
+    if st is None:
+        return [], ""
+    return st["lines"], st["cursor_line"]
 
 
 def classify_session(name: str) -> tuple[str, list[str], str]:
-    """Read the session's visible pane once and run detect_prompt over it.
+    """Read the session's visible pane once and run the agent rules over it.
 
-    Called only on a busy→idle transition, so its two tmux calls (the pane's
-    id and cursor row, then the capture) are paid per episode, not per tick.
+    Called only on a busy→idle transition (and again each quiet tick while
+    the verdict is "working"), so its two tmux calls are paid per episode,
+    not per tick.
     """
-    return detect_prompt(*capture_visible(name))
+    st = capture_pane_state(name)
+    if st is None:
+        return "quiet", [], ""
+    shot = PaneShot(raw=st["lines"], text=[strip_sgr(x) for x in st["lines"]],
+                    cursor_y=st["cursor_y"], cursor_raw=st["cursor_line"],
+                    title=st["title"], cmd=st["cmd"])
+    kind, options, line, rule = classify_shot(shot)
+    if kind != "working":  # re-read every quiet tick; logged once it settles
+        log(f"watch classify session={name} cmd={st['cmd']} kind={kind} "
+            f"rule={rule or '-'}")
+    return kind, options, line
 
 
 def watch_panes() -> list[dict]:
@@ -10904,7 +11278,7 @@ def watch_panes() -> list[dict]:
         "list-panes", "-a", "-F",
         "#{pane_active}\t#{window_active}\t#{session_name}"
         "\t#{window_activity}\t#{window_bell_flag}\t#{alternate_on}"
-        "\t#{pane_current_command}",
+        "\t#{pane_current_command}\t#{pane_id}",
     )
     if rc != 0:
         return []
@@ -10924,6 +11298,7 @@ def watch_panes() -> list[dict]:
             "alt": parts[5] == "1",
             "cmd": parts[6],
             "window_active": parts[1] == "1",
+            "pane": parts[7] if len(parts) > 7 else "",
         })
     return panes
 
@@ -10991,7 +11366,11 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
     transition below the MIN_BUSY_S gate closes the episode only when the
     pane is back at a shell. A non-shell command that is producing no output
     (`sleep 30`) keeps its episode open, so the episode spans the quiet run
-    and the eventual "finished" clears the gate.
+    and the eventual "finished" clears the gate. Two from herdr: a "working"
+    verdict (the agent's title still spins) is not an idle episode, so the
+    pane is read again next tick; and a session whose active pane changed is
+    first sight again, so a restored or switched-to pane repainting an old
+    conversation never reads as a fresh "done".
     """
     if classify is None:
         classify = classify_session
@@ -11003,12 +11382,13 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
     # window's, since that pane is what a classification would capture.
     per: dict[str, dict] = {}
     for pane in panes:
-        agg = per.setdefault(pane["session"],
-                             {"activity": 0, "bell": False, "cmd": ""})
+        agg = per.setdefault(pane["session"], {"activity": 0, "bell": False,
+                                               "cmd": "", "pane": ""})
         agg["activity"] = max(agg["activity"], pane["activity"])
         agg["bell"] = agg["bell"] or pane["bell"]
         if pane["window_active"]:
             agg["cmd"] = pane["cmd"]
+            agg["pane"] = pane.get("pane", "")
 
     seen = set()
     for row in rows:
@@ -11022,12 +11402,28 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
         busy = (now - agg["activity"]) < IDLE_S
 
         w = WATCHER.get(name)
+        gap = None
+        if w is not None and agg["pane"] and w.pane and agg["pane"] != w.pane:
+            # Another pane now fronts the session: a restored session, a
+            # respawned pane, a window switch. Its screen is new to the
+            # watcher, so this is first sight again — the open episode
+            # belonged to the old pane, and whatever the new one shows (an
+            # agent repainting a conversation that finished long ago) is not
+            # news. Only the spacing between pushes carries over.
+            log(f"watch pane changed session={name} {w.pane} -> "
+                f"{agg['pane']}: baseline")
+            if w.prompt is not None:
+                events.append({"kind": "ws", "session": name, "payload":
+                               {"type": "prompt", "options": [], "line": ""}})
+            gap = w.notified_at
+            w = None
         if w is None:
             # First sight is baseline only: whatever happened before this
             # server was watching is not something to notify about.
             w = WATCHER[name] = WatchState(
                 last_activity=agg["activity"], cmd=agg["cmd"],
-                bell=agg["bell"], state="active" if busy else "idle")
+                bell=agg["bell"], state="active" if busy else "idle",
+                notified_at=gap, pane=agg["pane"])
             if busy:
                 w.busy_started = agg["activity"]
                 if agg["cmd"] and agg["cmd"] not in SHELL_COMMANDS:
@@ -11071,7 +11467,15 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
             if episode >= MIN_BUSY_S or (agg["cmd"]
                                          and agg["cmd"] not in SHELL_COMMANDS):
                 kind, options, line = classify(name)
-                if kind in ("prompt", "menu", "waiting", "ready", "drafting"):
+                if kind == "working":
+                    # The agent says it is still at work (a spinner in its
+                    # title) though the pane went quiet — a long think, a slow
+                    # tool. Not an idle episode yet: the episode stays open
+                    # and the pane is read again next tick.
+                    w.state = "active"
+                    continue
+                if kind in ("prompt", "menu", "waiting", "ready", "drafting",
+                            "fresh"):
                     # Only a real question is "needs input". An agent sitting
                     # at an empty composer is done, which is worth saying but
                     # not worth answering, and a half-typed draft is a human at
@@ -11104,7 +11508,9 @@ def watch_update(rows: list[dict], panes: list[dict], now: float, mono: float,
                         events.extend(_watch_notify(
                             row, w, mono, "ready", line,
                             sig=f"ready\x00{line}"))
-                    # "drafting" is a human mid-sentence: badge and frame only.
+                    # "drafting" is a human mid-sentence, "fresh" an agent
+                    # that has not answered anything yet (startup, /clear):
+                    # badge and frame only.
                 else:
                     w.state = "idle"
                     # A finished run is not a question, so these two keep the
