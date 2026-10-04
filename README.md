@@ -109,7 +109,7 @@ If you opt in, PocketTUI stores a random ID in your browser so we can determine 
 
 The ID contains no personal or terminal information. Turning return-visit counting off deletes it.
 
-Usage data is stored in Cloudflare's EU region and deleted after 400 days. The exact fields are in [`functions/api/wave.js`](functions/api/wave.js); installer and tarball downloads are counted in [`functions/_middleware.js`](functions/_middleware.js).
+Usage data is stored in Cloudflare's EU region and deleted after 400 days. The exact fields are in [`src/mobile/js/45-usage.js`](src/mobile/js/45-usage.js), the app code that sends them; installer and tarball downloads are counted server-side.
 
 ## Self-hosting the app shell
 
