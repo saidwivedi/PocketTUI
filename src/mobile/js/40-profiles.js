@@ -57,6 +57,240 @@ function profileNameField() {
   return $("backend-name").value.trim().slice(0, 40);
 }
 
+// ---- whether each computer answers ------------------------------------------
+
+// One authenticated GET of /api/version, built from this profile's own address
+// and code and nothing else: cfg and apiURL() are the active computer's, and
+// another computer's code must never travel to it. redirect "manual" for the
+// same reason — a redirect would carry the code header on to wherever it
+// pointed. The timeout is ours (setTimeout + abort) rather than
+// AbortSignal.timeout(), which iOS Safari only has from 16.
+const PROFILE_CHECK_MS = 4000;
+
+function profileApiURL(p, path) {
+  const backend = (p && p.backend) || DEFAULT_BACKEND;
+  return backend ? backend.replace(/\/$/, "") + "/" + path : BASE + path;
+}
+
+// An http address from an https page, which the browser refuses before any
+// packet leaves — the same test classifyFailure() makes for the active one.
+function profileMixedContent(p) {
+  const backend = (p && p.backend) || DEFAULT_BACKEND;
+  return location.protocol === "https:" && /^http:/i.test(backend)
+    && !loopbackBackend(backend);
+}
+
+// The verdict in FAILURE_COPY's vocabulary plus two of its own: "ok" (answered
+// and took the code) and "auth" (answered and refused it, with the server's
+// hint). A thrown fetch is a refused connection, a DNS miss, the timeout or a
+// mixed-content block, which the browser reports identically, so the last one
+// is named from the addresses alone.
+async function checkProfile(p, timeoutMs = PROFILE_CHECK_MS) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    let r;
+    try {
+      r = await fetch(profileApiURL(p, "api/version"), {
+        cache: "no-store", redirect: "manual", signal: ctrl.signal,
+        headers: { "X-PocketTUI-Token": (p && p.token) || "" },
+      });
+    } catch (e) {
+      if (netOffline()) return { kind: "offline", status: 0 };
+      return { kind: profileMixedContent(p) ? "mixed_content" : "unreachable", status: 0 };
+    }
+    const status = r.status;
+    if (r.ok) return { kind: "ok", status };
+    if (status === 401 || status === 403) {
+      let hint = "";
+      try { hint = (await r.json()).hint || ""; } catch (e) {}
+      return { kind: "auth", status, hint };
+    }
+    if (status >= 502 && status <= 504) return { kind: "proxy_dead", status };
+    if (status === 404) return { kind: "not_published", status };
+    // An opaque redirect reads as status 0: something answers there, and it
+    // is not PocketTUI's API.
+    if (r.type === "opaqueredirect") return { kind: "not_pockettui", status };
+    return { kind: "server_error", status };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// What a row says about its computer, as [text, tone]. The tone picks the
+// dot's colour; the text is the whole of the explanation a menu row has room
+// for, and the title attribute carries the longer one where there is one.
+const PROFILE_STATUS = {
+  checking: ["Checking…", ""],
+  connected: ["Connected", "good"],
+  ok: ["Reachable", "good"],
+  auth: ["Code rejected", "bad"],
+  mixed_content: ["Blocked by browser", "bad"],
+  offline: ["Offline", "warn"],
+  unreachable: ["Unreachable", "warn"],
+  proxy_dead: ["Not running", "warn"],
+  not_published: ["Not published", "warn"],
+  not_pockettui: ["Wrong address", "warn"],
+  blocked: ["Blocked", "warn"],
+  server_error: ["Server error", "warn"],
+};
+const PROFILE_STATUS_TITLE = {
+  auth: "The computer refused this device's pairing code.",
+  mixed_content: "This page is https and the browser will not let it call a plain-http address.",
+  unreachable: "Nothing answered at this address.",
+  proxy_dead: "The computer answered, but PocketTUI is not running.",
+};
+
+// The computer in force is not checked from here: the app is talking to it
+// already, and whatever last failed against it (activeVerdict) or succeeded is
+// the truer answer. Every other row reads its own last check, and keeps that
+// answer on screen while a recheck is out.
+function profileStatusKind(p) {
+  if (p.id === activeProfileId()) {
+    if (activeVerdict) return activeVerdict;
+    const open = typeof WebSocket !== "undefined" && sock && sock.readyState === WebSocket.OPEN;
+    return sessionsEverLoaded || open ? "connected" : "";
+  }
+  const rec = profileChecks.get(p.id);
+  if (!rec) return "";
+  return rec.kind || (rec.pending ? "checking" : "");
+}
+
+function profileStatusEl(p) {
+  const s = el("span", { class: "profile-menu-status" });
+  paintStatusEl(s, profileStatusKind(p));
+  return s;
+}
+
+function paintStatusEl(s, kind) {
+  const [text, tone] = PROFILE_STATUS[kind] || ["", ""];
+  s.textContent = text;
+  s.hidden = !text;
+  s.dataset.tone = tone;
+  if (PROFILE_STATUS_TITLE[kind]) s.title = PROFILE_STATUS_TITLE[kind];
+  else s.removeAttribute("title");
+}
+
+// Both menus' rows, repainted in place: a check landing must not rebuild a
+// menu under the finger that is about to tap it.
+function paintProfileStatuses() {
+  const byId = new Map(readProfiles().map((p) => [p.id, p]));
+  for (const row of document.querySelectorAll(".profile-row[data-profile-id]")) {
+    const p = byId.get(row.dataset.profileId);
+    const s = row.querySelector(".profile-menu-status");
+    if (p && s) paintStatusEl(s, profileStatusKind(p));
+  }
+}
+
+// The failure paths' report on the computer in force (null = it just worked).
+function noteActiveVerdict(kind) {
+  if (activeVerdict === kind) return;
+  activeVerdict = kind;
+  paintProfileStatuses();
+}
+
+// Checks run only while a chooser is on screen. The Settings one can be left
+// "open" under a sheet that has closed, which counts as shut.
+function profileMenusOpen() {
+  return $("profile-wrap").classList.contains("open") ||
+    ($("profile-pick-wrap").classList.contains("open") &&
+     $("sheet-settings").classList.contains("show"));
+}
+
+// Rechecks while a chooser stays open, herdr's cadence: every 30 s while a
+// computer answers, doubling from there while it does not, up to four minutes.
+// A rejected code and an http address in an https page are not rechecked at
+// all — no wait changes either, and every wrong code counts towards the
+// server's lockout of this device — until the chooser is opened again.
+const PROFILE_RECHECK_MS = 30000;
+const PROFILE_RECHECK_MAX_MS = 240000;
+
+async function runProfileCheck(id) {
+  const p = readProfiles().find((x) => x.id === id);
+  if (!p || id === activeProfileId()) return;
+  let rec = profileChecks.get(id);
+  if (!rec) { rec = { kind: "", at: 0, fails: 0, timer: null, seq: 0, pending: false }; profileChecks.set(id, rec); }
+  clearTimeout(rec.timer);
+  rec.timer = null;
+  const seq = ++rec.seq;
+  rec.pending = true;
+  paintProfileStatuses();
+  const c = await checkProfile(p);
+  if (profileChecks.get(id) !== rec || seq !== rec.seq) return;
+  rec.pending = false;
+  // Edited, forgotten or switched to while the answer was out: it is about an
+  // address or code that is no longer this row's.
+  const now = readProfiles().find((x) => x.id === id);
+  if (!now || now.backend !== p.backend || now.token !== p.token || id === activeProfileId()) {
+    profileChecks.delete(id);
+    paintProfileStatuses();
+    return;
+  }
+  rec.kind = c.kind;
+  rec.at = Date.now();
+  rec.fails = c.kind === "ok" ? 0 : rec.fails + 1;
+  paintProfileStatuses();
+  scheduleProfileRecheck(id, rec);
+}
+
+// The next check, timed from the last answer rather than from now, so a
+// chooser reopened a moment after a check keeps the same cadence.
+function scheduleProfileRecheck(id, rec) {
+  if (rec.timer || rec.pending || !profileMenusOpen()) return;
+  if (rec.kind === "auth" || rec.kind === "mixed_content") return;
+  const delay = rec.kind === "ok" ? PROFILE_RECHECK_MS
+    : Math.min(PROFILE_RECHECK_MS * Math.pow(2, rec.fails - 1), PROFILE_RECHECK_MAX_MS);
+  rec.timer = setTimeout(() => {
+    rec.timer = null;
+    if (profileMenusOpen()) runProfileCheck(id);
+  }, Math.max(0, rec.at + delay - Date.now()));
+}
+
+// On every open: each other computer is asked now, unless it answered in the
+// last few seconds (a menu closed and reopened) or is being asked already.
+function startProfileChecks() {
+  const active = activeProfileId();
+  for (const p of readProfiles()) {
+    if (p.id === active) continue;
+    const rec = profileChecks.get(p.id);
+    if (rec && (rec.pending || Date.now() - rec.at < 5000)) { scheduleProfileRecheck(p.id, rec); continue; }
+    runProfileCheck(p.id);
+  }
+}
+
+function stopProfileChecksIfClosed() {
+  if (profileMenusOpen()) return;
+  for (const rec of profileChecks.values()) { clearTimeout(rec.timer); rec.timer = null; }
+}
+
+// The active computer's socket has failed `n` times in a row
+// (scheduleReconnect, 09-image-viewer.js): say which way, in the banner the
+// terminal already has. A computer that answers and takes the code leaves the
+// socket as the thing failing — the toast at 3, the server-error banner from
+// 6, as before. A refused code goes the way a 4401 close does. Anything else
+// is named now rather than after six tries, with the health descriptor asked
+// for the finer verdicts (a proxy with nothing behind it, an unrouted path).
+async function classifyDrop(n) {
+  const pgen = profileGen;
+  const stale = () => pgen !== profileGen || !currentSession || retries === 0;
+  const c = await checkProfile({ backend: cfg.backend, token: cfg.token });
+  if (stale()) return;
+  if (c.kind === "ok") {
+    if (n === 3) toast("Reconnecting…");
+    if (n >= 6) renderConnBanner(classifyFailure(null, null, { kind: "ok" }));
+    return;
+  }
+  if (c.kind === "auth") {
+    clearTimeout(retryTimer);
+    closeTerminal(true);
+    rejectToken(c.hint);
+    return;
+  }
+  const probe = c.kind === "offline" || c.kind === "mixed_content" ? null : await probeServer();
+  if (stale()) return;
+  renderConnBanner(classifyFailure(null, null, probe));
+}
+
 // ---- the menu, drawn in two places -----------------------------------------
 
 // The trash at the end of a Settings row. It asks first, through the native
@@ -96,6 +330,7 @@ function fillProfileMenu(menu, pick, withAdd) {
     const row = el("div", {
       class: "view-row profile-row" + (on ? " on" : ""),
       role: "menuitemradio", "aria-checked": on ? "true" : "false", tabindex: "0",
+      "data-profile-id": p.id,
     },
       el("span", { class: "view-check", "aria-hidden": "true" }, "✓"),
       // Name over address rather than beside it: on one line the two split the
@@ -104,8 +339,11 @@ function fillProfileMenu(menu, pick, withAdd) {
       el("span", { class: "profile-menu-text" },
         el("span", { class: "profile-menu-name" }, profileLabel(p)),
         // Which address that name resolves to, for the two computers whose names
-        // do not tell them apart on their own.
-        el("span", { class: "profile-menu-addr" }, profileHost(p.backend)),
+        // do not tell them apart on their own, and whether it answers there.
+        el("span", { class: "profile-menu-sub" },
+          el("span", { class: "profile-menu-addr" }, profileHost(p.backend)),
+          profileStatusEl(p),
+        ),
       ),
     );
     row.addEventListener("click", () => pick(p.id));
@@ -147,7 +385,8 @@ function syncProfilePick() {
 function showProfilePick(on) {
   $("profile-pick-wrap").classList.toggle("open", on);
   $("btn-profile-pick").setAttribute("aria-expanded", on ? "true" : "false");
-  if (!on) return;
+  if (!on) { stopProfileChecksIfClosed(); return; }
+  startProfileChecks();
   fillProfileMenu($("profile-pick-menu"), (id) => {
     showProfilePick(false);
     // The computer already on the other end: nothing to switch to, and the tap
@@ -207,7 +446,8 @@ function showProfileMenu(on) {
   $("profile-wrap").classList.toggle("open", on);
   $("profile-scrim").classList.toggle("show", on);
   $("btn-profile").setAttribute("aria-expanded", on ? "true" : "false");
-  if (!on) return;
+  if (!on) { stopProfileChecksIfClosed(); return; }
+  startProfileChecks();
   fillProfileMenu($("profile-menu"), (id) => {
     showProfileMenu(false);
     if (id !== activeProfileId()) switchProfile(id);
@@ -259,6 +499,10 @@ function switchProfile(id, probe) {
   sessionsResetForProfile();
   versionResetForProfile();
   pairResetForProfile();
+  // The verdict was the computer being left's. The one switched to has its own
+  // check record, which is about it as a row and not as the active one.
+  activeVerdict = null;
+  profileChecks.delete(id);
   setActiveProfile(id);
   // Whatever was on screen, a switch lands on the session list — the one screen
   // that is about the computer as a whole.
@@ -282,7 +526,12 @@ function switchProfile(id, probe) {
 // the first run.
 function forgetProfile(id) {
   const wasActive = !id || id === activeProfileId();
-  if (id) removeProfile(id);
+  if (id) {
+    removeProfile(id);
+    const rec = profileChecks.get(id);
+    if (rec) clearTimeout(rec.timer);
+    profileChecks.delete(id);
+  }
   toast("Computer forgotten");
   if (!wasActive) {
     // The fields are the active computer's and stay its — including anything

@@ -455,6 +455,35 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The address line also carries whether the computer answers: the address
+   gives way first, so the status is never the half that is elided. */
+.profile-menu-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.profile-menu-sub .profile-menu-addr { flex: 0 1 auto; min-width: 0; }
+.profile-menu-status {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--secondary);
+  white-space: nowrap;
+}
+.profile-menu-status[hidden] { display: none; }
+.profile-menu-status::before {
+  content: "";
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--whisper);
+}
+.profile-menu-status[data-tone="good"]::before { background: var(--good); }
+.profile-menu-status[data-tone="warn"]::before { background: var(--warn); }
+.profile-menu-status[data-tone="bad"]::before { background: var(--bad); }
 /* The way to forget one computer, at the end of its own row and in Settings
    only — the session list's menu chooses between machines and manages none.
    The session cards' trash glyph, in its quiet colour, a size down for a menu
