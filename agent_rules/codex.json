@@ -1,0 +1,84 @@
+{
+  "id": "codex",
+  "version": "2026.10.05.1",
+  "engine": 1,
+  "commands": ["codex"],
+  "composer": "^\\s*›(?:\\s|$)",
+  "about": "OpenAI Codex CLI. Ported from herdr's codex manifest (src/detect/manifests/codex.toml, 2026.10.01.1); not yet checked against a capture taken on this box. Its composer is a '›' row with the cursor on it.",
+  "rules": [
+    {
+      "id": "title_blocked",
+      "state": "blocked",
+      "verdict": "waiting",
+      "priority": 1100,
+      "region": "title",
+      "contains": ["action required"],
+      "quote": "title"
+    },
+    {
+      "id": "live_blocker_menu",
+      "state": "blocked",
+      "verdict": "menu",
+      "priority": 1000,
+      "region": "bottom_lines(12)",
+      "any": [
+        {"contains": ["press enter to confirm or esc to cancel"]},
+        {"contains": ["allow command?"]},
+        {"contains": ["enter to submit answer"]}
+      ],
+      "shape": "menu",
+      "quote": "question"
+    },
+    {
+      "id": "live_blocker",
+      "state": "blocked",
+      "verdict": "waiting",
+      "priority": 990,
+      "region": "bottom_lines(12)",
+      "any": [
+        {"contains": ["press enter to confirm or esc to cancel"]},
+        {"contains": ["allow command?"]},
+        {"contains": ["enter to submit answer"]},
+        {"contains": ["enter to submit all"]}
+      ],
+      "quote": "question"
+    },
+    {
+      "id": "trust_directory",
+      "state": "blocked",
+      "verdict": "waiting",
+      "priority": 980,
+      "region": "screen",
+      "any": [
+        {"contains": ["do you trust the contents of this directory?"]},
+        {"contains": ["trust this folder?", "codex can read, edit, and run files here"]}
+      ],
+      "quote": "question"
+    },
+    {
+      "id": "title_working",
+      "state": "working",
+      "verdict": "working",
+      "priority": 950,
+      "region": "title",
+      "regex": ["(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)"]
+    },
+    {
+      "id": "composer_draft",
+      "state": "idle",
+      "verdict": "drafting",
+      "priority": 900,
+      "region": "cursor_line",
+      "shape": "draft"
+    },
+    {
+      "id": "composer_empty",
+      "state": "done",
+      "verdict": "ready",
+      "priority": 800,
+      "region": "cursor_line",
+      "shape": "empty_composer",
+      "quote": "last_said"
+    }
+  ]
+}

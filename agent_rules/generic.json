@@ -1,0 +1,73 @@
+{
+  "id": "generic",
+  "version": "2026.10.05.1",
+  "engine": 1,
+  "commands": [],
+  "about": "Any pane, read last: shells, unknown programs, and an agent whose own rules found nothing. These are the shapes the classifier read before rules existed, in the same order. tail(5) is the last five non-empty rows above an empty cursor-row composer, newest first, with the cursor's own row read before them unless it holds a draft.",
+  "rules": [
+    {
+      "id": "yes_no",
+      "state": "blocked",
+      "verdict": "prompt",
+      "priority": 900,
+      "region": "tail(5)",
+      "line_regex": ["(?i)\\[y/n\\]|\\(y/n\\)|\\byes/no\\b"],
+      "quote": "match"
+    },
+    {
+      "id": "numbered_menu",
+      "state": "blocked",
+      "verdict": "menu",
+      "priority": 800,
+      "region": "tail(5)",
+      "about": "Looked for before question phrasing: a dialog that takes digits must not offer y/n.",
+      "shape": "menu",
+      "quote": "question"
+    },
+    {
+      "id": "arrow_chooser",
+      "state": "blocked",
+      "verdict": "waiting",
+      "priority": 700,
+      "region": "tail(5)",
+      "shape": "chooser",
+      "quote": "question"
+    },
+    {
+      "id": "ask_phrasing",
+      "state": "blocked",
+      "verdict": "prompt",
+      "priority": 600,
+      "region": "tail(5)",
+      "line_regex": ["(?i)do you want|would you like|proceed\\?|continue\\?|are you sure"],
+      "quote": "match"
+    },
+    {
+      "id": "composer_draft",
+      "state": "idle",
+      "verdict": "drafting",
+      "priority": 500,
+      "region": "cursor_line",
+      "about": "A human mid-sentence: never news.",
+      "shape": "draft"
+    },
+    {
+      "id": "composer_empty",
+      "state": "done",
+      "verdict": "ready",
+      "priority": 400,
+      "region": "cursor_line",
+      "shape": "empty_composer",
+      "quote": "last_said"
+    },
+    {
+      "id": "trailing_question",
+      "state": "blocked",
+      "verdict": "waiting",
+      "priority": 300,
+      "region": "cursor_line",
+      "regex": ["\\?\\s*$"],
+      "quote": "cursor"
+    }
+  ]
+}
