@@ -1,0 +1,121 @@
+{
+  "id": "claude",
+  "version": "2026.10.05.1",
+  "engine": 1,
+  "commands": ["claude"],
+  "about": "Claude Code (checked against v2.1.278 at 40 rows and v2.1.289 at 45x18). Its composer is a box between two full-width rules with the footer under it; its dialogs replace box and footer, and end with an 'Esc to cancel' hint under the last rule. Title and spinner patterns follow herdr's claude manifest (src/detect/manifests/claude.toml, 2026.09.11.1).",
+  "rules": [
+    {
+      "id": "permission_menu",
+      "state": "blocked",
+      "verdict": "menu",
+      "priority": 1000,
+      "region": "after_last_rule",
+      "about": "The whole dialog, not a five-row tail: at phone height its options and their wrapped rows fill more than five.",
+      "contains": ["esc to cancel"],
+      "shape": "menu",
+      "quote": "question"
+    },
+    {
+      "id": "arrow_chooser",
+      "state": "blocked",
+      "verdict": "waiting",
+      "priority": 990,
+      "region": "after_last_rule",
+      "about": "The folder-trust dialog and other choosers without digits.",
+      "contains": ["esc to cancel"],
+      "any": [
+        {"contains": ["enter to confirm"]},
+        {"contains": ["enter to select"]}
+      ],
+      "shape": "chooser",
+      "quote": "question"
+    },
+    {
+      "id": "blocked_form",
+      "state": "blocked",
+      "verdict": "waiting",
+      "priority": 980,
+      "region": "after_last_rule",
+      "contains": ["esc to cancel"],
+      "any": [
+        {"contains": ["enter to confirm"]},
+        {"contains": ["enter to select"]},
+        {"contains": ["enter to submit"]}
+      ],
+      "quote": "question"
+    },
+    {
+      "id": "title_working",
+      "state": "working",
+      "verdict": "working",
+      "priority": 960,
+      "region": "title",
+      "about": "Below the dialogs on purpose: a question on screen is worth a push even if the title still spins. Braille covers <= 2.1.227, half circles 2.1.228+; '✳' is the idle title and matches nothing here.",
+      "regex": ["^[\\u2800-\\u28FF\\u25D0-\\u25D3] "]
+    },
+    {
+      "id": "live_turn",
+      "state": "working",
+      "verdict": "working",
+      "priority": 955,
+      "region": "above_prompt_box(4)",
+      "about": "The spinner row of a running turn ('✻ Thinking… (12s · esc to interrupt)'). The finished-turn summary ('✻ Worked for 14s · done') has no ellipsis and does not match.",
+      "line_regex": [
+        "^\\s*[⏸⏵].*esc to interrupt(?:\\s|·|$)",
+        "^\\s*[*·✢✳✶✻✽]\\s+\\S.*…(?:\\s+\\(\\d+[smh](?:\\s|·)|\\s*$)"
+      ]
+    },
+    {
+      "id": "composer_draft",
+      "state": "idle",
+      "verdict": "drafting",
+      "priority": 950,
+      "region": "prompt_box",
+      "about": "Every row of the box, so a draft that wraps (the cursor on its second row) is still a draft. Dim text is Claude's own placeholder.",
+      "shape": "draft"
+    },
+    {
+      "id": "fresh_conversation",
+      "state": "idle",
+      "verdict": "fresh",
+      "priority": 940,
+      "region": "above_prompt_box",
+      "about": "Startup, /clear and /new: the banner is up and Claude has not answered anything yet, so there is nothing that finished.",
+      "contains": ["claude code v"],
+      "shape": "empty_composer",
+      "not": [
+        {"line_regex": ["^\\s*[●⏺]\\s"]}
+      ]
+    },
+    {
+      "id": "yes_no_above",
+      "state": "blocked",
+      "verdict": "prompt",
+      "priority": 930,
+      "region": "above_prompt_box(5)",
+      "shape": "empty_composer",
+      "line_regex": ["(?i)\\[y/n\\]|\\(y/n\\)|\\byes/no\\b"],
+      "quote": "match"
+    },
+    {
+      "id": "ask_above",
+      "state": "blocked",
+      "verdict": "prompt",
+      "priority": 920,
+      "region": "above_prompt_box(5)",
+      "shape": "empty_composer",
+      "line_regex": ["(?i)do you want|would you like|proceed\\?|continue\\?|are you sure"],
+      "quote": "match"
+    },
+    {
+      "id": "composer_empty",
+      "state": "done",
+      "verdict": "ready",
+      "priority": 900,
+      "region": "prompt_box",
+      "shape": "empty_composer",
+      "quote": "last_said"
+    }
+  ]
+}

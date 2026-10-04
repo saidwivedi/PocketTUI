@@ -1346,6 +1346,23 @@ def test_chromium_py_listed_wherever_resolver_is(tmp_path):
         assert tree and "chromium.py" in tree[0], tree
 
 
+def test_agent_rules_listed_wherever_resolver_is():
+    """The watcher's rule files are a directory the backend reads at run time;
+    an install without them classifies every pane as quiet. Same three lists
+    as chromium.py, and the tarball's tree where the deploy script exists."""
+    lists = [l for l in logical_lines(INSTALL_SH.read_text())
+             if l.lstrip().startswith("for f in") and "resolver.py" in l]
+    assert len(lists) == 3, lists
+    for line in lists:
+        assert "agent_rules" in line.split(), f"agent_rules missing: {line}"
+    assert (INSTALL_SH.parent / "agent_rules" / "generic.json").is_file()
+    deploy = INSTALL_SH.parent / "deploy_cloudflare.sh"
+    if deploy.is_file():
+        tree = [l for l in logical_lines(deploy.read_text())
+                if l.startswith("RUNTIME_TREE=(")]
+        assert tree and "agent_rules" in tree[0], tree
+
+
 def fake_python(tmp_path):
     """A stand-in for $VENV_PY, which is only ever handed a script to run.
 
