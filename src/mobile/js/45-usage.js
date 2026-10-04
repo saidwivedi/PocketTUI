@@ -196,7 +196,7 @@ setTimeout(() => usageAskIfDue("boot"), 800);
 
 // ---- the usage console row -------------------------------------------------
 
-// The address the usage console stored next to its key (src/console/), or ""
+// The address the usage console stored next to its key, or ""
 // when this browser has never opened it. Same-origin storage is the whole
 // scope: only a browser that unlocked the console sees the row. The private
 // test build (testGateActive, 02) always has the row, falling back to the

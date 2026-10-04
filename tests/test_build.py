@@ -2450,35 +2450,36 @@ def test_usage_sheet_markup_and_the_pairing_trigger(doc):
     assert confirm.index('usageAskIfDue("pairing")') > confirm.index("showSheet(false);")
 
 
-# ---- the usage console (src/console/) --------------------------------------
-
-CONSOLE_SRC = REPO / "src" / "console" / "index.html"
-
-
-def test_console_page_is_one_self_contained_file():
-    """No build step and nothing fetched from elsewhere: the deployed page is the
-    file written, and the only network call is the console API itself."""
-    page = CONSOLE_SRC.read_text(encoding="utf-8")
-    assert "<title>PocketTUI usage</title>" in page
-    assert "<script src=" not in page
-    assert "<link" not in page
-    assert "http://" not in page
-    assert 'const API = "https://pockettui.com/api/console";' in page
-    assert 'const STORE = "pockettui_console";' in page
-    assert "url: location.href" in page
-
+# ---- the usage console (private/console/, not in the public repo) ------------
 
 def test_console_is_built_beside_the_shell_but_not_into_the_runtime(tmp_path, doc, monkeypatch):
     build = tmp_path / "mobile_build"
+    console = tmp_path / "console.html"
+    console.write_text("<!doctype html><title>console</title>\n", encoding="utf-8")
     monkeypatch.setattr(build_mobile, "BUILD_DIR", build)
+    monkeypatch.setattr(build_mobile, "CONSOLE_SRC", console)
     monkeypatch.setattr(sys, "argv", ["build_mobile.py", "--version", "0.9.999"])
     assert build_mobile.main() == 0
-    assert (build / "console.html").read_bytes() == CONSOLE_SRC.read_bytes()
+    assert (build / "console.html").read_bytes() == console.read_bytes()
     runtime = tmp_path / "runtime"
     # The runtime set is what install.sh and the tarball carry to a self-hosted
     # install; the console is the founder's page and stays out of it.
     build_mobile.emit_runtime(runtime, doc, "// sw")
     assert not any("console" in p.name for p in runtime.rglob("*"))
+
+
+def test_a_public_clone_builds_without_the_console(tmp_path, monkeypatch):
+    """private/ is not published, so a clone has no console page: the build goes
+    on without it and drops a console.html an earlier build left behind."""
+    build = tmp_path / "mobile_build"
+    build.mkdir()
+    (build / "console.html").write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(build_mobile, "BUILD_DIR", build)
+    monkeypatch.setattr(build_mobile, "CONSOLE_SRC", tmp_path / "absent" / "index.html")
+    monkeypatch.setattr(sys, "argv", ["build_mobile.py", "--version", "0.9.999"])
+    assert build_mobile.main() == 0
+    assert (build / "index.html").exists()
+    assert not (build / "console.html").exists()
 
 
 def test_console_about_row_markup(doc):

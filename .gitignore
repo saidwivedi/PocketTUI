@@ -53,3 +53,5 @@ explore/
 /icon-512.png
 # Local working notes for this checkout, not part of the shipped project.
 /CLAUDE.md
+# Usage-analytics server code and the founder's console: deployed from here, not published.
+/private/

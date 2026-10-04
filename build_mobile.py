@@ -4,7 +4,8 @@
   - Assembles src/mobile/ into the single-file mobile_app.html.
   - Substitutes __BACKEND_URL__ -> chosen backend.
   - Emits index.html, sw.js, manifest.json, the icons and vendor/, plus the
-    usage console page (console.html, copied from src/console/ unchanged).
+    usage console page (console.html, copied unchanged from private/console/,
+    which is not in the public repo; a public clone builds without it).
 
 The app source lives split under src/mobile/ (markup skeleton, the pre-paint
 theme script, the stylesheet, and the main script in ordered fragments). The
@@ -46,8 +47,9 @@ SRC_DIR = HERE / "src" / "mobile"
 ASSETS_DIR = HERE / "assets"
 VENDOR_DIR = HERE / "vendor"
 # The founder's usage console: one static page, published beside the shell but
-# never part of the runtime set, so a self-hosted install does not carry it.
-CONSOLE_SRC = HERE / "src" / "console" / "index.html"
+# never part of the runtime set, so a self-hosted install does not carry it. It
+# lives in the gitignored private/ directory, so a public clone has no copy.
+CONSOLE_SRC = HERE / "private" / "console" / "index.html"
 BACKEND_FILE = HERE / ".backend_url"
 
 # The assembled runtime copies, written at the repo root because that is the
@@ -209,7 +211,7 @@ def main() -> int:
         backend = args.backend.strip()
 
     for path in (SRC_DIR / "index.src.html", SRC_DIR / "sw.js", ASSETS_DIR,
-                 VENDOR_DIR, CONSOLE_SRC):
+                 VENDOR_DIR):
         if not path.exists():
             print(f"ERROR: {path} not found", file=sys.stderr)
             return 1
@@ -250,7 +252,11 @@ def main() -> int:
         shutil.copy(ASSETS_DIR / icon, BUILD_DIR / icon)
     shutil.copytree(VENDOR_DIR, BUILD_DIR / "vendor", dirs_exist_ok=True)
     # Copied as bytes: no placeholder substitution, nothing stamped into it.
-    shutil.copyfile(CONSOLE_SRC, BUILD_DIR / "console.html")
+    if CONSOLE_SRC.exists():
+        shutil.copyfile(CONSOLE_SRC, BUILD_DIR / "console.html")
+    else:
+        (BUILD_DIR / "console.html").unlink(missing_ok=True)
+        print(f"Note: {CONSOLE_SRC} not found, building without console.html")
 
     print(f"Built -> {BUILD_DIR}")
     print(f"Backend baked in: {backend or '(none — app asks on first run)'}")

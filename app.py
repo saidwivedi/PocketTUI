@@ -543,9 +543,9 @@ async def require_token(request: Request, call_next):
     return await call_next(request)
 
 
-# The public static shell (test.example.net/pockettui/) calls this server
-# cross-origin, so /api/sessions has to answer with CORS headers. The WebSocket
-# is unaffected — WS handshakes are not subject to CORS.
+# The hosted static shell calls this server cross-origin, so /api/sessions has
+# to answer with CORS headers. The WebSocket is unaffected — WS handshakes are
+# not subject to CORS.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
