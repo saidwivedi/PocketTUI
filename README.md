@@ -118,3 +118,9 @@ You don't have to use the hosted page: `build_mobile.py` builds the phone app in
 ## License
 
 [MIT](LICENSE) — free and open source. No account, and your terminal stays on your computer.
+
+Built with [xterm.js](https://github.com/xtermjs/xterm.js), [CodeMirror](https://codemirror.net/) and [KaTeX](https://katex.org/). Their licenses and versions are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Acknowledgements
+
+Some ideas in PocketTUI were inspired by [AgentsServer](https://github.com/ZhengyiLuo/AgentsServer) and [T3 Code](https://github.com/pingdotgg/t3code).
