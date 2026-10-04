@@ -354,6 +354,7 @@ function syncVoiceConfirm() {
 // The address was reachable but the code was wrong — send them straight back
 // to re-enter it rather than showing the generic can't-connect toast.
 function rejectToken(hint) {
+  noteActiveVerdict("auth");
   // With the sheet already open the user is where a rejection would send them,
   // and re-opening would rewrite every field from stored cfg — wiping a code
   // they are part-way through typing over a stale token's 401. Leave it alone.

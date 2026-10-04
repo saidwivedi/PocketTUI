@@ -858,6 +858,7 @@ function connect() {
     if (gen !== sockGen) { try { ws.close(); } catch (e) {} return; }
     retries = 0;
     hideConnBanner();
+    noteActiveVerdict(null);
     // Size first, so tmux paints straight into the phone's geometry. Forced:
     // a new socket knows nothing about what the terminal measures.
     sendResize(true);
@@ -980,6 +981,7 @@ function hideConnBanner() { $("conn-banner").classList.remove("show"); }
 // underneath. No command here — the banner belongs to a screen the user is
 // reading output on, and the list card is where a command to type is offered.
 function renderConnBanner(v) {
+  noteActiveVerdict(v.kind);
   $("conn-banner").querySelector(".msg").textContent = v.title;
   $("conn-banner-hint").textContent = v.hint || "";
   showConnBanner();
@@ -1028,13 +1030,14 @@ function scheduleReconnect() {
   }
   usageReconnects += 1;
   retries += 1;
-  // 0.5s → 5s, capped; only nag with a toast once it's clearly not transient.
+  // 0.5s → 5s, capped; only nag once it's clearly not transient.
   const delay = Math.min(500 * Math.pow(1.7, retries - 1), 5000);
-  if (retries === 3) toast("Reconnecting…");
-  // Six straight failures is no longer a blip — put up the banner, and ask the
-  // health descriptor what to put in it. Fire and forget: the retry below is
-  // not waiting on the answer.
-  if (retries >= 6) probeServer().then(p => renderConnBanner(classifyFailure(null, null, p)));
+  // From the third straight failure, ask the computer which way it is failing
+  // and say so (classifyDrop, 40-profiles.js): the "Reconnecting…" toast when
+  // it answers fine, the banner with the reason when it does not, the banner
+  // regardless from six on. Fire and forget: the retry below is not waiting on
+  // the answer, and the happy path never gets this far.
+  if (retries === 3 || retries >= 6) classifyDrop(retries);
   clearTimeout(retryTimer);
   // No term.reset() here: the new connection's first frame (replay or attach
   // repaint) does the wiping, so the screen stays readable through the wait.
