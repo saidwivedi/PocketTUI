@@ -123,4 +123,4 @@ Built with [xterm.js](https://github.com/xtermjs/xterm.js), [CodeMirror](https:/
 
 ## Acknowledgements
 
-Some ideas in PocketTUI were inspired by [AgentsServer](https://github.com/ZhengyiLuo/AgentsServer) and [T3 Code](https://github.com/pingdotgg/t3code).
+Some ideas in PocketTUI were inspired by [AgentsServer](https://github.com/ZhengyiLuo/AgentsServer), [T3 Code](https://github.com/pingdotgg/t3code) and [herdr](https://github.com/herdrdev/herdr).
