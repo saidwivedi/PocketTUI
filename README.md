@@ -81,7 +81,7 @@ Useful environment variables: `PORT` (default 5560), `POCKETTUI_DIR` (install di
 
 ## Privacy
 
-PocketTUI sends a small anonymous usage summary by default and never collects terminal content. If you opt in to return-visit counting, PocketTUI additionally stores a random ID in your browser.
+PocketTUI sends a small anonymous usage summary by default and never collects terminal content. The server also sends a random install ID once a day. If you opt in to return-visit counting, PocketTUI additionally stores a random ID in your browser.
 
 ### Usage statistics
 
@@ -91,7 +91,7 @@ By default, PocketTUI collects:
 - Device type
 - Session duration
 - Session and feature counts
-- Country
+- Country and city
 
 PocketTUI does **not** collect:
 
@@ -109,7 +109,19 @@ If you opt in, PocketTUI stores a random ID in your browser so we can determine 
 
 The ID contains no personal or terminal information. Turning return-visit counting off deletes it.
 
-Usage data is stored in Cloudflare's EU region and deleted after 400 days. The exact fields are in [`src/mobile/js/45-usage.js`](src/mobile/js/45-usage.js), the app code that sends them; installer and tarball downloads are counted server-side.
+### Server install ID
+
+Each install of the server gets a random ID, made when you install and kept across updates. Once a day the server sends it to pockettui.com with:
+
+- Server version
+- Operating system family (Linux or macOS)
+- CPU type
+
+The installer adds the same ID to its download. Country and city are recorded with it; the IP address is not. The ID is random and says nothing about your computer.
+
+To turn this off, set `POCKETTUI_NO_PING=1` when you install or update. The installer then leaves a `.no_ping` file in the install folder, which the server and later updates obey; creating that file yourself does the same.
+
+Usage data is stored in Cloudflare's EU region and deleted after 400 days. The exact fields are in [`src/mobile/js/45-usage.js`](src/mobile/js/45-usage.js), the app code that sends them; the daily check is `ping_once` in [`app.py`](app.py); installer and tarball downloads are counted server-side.
 
 ## Self-hosting the app shell
 

@@ -123,9 +123,11 @@ async def lifespan(app: FastAPI):
     no handler of its own to notice the shutdown.
     """
     task = asyncio.create_task(watcher_loop())
+    ping_task = asyncio.create_task(ping_loop())
     try:
         yield
     finally:
+        ping_task.cancel()
         task.cancel()
         try:
             await task
@@ -12006,6 +12008,100 @@ def rotate_token() -> None:
     print(f"Stored in {TOKEN_PATH} (mode 0600).")
     print("Every paired phone must be re-paired with this token; the old one no "
           "longer works.")
+
+
+# ---------------------------------------------------------------------------
+# Daily install check
+# ---------------------------------------------------------------------------
+# Once per UTC day the server tells pockettui.com that this install is running:
+# a random install id, the version, and the platform family and CPU type.
+# Nothing else is sent, and nothing about the machine goes into the id.
+# Switched off by POCKETTUI_NO_PING=1 or by a .no_ping file in the install dir
+# (install.sh writes the file when it runs with the variable set), so the
+# choice outlives a service that starts without the variable.
+INSTALL_ID_PATH = HERE / ".install_id"
+NO_PING_PATH = HERE / ".no_ping"
+# The last UTC day a check went through, so a restart does not send a second.
+PING_DAY_PATH = HERE / ".ping_day"
+PING_URL = "https://pockettui.com/api/ping"
+PING_TIMEOUT_S = 5
+# How often the loop wakes to see whether the UTC day has turned.
+PING_EVERY_S = 3600
+INSTALL_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def ping_opted_out() -> bool:
+    return os.environ.get("POCKETTUI_NO_PING", "") == "1" or NO_PING_PATH.exists()
+
+
+def ensure_install_id() -> str:
+    """This install's id, minted on first need; "" when it cannot be stored.
+
+    An id that cannot be written is not sent either: a fresh one every day
+    would count one computer as many.
+    """
+    try:
+        cur = INSTALL_ID_PATH.read_text(encoding="utf-8").strip()
+        if INSTALL_ID_RE.match(cur):
+            return cur
+    except OSError:
+        pass
+    new = secrets.token_hex(16)
+    tmp = INSTALL_ID_PATH.with_name(INSTALL_ID_PATH.name + ".tmp")
+    try:
+        tmp.write_text(new + "\n", encoding="utf-8")
+        os.replace(tmp, INSTALL_ID_PATH)
+    except OSError:
+        return ""
+    return new
+
+
+def ping_payload(install_id: str) -> dict:
+    os_name = {"linux": "linux", "darwin": "mac"}.get(sys.platform, "other")
+    machine = os.uname().machine.lower()
+    arch = {"x86_64": "x86_64", "amd64": "x86_64",
+            "arm64": "arm64", "aarch64": "arm64"}.get(machine, "other")
+    return {"id": install_id, "v": installed_version(), "os": os_name, "arch": arch}
+
+
+def send_ping(payload: dict) -> bool:
+    req = urllib.request.Request(
+        PING_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=PING_TIMEOUT_S) as r:
+            return 200 <= r.status < 300
+    except Exception:
+        return False
+
+
+def ping_once(today: str | None = None) -> bool:
+    """Send today's check unless it is off or already sent. True if sent."""
+    if ping_opted_out():
+        return False
+    today = today or time.strftime("%Y-%m-%d", time.gmtime())
+    try:
+        if PING_DAY_PATH.read_text(encoding="utf-8").strip() == today:
+            return False
+    except OSError:
+        pass
+    install_id = ensure_install_id()
+    if not install_id or not send_ping(ping_payload(install_id)):
+        return False
+    try:
+        PING_DAY_PATH.write_text(today + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    return True
+
+
+async def ping_loop() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(ping_once)
+        except Exception:
+            pass
+        await asyncio.sleep(PING_EVERY_S)
 
 
 def main() -> None:

@@ -24,6 +24,7 @@
 #   POCKETTUI_SERVICE_NAME  systemd unit / launchd label  (default: pockettui)
 #   POCKETTUI_BASE_URL where install.sh, the tarball and version.txt live
 #   POCKETTUI_BIN      directory for the `pockettui` command (default: ~/.local/bin)
+#   POCKETTUI_NO_PING  1 to stop the install id and the daily check (README, Privacy)
 #   PORT               port to serve on    (default: 5560)
 
 set -eu
@@ -594,11 +595,37 @@ if [[ "$FRESH_DIR" == "1" ]]; then
 fi
 OLD_VERSION="${OLD_VERSION:-unknown}"
 
+# The install id: 32 random hex characters in $INSTALL_DIR/.install_id, made
+# here on a fresh install (or the first update after ids existed) and kept by
+# every update after. The tarball fetch carries it, and the server sends it in
+# its daily check, so pockettui.com can count computers rather than downloads.
+# POCKETTUI_NO_PING=1 turns both off and leaves a .no_ping file behind, so the
+# choice holds for the server and for every later update.
+INSTALL_ID=""
+install_id_setup() {
+    local f="$INSTALL_DIR/.install_id" id=""
+    if [[ "${POCKETTUI_NO_PING:-0}" == "1" ]]; then
+        : > "$INSTALL_DIR/.no_ping" 2>/dev/null || true
+        return 0
+    fi
+    [[ -e "$INSTALL_DIR/.no_ping" ]] && return 0
+    if [[ -r "$f" ]]; then
+        id="$(tr -d ' \r\n' < "$f" 2>/dev/null || true)"
+    fi
+    if ! [[ "$id" =~ ^[0-9a-f]{32}$ ]]; then
+        id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || true)"
+        [[ "$id" =~ ^[0-9a-f]{32}$ ]] || return 0
+        printf '%s\n' "$id" > "$f" 2>/dev/null || return 0
+    fi
+    INSTALL_ID="$id"
+}
+
 if [[ "$LOCAL_CHECKOUT" == "1" ]]; then
     step_quiet "Copying source from this checkout"
     vsay "  $SRC_DIR"
     mkdir -p "$INSTALL_DIR"
     [[ "$FRESH_DIR" == "1" ]] && note "created $INSTALL_DIR"
+    install_id_setup
     # Only the files the backend actually runs, mirroring what the tarball ships.
     # Absent ones are skipped rather than fatal. The front end is not in this
     # list: a checkout keeps it split under src/ and its icons in assets/, so
@@ -617,6 +644,7 @@ else
     step_quiet "Downloading source"
     mkdir -p "$INSTALL_DIR"
     [[ "$FRESH_DIR" == "1" ]] && note "created $INSTALL_DIR"
+    install_id_setup
     # `mktemp -t X.tar.gz` means different things to GNU and BSD mktemp (BSD
     # appends its own suffix to the template, GNU treats the whole thing as one),
     # so name the file in full ourselves and let mktemp fill only the X's.
@@ -629,7 +657,7 @@ else
     if [[ "$UPDATE" == "1" ]]; then
         TARBALL_MODE=update
     fi
-    curl -fsSL "$TARBALL_URL?m=$TARBALL_MODE" -o "$TMP_TGZ" || die "could not download $TARBALL_URL"
+    curl -fsSL "$TARBALL_URL?m=$TARBALL_MODE${INSTALL_ID:+&i=$INSTALL_ID}" -o "$TMP_TGZ" || die "could not download $TARBALL_URL"
     tar -xzf "$TMP_TGZ" -C "$INSTALL_DIR" || die "could not extract the tarball"
     vsay "  -> $INSTALL_DIR"
 fi
