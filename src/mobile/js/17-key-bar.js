@@ -273,6 +273,10 @@ function composeSend(keepCaret) {
   const ta = $("compose-text");
   const text = ta.value;
   if (!text || !term) return;
+  // On touch, a send from a focused box is a typed message, and the keyboard
+  // goes away with it so the terminal's reply is not hidden behind it. A
+  // dictated send has no keyboard up, so this changes nothing for the mic.
+  const typed = touchOnly() && document.activeElement === ta;
   term.paste(text);
   send("\r");
   // The edit the user made to a dictated transcript before sending it is the
@@ -298,16 +302,16 @@ function composeSend(keepCaret) {
   // keyboard reads the blur as the field going away and closes — which the
   // refocus below would then reopen, a whole keyboard animation on every
   // message sent. Everywhere else the plain assignment sticks.
-  if (a2hsPlatform() === "ios") ta.blur();
+  if (typed || a2hsPlatform() === "ios") ta.blur();
   ta.value = "";
   recogText = "";
   composeGrow();
   // The strip stays for the next message, the way any messaging app's does:
   // sending one line is rarely the end of the errand, and closing here would
   // cost a tap on the terminal and a keyboard animation to say the next one.
-  // The caret goes straight back into the emptied box, for a keyboard send;
-  // see keepCaret.
-  if (keepCaret) ta.focus();
+  // The caret goes straight back into the emptied box for a keyboard send on
+  // the laptop (see keepCaret); on touch a typed send drops the keyboard instead.
+  if (keepCaret && !typed) ta.focus();
   // The blur above scheduled a close, on the reading that a keyboard leaving is
   // the strip's cue to go. The refocus is the answer that pending close was
   // waiting for, and it is the same cancel setCompose() makes for a deliberate
