@@ -15,6 +15,7 @@ restarted with the default KillMode, taking every tmux session with it.
 """
 
 import os
+import re
 import pty
 import shutil
 import subprocess
@@ -1244,6 +1245,16 @@ def curl_urls(tmp_path):
 ])
 def test_the_tarball_fetch_says_install_or_update(tmp_path, fresh, update, mode):
     inst = install_dir(tmp_path)
+    r = tarball_run(tmp_path, inst, fresh, update)
+    assert r.returncode == 0, r.stderr
+    (url,) = curl_urls(tmp_path)
+    install_id = (inst / ".install_id").read_text().strip()
+    assert re.fullmatch(r"[0-9a-f]{32}", install_id)
+    assert url == f"https://pockettui.example.net/pockettui.tar.gz?m={mode}&i={install_id}"
+    assert "TARBALL_URL=https://pockettui.example.net/pockettui.tar.gz\n" in r.stdout
+
+
+def tarball_run(tmp_path, inst, fresh="0", update="1", no_ping="0"):
     body = (
         f'INSTALL_DIR="{inst}"\n'
         'TARBALL_URL="https://pockettui.example.net/pockettui.tar.gz"\n'
@@ -1252,10 +1263,38 @@ def test_the_tarball_fetch_says_install_or_update(tmp_path, fresh, update, mode)
         + "fi\n"
         'printf "TARBALL_URL=%s\\n" "$TARBALL_URL"\n'
     )
-    r = run_bash(tmp_path, body, env=recording_curl(tmp_path), name="tarball.sh")
+    env = dict(recording_curl(tmp_path), POCKETTUI_NO_PING=no_ping)
+    return run_bash(tmp_path, body, env=env, name="tarball.sh")
+
+
+def test_the_install_id_is_kept_across_updates(tmp_path):
+    inst = install_dir(tmp_path)
+    (inst / ".install_id").write_text("0123456789abcdef0123456789abcdef\n")
+    r = tarball_run(tmp_path, inst)
     assert r.returncode == 0, r.stderr
-    assert curl_urls(tmp_path) == [f"https://pockettui.example.net/pockettui.tar.gz?m={mode}"]
-    assert "TARBALL_URL=https://pockettui.example.net/pockettui.tar.gz\n" in r.stdout
+    assert curl_urls(tmp_path) == [
+        "https://pockettui.example.net/pockettui.tar.gz?m=update&i=0123456789abcdef0123456789abcdef"]
+    assert (inst / ".install_id").read_text() == "0123456789abcdef0123456789abcdef\n"
+
+
+def test_no_ping_leaves_the_id_out_and_is_remembered(tmp_path):
+    inst = install_dir(tmp_path)
+    (inst / ".install_id").write_text("0123456789abcdef0123456789abcdef\n")
+    r = tarball_run(tmp_path, inst, no_ping="1")
+    assert r.returncode == 0, r.stderr
+    assert (inst / ".no_ping").exists()
+    # A later update without the variable still leaves it out: the file holds.
+    r = tarball_run(tmp_path, inst, no_ping="0")
+    assert r.returncode == 0, r.stderr
+    assert curl_urls(tmp_path) == ["https://pockettui.example.net/pockettui.tar.gz?m=update"] * 2
+
+
+def test_no_ping_on_a_fresh_install_mints_no_id(tmp_path):
+    inst = install_dir(tmp_path)
+    r = tarball_run(tmp_path, inst, fresh="1", update="0", no_ping="1")
+    assert r.returncode == 0, r.stderr
+    assert curl_urls(tmp_path) == ["https://pockettui.example.net/pockettui.tar.gz?m=install"]
+    assert not (inst / ".install_id").exists()
 
 
 def test_the_wrappers_installer_refetch_says_update(tmp_path):

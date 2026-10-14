@@ -16,8 +16,8 @@
   },
   "sources": [
    "src/mobile/js/06-session-list.js:134-347",
-   "app.py:1521-1523",
-   "app.py:702-731"
+   "app.py:1523-1525",
+   "app.py:704-733"
   ],
   "shot": "rail-states",
   "show": false
@@ -39,7 +39,7 @@
   },
   "sources": [
    "src/mobile/js/06-session-list.js:250-263",
-   "app.py:711-716"
+   "app.py:713-718"
   ],
   "shot": "rail-states",
   "show": true
@@ -79,7 +79,7 @@
   },
   "sources": [
    "src/mobile/js/06-session-list.js:450-535",
-   "app.py:3133-3169"
+   "app.py:3135-3171"
   ],
   "shot": "new-session",
   "show": false
@@ -141,8 +141,8 @@
   },
   "sources": [
    "src/mobile/js/06-session-list.js:359-411",
-   "app.py:1578-1601",
-   "app.py:1631-1680"
+   "app.py:1580-1603",
+   "app.py:1633-1682"
   ],
   "shot": "session-sheet",
   "show": true
@@ -160,7 +160,7 @@
   "agent": null,
   "sources": [
    "src/mobile/js/06-session-list.js:507-725",
-   "app.py:1638-1662"
+   "app.py:1640-1664"
   ],
   "shot": null,
   "show": false
@@ -182,7 +182,7 @@
   },
   "sources": [
    "src/mobile/js/06-session-list.js:4-20,413-444",
-   "app.py:1604-1628"
+   "app.py:1606-1630"
   ],
   "shot": "session-sheet",
   "show": true
@@ -204,8 +204,8 @@
   },
   "sources": [
    "app.py:1-17",
-   "app.py:984-1010",
-   "app.py:9811-9847"
+   "app.py:986-1012",
+   "app.py:9813-9849"
   ],
   "shot": "rail-states",
   "show": true
@@ -224,8 +224,8 @@
   "sources": [
    "src/mobile/js/09-image-viewer.js:520-536,761-959",
    "src/mobile/js/09-image-viewer.js:790-813",
-   "app.py:9864-9870",
-   "app.py:9887-9950"
+   "app.py:9866-9872",
+   "app.py:9889-9952"
   ],
   "shot": null,
   "show": false
@@ -265,7 +265,7 @@
   "sources": [
    "src/mobile/js/38-scrollback-search.js:1-196",
    "src/mobile/js/31-wide-layout.js:318-323",
-   "app.py:5142-5192"
+   "app.py:5144-5194"
   ],
   "shot": "search",
   "show": true
@@ -359,8 +359,8 @@
   },
   "sources": [
    "src/mobile/js/32-image-paste.js:1-90,144-190",
-   "app.py:8660-8661",
-   "app.py:8705-8755"
+   "app.py:8662-8663",
+   "app.py:8707-8757"
   ],
   "shot": null,
   "show": true
@@ -382,7 +382,7 @@
   },
   "sources": [
    "src/mobile/js/32-image-paste.js:192-317",
-   "app.py:8766-8837"
+   "app.py:8768-8839"
   ],
   "shot": null,
   "show": true
@@ -619,7 +619,7 @@
   "hidden": 3,
   "agent": null,
   "sources": [
-   "app.py:2833-2933",
+   "app.py:2835-2935",
    "src/mobile/js/19-voice-capture.js",
    "src/mobile/js/17-key-bar.js:44-45"
   ],
@@ -639,7 +639,7 @@
   "agent": null,
   "sources": [
    "resolver.py:1-20",
-   "app.py:2873-2933"
+   "app.py:2875-2935"
   ],
   "shot": null,
   "show": true
@@ -658,7 +658,7 @@
   "sources": [
    "src/mobile/js/05-settings.js:297-324,480-584",
    "src/mobile/index.src.html:1289-1313",
-   "app.py:2834-2847"
+   "app.py:2836-2849"
   ],
   "shot": "settings-dictation",
   "show": false
@@ -678,7 +678,7 @@
    "src/mobile/js/19-voice-capture.js:190-204",
    "src/mobile/js/17-key-bar.js:280-286",
    "src/mobile/js/05-settings.js:619-679",
-   "app.py:3078-3130"
+   "app.py:3080-3132"
   ],
   "shot": "settings-dictation",
   "show": true
@@ -825,7 +825,7 @@
   "sources": [
    "src/mobile/js/28-file-explorer.js:2610",
    "src/mobile/js/17-key-bar.js:46-50",
-   "app.py:3682-3729"
+   "app.py:3684-3731"
   ],
   "shot": "explorer",
   "show": true
@@ -871,7 +871,7 @@
   "sources": [
    "src/mobile/js/08-links.js:240-254,410-534",
    "src/mobile/js/28-file-explorer.js:33",
-   "app.py:4178-4207"
+   "app.py:4180-4209"
   ],
   "shot": null,
   "show": false
@@ -930,8 +930,8 @@
   "sources": [
    "src/mobile/js/31-wide-layout.js:114-126",
    "src/mobile/js/28-file-explorer.js:852",
-   "app.py:1526-1540",
-   "app.py:786-829"
+   "app.py:1528-1542",
+   "app.py:788-831"
   ],
   "shot": "explorer",
   "show": true
@@ -952,9 +952,9 @@
    "contract": null
   },
   "sources": [
-   "app.py:741-775",
-   "app.py:778-829",
-   "app.py:3305-3323"
+   "app.py:743-777",
+   "app.py:780-831",
+   "app.py:3307-3325"
   ],
   "shot": null,
   "show": false
@@ -991,8 +991,8 @@
   "hidden": 2,
   "agent": null,
   "sources": [
-   "app.py:4370-4500",
-   "app.py:1378-1462"
+   "app.py:4372-4502",
+   "app.py:1380-1464"
   ],
   "shot": "explorer-grid",
   "show": true
@@ -1010,8 +1010,8 @@
   "agent": null,
   "sources": [
    "src/mobile/js/28-file-explorer.js:1683-1800",
-   "app.py:3682-3729",
-   "app.py:4778-4843"
+   "app.py:3684-3731",
+   "app.py:4780-4845"
   ],
   "shot": "explorer-branch",
   "show": true
@@ -1046,7 +1046,7 @@
   "agent": null,
   "sources": [
    "src/mobile/js/28-file-explorer.js:2618-2619",
-   "app.py:3816-3831"
+   "app.py:3818-3833"
   ],
   "shot": "explorer-add",
   "show": true
@@ -1063,7 +1063,7 @@
   "hidden": 2,
   "agent": null,
   "sources": [
-   "app.py:3832-3854"
+   "app.py:3834-3856"
   ],
   "shot": "explorer-actions",
   "show": true
@@ -1080,7 +1080,7 @@
   "hidden": 1,
   "agent": null,
   "sources": [
-   "app.py:3855-3882"
+   "app.py:3857-3884"
   ],
   "shot": "explorer-actions",
   "show": false
@@ -1098,7 +1098,7 @@
   "agent": null,
   "sources": [
    "src/mobile/js/28-file-explorer.js:2620",
-   "app.py:3883-3920"
+   "app.py:3885-3922"
   ],
   "shot": "explorer-add",
   "show": true
@@ -1117,7 +1117,7 @@
   "hidden": 3,
   "agent": null,
   "sources": [
-   "app.py:3883-3920"
+   "app.py:3885-3922"
   ],
   "shot": null,
   "show": false
@@ -1138,7 +1138,7 @@
   "sources": [
    "src/mobile/js/28-file-explorer.js:261-319",
    "src/mobile/js/28-file-explorer.js:2247-2352",
-   "app.py:3891-3944"
+   "app.py:3893-3946"
   ],
   "shot": null,
   "show": false
@@ -1157,7 +1157,7 @@
   "hidden": 4,
   "agent": null,
   "sources": [
-   "app.py:3832-3854"
+   "app.py:3834-3856"
   ],
   "shot": "explorer-drag",
   "show": true
@@ -1174,7 +1174,7 @@
   "hidden": 1,
   "agent": null,
   "sources": [
-   "app.py:4056-4177"
+   "app.py:4058-4179"
   ],
   "shot": "explorer-actions",
   "show": false
@@ -1191,8 +1191,8 @@
   "hidden": 3,
   "agent": null,
   "sources": [
-   "app.py:4056-4098",
-   "app.py:1378-1462"
+   "app.py:4058-4100",
+   "app.py:1380-1464"
   ],
   "shot": "explorer-actions",
   "show": true
@@ -1264,7 +1264,7 @@
   "agent": null,
   "sources": [
    "src/mobile/js/29-editor.js:244",
-   "app.py:3730-3815"
+   "app.py:3732-3817"
   ],
   "shot": "editor",
   "show": true
@@ -1285,7 +1285,7 @@
    "contract": null
   },
   "sources": [
-   "app.py:3770-3815"
+   "app.py:3772-3817"
   ],
   "shot": "editor",
   "show": false
@@ -1367,8 +1367,8 @@
   "sources": [
    "src/mobile/js/37-git-diff.js",
    "src/mobile/js/31-wide-layout.js:325-338",
-   "app.py:4739-4777",
-   "app.py:4844-4931"
+   "app.py:4741-4779",
+   "app.py:4846-4933"
   ],
   "shot": "diff",
   "show": true
@@ -1385,7 +1385,7 @@
   "hidden": 2,
   "agent": null,
   "sources": [
-   "app.py:4739-4777"
+   "app.py:4741-4779"
   ],
   "shot": "diff-untracked",
   "show": false
@@ -1402,7 +1402,7 @@
   "hidden": 1,
   "agent": null,
   "sources": [
-   "app.py:4932-5000"
+   "app.py:4934-5002"
   ],
   "shot": "diff",
   "show": false
@@ -1419,7 +1419,7 @@
   "hidden": 1,
   "agent": null,
   "sources": [
-   "app.py:4932-5000"
+   "app.py:4934-5002"
   ],
   "shot": "diff",
   "show": false
@@ -1437,7 +1437,7 @@
   "agent": null,
   "sources": [
    "src/mobile/js/37-git-diff.js:133",
-   "app.py:4932-5000"
+   "app.py:4934-5002"
   ],
   "shot": "diff",
   "show": true
@@ -1681,7 +1681,7 @@
   },
   "sources": [
    "src/mobile/js/08-links.js:342-408",
-   "app.py:5350-5452"
+   "app.py:5352-5454"
   ],
   "shot": null,
   "show": true
@@ -1726,7 +1726,7 @@
   },
   "sources": [
    "src/mobile/js/28-file-explorer.js:98,1864",
-   "app.py:4502-4560"
+   "app.py:4504-4562"
   ],
   "shot": null,
   "show": true
@@ -1747,8 +1747,8 @@
   "sources": [
    "src/mobile/js/17-key-bar.js:51-55",
    "src/mobile/js/42-browser.js:3240-3272",
-   "app.py:7871-7960",
-   "app.py:8181-8395"
+   "app.py:7873-7962",
+   "app.py:8183-8397"
   ],
   "shot": "browser",
   "show": true
@@ -1773,7 +1773,7 @@
   "sources": [
    "src/mobile/js/43-full-browser.js",
    "src/mobile/js/42-browser.js:324",
-   "app.py:9727",
+   "app.py:9729",
    "chromium.py"
   ],
   "shot": "browser",
@@ -1791,7 +1791,7 @@
   "hidden": 4,
   "agent": null,
   "sources": [
-   "app.py:7871-7899"
+   "app.py:7873-7901"
   ],
   "shot": "browser",
   "show": false
@@ -1827,7 +1827,7 @@
   "hidden": 2,
   "agent": null,
   "sources": [
-   "app.py:8031-8063"
+   "app.py:8033-8065"
   ],
   "shot": "browser",
   "show": false
@@ -1866,7 +1866,7 @@
   "agent": null,
   "sources": [
    "src/mobile/js/42-browser.js:1420-1460",
-   "app.py:8396-8450"
+   "app.py:8398-8452"
   ],
   "shot": "browser",
   "show": false
@@ -1926,7 +1926,7 @@
   "agent": null,
   "sources": [
    "src/mobile/js/42-browser.js:1642",
-   "app.py:7871-8400"
+   "app.py:7873-8402"
   ],
   "shot": null,
   "show": false
@@ -2005,7 +2005,7 @@
   "agent": null,
   "sources": [
    "src/mobile/js/43-full-browser.js:1186-1254",
-   "app.py:8163-8180"
+   "app.py:8165-8182"
   ],
   "shot": null,
   "show": false
@@ -2067,7 +2067,7 @@
    "src/mobile/index.src.html:1271",
    "src/mobile/js/05-settings.js:605-614",
    "src/mobile/js/42-browser.js:320",
-   "app.py:8092-8125"
+   "app.py:8094-8127"
   ],
   "shot": "settings-browser",
   "show": false
@@ -2146,9 +2146,9 @@
   },
   "sources": [
    "app.py:76",
-   "app.py:144-197",
-   "app.py:296-368",
-   "app.py:507-539",
+   "app.py:146-199",
+   "app.py:298-370",
+   "app.py:509-541",
    "install.sh:1265-1298"
   ],
   "shot": "settings-connection",
@@ -2167,7 +2167,7 @@
   "agent": null,
   "sources": [
    "src/mobile/js/05-settings.js:85-104,683-707",
-   "app.py:173-186"
+   "app.py:175-188"
   ],
   "shot": null,
   "show": false
@@ -2204,7 +2204,7 @@
   "sources": [
    "src/mobile/js/05-settings.js:240-285",
    "src/mobile/index.src.html:1279-1286",
-   "app.py:1491-1518",
+   "app.py:1493-1520",
    "src/mobile/js/40-profiles.js:305-322"
   ],
   "shot": "settings-pair",
@@ -2317,7 +2317,7 @@
   },
   "sources": [
    "src/mobile/js/36-server-version.js:80-113,204-237",
-   "app.py:1463-1490"
+   "app.py:1465-1492"
   ],
   "shot": "settings-about",
   "show": false
@@ -2340,7 +2340,7 @@
   "sources": [
    "src/mobile/js/36-server-version.js:229-328,377-418",
    "src/mobile/index.src.html:418,1493-1498",
-   "app.py:3225-3300"
+   "app.py:3227-3302"
   ],
   "shot": "settings-about",
   "show": true
@@ -2358,7 +2358,7 @@
   "agent": null,
   "sources": [
    "src/mobile/js/36-server-version.js:340-372,420-442",
-   "app.py:3277-3300"
+   "app.py:3279-3302"
   ],
   "shot": "update-failed",
   "show": false
@@ -2381,7 +2381,7 @@
   "sources": [
    "src/mobile/js/39-type-command.js:1-64",
    "src/mobile/js/06-session-list.js:185-203",
-   "app.py:3172-3222"
+   "app.py:3174-3224"
   ],
   "shot": "update-failed",
   "show": true
@@ -2447,9 +2447,9 @@
    "contract": null
   },
   "sources": [
-   "app.py:10170-10250",
-   "app.py:10359-10491",
-   "app.py:10605-10780",
+   "app.py:10172-10252",
+   "app.py:10361-10493",
+   "app.py:10607-10782",
    "src/mobile/js/06-session-list.js:134-347"
   ],
   "shot": "rail-states",
@@ -2490,7 +2490,7 @@
   "sources": [
    "src/mobile/js/06-session-list.js:22-36,317-324",
    "src/mobile/js/30-notify.js:82-115",
-   "app.py:11130-11158"
+   "app.py:11132-11160"
   ],
   "shot": "rail-states",
   "show": true
@@ -2512,9 +2512,9 @@
   },
   "sources": [
    "src/mobile/js/30-notify.js:10-80",
-   "app.py:10565-10602",
-   "app.py:10640-10645",
-   "app.py:11059-11127"
+   "app.py:10567-10604",
+   "app.py:10642-10647",
+   "app.py:11061-11129"
   ],
   "shot": null,
   "show": true
@@ -2535,8 +2535,8 @@
    "contract": null
   },
   "sources": [
-   "app.py:11020-11040",
-   "app.py:11079"
+   "app.py:11022-11042",
+   "app.py:11081"
   ],
   "shot": null,
   "show": false
@@ -2735,7 +2735,7 @@
   "id": "hood.privacy-direct",
   "group": "Under the hood",
   "title": "Your terminal stays between your devices",
-  "outcome": "Your device talks straight to your computer; sessions, keystrokes and files never pass through PocketTUI's servers. The app sends one anonymous usage summary per use, with no hostnames, paths or terminal text, and the Share anonymous usage statistics switch in Settings, About turns it off.",
+  "outcome": "Your device talks straight to your computer; sessions, keystrokes and files never pass through PocketTUI's servers. The app sends one anonymous usage summary per use, with no hostnames, paths or terminal text, and the Share anonymous usage statistics switch in Settings, About turns it off. The server sends a random install id with its version, OS and CPU type once a day; POCKETTUI_NO_PING=1 turns that off.",
   "where": "Automatic",
   "surface": "both",
   "gates": [],
@@ -2744,9 +2744,10 @@
   "agent": null,
   "sources": [
    "app.py:1-17",
-   "app.py:545-548",
+   "app.py:547-550",
    "functions/api/report.js:1-11",
-   "src/mobile/js/45-usage.js:1-20"
+   "src/mobile/js/45-usage.js:1-20",
+   "app.py:12013-12104"
   ],
   "shot": null,
   "show": true
@@ -2767,8 +2768,8 @@
    "contract": "GET /api/version  -  -> {version, host, capabilities:{<flag>: bool}}"
   },
   "sources": [
-   "app.py:1378-1462",
-   "app.py:1463-1490"
+   "app.py:1380-1464",
+   "app.py:1465-1492"
   ],
   "shot": null,
   "show": false
@@ -2789,7 +2790,7 @@
    "contract": "GET /.well-known/pockettui  (no token)  -> {product:\"pockettui\", version}"
   },
   "sources": [
-   "app.py:1268-1283"
+   "app.py:1270-1285"
   ],
   "shot": null,
   "show": false
@@ -2829,7 +2830,7 @@
   },
   "sources": [
    "src/mobile/js/02-debug-log.js:42-80",
-   "app.py:8847-8866"
+   "app.py:8849-8868"
   ],
   "shot": null,
   "show": false
@@ -2938,7 +2939,7 @@
   "hidden": 2,
   "agent": null,
   "sources": [
-   "app.py:1284-1324",
+   "app.py:1286-1326",
    "app.py:104-106",
    "src/mobile/js/03-a2hs-hint.js:1-17",
    "src/mobile/js/05-settings.js:160-168"
@@ -2958,7 +2959,7 @@
   "hidden": 3,
   "agent": null,
   "sources": [
-   "app.py:1252-1263",
+   "app.py:1254-1265",
    "build_mobile.py"
   ],
   "shot": null,
@@ -2997,8 +2998,8 @@
    "contract": null
   },
   "sources": [
-   "app.py:1739-1745",
-   "app.py:2727-2769"
+   "app.py:1741-1747",
+   "app.py:2729-2771"
   ],
   "shot": null,
   "show": false

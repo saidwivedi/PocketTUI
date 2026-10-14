@@ -24,3 +24,11 @@ tmux top touch tree uniq vim wc wget which xargs zsh
 @pytest.fixture(autouse=True)
 def pinned_path_commands(monkeypatch):
     monkeypatch.setattr(R, "path_commands", lambda deadline=0.0: list(PATH_COMMANDS))
+
+
+# The server's daily install check posts to pockettui.com. No test may reach
+# the network, and a server started by a test (in process or as a child, which
+# inherits the environment) would otherwise send one.
+@pytest.fixture(autouse=True)
+def no_install_check(monkeypatch):
+    monkeypatch.setenv("POCKETTUI_NO_PING", "1")

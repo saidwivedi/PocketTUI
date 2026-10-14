@@ -44,6 +44,11 @@ voice/
 # serving right now (app.py) and how the last update went (install.sh).
 runtime.json
 update-state.json
+# The install id, the daily check's last day and its opt-out (app.py, install.sh).
+.install_id
+.install_id.tmp
+.ping_day
+.no_ping
 explore/
 # Assembled by build_mobile.py from src/mobile/. The runtime layout is flat, so
 # these live at the root even though their source is split under src/.
