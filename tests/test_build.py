@@ -1247,6 +1247,103 @@ console.log(JSON.stringify({{ prevented, stopped, during, after, dbgLines }}));
                 if l.startswith("tap: mousedown focus held")]) == (1 if held else 0)
 
 
+def _keyboard_geometry(doc):
+    """The soft-keyboard geometry fragment, from its first declaration to the
+    banner of the fragment after it."""
+    at = doc.index("\nlet fullViewH = 0;") + 1
+    return doc[at:doc.index("\n// " + "=" * 60 + "\n", at) + 1]
+
+
+# Each case is (focus before, focus after, relatedTarget is a field, keyboard
+# still up) -> whether the screen stays pinned through the focusout. A double
+# tap moves the caret from the box to xterm's textarea (and a strip tap the
+# other way) with the keyboard up the whole time; only a focusout to nothing
+# is the keyboard leaving.
+FOCUS_HOP_CASES = [
+    ("double tap: box to xterm", "compose", "term", True, True),
+    ("strip tap: xterm to box", "term", "compose", True, True),
+    ("dismissal: box to nothing", "compose", None, False, False),
+    ("dismissal: xterm to nothing", "term", None, False, False),
+]
+
+
+@pytest.mark.parametrize("name,start,end,kept_up,pinned", FOCUS_HOP_CASES,
+                         ids=[c[0] for c in FOCUS_HOP_CASES])
+def test_a_focus_hop_between_fields_keeps_the_keyboard_geometry(doc, tmp_path, name,
+                                                                start, end, kept_up,
+                                                                pinned):
+    """Run rather than read: during focusout the caret is in neither field
+    (activeElement is the body, as in WebKit and Blink), so reading the
+    geometry there called the keyboard down on every box-to-xterm double tap,
+    unpinned the screen and refit the grid to full height until the 300 ms
+    re-read pinned it again: the strip and key bar dropped behind the keyboard
+    and came back. A hop whose relatedTarget is a field keeps the pin
+    throughout; a focusout to nothing still unpins at once."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    harness = f"""
+const on = {{}};
+const add = (ev, fn) => {{ (on[ev] = on[ev] || []).push(fn); }};
+const fire = (ev, e) => {{ for (const fn of on[ev] || []) fn(e || {{}}); }};
+const vvOn = {{}};
+const vv = {{ height: 844, offsetTop: 0, addEventListener(ev, fn) {{ vvOn[ev] = fn; }} }};
+const window = {{ visualViewport: vv, innerHeight: 844, scrollX: 0, scrollY: 0,
+  scrollTo() {{}}, addEventListener() {{}} }};
+const screen = {{ width: 390, height: 844 }};
+const body = {{ tagName: "BODY" }};
+const box = {{ id: "compose-text", tagName: "TEXTAREA" }};
+const helper = {{ tagName: "TEXTAREA", className: "xterm-helper-textarea" }};
+const fields = {{ compose: box, term: helper }};
+const document = {{ activeElement: body, addEventListener: add,
+  documentElement: {{ style: {{ setProperty() {{}} }} }} }};
+const getComputedStyle = () => ({{ lineHeight: "22px" }});
+const scr = {{ classList: {{ contains: (c) => c === "active" }},
+  style: {{ height: "", top: "", setProperty() {{}} }} }};
+function $(id) {{ return id === "screen-term" ? scr : id === "compose-text" ? box : null; }}
+const term = {{ textarea: helper }}, demoMode = false;
+function keyboardUp() {{ return document.activeElement === box || document.activeElement === helper; }}
+const dbgLines = [];
+function dbg(...p) {{ dbgLines.push(p.join(" ")); }}
+let fits = 0;
+function refit() {{ fits++; }}
+{_keyboard_geometry(doc)}
+// Full height measured, then the caret goes into the first field from a tap and
+// the keyboard rises.
+vvOn.resize();
+fire("touchstart");
+document.activeElement = fields[{json.dumps(start)}];
+vv.height = 508;
+vvOn.resize();
+const before = scr.style.height;
+// el.focus() on the second field, or a blur: focusout first, with the caret in
+// neither field, then focusin on the new one.
+const next = fields[{json.dumps(end)}] || null;
+if (!{json.dumps(kept_up)}) vv.height = 844;
+document.activeElement = body;
+fire("focusout", {{ target: fields[{json.dumps(start)}], relatedTarget: next }});
+const during = scr.style.height;
+if (next) {{ document.activeElement = next; fire("focusin", {{ target: next }}); }}
+await new Promise((r) => setTimeout(r, 400));
+console.log(JSON.stringify({{ before, during, after: scr.style.height, dbgLines }}));
+// The pinned screen keeps the fragment's keyboard poll interval alive.
+process.exit(0);
+"""
+    f = tmp_path / "hop.mjs"
+    f.write_text(harness, encoding="utf-8")
+    out = json.loads(subprocess.run([node, str(f)], check=True, timeout=30,
+                                    capture_output=True).stdout.decode())
+    assert out["before"] == "508px"
+    if pinned:
+        assert out["during"] == "508px"
+        assert out["after"] == "508px"
+        assert not [l for l in out["dbgLines"] if l.startswith("kb down")]
+    else:
+        assert out["during"] == ""
+        assert out["after"] == ""
+        assert len([l for l in out["dbgLines"] if l.startswith("kb down")]) == 1
+
+
 def test_vendor_script_tags_survive(doc):
     for name in ("xterm.js", "addon-fit.js", "addon-webgl.js"):
         assert f'src="vendor/{name}?v=__CACHE_VERSION__"' in doc

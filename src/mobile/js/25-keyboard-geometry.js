@@ -94,7 +94,9 @@ function setKbInset(px) {
   document.documentElement.style.setProperty("--kb-inset", px + "px");
 }
 function typingFocus() {
-  const a = document.activeElement;
+  return typingField(document.activeElement);
+}
+function typingField(a) {
   if (!a) return false;
   if (a.isContentEditable) return true;  // the editor's CodeMirror surface
   const tag = a.tagName;
@@ -259,8 +261,18 @@ const settleViewport = () => {
 document.addEventListener("focusin", (e) => {
   if (e.target === $("compose-text")) applyViewport();
 });
-// Blur is the usual precursor to the keyboard leaving.
-document.addEventListener("focusout", settleViewport);
+// Blur is the usual precursor to the keyboard leaving, but not when focus is
+// only moving to another field: a double tap hands the caret from the composer
+// to xterm's textarea with the keyboard staying up. While focusout runs the
+// caret is in neither field (activeElement is the body), so reading the
+// geometry then calls the keyboard down, unpins the screen and refits the grid
+// to full height until the 300 ms re-read pins it again: the strip and key bar
+// drop behind the keyboard and the terminal resizes twice. relatedTarget is the
+// field taking the caret; the re-read still runs once it has landed.
+document.addEventListener("focusout", (e) => {
+  if (typingField(e.relatedTarget)) { setTimeout(applyViewport, 300); return; }
+  settleViewport();
+});
 // Returning to a resumed app: the keyboard is normally gone by now, and nothing
 // else will say so.
 document.addEventListener("visibilitychange", () => {
