@@ -1083,8 +1083,8 @@ html.term-open, body.term-open {
    IME handling re-sends what the composition already delivered. So dictation
    lands in a textarea of our own and reaches the terminal only on Send, as one
    paste. Thumb-typing wants the same box for its own reason — a line read back
-   and fixed before it runs — which is why on touch this is what a tap on the
-   terminal opens. Shares the key bar's material: the two read as one docked
+   and fixed before it runs — which is why on touch it stays docked, and a tap
+   anywhere on it puts the caret in the box. Shares the key bar's material: the two read as one docked
    surface. */
 #compose {
   display: none;

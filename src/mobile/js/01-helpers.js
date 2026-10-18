@@ -26,8 +26,8 @@ function svgIcon(id) {
   return svg;
 }
 // Whether a finger is the only pointer this device has. It is what separates a
-// phone, where a tap on the terminal opens the message composer, from a laptop,
-// where the same tap hands the keyboard straight to xterm. Asked rather than
+// phone, where a single tap on the terminal moves no focus and a double tap
+// hands the keyboard to xterm, from a laptop, where every tap does. Asked rather than
 // latched: a tablet that picks up a trackpad mid-session changes the answer.
 function touchOnly() {
   return window.matchMedia("(pointer: coarse), (hover: none)").matches;
