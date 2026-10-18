@@ -103,7 +103,7 @@ let composeBlurTimer = null;
 let composeDictated = false;
 
 // Whether the strip is furniture rather than a mode right now. On touch it is
-// the terminal's typing surface — a tap on the grid puts the caret in it and it
+// the terminal's typing surface — a tap on the strip puts the caret in it and it
 // stays whatever the keyboard then does — so nothing on that screen may take it
 // away; beside a real keyboard it is still summoned by the mic key and leaves
 // with the blur. Leaving the terminal screen is the one close that stands, and
@@ -308,7 +308,7 @@ function composeSend(keepCaret) {
   composeGrow();
   // The strip stays for the next message, the way any messaging app's does:
   // sending one line is rarely the end of the errand, and closing here would
-  // cost a tap on the terminal and a keyboard animation to say the next one.
+  // cost a tap on the strip and a keyboard animation to say the next one.
   // The caret goes straight back into the emptied box for a keyboard send on
   // the laptop (see keepCaret); on touch a typed send drops the keyboard instead.
   if (keepCaret && !typed) ta.focus();

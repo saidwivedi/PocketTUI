@@ -1593,6 +1593,24 @@ async function startLocalRecording(engine) {
   clear.addEventListener("pointerdown", e => e.preventDefault());
   clear.addEventListener("mousedown", e => e.preventDefault());
   clear.addEventListener("click", composeClear);
+  // On touch the whole strip is the box's target, not only the textarea: a tap
+  // on the box's padding, beside it or on the strip's own inset puts the caret
+  // in the box, and a single tap on the terminal no longer does. The buttons
+  // keep their own errands, and a tap on the textarea itself is the browser's,
+  // which places the caret under the finger. The press is held so a tap beside
+  // a focused box never blurs it (no keyboard flap); the focus comes from the
+  // click, a gesture iOS raises the keyboard for. While a take records the box
+  // is hidden and there is nothing to focus.
+  const strip = $("compose");
+  const besideBox = (e) => touchOnly() && !e.target.closest("button, textarea, input");
+  for (const ev of ["pointerdown", "mousedown"]) {
+    strip.addEventListener(ev, (e) => { if (besideBox(e)) e.preventDefault(); });
+  }
+  strip.addEventListener("click", (e) => {
+    if (!besideBox(e) || strip.classList.contains("recording")) return;
+    ta.focus();
+    dbg("tap: composer (strip) active=" + activeName());
+  });
 })();
 
 // A backgrounded tab keeps the microphone hot otherwise — true of the recogniser
@@ -2039,41 +2057,34 @@ document.addEventListener("keydown", (e) => {
   releaseMods();
 }, true);
 
-// Tapping the terminal raises the keyboard; drags scroll or go back instead.
+// Tapping the terminal on a laptop focuses it; drags scroll or go back instead.
 // A selection gesture also ends in a click the browser synthesizes, and the tap
 // that dismisses the pill is a dismiss and nothing more — both stamp
 // selectEndedAt, and a click just after one is not a request for the keyboard.
 //
-// Where the keys go on touch: a single tap puts the caret in the composer box,
-// so a line can be read back, fixed or dictated before it runs. A double tap
-// (two taps within TERM_DOUBLE_TAP_MS, anywhere on the grid) puts it in the
-// terminal instead, for the keys the shell has to see one at a time: tab
-// completion, ctrl+r, arrow history, and vim or less. Anything already in the
-// box stays there. The buffer type cannot tell a keystroke app from a chat
-// prompt: Claude Code, the main thing typed into from a phone, runs in xterm's
-// alternate buffer just as vim does, so a single tap goes to the box there too.
-// Beside a real keyboard every tap goes to the terminal, as it always has.
+// On touch a single tap moves nothing: the keyboard stays up or down as it was,
+// and the caret stays in the box or the terminal, wherever it already was. A
+// tap is often only a look, or a tmux pane switch, and raising or dropping the
+// keyboard under it refits the grid the user is reading. The box is reached by
+// tapping the box. A double tap (two taps within TERM_DOUBLE_TAP_MS, anywhere
+// on the grid) puts the caret in the terminal, for the keys the shell has to
+// see one at a time: tab completion, ctrl+r, arrow history, and vim or less.
+// Anything already in the box stays there. Beside a real keyboard every tap
+// goes to the terminal, as it always has.
 //
-// The pair is read from touchend, not from click. On a real iPhone the first
-// tap raises the keyboard and the terminal refits, so the second tap's click
-// can be dispatched well past the window, and Safari may swallow the second
-// click of a fast pair altogether. touchend's timeStamp is when the finger
-// lifted, whatever the main thread was doing. The second touchend of a pair
-// focuses xterm itself (touchend is a user gesture, so iOS keeps or raises the
-// keyboard), and the clicks the pair still owes are spent as no-ops so neither
-// can pull the caret back into the box. A lone touchend never focuses anything:
-// the single tap stays on click, where it works. xterm's own mousedown handler
-// focuses its textarea too, which agrees with the pair. keyboardUp() counts
-// both fields and the docked strip ignores the blur (composeBlurred()).
+// The pair is read from touchend, not from click. On a real iPhone the second
+// tap's click can be dispatched well past the window, and Safari may swallow the
+// second click of a fast pair altogether. touchend's timeStamp is when the
+// finger lifted, whatever the main thread was doing. The second touchend of a
+// pair focuses xterm itself (touchend is a user gesture, so iOS keeps or raises
+// the keyboard). A lone touchend never focuses anything, and neither does its
+// click. keyboardUp() counts both fields and the docked strip ignores the blur
+// (composeBlurred()).
 const TERM_DOUBLE_TAP_MS = 350;    // touchend to touchend, event time
 const TERM_TAP_SLOP = 10;          // px of travel a tap may have
 const TERM_TAP_MAX_MS = 350;       // a longer press is the long-press select's
-const TERM_PAIR_CLICK_MS = 1000;   // how long a pair's late clicks are waited for
 let termTapAt = null;              // e.timeStamp of the last unpaired tap
-let termRawAt = 0;                 // Date.now() when a pair last focused xterm
-let termPairClicks = 0;            // clicks the last pair still owes, to swallow
-let termTapsUnclicked = 0;         // accepted taps whose click has not arrived
-let termTapEndAt = -Infinity;      // e.timeStamp of the last accepted tap
+let termFocusHeld = false;         // xterm's own focus calls are no-ops while set
 (function termTaps() {
   const host = $("term-host");
   let startX = 0, startY = 0, startAt = 0, moved = false, multi = false, travel = 0;
@@ -2103,20 +2114,15 @@ let termTapEndAt = -Infinity;      // e.timeStamp of the last accepted tap
     if (multi) { reject("multi"); return; }
     if (moved) { reject("moved(" + Math.round(travel) + "px)"); return; }
     if (e.timeStamp - startAt > TERM_TAP_MAX_MS) { reject("long(" + Math.round(e.timeStamp - startAt) + "ms)"); return; }
-    // Past the click wait, any click an earlier tap still owed is not coming.
-    if (e.timeStamp - termTapEndAt > TERM_PAIR_CLICK_MS) termTapsUnclicked = 0;
-    termTapEndAt = e.timeStamp;
-    termTapsUnclicked++;
     const gap = termTapAt === null ? null : Math.round(e.timeStamp - termTapAt);
     const pair = gap !== null && gap < TERM_DOUBLE_TAP_MS;
     // A pair is spent once it is read, so a third tap starts a new pair.
     termTapAt = pair ? null : e.timeStamp;
     dbg("tap: touch gap=" + (gap === null ? "-" : gap + "ms") + (pair ? " -> pair" : " -> single"));
     if (!pair) return;
-    termRawAt = Date.now();
-    termPairClicks = Math.min(termTapsUnclicked, 2);
+    termFocusHeld = false;
     term.focus();
-    dbg("tap: terminal (double tap) active=" + activeName() + " owed=" + termPairClicks);
+    dbg("tap: terminal (double tap) active=" + activeName());
   }, { passive: true });
   host.addEventListener("touchcancel", (e) => {
     if (!touchOnly()) return;
@@ -2127,33 +2133,33 @@ function activeName() {
   const a = document.activeElement;
   return a ? (a.id || a.tagName.toLowerCase()) + (a.className ? "." + String(a.className).split(" ")[0] : "") : "none";
 }
-// With the caret in the box, the tap's synthetic mousedown would reach xterm's
-// own handler, which calls preventDefault and focuses its hidden textarea: the
-// box blurs, the keyboard geometry reads "down" for a moment and refits, and
-// the click then puts the caret back — a focus hop on every single tap. Stopped
-// here, in the capture phase on the host, xterm never sees the press and the
-// box keeps focus; the click's composer focus is then a no-op. A pair has
-// already moved focus to xterm from its touchend by the time its mousedowns
-// arrive, so they pass untouched and agree with it. The laptop never gets here.
+// A tap's synthetic mousedown reaches xterm's own handler, which calls
+// preventDefault, focuses its hidden textarea and then sends the press to tmux
+// as a mouse report. The report is wanted: it is what switches tmux panes. The
+// focus is not, on touch: it would raise the keyboard from a single tap, or
+// pull the caret out of the box. So for the length of this dispatch xterm's
+// textarea refuses focus (termFocusHeld, checked by the wrapper installed here
+// on first use), and the press itself is preventDefault-ed here too, so the
+// browser's own default cannot move focus either. The pair's term.focus() in
+// touchend clears the hold before it calls. The laptop never gets here.
 $("term-host").addEventListener("mousedown", (e) => {
-  if (!touchOnly() || document.activeElement !== $("compose-text")) return;
+  if (!touchOnly() || !term || !term.textarea) return;
+  const ta = term.textarea;
+  if (document.activeElement === ta) return;
+  if (!ta.ptuiFocusHold) {
+    const focus = ta.focus;
+    ta.focus = function (opts) { if (!termFocusHeld) focus.call(this, opts); };
+    ta.ptuiFocusHold = true;
+  }
   e.preventDefault();
-  e.stopPropagation();
-  dbg("tap: mousedown kept in composer");
+  termFocusHeld = true;
+  setTimeout(() => { termFocusHeld = false; }, 0);
+  dbg("tap: mousedown focus held active=" + activeName());
 }, true);
 $("term-host").addEventListener("click", () => {
   if (Date.now() - selectEndedAt < 350) return;
   if (!term || dragScrolled || edgeSwipe || termGesture) return;
   if (!touchOnly()) { term.focus(); return; }
-  if (termTapsUnclicked > 0) termTapsUnclicked--;
-  if (termPairClicks > 0 && Date.now() - termRawAt < TERM_PAIR_CLICK_MS) {
-    termPairClicks--;
-    dbg("tap: click suppressed (pair) " + (Date.now() - termRawAt) + "ms after");
-    return;
-  }
-  termPairClicks = 0;
-  dbg("tap: composer (single tap)");
-  if (!composeOpen) setCompose(true, true);
-  $("compose-text").focus();
+  dbg("tap: ignored (click) active=" + activeName());
 });
 
