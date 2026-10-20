@@ -173,7 +173,7 @@ SOFTWARE.
 | `@codemirror/theme-one-dark` | 6.1.3 (pinned) | https://github.com/codemirror/theme-one-dark | A |
 | `@lezer/common` | 1.5.2 | https://github.com/lezer-parser/common | C |
 | `@lezer/lr` | 1.4.10 | https://github.com/lezer-parser/lr | C |
-| `@lezer/highlight` | 1.2.3 | https://github.com/lezer-parser/highlight | C |
+| `@lezer/highlight` | 1.2.3 (pinned) | https://github.com/lezer-parser/highlight | C |
 | `@lezer/python` | 1.1.19 | https://github.com/lezer-parser/python | D |
 | `@lezer/javascript` | 1.5.4 | https://github.com/lezer-parser/javascript | C |
 | `@lezer/json` | 1.0.3 | https://github.com/lezer-parser/json | E |

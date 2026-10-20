@@ -35,7 +35,7 @@ function edLanguage(name) {
   const CM = window.CM6;
   const ext = (name.match(/\.([a-z0-9]+)$/i) || [, ""])[1].toLowerCase();
   switch (ext) {
-    case "py": return CM.python();
+    case "py": return [CM.python(), edPyMarksExt()];
     case "js": case "mjs": case "cjs": return CM.javascript();
     case "jsx": return CM.javascript({ jsx: true });
     case "ts": return CM.javascript({ typescript: true });
@@ -58,35 +58,203 @@ function edWraps(name) {
 
 function edWrapExt() {
   const CM = window.CM6;
-  return (edWraps(edPath) || cfg.editorWrapOn) ? CM.EditorView.lineWrapping : [];
+  return (edWraps(edPath) || cfg.editorWrapOn)
+    ? [CM.EditorView.lineWrapping, edHangExt()] : [];
+}
+
+// A line's left padding inside the content, the theme's and the hanging
+// indent's alike: the two have to agree or a wrapped line's first row shifts.
+const ED_LINE_PAD = 8;
+
+// Wrapped rows hang under the line's own indentation instead of restarting at
+// the content's left edge: an indented line is padded in by its indent and its
+// first row pulled back out by the same amount (text-indent), so that row stays
+// where it was and every continuation row starts under the code. Columns, with
+// tabs expanded, and ch, which is one column of a monospace font.
+let edHangPlugin = null;
+function edHangExt() {
+  if (edHangPlugin) return edHangPlugin;
+  const CM = window.CM6;
+  const build = (view) => {
+    const b = new CM.RangeSetBuilder();
+    const tab = view.state.tabSize;
+    // Ranges must go in sorted, and two visible ranges can share a line.
+    let next = 0;
+    for (const { from, to } of view.visibleRanges) {
+      for (let pos = Math.max(from, next); pos <= to;) {
+        const line = view.state.doc.lineAt(pos);
+        const lead = /^[ \t]*/.exec(line.text)[0];
+        // A blank line has no code to hang anything under.
+        if (lead.length && lead.length < line.length) {
+          let cols = 0;
+          for (const ch of lead) cols = ch === "\t" ? cols + tab - cols % tab : cols + 1;
+          b.add(line.from, line.from, CM.Decoration.line({ attributes: {
+            style: `padding-left: calc(${cols}ch + ${ED_LINE_PAD}px); text-indent: -${cols}ch`,
+          } }));
+        }
+        pos = next = line.to + 1;
+      }
+    }
+    return b.finish();
+  };
+  edHangPlugin = CM.ViewPlugin.fromClass(class {
+    constructor(view) { this.decorations = build(view); }
+    update(u) {
+      if (u.docChanged || u.viewportChanged) this.decorations = build(u.view);
+    }
+  }, { decorations: (v) => v.decorations });
+  return edHangPlugin;
+}
+
+// Docstrings and decorators, which lang-python tags as a plain string and a
+// bare "@": a docstring is a string statement standing first in a module, class
+// or function body, and reads as the comment it is; a decorator is coloured
+// from its "@" to the end of its name, its arguments left to the highlighter.
+let edPyPlugin = null;
+function edPyMarksExt() {
+  if (edPyPlugin) return edPyPlugin;
+  const CM = window.CM6;
+  const doc = CM.Decoration.mark({ class: "cm-ptui-doc" });
+  const deco = CM.Decoration.mark({ class: "cm-ptui-deco" });
+  const firstInBody = (stmt) => {
+    let prev = stmt.prevSibling;
+    while (prev && prev.name === "Comment") prev = prev.prevSibling;
+    if (stmt.parent.name === "Script") return !prev;
+    return stmt.parent.name === "Body" && !!prev && prev.name === ":";
+  };
+  const build = (view) => {
+    const b = new CM.RangeSetBuilder();
+    const tree = CM.syntaxTree(view.state);
+    let last = 0;
+    const add = (from, to, mark) => {
+      if (from >= last) { b.add(from, to, mark); last = to; }
+    };
+    for (const { from, to } of view.visibleRanges) {
+      tree.iterate({ from, to, enter: (n) => {
+        if (n.name === "Decorator") {
+          const text = view.state.sliceDoc(n.from, n.to);
+          const end = n.from + text.search(/[(\n]|$/);
+          if (end > n.from) add(n.from, end, deco);
+          return false;
+        }
+        if (n.name !== "String") return;
+        const stmt = n.node.parent;
+        if (stmt && stmt.name === "ExpressionStatement" && stmt.parent
+            && stmt.from === n.from && firstInBody(stmt)) {
+          add(n.from, n.to, doc);
+        }
+        return false;
+      } });
+    }
+    return b.finish();
+  };
+  edPyPlugin = CM.ViewPlugin.fromClass(class {
+    constructor(view) { this.decorations = build(view); }
+    update(u) {
+      if (u.docChanged || u.viewportChanged
+          || CM.syntaxTree(u.startState) !== CM.syntaxTree(u.state)) {
+        this.decorations = build(u.view);
+      }
+    }
+  }, { decorations: (v) => v.decorations });
+  return edPyPlugin;
 }
 
 function edVimExt() {
   return cfg.editorVimOn ? window.CM6.vim() : [];
 }
 
+// The editor wears the palette the terminal does (currentTermTheme(),
+// 07-terminal.js): its background and foreground, its ANSI slots for the
+// syntax, and the chrome derivation's accent and hairline (chromeTokensFor,
+// boot-theme.js) for the cursor, the selection and the gutter's rule. Every
+// colour is held to the 4.5 ratio xterm is given (minimumContrastRatio), since
+// someone else's scheme is free to pair a yellow with a cream background.
 function edThemeExt() {
-  const CM = window.CM6;
-  // The terminal's stored font size is the user's one stated preference about
-  // reading monospace on this phone; the editor honours it on open.
-  const size = CM.EditorView.theme({
-    "&": { fontSize: storedFontSize() + "px", height: "100%" },
+  const CM = window.CM6, t = CM.tags;
+  const p = currentTermTheme();
+  const bg = p.background;
+  const dark = paletteIsDark(p);
+  const chrome = chromeTokensFor(p);
+  const text = chrome["--ink"];
+  const accent = chrome["--umber"];
+  const slot = (name) => pickInk(p[name],
+    p["bright" + name[0].toUpperCase() + name.slice(1)], bg, 4.5);
+  const muted = ensureContrast(mixHex(text, bg, 0.45), bg, 4.5);
+  const lineTint = rgbaHex(p.foreground, dark ? 0.05 : 0.04);
+  const c = {
+    keyword: slot("magenta"), string: slot("green"), literal: slot("red"),
+    fn: slot("blue"), type: slot("yellow"), op: slot("cyan"),
+  };
+  const highlight = CM.HighlightStyle.define([
+    { tag: [t.keyword, t.modifier, t.self], color: c.keyword },
+    { tag: [t.string, t.special(t.string), t.regexp, t.character], color: c.string },
+    { tag: [t.number, t.bool, t.null, t.atom], color: c.literal },
+    { tag: [t.function(t.variableName), t.function(t.propertyName), t.macroName],
+      color: c.fn },
+    { tag: [t.className, t.typeName, t.namespace], color: c.type },
+    { tag: [t.operator, t.escape, t.meta], color: c.op },
+    // The dot of a.b is an operator to the parser and punctuation to a reader.
+    { tag: t.derefOperator, color: text },
+    { tag: t.comment, color: muted, fontStyle: "italic" },
+    { tag: t.invalid, color: slot("red") },
+    // Markdown and the markup languages.
+    { tag: t.heading, color: c.fn, fontWeight: "bold" },
+    { tag: t.strong, fontWeight: "bold" },
+    { tag: t.emphasis, fontStyle: "italic" },
+    { tag: t.strikethrough, textDecoration: "line-through" },
+    { tag: [t.link, t.url], color: c.fn, textDecoration: "underline" },
+    { tag: t.monospace, color: c.string },
+    { tag: [t.quote, t.contentSeparator, t.processingInstruction], color: muted },
+    { tag: t.tagName, color: c.keyword },
+    { tag: t.attributeName, color: c.type },
+    { tag: t.angleBracket, color: muted },
+  ]);
+  const theme = CM.EditorView.theme({
+    // The terminal's stored font size is the user's one stated preference
+    // about reading monospace on this phone; the editor honours it on open.
+    "&": { color: text, backgroundColor: bg,
+           fontSize: storedFontSize() + "px", height: "100%" },
     ".cm-scroller": { fontFamily: 'Menlo, ui-monospace, "SF Mono", monospace' },
-  });
-  return resolvedDark()
-    ? [CM.oneDark, size]
-    : [CM.syntaxHighlighting(CM.defaultHighlightStyle), size];
+    ".cm-content": { caretColor: accent },
+    ".cm-line": { padding: `0 2px 0 ${ED_LINE_PAD}px` },
+    ".cm-cursor, .cm-dropCursor": { borderLeftColor: accent },
+    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
+      { backgroundColor: rgbaHex(accent, dark ? 0.30 : 0.22) },
+    // Translucent, because it is laid over the selection layer.
+    ".cm-activeLine": { backgroundColor: lineTint },
+    // The gutter is the page, set off by the chrome's own hairline.
+    ".cm-gutters": { backgroundColor: bg, color: ensureContrast(mixHex(text, bg, 0.55), bg, 3),
+                     border: "none", borderRight: "1px solid " + chrome["--hair"] },
+    ".cm-lineNumbers .cm-gutterElement": { padding: "0 10px 0 12px" },
+    ".cm-activeLineGutter": { backgroundColor: lineTint, color: text },
+    "&.cm-focused .cm-matchingBracket": {
+      backgroundColor: rgbaHex(accent, 0.18), outline: "1px solid " + rgbaHex(accent, 0.5),
+    },
+    "&.cm-focused .cm-nonmatchingBracket": { backgroundColor: rgbaHex(slot("red"), 0.2) },
+    // edPyMarksExt's two marks. The span inside is the highlighter's string
+    // colour, which the docstring's has to outrank.
+    ".cm-ptui-doc, .cm-ptui-doc *": { color: muted, fontStyle: "italic" },
+    ".cm-ptui-deco, .cm-ptui-deco *": { color: c.op },
+    ".cm-panels": { backgroundColor: chrome["--card"], color: text },
+  }, { dark });
+  return [theme, CM.syntaxHighlighting(highlight)];
+}
+
+function edRetheme() {
+  if (edView && edThemeComp) {
+    edView.dispatch({ effects: edThemeComp.reconfigure(edThemeExt()) });
+  }
 }
 
 // The theme button lives on the session list, but its toggle must still reach
 // an editor that is merely hidden behind it. Watching the attribute keeps this
-// fragment out of 04-theme.js entirely.
-new MutationObserver(() => {
-  if (edView && edThemeComp) {
-    edView.dispatch({ effects: edThemeComp.reconfigure(edThemeExt()) });
-  }
-}).observe(document.documentElement,
-           { attributes: true, attributeFilter: ["data-theme"] });
+// fragment out of 04-theme.js entirely. A palette swapped for another of the
+// same lightness leaves the attribute alone, so applyTermTheme()'s event
+// (07-terminal.js) is the second way in.
+new MutationObserver(edRetheme).observe(document.documentElement,
+  { attributes: true, attributeFilter: ["data-theme"] });
+window.addEventListener("ptui-termtheme", edRetheme);
 
 function edSetDirty(on) {
   edDirty = on;
