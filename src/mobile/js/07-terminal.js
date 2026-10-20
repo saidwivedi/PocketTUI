@@ -74,6 +74,8 @@ function currentTermTheme() {
 function applyTermTheme() {
   if (term) term.options.theme = currentTermTheme();
   syncChrome();
+  // The editor (29-editor.js) wears the same palette.
+  window.dispatchEvent(new Event("ptui-termtheme"));
 }
 
 // The fixed terminal screen does not reliably paint the iOS safe-area strip, so
