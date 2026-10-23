@@ -1294,7 +1294,9 @@
            only place any of that is kept. Shaped like the Forget below it
            rather than like an action row, being the same kind of thing, and
            hidden where there is no browser on the computer to have a profile
-           (browserSyncSetting, 42-browser.js). -->
+           (browserSyncSetting, 42-browser.js). In the desktop app the pane's
+           pages are the app's own webviews, so the switch goes and this clears
+           the app's browser session instead. -->
       <button type="button" id="btn-browser-clear" hidden>Clear browsing data</button>
     </div>
     <!-- The one destructive thing in the sheet, so it stays out of the footer

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Sign in</title>
+<style>
+  :root {
+    --bg: #FAF8F3; --ink: #2b2620; --muted: #6f675c; --line: #d9d2c4;
+    --field: #ffffff; --accent: #8a5a2b; --accent-ink: #ffffff;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16140f; --ink: #ece6da; --muted: #a39a8b; --line: #3a352c;
+      --field: #211e17; --accent: #c8915a; --accent-ink: #16140f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding: 16px 18px;
+  }
+  form { display: flex; flex-direction: column; gap: 10px; height: 100%; }
+  h1 { font-size: 14px; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+  p { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+  input {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--field); color: var(--ink); font: inherit;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: auto; }
+  button {
+    padding: 6px 14px; border-radius: 6px; border: 1px solid var(--line);
+    background: transparent; color: var(--ink); font: inherit; cursor: pointer;
+  }
+  button[type="submit"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+</style>
+</head>
+<body>
+<form id="f">
+  <h1 id="host">Sign in</h1>
+  <p id="realm"></p>
+  <input id="user" autocomplete="username" placeholder="Username" autofocus>
+  <input id="pass" type="password" autocomplete="current-password" placeholder="Password">
+  <div class="row">
+    <button type="button" id="cancel">Cancel</button>
+    <button type="submit">Sign in</button>
+  </div>
+</form>
+<script>
+  const f = document.getElementById("f");
+  window.pockettuiAuth.info().then((d) => {
+    if (!d) return;
+    document.getElementById("host").textContent =
+      (d.proxy ? "The proxy " : "") + d.host + " asks for a username and password";
+    document.getElementById("realm").textContent = d.realm ? "“" + d.realm + "”" : "";
+  });
+  f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    window.pockettuiAuth.submit(document.getElementById("user").value,
+                                document.getElementById("pass").value);
+  });
+  document.getElementById("cancel").addEventListener("click", () => window.pockettuiAuth.cancel());
+  addEventListener("keydown", (e) => { if (e.key === "Escape") window.pockettuiAuth.cancel(); });
+</script>
+</body>
+</html>

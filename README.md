@@ -74,6 +74,8 @@ On macOS this puts `PocketTUI.app` in `/Applications` (or `~/Applications`) and 
 
 Or download a build: [pockettui.com](https://pockettui.com/#install) picks your OS, and the rest (Intel or Apple silicon `.dmg`, `.zip`, arm64 `.AppImage`, `.deb`) are at [pockettui.com/download](https://pockettui.com/download), which opens the latest [GitHub release](https://github.com/saidwivedi/pockettui/releases/latest). The app is not notarized, so a downloaded `.dmg` is blocked on first open: System Settings → Privacy & Security → Open Anyway.
 
+In the desktop app the browser pane is a real browser of its own: logins and cookies persist across restarts, and addresses only your machine can reach (its `localhost`, intranet names) still open, fetched through your machine. Certificates are checked against the system's trust store; on Linux that is NSS, so a private CA (an institute's, say) needs adding there once: `certutil -d sql:$HOME/.pki/nssdb -A -t C -n "My CA" -i ca.pem`.
+
 <div align="center">
 <img src="https://pockettui.com/landing_assets/sessions-round.png" alt="Session list" width="24%">
 <img src="https://pockettui.com/landing_assets/keybar-round.png" alt="Touch-first key bar" width="24%">

@@ -110,6 +110,7 @@ JS_FRAGMENTS = (
     "43-full-browser.js",
     "44-features-guide.js",
     "45-usage.js",
+    "46-desktop-browser.js",
     "27-boot.js",
 )
 

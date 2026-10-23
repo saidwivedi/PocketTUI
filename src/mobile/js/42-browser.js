@@ -195,6 +195,7 @@ function browserStreamHost(url) {
 }
 
 function browserStreamsHost(url) {
+  if (desktopBrowserOn()) return false;
   const host = browserStreamHost(url);
   return !!host && cfg.browserStreamHosts[host] === true;
 }
@@ -244,6 +245,8 @@ browserMigrateStreamHosts();
 // it. Without an address it answers for a tab with nothing in it yet, which is
 // what the page-mode key is drawn from before anything has been opened.
 function browserFullWanted(url) {
+  // The desktop app's tabs are its own webviews (46-desktop-browser.js).
+  if (desktopBrowserOn()) return false;
   if (!hasCapStrict("browser_full")) return false;
   return cfg.browserStreamAll || browserStreamsHost(url);
 }
@@ -314,6 +317,16 @@ async function browserSyncSetting() {
   if (!block) return;
   const on = !demoMode && !needsSetup() && hasCapStrict("browse");
   block.hidden = !on;
+  // In the desktop app the pane's pages are the app's own (a webview session
+  // of its own), so there is no stream to switch on and the clear is local.
+  if (desktopBrowserOn()) {
+    $("browser-stream-toggle").closest(".toggle-row").style.display = "none";
+    $("browser-stream-hosts").hidden = true;
+    $("btn-browser-clear").hidden = !on;
+    const line = $("browser-status-line");
+    if (line) line.textContent = "Pages open in this app's own browser";
+    return;
+  }
   $("browser-stream-toggle").checked = cfg.browserStreamAll;
   browserSyncStreamHosts();
   // Nothing to clear on a computer with no browser to keep a profile in.
@@ -536,6 +549,8 @@ function browserOpenOutside(url) {
 function makeBrowserPane(id, root) {
 
 const q = (name) => root.querySelector("#" + name);
+// The keys and bars that are about the stream go in the desktop app (styles).
+if (desktopBrowserOn()) root.classList.add("desktop");
 
 let browserDocked = false;      // in the slot beside the terminal, not over it
 let browserOpen = false;        // either shape is up
@@ -552,6 +567,9 @@ let browserExpanded = id === "browser" ? cfg.browserExpanded : false;
 function browserNewTab() {
   return {
     frame: null,
+    // The desktop app's <webview> in place of the frame (46-desktop-browser.js),
+    // made on the first navigation the same way.
+    web: null,
     // Which of the two kinds of tab this is, and the view when it is the
     // streamed one. Null is a tab nothing has been asked of yet: whether the
     // computer has a browser to stream from is not known at the load that makes
@@ -1102,6 +1120,42 @@ function browserDropFull(tab) {
   tab.discarded = false;
 }
 
+// ---- the desktop app's own browser, in this pane -----------------------------
+
+// This tab's webview, made on first use the way browserFrame makes its frame,
+// and refused for the same reason. What it reports is a streamed tab's report
+// in all but name (url, title, history, icon), so browserFullTab takes it.
+function browserWebView(tab) {
+  if (tab.web) return tab.web;
+  if (browserTabs.indexOf(tab) < 0) return null;
+  const view = desktopBrowserMake({
+    onTab: (msg) => browserFullTab(tab, msg),
+    onError: (msg) => {
+      if (tab === browserTab()) toast(BROWSE_ERRORS[msg.code] || "That page could not be loaded");
+    },
+    openTab: (url) => browserOpenFrom(tab, url),
+    onClose: () => {
+      const i = browserTabs.indexOf(tab);
+      if (i >= 0) browserCloseTab(i);
+    },
+  });
+  tab.web = view;
+  tab.zoomAt = 0;
+  if (tab !== browserTab()) view.hide();
+  q("browser-wrap").appendChild(view.el);
+  return view;
+}
+
+function browserDropWeb(tab) {
+  if (!tab.web) return;
+  tab.web.destroy();
+  tab.web = null;
+  tab.zoomAt = 0;
+  tab.canBack = false;
+  tab.canFwd = false;
+  tab.icon = "";
+}
+
 // Every page this pane holds, gone — for a teardown, a profile switch, or the
 // last tab's close: the frames out of the document, the streamed tabs closed on
 // the computer. The tabs keep their addresses; what goes is the page.
@@ -1110,6 +1164,7 @@ function browserDropPages() {
     if (tab.frame) tab.frame.remove();
     tab.frame = null;
     browserDropFull(tab);
+    browserDropWeb(tab);
     tab.primed = false;
     tab.loaded = "";
     tab.navigating = false;
@@ -1131,7 +1186,8 @@ function syncBrowserNav() {
   // A streamed tab's history is the real browser's, not the list below: it has
   // entries this pane never saw — a page's own pushState, a redirect chain — and
   // the computer says on every `tab` message how far each way it goes.
-  const full = browserIsFull(tab) && tab.full;
+  // A desktop webview's history is its own in the same way.
+  const full = (browserIsFull(tab) && tab.full) || tab.web;
   if (back) back.disabled = full ? !tab.canBack : tab.idx <= 0;
   if (fwd) fwd.disabled = full ? !tab.canFwd
                                : (tab.idx < 0 || tab.idx >= tab.stack.length - 1);
@@ -1280,6 +1336,7 @@ async function browserNavigateIn(tab, raw, push = true) {
   // one.
   if (api.navigateHook) api.navigateHook(url, push);
   else if (demoMode) { if (!browserPointDemo(tab, url)) return; }
+  else if (desktopBrowserOn()) { if (!await browserPointWeb(tab, url, gen)) return; }
   else if (tab.fullMode) { if (!browserPointFull(tab, url)) return; }
   else if (!await browserPointFrame(tab, url, gen)) return;
   tab.loaded = url;
@@ -1368,6 +1425,40 @@ async function browserPointFrame(tab, url, gen) {
     frame.src = target;
     tab.primed = true;
   }
+  return true;
+}
+
+// Where a desktop app tab is sent. An address this laptop reaches on its own
+// loads as itself; one only the computer reaches (its localhost, an intranet
+// name) goes through the computer's proxy as the tab flavour, through the
+// /enter hop on the tab's first such load, exactly as the arrow sends it to
+// the device's own browser (browserOutTarget). Where the computer refuses that
+// flavour because it served this shell itself, this laptop is that computer
+// and the address loads as itself too.
+async function browserPointWeb(tab, url, gen) {
+  let target = url;
+  let proxied = false;
+  let host = "";
+  try { host = new URL(url).hostname; } catch (e) { /* refused below */ }
+  if (browserAddressIsPrivate(host) && browserTabAllowed()) {
+    const rec = browserTabTokenFresh() || await browserEnsureTabToken();
+    if (!browserAlive(tab, gen)) return false;
+    if (rec) {
+      proxied = true;
+      const through = browserProxied(url, rec);
+      target = tab.primed ? through : browserEnterUrl(through, rec);
+    } else if (!browserTabBlocked) {
+      toast("Couldn't reach the computer");
+      return false;
+    }
+  }
+  if (!/^https?:\/\//i.test(target || "")) { toast("That is not an address to open"); return false; }
+  const view = browserWebView(tab);
+  if (!view) return false;
+  browserApplyZoom(browserZoomFor(browserZoomHost(url)), tab);
+  if (tab === browserTab()) syncBrowserZoom(browserZoomHost(url));
+  view.navigate(target);
+  if (proxied) tab.primed = true;
   return true;
 }
 
@@ -1683,6 +1774,7 @@ function browserWatchLanding(tab) {
 // already shown it will not stay in a frame. On a computer with no browser to
 // stream from, it is the bar after all.
 function browserLandFailed(tab, reason, escaped = false) {
+  if (desktopBrowserOn()) return;
   if (!tab || browserTabs.indexOf(tab) < 0 || browserIsFull(tab)) return;
   // A retry waiting for its token is this landing's answer already: the second
   // report of the same page (the shim reports a landing twice) must not start
@@ -1924,6 +2016,7 @@ function browserShowHint(tab, said, ms) {
 // the log and nowhere else; the bar says the same thing however the page
 // failed.
 function browserHint(tab, reason) {
+  if (desktopBrowserOn()) return;
   if (!tab || browserTabs.indexOf(tab) < 0) return;
   if (browserIsFull(tab)) return;
   // Nothing to offer: the key is hidden on a computer with no browser to stream
@@ -1941,6 +2034,7 @@ function browserHint(tab, reason) {
 // The first proxy page this device ever opens. Once, remembered on the device
 // rather than in the session: what it teaches is where the key is.
 function browserHintTip(tab) {
+  if (desktopBrowserOn()) return;
   if (!hasCapStrict("browser_full") || tab !== browserTab()) return;
   try {
     if (localStorage.getItem(BROWSER_HINT_SEEN_KEY)) return;
@@ -2107,6 +2201,12 @@ function browserZoomFor(host) {
 // in a tab that is not on screen is still that host's page, and the frame or the
 // view it has to be applied to is that tab's.
 function browserApplyZoom(factor, tab = browserTab()) {
+  if (tab.web) {
+    if (tab.zoomAt === factor) return;
+    tab.zoomAt = factor;
+    tab.web.setZoom(factor);
+    return;
+  }
   if (tab.full) {
     // Only when it has changed: a landing reports itself three or four times and
     // each zoom message restarts the stream.
@@ -2352,6 +2452,7 @@ function browserShowTab(i) {
       t.full.el.hidden = t !== tab;
       if (t !== tab) t.full.hide();
     }
+    if (t.web) { if (t === tab) t.web.show(); else t.web.hide(); }
   }
   if (tab.full) tab.full.show();
   showBrowserZoomMenu(false);
@@ -2393,6 +2494,7 @@ function browserMakeTab() {
   for (const t of browserTabs) {
     if (t.frame) t.frame.hidden = true;
     if (t.full) { t.full.el.hidden = true; t.full.hide(); }
+    if (t.web) t.web.hide();
   }
   showBrowserZoomMenu(false);
   browserSetField("");
@@ -2442,7 +2544,8 @@ function browserHomeTab(tab) {
     // it, and it keeps what it was given.
     const regrab = (e) => {
       browserGrabOff = null;                          // spent, once either way
-      if (e.relatedTarget && e.relatedTarget !== tab.frame) return;
+      if (e.relatedTarget && e.relatedTarget !== tab.frame
+          && !(tab.web && e.relatedTarget === tab.web.el)) return;
       if (Date.now() - opened > 5000) return;
       if (!browserAlive(tab, gen) || tab !== browserTab()) return;
       f.focus();
@@ -2473,6 +2576,7 @@ function browserCloseTab(i) {
   }
   const wasActive = i === browserActive;
   if (tab.frame) tab.frame.remove();
+  browserDropWeb(tab);
   // The page on the computer goes with the chip: a closed tab is not a tab to
   // come back to, which is what tells this apart from closing the pane.
   browserDropFull(tab);
@@ -2490,6 +2594,8 @@ function browserCloseTab(i) {
 // computer has no browser to stream from any more, which is the honest answer
 // and the one that still shows the page.
 function browserSeedMode(tab, rec) {
+  // Every desktop app tab is a webview, whatever an older record says.
+  if (desktopBrowserOn()) { tab.fullMode = false; return; }
   const full = !!(rec && rec.full);
   if (full && hasCapStrict("browser_full")) {
     tab.fullMode = true;
@@ -2901,6 +3007,10 @@ window.addEventListener("message", (e) => {
 // called history.back() inside the frame. A step off either end is no step, and
 // a page stepping in a background tab moves that tab and nothing else.
 function browserStepIn(tab, delta) {
+  if (tab.web) {
+    if (delta < 0) tab.web.back(); else tab.web.fwd();
+    return;
+  }
   // A streamed tab steps in the browser that holds its page, which is the only
   // one that knows what its history is: what comes back is a `tab` message, and
   // that is what moves the field and the arrows (browserFullTab). One step
@@ -2924,6 +3034,7 @@ q("btn-browser-reload").addEventListener("click", () => {
   // The page the computer is holding, reloaded there: a navigation from here
   // would be a second open for a tab that already has the page on it.
   if (browserIsFull(tab)) { browserFullSend(tab, "reload"); return; }
+  if (tab.web) { tab.web.reload(); return; }
   const u = browserCurrentUrl();
   if (u) browserNavigate(u, false);
 });
@@ -3213,6 +3324,12 @@ function browserReloadFull() {
   if (browserIsFull(tab) && url) browserNavigateIn(tab, url, false);
 }
 
+// Every desktop webview in this pane, loaded again after its session's data
+// was cleared (browserClearProfile).
+function browserReloadWebs() {
+  for (const tab of browserTabs) if (tab.web) tab.web.reload();
+}
+
 // The keys in this pane's own bar that a capability answer takes away. The
 // globe key and the header button are the app's rather than a pane's and are
 // dealt with once (syncBrowseCap, under the factory), which is also what calls
@@ -3255,6 +3372,7 @@ const api = {
   reset: browserReset,
   clearFulls: browserClearFulls,
   reloadFull: browserReloadFull,
+  reloadWebs: browserReloadWebs,
 };
 browserPanes[id] = api;
 return api;
@@ -3429,6 +3547,17 @@ function browserResetForProfile() {
 // page each of them was showing is fetched again afterwards, in a browser that
 // has forgotten it.
 async function browserClearProfile() {
+  // The desktop app's pages live in its own webview session, not on the
+  // computer, and main.js clears that.
+  if (desktopBrowserOn()) {
+    let ok = false;
+    try { ok = await window.pockettuiDesktop.browser.clearBrowsingData(); }
+    catch (e) { dbg("browser clear failed", e); }
+    if (!ok) { toast("Couldn't clear the browsing data"); return false; }
+    toast("Browsing data cleared");
+    for (const pane of Object.values(browserPanes)) pane.reloadWebs();
+    return true;
+  }
   for (const pane of Object.values(browserPanes)) pane.clearFulls();
   let said = "";
   // The closes went out on the panes' own sockets and this goes out on its own

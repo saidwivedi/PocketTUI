@@ -2950,3 +2950,32 @@ console.log(JSON.stringify({{ afterBaseline, second, repeat, switched, cleared, 
     assert out["switched"] == 2
     assert out["cleared"] is None
     assert out["calls"] == ["focus", "open c"]
+
+
+def test_the_desktop_browser_is_only_there_inside_the_desktop_app(doc, tmp_path):
+    """46-desktop-browser.js: outside the desktop app (a phone, a plain
+    browser, or a desktop app older than 0.3.0 whose preload has no `browser`)
+    there is no webview adapter and the pane keeps its frames. 42-browser.js
+    asks desktopBrowserOn() while it loads, so that has to be a hoisted function
+    that reads nothing a later fragment declares."""
+    frag = (SRC / "js" / "46-desktop-browser.js").read_text(encoding="utf-8")
+    at = build_mobile.JS_FRAGMENTS.index
+    assert at("42-browser.js") < at("46-desktop-browser.js") < at("27-boot.js")
+    assert "function desktopBrowserOn() {\n  return !!(window.pockettuiDesktop && window.pockettuiDesktop.browser);\n}" in frag
+    # The fragment's own bindings are in their dead zone while earlier ones load.
+    assert not re.search(r"\bdesktop(Browser|Views)\b", doc[:doc.index(frag)])
+    out = _node_json(tmp_path, "desk-web.mjs", f"""
+const results = {{}};
+for (const [name, w] of [["plain", {{}}], ["old", {{ pockettuiDesktop: {{ focus() {{}} }} }}],
+                         ["app", {{ pockettuiDesktop: {{ browser: {{
+                           onOpenTab(cb) {{ results.hooked = typeof cb; }} }} }} }}]]) {{
+  globalThis.window = w;
+  const r = new Function({json.dumps(frag)} + "; return [desktopBrowser === null, desktopBrowserOn()];")();
+  results[name] = r;
+}}
+console.log(JSON.stringify(results));
+""")
+    assert out["plain"] == [True, False]
+    assert out["old"] == [True, False]
+    assert out["app"] == [False, True]
+    assert out["hooked"] == "function"
