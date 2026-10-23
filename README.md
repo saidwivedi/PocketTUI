@@ -64,7 +64,15 @@ Not natively (the backend wraps tmux and Unix PTYs), but it works in **WSL2**: r
 
 ### Desktop app
 
-The same web client in its own window, for macOS and Linux. It loads the hosted UI, so it updates itself, and shortcuts a browser keeps for itself (Ctrl+W, Ctrl+T, Ctrl+N, Ctrl+Tab) reach the terminal. Download from [pockettui.com](https://pockettui.com/#install) (the button picks your OS). Other builds (Intel or Apple silicon `.dmg`, `.zip`, arm64 `.AppImage`, `.deb`) are at [pockettui.com/download](https://pockettui.com/download), which opens the latest [GitHub release](https://github.com/saidwivedi/pockettui/releases/latest). The app is not notarized. First open: System Settings → Privacy & Security → Open Anyway.
+The same web client in its own window, for macOS and Linux. It loads the hosted UI, so it updates itself, and shortcuts a browser keeps for itself (Ctrl+W, Ctrl+T, Ctrl+N, Ctrl+Tab) reach the terminal. Install or update it from a terminal:
+
+```bash
+curl -fsSL https://pockettui.com/desktop.sh | bash
+```
+
+On macOS this puts `PocketTUI.app` in `/Applications` (or `~/Applications`) and opens it, with no Gatekeeper prompt; on Linux it installs the AppImage to `~/.local/bin` with an app menu entry, no sudo.
+
+Or download a build: [pockettui.com](https://pockettui.com/#install) picks your OS, and the rest (Intel or Apple silicon `.dmg`, `.zip`, arm64 `.AppImage`, `.deb`) are at [pockettui.com/download](https://pockettui.com/download), which opens the latest [GitHub release](https://github.com/saidwivedi/pockettui/releases/latest). The app is not notarized, so a downloaded `.dmg` is blocked on first open: System Settings → Privacy & Security → Open Anyway.
 
 <div align="center">
 <img src="https://pockettui.com/landing_assets/sessions-round.png" alt="Session list" width="24%">
