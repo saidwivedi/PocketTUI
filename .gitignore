@@ -13,6 +13,9 @@ cloudflare_build/
 .dev.vars
 .turnstile_secret
 node_modules/
+# The desktop app's install and electron-builder output (desktop/).
+desktop/node_modules/
+desktop/dist/
 .wrangler/
 assets/landing_assets*/
 # The features guide's screenshots, written by feature_shots.mjs: regenerated
