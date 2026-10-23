@@ -667,8 +667,9 @@ $("browser-stream-toggle").addEventListener("change", (e) => {
 // have to give up their pages before the computer will do it, which is what
 // browserClearProfile (42-browser.js) arranges.
 $("btn-browser-clear").addEventListener("click", async () => {
-  const yes = await appConfirm(
-    "Every cookie and login the computer's browser is holding is deleted.",
+  const yes = await appConfirm(desktopBrowserOn()
+    ? "Every cookie and login this app's browser is holding is deleted."
+    : "Every cookie and login the computer's browser is holding is deleted.",
     { title: "Clear browser logins?", confirmLabel: "Clear" });
   if (yes) browserClearProfile();
 });

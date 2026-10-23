@@ -10,4 +10,10 @@ contextBridge.exposeInMainWorld("pockettuiDesktop", {
   platform: process.platform,
   // Shows and focuses this window (a notification click; see 30-notify.js).
   focus: () => ipcRenderer.send("pockettui:focus"),
+  // The browser pane's <webview> tabs (46-desktop-browser.js): a guest's link
+  // meant for a new tab, and clearing the pane's own session.
+  browser: {
+    onOpenTab: (cb) => ipcRenderer.on("pockettui:browser-open", (e, msg) => cb(msg)),
+    clearBrowsingData: () => ipcRenderer.invoke("pockettui:browser-clear"),
+  },
 });

@@ -73,6 +73,15 @@ function allowed(permission, requestingUrl, details) {
   return true;
 }
 
+// No setSavePath, so Electron shows its save dialog for every download.
+function onDownload(event, item) {
+  item.once("done", (e, state) => {
+    if (state === "completed" && process.platform === "darwin") {
+      app.dock.downloadFinished(item.getSavePath());
+    }
+  });
+}
+
 function setUpSession() {
   const ses = session.defaultSession;
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
@@ -80,15 +89,127 @@ function setUpSession() {
   });
   ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) =>
     allowed(permission, requestingOrigin, details));
-  // No setSavePath, so Electron shows its save dialog for every download.
-  ses.on("will-download", (event, item) => {
-    item.once("done", (e, state) => {
-      if (state === "completed" && process.platform === "darwin") {
-        app.dock.downloadFinished(item.getSavePath());
-      }
-    });
-  });
+  ses.on("will-download", onDownload);
 }
+
+// The browser pane's <webview> tabs: their own persistent session, so logins
+// and cookies survive a restart and never mix with the shell's.
+const BROWSE_PARTITION = "persist:browse";
+const BROWSE_GRANTED = new Set(["fullscreen", "clipboard-sanitized-write"]);
+let browse = null;
+
+function setUpBrowse() {
+  browse = session.fromPartition(BROWSE_PARTITION);
+  browse.setPermissionRequestHandler((wc, permission, callback) =>
+    callback(BROWSE_GRANTED.has(permission)));
+  browse.setPermissionCheckHandler((wc, permission) => BROWSE_GRANTED.has(permission));
+  browse.on("will-download", onDownload);
+  // Sites (Google's sign-in among them) refuse a browser that names itself
+  // Electron; the app's own name/version token goes with it.
+  const name = app.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  browse.setUserAgent(app.userAgentFallback.replace(
+    new RegExp(" (" + name + "|Electron)/\\S+", "g"), ""));
+}
+
+// A guest's window.open / target=_blank. A sized popup (an OAuth sign-in) is a
+// real window in the same session, so the opener keeps its handle; a link
+// meant for a new tab becomes a tab of the pane that holds the guest.
+function guestOpen(contents, details) {
+  const url = details.url || "";
+  const tab = details.disposition === "foreground-tab" || details.disposition === "background-tab";
+  if (tab && contents.getType() === "webview" && contents.hostWebContents
+      && /^https?:/i.test(url)) {
+    contents.hostWebContents.send("pockettui:browser-open", {
+      id: contents.id, url, background: details.disposition === "background-tab",
+    });
+    return { action: "deny" };
+  }
+  return {
+    action: "allow",
+    overrideBrowserWindowOptions: {
+      autoHideMenuBar: true,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    },
+  };
+}
+
+// HTTP Basic/Digest auth for a guest: a small modal over the window holding
+// it. The prompt's preload talks back on channels keyed by its own
+// webContents, so each answer reaches only the request that asked.
+const authPrompts = new Map();
+
+function guestLogin(contents, event, details, authInfo, callback) {
+  event.preventDefault();
+  const host = contents.hostWebContents || contents;
+  const parent = BrowserWindow.fromWebContents(host);
+  const win = new BrowserWindow({
+    parent: parent || undefined,
+    modal: !!parent,
+    width: 380,
+    height: 250,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    autoHideMenuBar: true,
+    title: "Sign in",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? BG_DARK : BG_LIGHT,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, "auth-preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  const id = win.webContents.id;
+  let done = false;
+  const answer = (user, pass) => {
+    if (done) return;
+    done = true;
+    authPrompts.delete(id);
+    if (typeof user === "string") callback(user, typeof pass === "string" ? pass : "");
+    else callback();
+    if (!win.isDestroyed()) win.close();
+  };
+  authPrompts.set(id, {
+    info: { host: authInfo.host + (authInfo.port ? ":" + authInfo.port : ""),
+            realm: authInfo.realm || "", proxy: !!authInfo.isProxy },
+    answer,
+  });
+  win.on("closed", () => answer());
+  win.once("ready-to-show", () => win.show());
+  win.loadFile(path.join(__dirname, "auth.html"));
+}
+
+ipcMain.handle("pockettui:auth-info", (e) => {
+  const p = authPrompts.get(e.sender.id);
+  return p ? p.info : null;
+});
+ipcMain.on("pockettui:auth-submit", (e, user, pass) => {
+  const p = authPrompts.get(e.sender.id);
+  if (p) p.answer(String(user || ""), String(pass || ""));
+});
+ipcMain.on("pockettui:auth-cancel", (e) => {
+  const p = authPrompts.get(e.sender.id);
+  if (p) p.answer();
+});
+
+// Settings' "Clear browsing data", for the pane's own session only.
+ipcMain.handle("pockettui:browser-clear", async (e) => {
+  if (originOf(e.sender.getURL()) !== APP_ORIGIN || !browse) return false;
+  await browse.clearStorageData();
+  await browse.clearCache();
+  await browse.clearAuthCache();
+  return true;
+});
+
+app.on("web-contents-created", (e, contents) => {
+  if (!browse || contents.session !== browse) return;
+  contents.setWindowOpenHandler((details) => guestOpen(contents, details));
+  contents.on("login", (event, details, authInfo, callback) =>
+    guestLogin(contents, event, details, authInfo, callback));
+});
 
 // Which window.open / target=_blank opens where:
 // - The shell's own top frame opens outside links (openUrl in 08-links.js,
@@ -113,7 +234,7 @@ function windowOpenHandler(details) {
       // window's insecure-content allowance is for the shell alone.
       webPreferences: {
         contextIsolation: true, nodeIntegration: false, sandbox: true,
-        allowRunningInsecureContent: false,
+        allowRunningInsecureContent: false, webviewTag: false,
       },
     },
   };
@@ -188,6 +309,9 @@ function createWindow() {
       // The page is https and the user's backend is often plain http on the
       // tailnet or LAN; Chromium would block those calls as mixed content.
       allowRunningInsecureContent: true,
+      // The browser pane's tabs (46-desktop-browser.js); will-attach-webview
+      // below decides what a guest may be.
+      webviewTag: true,
     },
   });
   mainWindows.add(win);
@@ -218,6 +342,23 @@ function createWindow() {
   });
   wc.on("before-input-event", (e, input) => {
     if (process.platform !== "darwin" && zoomKey(wc, input)) e.preventDefault();
+  });
+  // Only the app's own page gets guests, only in the pane's session, and
+  // never with a preload or Node.
+  wc.on("will-attach-webview", (e, prefs, params) => {
+    if (originOf(wc.getURL()) !== APP_ORIGIN || params.partition !== BROWSE_PARTITION) {
+      e.preventDefault();
+      return;
+    }
+    delete prefs.preload;
+    delete prefs.preloadURL;
+    prefs.nodeIntegration = false;
+    prefs.contextIsolation = true;
+    prefs.sandbox = true;
+    prefs.allowRunningInsecureContent = false;
+    prefs.webviewTag = false;
+    // Chromium's PDF viewer is a plugin.
+    prefs.plugins = true;
   });
   win.loadURL(APP_URL);
   return win;
@@ -339,6 +480,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     setUpSession();
+    setUpBrowse();
     buildMenu();
     createWindow();
     createTray(registerHotkey());
