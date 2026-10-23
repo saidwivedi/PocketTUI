@@ -1,0 +1,86 @@
+{
+  "name": "pockettui-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PocketTUI in its own window",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:linux": "electron-builder --linux",
+    "dist:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "45.0.0",
+    "electron-builder": "26.15.3"
+  },
+  "homepage": "https://pockettui.com",
+  "author": {
+    "name": "Sai Kumar Dwivedi",
+    "email": "support@pockettui.com"
+  },
+  "license": "MIT",
+  "build": {
+    "appId": "com.pockettui.desktop",
+    "productName": "PocketTUI",
+    "icon": "../assets/icon-512.png",
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "artifactName": "PocketTUI-${os}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "identity": "-",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "PocketTUI uses the microphone for voice dictation into the terminal."
+      }
+    },
+    "linux": {
+      "category": "Utility;Development",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "maintainer": "PocketTUI <support@pockettui.com>",
+      "syncDesktopName": true
+    },
+    "publish": null
+  },
+  "desktopName": "pockettui.desktop"
+}

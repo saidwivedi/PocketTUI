@@ -62,6 +62,10 @@ Or skip the installer entirely: `./run.sh` creates a `.venv` on first run and st
 
 Not natively (the backend wraps tmux and Unix PTYs), but it works in **WSL2**: run the same installer inside WSL and reach it via Tailscale or WSL's mirrored networking mode.
 
+### Desktop app
+
+The same web client in its own window, for macOS and Linux. It loads the hosted UI, so it updates itself, and shortcuts a browser keeps for itself (Ctrl+W, Ctrl+T, Ctrl+N, Ctrl+Tab) reach the terminal. Download from [pockettui.com](https://pockettui.com/#install) (the button picks your OS). Other builds (Intel or Apple silicon `.dmg`, `.zip`, arm64 `.AppImage`, `.deb`) are at [pockettui.com/download](https://pockettui.com/download), which opens the latest [GitHub release](https://github.com/saidwivedi/pockettui/releases/latest). The app is not notarized. First open: System Settings → Privacy & Security → Open Anyway.
+
 <div align="center">
 <img src="https://pockettui.com/landing_assets/sessions-round.png" alt="Session list" width="24%">
 <img src="https://pockettui.com/landing_assets/keybar-round.png" alt="Touch-first key bar" width="24%">

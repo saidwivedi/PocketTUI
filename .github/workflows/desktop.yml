@@ -1,0 +1,42 @@
+name: Desktop app
+
+on:
+  push:
+    tags: ["desktop-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            script: dist:mac
+            files: |
+              desktop/dist/*.dmg
+              desktop/dist/*.zip
+          - os: ubuntu-latest
+            script: dist:linux
+            files: |
+              desktop/dist/*.AppImage
+              desktop/dist/*.deb
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      # The release version is the tag's, not whatever package.json last said.
+      - run: npm version --no-git-tag-version --allow-same-version "${GITHUB_REF_NAME#desktop-v}"
+      - run: npm run ${{ matrix.script }} -- --publish never
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.files }}
