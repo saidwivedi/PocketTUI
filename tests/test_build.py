@@ -2841,13 +2841,14 @@ def test_a_profile_check_sends_each_code_only_to_its_own_address(doc, tmp_path):
     with its own address and its own code (never cfg's, which is the active
     one's), redirects are not followed with the code on them, and the answer is
     sorted into reachable, code rejected, unreachable, blocked by the browser
-    (https page, http address) and the timeout."""
+    (https page, http address, except in the desktop app) and the timeout."""
     src = "\n".join(_js_chunk(doc, name) for name in (
-        "function loopbackBackend", "function netOffline",
+        "function loopbackBackend", "function mixedContentBlocked", "function netOffline",
         "const PROFILE_CHECK_MS", "function profileApiURL",
         "function profileMixedContent", "async function checkProfile"))
     out = _node_json(tmp_path, "check.mjs", f"""
 globalThis.location = {{ protocol: "https:" }};
+globalThis.window = {{}};
 Object.defineProperty(globalThis, "navigator", {{ value: {{ onLine: true }}, configurable: true }});
 const DEFAULT_BACKEND = "";
 const BASE = "/app/";
@@ -2876,6 +2877,9 @@ got.auth = [a.kind, a.hint];
 got.dead = (await checkProfile({{ backend: "https://dead.example.net", token: "T-DEAD" }})).kind;
 got.down = (await checkProfile({{ backend: "https://gone.example.net", token: "T-GONE" }})).kind;
 got.mixed = (await checkProfile({{ backend: "http://lan.example.net:5560", token: "T-LAN" }})).kind;
+window.pockettuiDesktop = {{ version: "0.2.0" }};
+got.desktop = (await checkProfile({{ backend: "http://lan.example.net:5560", token: "T-LAN" }})).kind;
+delete window.pockettuiDesktop;
 got.slow = (await checkProfile({{ backend: "https://slow.example.net", token: "T-SLOW" }}, 50)).kind;
 got.calls = calls;
 console.log(JSON.stringify(got));
@@ -2885,9 +2889,64 @@ console.log(JSON.stringify(got));
     assert out["dead"] == "proxy_dead"
     assert out["down"] == "unreachable"
     assert out["mixed"] == "mixed_content"
+    assert out["desktop"] == "unreachable"
     assert out["slow"] == "unreachable"
     for url, token, redirect in out["calls"]:
         host = url.split("/")[2].split(".")[0].split(":")[0]
         assert token == "T-" + host.upper(), (url, token)
         assert redirect == "manual"
     assert not any(t == "ACTIVE" for _, t, _ in out["calls"])
+
+
+def test_the_desktop_app_notifies_from_the_session_list(doc, tmp_path):
+    """The desktop app has no Web Push, so while its window is out of sight it
+    polls the list and raises a notification for an opted-in session that has
+    just started waiting or finished its turn: never on the first poll (the
+    baseline), never while the window is in front, never for a bell that is
+    off, and never across a switch to another computer. A click focuses the
+    window and opens the session."""
+    src = "\n".join(_js_chunk(doc, name) for name in (
+        "const DESKTOP_NOTIFY_BODY", "async function desktopNotifyTick"))
+    out = _node_json(tmp_path, "desk.mjs", f"""
+const shown = [], calls = [];
+let front = false, profileGen = 1, list = [], last = null;
+globalThis.document = {{ get hidden() {{ return !front; }}, hasFocus: () => front }};
+globalThis.window = {{ pockettuiDesktop: {{ focus: () => calls.push("focus") }} }};
+globalThis.Notification = class {{
+  constructor(title, o) {{ shown.push([title, o.body, o.tag, o.silent]); last = this; }}
+  static permission = "granted";
+}};
+globalThis.fetch = async () => ({{ ok: true, json: async () => ({{ sessions: list }}) }});
+const demoMode = false, needsSetup = () => false;
+const apiURL = (p) => p, authHeaders = () => ({{}});
+const openSessionByName = (n) => calls.push("open " + n);
+let desktopStates = null;
+{src}
+const row = (name, state, notify = "on", alias = "") => ({{ name, state, notify, alias }});
+list = [row("a", "active"), row("b", "active", "off"), row("c", "active", "quiet", "Cee")];
+await desktopNotifyTick();
+const afterBaseline = shown.length;
+list = [row("a", "waiting"), row("b", "waiting", "off"), row("c", "ready", "quiet", "Cee")];
+await desktopNotifyTick();
+const second = shown.length;
+await desktopNotifyTick();
+const repeat = shown.length;
+last.onclick();
+list = [row("a", "active")];
+await desktopNotifyTick();
+profileGen = 2;
+list = [row("a", "waiting")];
+await desktopNotifyTick();
+const switched = shown.length;
+front = true;
+await desktopNotifyTick();
+const cleared = desktopStates;
+console.log(JSON.stringify({{ afterBaseline, second, repeat, switched, cleared, shown, calls }}));
+""")
+    assert out["afterBaseline"] == 0
+    assert out["shown"][:2] == [["a", "Needs input", "ptui-a", False],
+                                ["Cee", "Done", "ptui-c", True]]
+    assert out["second"] == 2 and out["repeat"] == 2
+    assert out["switched"] == 2
+    assert out["cleared"] is None
+    assert out["calls"] == ["focus", "open c"]

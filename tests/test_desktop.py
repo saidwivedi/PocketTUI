@@ -6,11 +6,14 @@ local page to prove that the chords a browser keeps for itself (Ctrl+W, T, N,
 Shift+N, Tab) reach the page and do not close the window.
 """
 
+import base64
 import functools
+import hashlib
 import http.server
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import threading
 from pathlib import Path
@@ -112,9 +115,25 @@ ENV_FAILURES = ("Missing X server", "cannot open display", "SUID sandbox",
                 "error while loading shared libraries")
 
 
-def _run_harness(tmp_path, harness_js):
+def _self_signed(tmp_path):
+    """A throwaway certificate for 127.0.0.1, for serving the page over https."""
+    openssl = shutil.which("openssl")
+    if not openssl:
+        pytest.skip("openssl is not installed")
+    key, cert = tmp_path / "key.pem", tmp_path / "cert.pem"
+    subprocess.run([openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                    "-keyout", str(key), "-out", str(cert), "-days", "1",
+                    "-subj", "/CN=127.0.0.1"], check=True, capture_output=True)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(cert), str(key))
+    return ctx
+
+
+def _run_harness(tmp_path, harness_js, https=False, env_extra=None):
     """Run harness_js (which loads the real main.js) against PAGE and return
-    the JSON it prints after RESULT, skipping where Electron cannot run."""
+    the JSON it prints after RESULT, skipping where Electron cannot run.
+    With https the page is served over TLS with a self-signed certificate
+    (the harness must pass ignore-certificate-errors itself)."""
     electron = _electron()
     if electron is None:
         pytest.skip("Electron is not installed in desktop/node_modules")
@@ -129,14 +148,18 @@ def _run_harness(tmp_path, harness_js):
                                 directory=str(site))
     handler.log_message = lambda *a: None
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    if https:
+        server.socket = _self_signed(tmp_path).wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     harness = tmp_path / "harness.js"
     harness.write_text(harness_js)
+    scheme = "https" if https else "http"
     env = dict(os.environ,
-               POCKETTUI_APP_URL=f"http://127.0.0.1:{server.server_port}/",
+               POCKETTUI_APP_URL=f"{scheme}://127.0.0.1:{server.server_port}/",
                T_USERDATA=str(tmp_path / "userdata"),
                T_MAIN=str(DESKTOP / "main.js"),
-               ELECTRON_DISABLE_SECURITY_WARNINGS="1")
+               ELECTRON_DISABLE_SECURITY_WARNINGS="1",
+               **(env_extra or {}))
     cmd = [str(electron), str(harness)]
     if xvfb:
         cmd = [xvfb, "-a", "-s", "-screen 0 1280x800x24"] + cmd
@@ -215,3 +238,199 @@ def test_ctrl_plus_minus_zero_zoom_the_window(tmp_path):
     assert reset["dpr"] == start["dpr"] and reset["width"] == start["width"], (start, reset)
     # The zoom chords are consumed, so the terminal never sees them.
     assert reset["keys"] == start["keys"]
+
+
+class _Backend(http.server.BaseHTTPRequestHandler):
+    """A plain-http stand-in for the user's backend: GET /ping answers with
+    CORS, and /ws completes a WebSocket handshake and sends one text frame."""
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.path == "/ws" and self.headers.get("Upgrade", "").lower() == "websocket":
+            accept = base64.b64encode(hashlib.sha1(
+                (self.headers["Sec-WebSocket-Key"]
+                 + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+            self.wfile.write(b"\x81\x05hello")
+            self.wfile.flush()
+            self.rfile.read(2)  # hold the socket until the client closes
+            return
+        body = b"pong"
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+# The page is https (as pockettui.com/app/ is) and calls a plain-http backend
+# by a name that is not loopback (host-resolver-rules points it at the test
+# server), so Chromium's mixed-content rule applies to it. The main window
+# must get through; a popup from it and a window with default preferences
+# must not, which also proves the check can fail. The switches are the
+# harness's own, never main.js's.
+HTTP_BACKEND_HARNESS = """
+const { app, BrowserWindow } = require("electron");
+app.setPath("userData", process.env.T_USERDATA);
+app.commandLine.appendSwitch("ignore-certificate-errors");
+app.commandLine.appendSwitch("host-resolver-rules", "MAP backend.example.net 127.0.0.1");
+// The page counts as public, as pockettui.com is, so a Chromium that enforces
+// Local Network Access treats the backend call as public-to-local.
+app.commandLine.appendSwitch("ip-address-space-overrides",
+  "127.0.0.1:" + new URL(process.env.POCKETTUI_APP_URL).port + "=public");
+const B = "http://backend.example.net:" + process.env.T_BACKEND_PORT;
+const CHECK = `(async () => {
+  const out = {};
+  try { out.fetch = await (await fetch("${B}/ping")).text(); }
+  catch (e) { out.fetch = "error"; }
+  out.ws = await new Promise((res) => {
+    try {
+      const ws = new WebSocket("${B.replace("http", "ws")}/ws");
+      ws.onmessage = (e) => { res(e.data); ws.close(); };
+      ws.onerror = () => res("error");
+      setTimeout(() => res("timeout"), 5000);
+    } catch (e) { res("error"); }
+  });
+  return out;
+})()`;
+let first = true;
+app.on("browser-window-created", (e, win) => {
+  if (!first) return;
+  first = false;
+  win.webContents.once("did-finish-load", async () => {
+    const wc = win.webContents;
+    const result = { main: await wc.executeJavaScript(CHECK) };
+    // A popup as the browser pane opens one: no referrer from the shell, so
+    // windowOpenHandler keeps it in the app.
+    const popup = await new Promise((res) => {
+      wc.once("did-create-window", (child) =>
+        child.webContents.once("did-finish-load", () => res(child)));
+      wc.executeJavaScript(
+        "window.open(location.href + '?popup', '_blank', 'noreferrer')", true);
+    });
+    result.popup = await popup.webContents.executeJavaScript(CHECK);
+    const plain = new BrowserWindow({ show: false,
+      webPreferences: { sandbox: true, contextIsolation: true } });
+    await plain.loadURL(process.env.POCKETTUI_APP_URL);
+    result.plain = await plain.webContents.executeJavaScript(CHECK);
+    console.log("RESULT " + JSON.stringify(result));
+    app.exit(0);
+  });
+});
+require(process.env.T_MAIN);
+"""
+
+
+def test_https_page_reaches_a_plain_http_backend(tmp_path):
+    backend = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Backend)
+    threading.Thread(target=backend.serve_forever, daemon=True).start()
+    try:
+        result = _run_harness(tmp_path, HTTP_BACKEND_HARNESS, https=True,
+                              env_extra={"T_BACKEND_PORT": str(backend.server_port)})
+    finally:
+        backend.shutdown()
+    assert result["main"] == {"fetch": "pong", "ws": "hello"}, result
+    assert result["popup"] == {"fetch": "error", "ws": "error"}, result
+    assert result["plain"] == {"fetch": "error", "ws": "error"}, result
+
+
+# The page's notification permission, granted to the app's origin by main.js
+# without a prompt; and the bridge the page's notification click calls.
+NOTIFY_HARNESS = """
+const { app } = require("electron");
+app.setPath("userData", process.env.T_USERDATA);
+app.on("browser-window-created", (e, win) => {
+  win.webContents.once("did-finish-load", async () => {
+    const result = await win.webContents.executeJavaScript(`(async () => ({
+      before: Notification.permission,
+      asked: await Notification.requestPermission(),
+      after: Notification.permission,
+      focus: typeof (window.pockettuiDesktop || {}).focus,
+    }))()`);
+    console.log("RESULT " + JSON.stringify(result));
+    app.exit(0);
+  });
+});
+require(process.env.T_MAIN);
+"""
+
+
+def test_notifications_are_granted_to_the_app(tmp_path):
+    result = _run_harness(tmp_path, NOTIFY_HARNESS)
+    assert result == {"before": "granted", "asked": "granted", "after": "granted",
+                      "focus": "function"}, result
+
+
+# The global hotkey is registered (the default, or window-state.json's
+# `hotkey`), and the function it calls hides a focused window and brings a
+# hidden one back. Pressing the real chord needs an X server that delivers
+# grabbed keys, so where xdotool is present it is pressed too. Closing the
+# window on Linux, with the tray up, hides it rather than quitting, and the
+# bounds saved on the way keep the hand-set hotkey.
+HOTKEY_HARNESS = """
+const { app, globalShortcut } = require("electron");
+const { execFile } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+app.setPath("userData", process.env.T_USERDATA);
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (f) => { for (let i = 0; i < 30 && !f(); i++) await wait(100); return f(); };
+let main;
+app.on("browser-window-created", (e, win) => {
+  win.once("ready-to-show", async () => {
+    await until(() => win.isVisible());
+    win.focus();
+    await until(() => win.isFocused());
+    const r = { focused: win.isFocused(),
+                registered: globalShortcut.isRegistered(process.env.T_HOTKEY),
+                defaultRegistered: globalShortcut.isRegistered("CommandOrControl+Shift+Space") };
+    r.first = main.toggleWindow();
+    r.hiddenAfterFirst = await until(() => !win.isVisible());
+    r.second = main.toggleWindow();
+    r.visibleAfterSecond = await until(() => win.isVisible());
+    if (process.env.T_XDOTOOL) {
+      win.focus();
+      await until(() => win.isFocused());
+      await new Promise((res) => execFile(process.env.T_XDOTOOL,
+        ["key", "ctrl+shift+space"], () => res()));
+      r.chordHid = await until(() => !win.isVisible());
+    }
+    win.show();
+    win.close();
+    await wait(300);
+    r.closeKeptApp = !win.isDestroyed() && !win.isVisible();
+    r.saved = JSON.parse(fs.readFileSync(
+      path.join(process.env.T_USERDATA, "window-state.json"), "utf8"));
+    console.log("RESULT " + JSON.stringify(r));
+    app.exit(0);
+  });
+});
+main = require(process.env.T_MAIN);
+"""
+
+
+@pytest.mark.parametrize("hotkey", [None, "CommandOrControl+Shift+K"])
+def test_hotkey_toggles_the_window(tmp_path, hotkey):
+    userdata = tmp_path / "userdata"
+    userdata.mkdir()
+    if hotkey:
+        (userdata / "window-state.json").write_text(json.dumps({"hotkey": hotkey}))
+    expect = hotkey or "CommandOrControl+Shift+Space"
+    xdotool = shutil.which("xdotool")
+    r = _run_harness(tmp_path, HOTKEY_HARNESS, env_extra={
+        "T_HOTKEY": expect, "T_XDOTOOL": xdotool if xdotool and not hotkey else ""})
+    assert r["registered"], r
+    assert r["defaultRegistered"] is (hotkey is None), r
+    assert r["focused"], r
+    assert (r["first"], r["hiddenAfterFirst"]) == ("hidden", True), r
+    assert (r["second"], r["visibleAfterSecond"]) == ("shown", True), r
+    if xdotool and not hotkey:
+        assert r["chordHid"], r
+    assert r["closeKeptApp"], r
+    assert r["saved"].get("hotkey") == hotkey and "width" in r["saved"], r

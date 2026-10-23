@@ -192,6 +192,14 @@ function loopbackBackend(url) {
   return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
 }
 
+// Whether the browser refuses this backend before any packet leaves: an http
+// address from an https page, loopback aside. The desktop app (desktop/main.js)
+// allows insecure content in its own window, so there it is never refused.
+function mixedContentBlocked(url) {
+  return location.protocol === "https:" && /^http:/i.test(url || "")
+    && !loopbackBackend(url) && !window.pockettuiDesktop;
+}
+
 // The device's own answer about its network. Only a definite no counts:
 // browsers report true whenever an interface is up, captive portal or not.
 function netOffline() { return navigator.onLine === false; }
@@ -244,8 +252,7 @@ async function probeServer(timeoutMs = 2500) {
 function classifyFailure(err, response, probe) {
   let kind = "unreachable";
   if (netOffline()) kind = "offline";
-  else if (location.protocol === "https:" && /^http:/i.test(cfg.backend || "")
-           && !loopbackBackend(cfg.backend)) kind = "mixed_content";
+  else if (mixedContentBlocked(cfg.backend)) kind = "mixed_content";
   else if (response && response.status === 403) kind = "blocked";
   else if (probe && FAILURE_COPY[probe.kind]) kind = probe.kind;
   else if (probe && (probe.kind === "ok" || probe.kind === "old_server")) kind = "server_error";

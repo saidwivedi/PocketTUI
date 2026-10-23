@@ -50,6 +50,10 @@ function pushKeyBytes(v) {
 // Returns whether it did — false is not an error: @notify still turns on and
 // the ntfy transport still fires; push is one transport, never the gate.
 async function ensurePushSubscription() {
+  // The desktop app has no push service; it raises its own notifications from
+  // the session list (desktopNotifyTick below), and its window already holds
+  // the permission (desktop/main.js grants it to the app's origin).
+  if (window.pockettuiDesktop) return false;
   if (!("serviceWorker" in navigator) || !("PushManager" in window) ||
       !("Notification" in window) || location.protocol !== "https:") return false;
   try {
@@ -205,6 +209,53 @@ if (cfg.debug && "caches" in window) {
       }
     })
     .catch(() => {});
+}
+
+// ------------------------------------------------------------
+// Desktop app notifications
+// ------------------------------------------------------------
+// Web Push never reaches the desktop app, so while its window is out of sight
+// it asks /api/sessions itself and raises a native notification when an
+// opted-in session starts asking for input or finishes its turn, the two
+// watcher states a push is sent for. The list carries the state but not the
+// pane's prompt line, so the body names the state. A click brings the window
+// forward on that session.
+const DESKTOP_NOTIFY_MS = 10000;
+const DESKTOP_NOTIFY_BODY = { waiting: "Needs input", ready: "Done" };
+// States as of the previous poll, and which computer they belong to; null
+// while the window is in front, so a state reached under the user's eyes is
+// the baseline rather than news.
+let desktopStates = null;
+
+async function desktopNotifyTick() {
+  if (!document.hidden && document.hasFocus()) { desktopStates = null; return; }
+  if (demoMode || needsSetup() || Notification.permission !== "granted") return;
+  const pgen = profileGen;
+  let sessions;
+  try {
+    const r = await fetch(apiURL("api/sessions"), { cache: "no-store", headers: authHeaders() });
+    if (!r.ok) return;
+    sessions = (await r.json()).sessions || [];
+  } catch (e) { return; }
+  if (pgen !== profileGen) return;
+  const prev = desktopStates && desktopStates.pgen === pgen ? desktopStates.map : null;
+  desktopStates = { pgen, map: new Map(sessions.map((s) => [s.name, s.state || ""])) };
+  if (!prev) return;
+  for (const s of sessions) {
+    const body = DESKTOP_NOTIFY_BODY[s.state];
+    if (!body || s.notify === "off" || !prev.has(s.name) || prev.get(s.name) === s.state) continue;
+    const n = new Notification(s.alias || s.name, {
+      body, tag: "ptui-" + s.name, icon: "icon-192.png", silent: s.notify === "quiet",
+    });
+    n.onclick = () => {
+      window.pockettuiDesktop.focus();
+      openSessionByName(s.name);
+    };
+  }
+}
+
+if (window.pockettuiDesktop && "Notification" in window) {
+  setInterval(desktopNotifyTick, DESKTOP_NOTIFY_MS);
 }
 
 // Warm the status cache so the first bell tap needs no round-trip before the

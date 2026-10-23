@@ -1,6 +1,6 @@
 {
   "name": "pockettui-desktop",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "PocketTUI in its own window",
   "main": "main.js",
@@ -25,7 +25,8 @@
     "icon": "../assets/icon-512.png",
     "files": [
       "main.js",
-      "preload.js"
+      "preload.js",
+      "tray/*.png"
     ],
     "directories": {
       "output": "dist",
