@@ -1,4 +1,7 @@
-const { app, BrowserWindow, Menu, nativeTheme, screen, session, shell } = require("electron");
+const {
+  app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, screen,
+  session, shell, Tray,
+} = require("electron");
 const fs = require("fs");
 const path = require("path");
 
@@ -10,15 +13,31 @@ const APP_ORIGIN = new URL(APP_URL).origin;
 const BG_LIGHT = "#FAF8F3";
 const BG_DARK = "#16140f";
 
+// The local-network names are Chromium's Local Network Access gate on a
+// public page (pockettui.com) calling the user's own backend on a tailnet,
+// LAN or loopback address.
 const GRANTED = new Set([
   "media", "notifications", "clipboard-read", "clipboard-sanitized-write", "fullscreen",
+  "local-network-access", "local-network", "loopback-network",
 ]);
+
+const DEFAULT_HOTKEY = "CommandOrControl+Shift+Space";
 
 const boundsFile = () => path.join(app.getPath("userData"), "window-state.json");
 
+// window-state.json holds the window's bounds and, set by hand, `hotkey`.
+function readState() {
+  try {
+    const s = JSON.parse(fs.readFileSync(boundsFile(), "utf8"));
+    return s && typeof s === "object" ? s : {};
+  } catch (e) {
+    return {};
+  }
+}
+
 function readBounds() {
   try {
-    const b = JSON.parse(fs.readFileSync(boundsFile(), "utf8"));
+    const b = readState();
     if (![b.x, b.y, b.width, b.height].every(Number.isFinite)) return null;
     // A display that has since been unplugged would put the window off screen.
     const area = screen.getDisplayMatching(b).workArea;
@@ -32,7 +51,7 @@ function readBounds() {
 
 function saveBounds(win) {
   try {
-    const b = { ...win.getNormalBounds(), maximized: win.isMaximized() };
+    const b = { ...readState(), ...win.getNormalBounds(), maximized: win.isMaximized() };
     fs.mkdirSync(path.dirname(boundsFile()), { recursive: true });
     fs.writeFileSync(boundsFile(), JSON.stringify(b));
   } catch (e) { /* a lost size is not worth an error */ }
@@ -90,7 +109,12 @@ function windowOpenHandler(details) {
     action: "allow",
     overrideBrowserWindowOptions: {
       autoHideMenuBar: true,
-      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+      // A child window inherits its opener's webPreferences; the main
+      // window's insecure-content allowance is for the shell alone.
+      webPreferences: {
+        contextIsolation: true, nodeIntegration: false, sandbox: true,
+        allowRunningInsecureContent: false,
+      },
     },
   };
 }
@@ -114,6 +138,36 @@ function zoomKey(wc, input) {
   return true;
 }
 
+// Windows createWindow made, as opposed to browser-pane popups.
+const mainWindows = new Set();
+let tray = null;
+let quitting = false;
+
+function mainWindow() {
+  for (const w of mainWindows) if (!w.isDestroyed()) return w;
+  return null;
+}
+
+function showWindow(win) {
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+// The global hotkey and the tray: bring the window forward, or put it away
+// when it is already in front. Returns what it did, for the tests.
+function toggleWindow() {
+  const win = mainWindow();
+  if (!win) { createWindow(); return "created"; }
+  if (win.isVisible() && win.isFocused()) {
+    // app.hide hands focus back to the app that had it before.
+    if (process.platform === "darwin") app.hide(); else win.hide();
+    return "hidden";
+  }
+  showWindow(win);
+  return "shown";
+}
+
 function createWindow() {
   const saved = readBounds();
   const win = new BrowserWindow({
@@ -131,13 +185,26 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // The page is https and the user's backend is often plain http on the
+      // tailnet or LAN; Chromium would block those calls as mixed content.
+      allowRunningInsecureContent: true,
     },
   });
+  mainWindows.add(win);
+  win.on("closed", () => mainWindows.delete(win));
   if (saved && saved.maximized) win.maximize();
   win.once("ready-to-show", () => win.show());
   // The page's <title> would otherwise replace the window's name.
   win.on("page-title-updated", (e) => e.preventDefault());
-  win.on("close", () => saveBounds(win));
+  win.on("close", (e) => {
+    saveBounds(win);
+    // On Linux, with a tray to come back through, closing puts the window
+    // away instead of quitting. macOS keeps the app in the dock either way.
+    if (tray && !quitting && process.platform !== "darwin") {
+      e.preventDefault();
+      win.hide();
+    }
+  });
 
   const wc = win.webContents;
   wc.setWindowOpenHandler(windowOpenHandler);
@@ -222,24 +289,66 @@ function buildMenu() {
   ]));
 }
 
+function prettyAccelerator(acc) {
+  const mod = process.platform === "darwin" ? "Cmd" : "Ctrl";
+  return acc.replace(/CommandOrControl|CmdOrCtrl/g, mod);
+}
+
+function registerHotkey() {
+  const set = readState().hotkey;
+  const hotkey = typeof set === "string" && set ? set : DEFAULT_HOTKEY;
+  let ok = false;
+  try { ok = globalShortcut.register(hotkey, toggleWindow); } catch (e) { /* bad accelerator */ }
+  return { hotkey, ok };
+}
+
+function createTray(hotkey) {
+  // trayTemplate.png is a black silhouette that macOS tints for the menu
+  // bar; Linux panels get the coloured icon.
+  const file = process.platform === "darwin" ? "trayTemplate.png" : "tray.png";
+  tray = new Tray(nativeImage.createFromPath(path.join(__dirname, "tray", file)));
+  tray.setToolTip("PocketTUI");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "Show PocketTUI", click: () => {
+      const win = mainWindow();
+      if (win) showWindow(win); else createWindow();
+    } },
+    { label: hotkey.ok ? `Show or hide: ${prettyAccelerator(hotkey.hotkey)}`
+      : `Hotkey ${prettyAccelerator(hotkey.hotkey)} is unavailable`, enabled: false },
+    { type: "separator" },
+    { label: "Quit", click: () => app.quit() },
+  ]));
+}
+
+// A notification click from the page (30-notify.js) brings its window up.
+ipcMain.on("pockettui:focus", (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (win && mainWindows.has(win) && originOf(e.sender.getURL()) === APP_ORIGIN) showWindow(win);
+});
+
+if (require.main !== module) module.exports = { toggleWindow, mainWindow, registerHotkey };
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = mainWindow();
     if (!win) { createWindow(); return; }
-    if (win.isMinimized()) win.restore();
-    win.focus();
+    showWindow(win);
   });
 
   app.whenReady().then(() => {
     setUpSession();
     buildMenu();
     createWindow();
+    createTray(registerHotkey());
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
   });
+
+  app.on("before-quit", () => { quitting = true; });
+  app.on("will-quit", () => globalShortcut.unregisterAll());
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();

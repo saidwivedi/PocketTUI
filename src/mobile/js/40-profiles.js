@@ -75,9 +75,7 @@ function profileApiURL(p, path) {
 // An http address from an https page, which the browser refuses before any
 // packet leaves — the same test classifyFailure() makes for the active one.
 function profileMixedContent(p) {
-  const backend = (p && p.backend) || DEFAULT_BACKEND;
-  return location.protocol === "https:" && /^http:/i.test(backend)
-    && !loopbackBackend(backend);
+  return mixedContentBlocked((p && p.backend) || DEFAULT_BACKEND);
 }
 
 // The verdict in FAILURE_COPY's vocabulary plus two of its own: "ok" (answered
