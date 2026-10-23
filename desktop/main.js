@@ -95,6 +95,25 @@ function windowOpenHandler(details) {
   };
 }
 
+// Chromium's zoom factor range is 0.25..5, which at 1.2 per level is about
+// -7.6..8.8; half steps keep inside it.
+const ZOOM_MIN = -7.5;
+const ZOOM_MAX = 8.5;
+
+// Ctrl+= / Ctrl++ / Ctrl+- / Ctrl+0 scale the window as in a browser tab. On
+// macOS the View menu's zoom roles own Cmd+= / Cmd+- / Cmd+0 instead.
+function zoomKey(wc, input) {
+  if (input.type !== "keyDown" || !input.control || input.alt || input.meta) return false;
+  let step;
+  if (input.key === "=" || input.key === "+" || input.code === "NumpadAdd") step = 0.5;
+  else if (input.key === "-" || input.code === "NumpadSubtract") step = -0.5;
+  else if (input.key === "0" || input.code === "Numpad0") step = 0;
+  else return false;
+  const level = step === 0 ? 0 : wc.getZoomLevel() + step;
+  wc.setZoomLevel(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, level)));
+  return true;
+}
+
 function createWindow() {
   const saved = readBounds();
   const win = new BrowserWindow({
@@ -130,13 +149,17 @@ function createWindow() {
       if (/^https?:/i.test(url)) shell.openExternal(url);
     }
   });
+  wc.on("before-input-event", (e, input) => {
+    if (process.platform !== "darwin" && zoomKey(wc, input)) e.preventDefault();
+  });
   win.loadURL(APP_URL);
   return win;
 }
 
 // Only chords the page has no use for get an accelerator. Close, new window,
-// reload, zoom and devtools have none, so Ctrl/Cmd+W, T, N, R, Tab and the
-// rest reach the terminal. On Linux there is no menu at all: Edit-role
+// reload and devtools have none, so Ctrl/Cmd+W, T, N, R, Tab and the rest
+// reach the terminal. Zoom does get Cmd+= / Cmd+- / Cmd+0: browsers already
+// keep those for themselves, so the page never relied on them. On Linux there is no menu at all: Edit-role
 // accelerators there would be Ctrl+C/V/Z/A, which the terminal needs (^C is
 // SIGINT), and Chromium handles copy and paste in fields without a menu.
 function buildMenu() {
@@ -175,6 +198,12 @@ function buildMenu() {
       submenu: [
         { label: "Reload", click: () => focused() && focused().webContents.reload() },
         { label: "Toggle Developer Tools", click: () => focused() && focused().webContents.toggleDevTools() },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        // The role's accelerator is Cmd+Plus (Cmd+Shift+=); this adds Cmd+=.
+        { role: "zoomIn", accelerator: "CommandOrControl+=", visible: false },
+        { role: "zoomOut" },
         { type: "separator" },
         { role: "togglefullscreen" },
       ],
