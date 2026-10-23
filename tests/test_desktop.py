@@ -112,7 +112,9 @@ ENV_FAILURES = ("Missing X server", "cannot open display", "SUID sandbox",
                 "error while loading shared libraries")
 
 
-def test_browser_chords_reach_the_page(tmp_path):
+def _run_harness(tmp_path, harness_js):
+    """Run harness_js (which loads the real main.js) against PAGE and return
+    the JSON it prints after RESULT, skipping where Electron cannot run."""
     electron = _electron()
     if electron is None:
         pytest.skip("Electron is not installed in desktop/node_modules")
@@ -129,7 +131,7 @@ def test_browser_chords_reach_the_page(tmp_path):
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     harness = tmp_path / "harness.js"
-    harness.write_text(HARNESS)
+    harness.write_text(harness_js)
     env = dict(os.environ,
                POCKETTUI_APP_URL=f"http://127.0.0.1:{server.server_port}/",
                T_USERDATA=str(tmp_path / "userdata"),
@@ -152,8 +154,64 @@ def test_browser_chords_reach_the_page(tmp_path):
         if any(s in proc.stderr for s in ENV_FAILURES):
             pytest.skip("Electron cannot run here: " + proc.stderr[-300:])
         pytest.fail("no result from Electron:\n" + proc.stderr[-2000:])
-    result = json.loads(lines[0][len("RESULT "):])
+    return json.loads(lines[0][len("RESULT "):])
+
+
+def test_browser_chords_reach_the_page(tmp_path):
+    result = _run_harness(tmp_path, HARNESS)
     assert result["open"], "Ctrl+W closed the window"
     for key in ("w,true,false,false", "t,true,false,false",
                 "n,true,false,false", "N,true,true,false", "Tab,true,false,false"):
         assert key in result["keys"], (key, result["keys"])
+
+
+# Ctrl+= zooms in, Ctrl+- out and Ctrl+0 resets, as in a browser tab (the
+# Linux path; macOS uses the View menu's zoom roles, which need a real menu
+# bar). Each step records the zoom level and what the page measures.
+ZOOM_HARNESS = """
+const { app } = require("electron");
+app.setPath("userData", process.env.T_USERDATA);
+app.on("browser-window-created", (e, win) => {
+  win.webContents.once("did-finish-load", async () => {
+    const wc = win.webContents;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    await wait(1000);
+    wc.focus();
+    const steps = [];
+    const read = async (name) => steps.push({ name, level: wc.getZoomLevel(),
+      ...(await wc.executeJavaScript(
+        "({ dpr: devicePixelRatio, width: innerWidth, keys: window.keys.length })")) });
+    const press = async (key, modifiers) => {
+      wc.sendInputEvent({ type: "keyDown", keyCode: key, modifiers });
+      wc.sendInputEvent({ type: "keyUp", keyCode: key, modifiers });
+      await wait(500);
+    };
+    await read("start");
+    await press("=", ["control"]);
+    await read("in");
+    await press("=", ["control", "shift"]);
+    await read("in2");
+    await press("-", ["control"]);
+    await read("out");
+    await press("0", ["control"]);
+    await read("reset");
+    console.log("RESULT " + JSON.stringify(steps));
+    app.exit(0);
+  });
+});
+require(process.env.T_MAIN);
+"""
+
+
+def test_ctrl_plus_minus_zero_zoom_the_window(tmp_path):
+    steps = {s["name"]: s for s in _run_harness(tmp_path, ZOOM_HARNESS)}
+    start, zin, zin2, out, reset = (steps[n] for n in ("start", "in", "in2", "out", "reset"))
+    assert start["level"] == 0
+    assert zin["level"] == 0.5
+    assert zin["dpr"] > start["dpr"] and zin["width"] < start["width"], (start, zin)
+    assert zin2["level"] == 1.0
+    assert out["level"] == 0.5
+    assert reset["level"] == 0
+    assert reset["dpr"] == start["dpr"] and reset["width"] == start["width"], (start, reset)
+    # The zoom chords are consumed, so the terminal never sees them.
+    assert reset["keys"] == start["keys"]
