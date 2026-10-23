@@ -991,7 +991,7 @@ def test_a_finished_record_is_left_alone(tmp_path):
 # It must fail, not skip, when that binary is missing: a gate nobody runs is
 # the failure mode this closes.
 
-SHIPPED_SCRIPTS = ("install.sh", "setup_voice.sh", "run.sh")
+SHIPPED_SCRIPTS = ("install.sh", "desktop.sh", "setup_voice.sh", "run.sh")
 WRAPPER_SECTION = ('WRAPPER_CONTENT="$(cat <<EOF', ')"')
 
 BASH32_HELP = (
