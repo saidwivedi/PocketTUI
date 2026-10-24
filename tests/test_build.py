@@ -4022,6 +4022,81 @@ console.log(JSON.stringify(mats.slice(0, 4).map(m => [m.opacity, m.transparent])
     obj = _js_chunk(doc, "async function meshMount(")
     assert "for (const m of mats) m.side = T.DoubleSide;\n        meshOpaqueRescue(mats);" in obj
 
+
+def test_the_mesh_viewer_draws_a_ground_grid_and_axis_triad(doc, tmp_path):
+    """Founder, 2026-10-25: a grid and a coordinate frame "like MeshLab" so a
+    model reads as 3D and people turn it. The grid lies under the model's box
+    with a power-of-ten cell (a scale, not a chessboard), is built after the
+    camera is framed and outside the model so neither the framing nor the
+    label's counts see it, is recoloured on a theme flip, and one key (kept
+    in cfg, on by default) hides it together with the corner triad."""
+    names = ["function meshGridPlan(", "function meshGridLines(", "function meshGridObject(",
+             "function meshGridTheme("]
+    src = "\n".join(_js_chunk(doc, n) for n in names)
+    at = doc.index("\n  get meshGrid()", doc.index("\nconst cfg = {"))
+    getter = doc[at:doc.index("\n", doc.index("  set meshGrid(", at))]
+    three = json.dumps(str(REPO / "vendor" / "three.js"))
+    out = _node_json(tmp_path, "grid.mjs", f"""
+import fs from "node:fs";
+import vm from "node:vm";
+const ctx = {{}}; ctx.window = ctx; ctx.self = ctx;
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync({three}, "utf8"), ctx);
+globalThis.THREE3D = ctx.THREE3D;
+const store = new Map();
+globalThis.localStorage = {{ getItem: (k) => store.has(k) ? store.get(k) : null,
+                            setItem: (k, v) => store.set(k, String(v)) }};
+const cfg = {{ {getter} }};
+{src}
+const r = {{ cfgDefault: cfg.meshGrid }};
+cfg.meshGrid = false; r.cfgOff = [cfg.meshGrid, store.get("pockettui_mesh_grid")];
+cfg.meshGrid = true; r.cfgOn = cfg.meshGrid;
+const unit = meshGridPlan([-0.5, 0.2, -0.3], [0.5, 1.2, 0.3]);
+r.unit = [unit.cell, unit.n, unit.cx, unit.cz, unit.y];
+r.big = meshGridPlan([100, 0, 100], [140, 10, 120]).cell;
+r.tiny = meshGridPlan([0, 0, 0], [0.003, 0.001, 0.002]).cell;
+r.flat = meshGridPlan([1, 1, 1], [1, 1, 1]).cell;
+const lines = meshGridLines(meshGridPlan([-0.5, 0, -0.5], [0.5, 1, 0.5]));
+r.lines = [lines.positions.length / 6, lines.major.reduce((a, b) => a + b, 0),
+           Array.from(lines.positions.slice(0, 6)).map((v) => +v.toFixed(4))];
+const g = meshGridObject(unit);
+r.obj = [g.isLineSegments, g.material.transparent, g.material.depthWrite,
+         !!g.geometry.getAttribute("major"), g.material.uniforms.uHalf.value];
+meshGridTheme(g, {{ hair: "#DDD4BE", secondary: "#6b6357" }});
+const light = g.material.uniforms.uMinor.value.getHexString();
+meshGridTheme(g, {{ hair: "#3b362a", secondary: "#a89e8c" }});
+r.theme = [light, g.material.uniforms.uMinor.value.getHexString()];
+console.log(JSON.stringify(r));
+""")
+    assert out["cfgDefault"] is True
+    assert out["cfgOff"] == [False, "0"] and out["cfgOn"] is True
+    # A 1-unit model: 0.1 cells, 13 out from the centre, under the bottom.
+    assert out["unit"][:4] == [0.1, 13, 0, 0] and out["unit"][4] < 0.2
+    assert out["big"] == 1 and out["tiny"] == 0.0001 and out["flat"] == 0.1
+    # 27 lines each way; every tenth cell from the origin is a major line.
+    assert out["lines"][0] == 54 and out["lines"][1] == 3 * 2 * 2
+    assert out["lines"][2] == [-1.3, -0.001, -1.3, -1.3, -0.001, 1.3]
+    assert out["obj"] == [True, True, False, True, 1.3]
+    assert out["theme"][0] != out["theme"][1]
+
+    mount = _js_chunk(doc, "async function meshMount(")
+    # The grid is made from the model's box after the framing, beside the model.
+    show = mount[mount.index("  function show("):]
+    assert show.index("controls.update();") < show.index("grid = meshGridObject(")
+    assert "grid = meshGridObject(meshGridPlan(box.min.toArray(), box.max.toArray()));" in show
+    assert "scene.add(grid);" in show and "current.add(grid)" not in mount
+    assert "if (grid) meshGridTheme(grid, t);" in _js_chunk(doc, "async function meshMount(")
+    # The triad is a second pass inside the on-demand frame, in a corner viewport.
+    frame = mount[mount.index("  function frame() {"):mount.index("  function resize() {")]
+    assert "renderer.render(scene, controls.object);\n    if (gridOn && triad) drawTriad(controls.object);" in frame
+    assert "renderer.setScissor(x, y, size, size);" in frame and "renderer.autoClear = false;" in frame
+    assert "const size = touchOnly() ? 48 : 64;" in frame
+    assert "requestAnimationFrame" not in frame
+    # One key, kept in cfg, hides both; the hint is a once-per-visit flag.
+    assert "let gridOn = cfg.meshGrid;" in mount and "cfg.meshGrid = gridOn;" in mount
+    assert "let meshHintSeen = false;" in doc
+    assert "if (!meshHintSeen) showHint();" in mount
+
 def test_the_workspace_terminal_height_defaults_and_clamps(doc, tmp_path):
     """The expanded explorer's terminal panel (26-side-pane.js): 30% of the
     window until the seam is dragged, never under 120px or over 70%."""

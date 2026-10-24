@@ -3078,6 +3078,33 @@ html.term-open #dbg-panel { opacity: 0.85; }
   padding: 4px 6px;
   max-width: 45vw;
 }
+/* The grid key: a mode toggle that shows its state, lit in the accent while
+   the ground grid and the axis triad are drawn. */
+:is(.viewer, .ws-pane) .mesh-grid-key {
+  font: 12px var(--sans);
+  color: var(--secondary); background: var(--card);
+  border: 1px solid var(--hair-strong); border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+:is(.viewer, .ws-pane) .mesh-grid-key[aria-pressed="true"] {
+  color: var(--umber); background: var(--umber-soft); border-color: var(--umber);
+}
+/* "Drag to rotate", centred above the label row, fading out once read. */
+:is(.viewer, .ws-pane) .mesh-hint {
+  position: absolute;
+  left: 50%; bottom: calc(40px + var(--safe-bot));
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--card); border: 1px solid var(--hair);
+  font: 12px/1.3 var(--sans);
+  color: var(--secondary);
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 0.35s var(--ease-out);
+}
+:is(.viewer, .ws-pane) .mesh-hint.gone { opacity: 0; }
 /* A PDF is the one tenant that draws a toolbar of its own, along the top edge
    where this overlay keeps its buttons: the frame starts below them rather
    than under them, so neither row is a press the other swallows. */
