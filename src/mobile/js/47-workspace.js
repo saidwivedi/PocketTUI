@@ -16,10 +16,11 @@
 // tabs always act on the listing they sit in. The pane loads before this
 // fragment, so it reaches makeWorkspace only from a press, never while it loads.
 //
-// The tabs are in groups: `groups[0]`, which may be empty and then says how to
-// open a file, and while a tab has been dragged down into it a second one
-// under the first, VS Code's split down. Whichever of the two empties goes,
-// and the other is the files again.
+// The tabs are in groups, at most four in a 2x2 grid: one or two columns, each
+// one group or two stacked, made by dragging a tab to the right of a group or
+// below it, VS Code's split beside and split down. A group whose last tab
+// leaves goes, and a column with none left goes, unless that group is the only
+// one: then it stays, empty, and says how to open a file.
 
 // The tree's width, in pixels, before the user has dragged it, and the bounds
 // the drag is held to: wide enough for a name, never more than most of the pane.
@@ -27,8 +28,8 @@ const WS_TREE_W = 220;
 const WS_TREE_MIN = 140;
 const WS_TREE_MAX = 0.6;
 
-// The least height either of two groups is held to by the seam between them:
-// a band of tabs and a few lines of what they show.
+// The least height (or width) either side of a seam between groups is held
+// to: a band of tabs and a few lines of what they show.
 const WS_GROUP_MIN = 120;
 
 // A tab's press becomes a drag after this much travel, the session list's
@@ -123,13 +124,16 @@ function wsKindOf(path) {
 }
 
 // Where a dragged tab would land, worked out from plain numbers so it reads
-// without a page: `pt` is the pointer, `geo.area` the groups' box, and each of
-// `geo.groups` its tab band's box (`row`), its body's box (`body`) and the
-// middles of its chips in strip order (`mids`). Over a band, the slot before
-// the first chip whose middle is right of the pointer. Over a body while there
-// is one group, its right third is a split beside it, the rest of its lower
-// half a split below it, and what is left that group; with two, a body is its
-// group, the tab added at the end. Anywhere else, nothing.
+// without a page: `pt` is the pointer, `geo.cols` how many columns there are,
+// and each of `geo.groups` its tab band's box (`row`), its body's box (`body`),
+// its column's box (`col`), how many groups that column holds (`stack`) and
+// the middles of its chips in strip order (`mids`). Over a band, the slot
+// before the first chip whose middle is right of the pointer. Over a body, the
+// right third of its column is a new column beside it while there is only one
+// column; the rest of the column's lower half is a new group under it while
+// the column holds only that group; and what is left that group, the tab
+// added at the end. The zones are the column's, not the body's, so a lone
+// group's are the files' as a whole. Anywhere else, nothing.
 function wsDropTarget(pt, geo) {
   const inside = (r) => !!r && pt.x >= r.left && pt.x < r.right
                         && pt.y >= r.top && pt.y < r.bottom;
@@ -141,11 +145,12 @@ function wsDropTarget(pt, geo) {
       return { kind: "insert", group: g, index };
     }
     if (inside(G.body)) {
-      if (geo.groups.length === 1) {
-        const side = geo.area.left + (geo.area.right - geo.area.left) * 2 / 3;
-        const half = geo.area.top + (geo.area.bottom - geo.area.top) / 2;
-        if (pt.x >= side) return { kind: "split", dir: "side" };
-        if (pt.y >= half) return { kind: "split", dir: "down" };
+      const c = G.col;
+      if (geo.cols === 1 && pt.x >= c.left + (c.right - c.left) * 2 / 3) {
+        return { kind: "split", dir: "side", group: g };
+      }
+      if (G.stack === 1 && pt.y >= c.top + (c.bottom - c.top) / 2) {
+        return { kind: "split", dir: "down", group: g };
       }
       return { kind: "append", group: g };
     }
@@ -167,6 +172,22 @@ function wsMoveTab(tab, to, index) {
   to.tabs.splice(index, 0, tab);
   tab.group = to;
   return { index, emptied: from !== to && !from.tabs.length ? from : null };
+}
+
+// A group with no tabs out of the grid in the model alone: `cols` the columns,
+// each with its `groups`, and each group knowing its `col`. The only group in
+// the grid stays, and a group still holding tabs is never taken, so no tab is
+// lost. Says what went: "group" (its column keeps the other), "col" (the
+// column went with it, and the other column is the files' whole width), or
+// null for nothing.
+function wsDropGroup(cols, g) {
+  const total = cols.reduce((n, c) => n + c.groups.length, 0);
+  if (total < 2 || g.tabs.length) return null;
+  const c = g.col;
+  c.groups.splice(c.groups.indexOf(g), 1);
+  if (c.groups.length) return "group";
+  cols.splice(cols.indexOf(c), 1);
+  return "col";
 }
 
 // The name a folder goes by in the tree's head: ~ for home, as the crumbs say.
@@ -776,11 +797,8 @@ function makeWorkspace(ctx) {
     // height and its drop slots do not move when the first file opens.
     const bodyEl = el("div", { class: "ws-body" },
       el("div", { class: "ws-empty" }, "Select a file in the tree to open it"));
-    const g = { el: el("div", { class: "ws-group", "data-group": String(groups.length) },
-                    el("div", { class: "ws-tabs" }, rowEl), bodyEl),
-                rowEl, bodyEl, tabs: [], active: null };
-    groupsEl.appendChild(g.el);
-    groups.push(g);
+    const g = { el: el("div", { class: "ws-group" }, el("div", { class: "ws-tabs" }, rowEl), bodyEl),
+                rowEl, bodyEl, tabs: [], active: null, col: null };
     syncEmpty(g);
     return g;
   }
@@ -898,8 +916,6 @@ function makeWorkspace(ctx) {
     const v = tab.body.querySelector("video");
     if (v) v.pause();
   }
-
-  makeGroup();
 
   // A file in a tab: the one already open if it is, otherwise a new tab at the
   // end of the strip, filled once what it shows has been read. `kind` is a
@@ -1074,55 +1090,159 @@ function makeWorkspace(ctx) {
     if (!g.tabs.length) unsplit();
   }
 
-  // ---- the second group --------------------------------------------------------
-  // Made by the first tab dragged to the lower half of the files, under the
-  // first group, or to their right third, beside it (.ws-side on the groups),
-  // with a seam between the two; the seam's drag sets the first group's share
-  // of the height or the width (--ws-split on the pane's root, remembered as
-  // cfg.wsSplit by the markup's own pane, as the tree's width is). One share
-  // serves both ways. The way is the drop's, kept while there are two groups
-  // and forgotten with the second: the next split is decided by its own drop,
-  // so it is not stored.
+  // ---- the grid of groups ------------------------------------------------------
+  // One or two columns, each one group or two stacked (`cols`, each with its
+  // `groups`; `groups` is every group in reading order, left column first). A
+  // column of one group is its full height. A tab dropped on the right third
+  // of a column, while there is only one, makes a column beside it; on the
+  // lower half of a column holding one group, a group under that one (the drop
+  // target above). The columns share the width by --ws-split, and a column of
+  // two shares its height by --ws-split-l or --ws-split-r, as the left or the
+  // right column it stands now; all three on the pane's root, remembered as
+  // cfg.wsSplit, wsSplitL and wsSplitR by the markup's own pane, as the tree's
+  // width is. A seam is in the document only while it has a group either side.
 
-  const groupSeam = el("div", { class: "ws-seam ws-group-seam", role: "separator",
-                                "aria-orientation": "horizontal",
-                                "aria-label": "Resize the file groups" });
+  const cols = [];
+  const colSeam = el("div", { class: "ws-seam ws-group-seam ws-col-seam", role: "separator",
+                              "aria-orientation": "vertical",
+                              "aria-label": "Resize the file columns" });
   let splitShare = 0;
-  let splitSide = false;
+  const rowShare = { l: 0, r: 0 };
 
   function applySplit(share) {
     splitShare = share;
     root.style.setProperty("--ws-split", String(share));
   }
 
-  function splitOff(tab, dir) {
-    if (groups.length < 2) {
-      const g = makeGroup();
-      g.el.before(groupSeam);
-      splitSide = dir === "side";
-      groupsEl.classList.add("ws-two");
-      groupsEl.classList.toggle("ws-side", splitSide);
-      groupSeam.setAttribute("aria-orientation", splitSide ? "vertical" : "horizontal");
-      if (!splitShare) applySplit(cfg.wsSplit);
-    }
-    moveTab(tab, groups[1], null);
+  function applyRowSplit(side, share) {
+    rowShare[side] = share;
+    root.style.setProperty("--ws-split-" + side, String(share));
   }
 
-  // Of two groups, the one nothing is left in goes, the second or the first,
-  // and the other is the files again; a lone group stays, empty or not.
+  const sideOf = (c) => (cols.indexOf(c) === 0 ? "l" : "r");
+
+  // The tree seam's drag, turned for groups: the first group (or column) is
+  // anchored at the top (or the left), so downward (rightward) travel is a
+  // bigger first one. `area` is what the two share, `set` takes the share and
+  // `keep` remembers it, for the markup's own pane only.
+  function seamDrag(s, across, area, set, keep) {
+    let dragging = false, grab = 0;
+    s.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      const b = s.getBoundingClientRect();
+      grab = across ? e.clientX - b.left : e.clientY - b.top;
+      s.classList.add("dragging");
+      s.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    s.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const r = area.getBoundingClientRect();
+      const avail = across ? r.width - s.offsetWidth : r.height - s.offsetHeight;
+      if (avail < 2 * WS_GROUP_MIN) return;
+      const at = across ? e.clientX - grab - r.left : e.clientY - grab - r.top;
+      const first = Math.max(WS_GROUP_MIN, Math.min(at, avail - WS_GROUP_MIN));
+      set(Math.round(first / avail * 10000) / 10000);
+    });
+    const finish = () => {
+      if (!dragging) return;
+      dragging = false;
+      s.classList.remove("dragging");
+      if (ctx.id === "files") keep();
+      relayout();
+    };
+    s.addEventListener("pointerup", finish);
+    s.addEventListener("pointercancel", finish);
+  }
+
+  seamDrag(colSeam, true, groupsEl, applySplit, () => { cfg.wsSplit = splitShare; });
+
+  // A column's seam is its own, and which share it moves is read at the drag:
+  // the right column becomes the left one when the left one goes.
+  function makeCol() {
+    const c = { el: el("div", { class: "ws-col" }), groups: [],
+                seam: el("div", { class: "ws-seam ws-group-seam", role: "separator",
+                                  "aria-orientation": "horizontal",
+                                  "aria-label": "Resize the file groups" }) };
+    seamDrag(c.seam, false, c.el, (v) => applyRowSplit(sideOf(c), v), () => {
+      if (sideOf(c) === "l") cfg.wsSplitL = rowShare.l;
+      else cfg.wsSplitR = rowShare.r;
+    });
+    return c;
+  }
+
+  // After the grid changed: `groups` in reading order again, and a seam that
+  // has come into the document at the share last remembered for it.
+  function syncGrid() {
+    groups.length = 0;
+    for (const c of cols) for (const g of c.groups) groups.push(g);
+    groups.forEach((g, i) => g.el.setAttribute("data-group", String(i)));
+    if (cols.length > 1 && !splitShare) applySplit(cfg.wsSplit);
+    for (const c of cols) {
+      const side = sideOf(c);
+      if (c.groups.length > 1 && !rowShare[side]) {
+        applyRowSplit(side, side === "l" ? cfg.wsSplitL : cfg.wsSplitR);
+      }
+    }
+  }
+
+  // A new group beside the grid's one column, or under `at` in its column, and
+  // the tab into it. Only what is new is put into the document, so no other
+  // group's body moves (a PDF's frame would load again if it did).
+  function splitOff(tab, dir, at) {
+    if (dir === "side" ? cols.length > 1 : at.col.groups.length > 1) return;
+    const g = makeGroup();
+    if (dir === "side") {
+      const c = makeCol();
+      c.groups.push(g);
+      g.col = c;
+      c.el.appendChild(g.el);
+      cols[0].el.after(colSeam, c.el);
+      cols.push(c);
+      groupsEl.classList.add("ws-two");
+    } else {
+      const c = at.col;
+      c.groups.push(g);
+      g.col = c;
+      at.el.after(c.seam, g.el);
+      c.el.classList.add("ws-two");
+    }
+    syncGrid();
+    moveTab(tab, g, null);
+  }
+
+  // The group nothing is left in goes, and its column with it when that was
+  // the column's last; the only group in the grid stays, empty or not.
   function unsplit() {
-    if (groups.length < 2) return;
-    const i = groups.findIndex((x) => !x.tabs.length);
-    if (i < 0) return;
-    const g = groups[i];
-    groups.splice(i, 1);
+    const g = groups.find((x) => !x.tabs.length);
+    if (!g) return;
+    const c = g.col;
+    const went = wsDropGroup(cols, g);
+    if (!went) return;
     g.el.remove();
-    groupSeam.remove();
-    groupsEl.classList.remove("ws-two", "ws-side");
-    splitSide = false;
+    if (went === "col") {
+      c.el.remove();
+      colSeam.remove();
+      groupsEl.classList.remove("ws-two");
+    } else {
+      c.seam.remove();
+      c.el.classList.remove("ws-two");
+    }
     if (focusGroup === g) focusGroup = null;
+    syncGrid();
     relayout();
   }
+
+  (function firstGroup() {
+    const c = makeCol(), g = makeGroup();
+    c.groups.push(g);
+    g.col = c;
+    c.el.appendChild(g.el);
+    cols.push(c);
+    groupsEl.appendChild(c.el);
+    syncGrid();
+  })();
 
   // A tab to `index` of `g` (null for the end), within its group or out of it.
   // It moves rather than being copied, so one tab per path holds by itself;
@@ -1158,48 +1278,14 @@ function makeWorkspace(ctx) {
     if (g) focusGroup = g;
   }, true);
 
-  // The tree seam's drag, turned on its side for groups one over the other:
-  // the first group is anchored at the top (or, side by side, at the left), so
-  // downward (rightward) travel is a bigger first group.
-  (function groupResize() {
-    let dragging = false, grab = 0;
-    groupSeam.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
-      dragging = true;
-      const s = groupSeam.getBoundingClientRect();
-      grab = splitSide ? e.clientX - s.left : e.clientY - s.top;
-      groupSeam.classList.add("dragging");
-      groupSeam.setPointerCapture(e.pointerId);
-      e.preventDefault();
-    });
-    groupSeam.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      const r = groupsEl.getBoundingClientRect();
-      const avail = splitSide ? r.width - groupSeam.offsetWidth : r.height - groupSeam.offsetHeight;
-      if (avail < 2 * WS_GROUP_MIN) return;
-      const at = splitSide ? e.clientX - grab - r.left : e.clientY - grab - r.top;
-      const first = Math.max(WS_GROUP_MIN, Math.min(at, avail - WS_GROUP_MIN));
-      applySplit(Math.round(first / avail * 10000) / 10000);
-    });
-    const finish = () => {
-      if (!dragging) return;
-      dragging = false;
-      groupSeam.classList.remove("dragging");
-      if (ctx.id === "files") cfg.wsSplit = splitShare;
-      relayout();
-    };
-    groupSeam.addEventListener("pointerup", finish);
-    groupSeam.addEventListener("pointercancel", finish);
-  })();
-
   // ---- dragging a tab ------------------------------------------------------------
   // By pointer events rather than the HTML5 drag the listing's rows move files
   // with: that drag would offer a tab to every folder row as a file to move.
   // A copy of the chip follows the pointer and the chip stays in its place,
   // dimmed, until the release says where it goes: a slot in a band (a bar
-  // between two chips), the right third or the lower half of the files while
-  // there is one group (a split beside or below), or the other group's body. Escape, or a cancelled pointer, puts
-  // it down where it was.
+  // between two chips), the right third or the lower half of a column while
+  // the grid has room that way (a split beside or below), or another group's
+  // body. Escape, or a cancelled pointer, puts it down where it was.
   let tabDrag = null;
   let swallowClick = false;
   const insBar = el("div", { class: "ws-drop-ins", "aria-hidden": "true" });
@@ -1273,8 +1359,9 @@ function makeWorkspace(ctx) {
     const hit = document.elementFromPoint(x, y);
     if (!hit || !groupsEl.contains(hit) || hit.closest(".ws-group-seam")) return null;
     const box = (n) => n.getBoundingClientRect();
-    const geo = { area: box(groupsEl), groups: groups.map((g) => ({
+    const geo = { cols: cols.length, groups: groups.map((g) => ({
       row: box(g.rowEl.parentNode), body: box(g.bodyEl),
+      col: box(g.col.el), stack: g.col.groups.length,
       mids: g.tabs.map((t) => { const r = box(t.chip); return r.left + r.width / 2; }),
     })) };
     const t = wsDropTarget({ x, y }, geo);
@@ -1299,14 +1386,14 @@ function makeWorkspace(ctx) {
       if (insBar.parentNode !== band) band.appendChild(insBar);
       return;
     }
-    const body = (t.kind === "split" ? groups[0] : groups[t.group]).bodyEl;
+    const body = groups[t.group].bodyEl;
     hint.classList.toggle("bot", t.kind === "split" && t.dir === "down");
     hint.classList.toggle("side", t.kind === "split" && t.dir === "side");
     // The split's tint covers what the new group would take: below, from the
-    // middle of the groups' height rather than of the body under the band;
+    // middle of the column's height rather than of the body under the band;
     // beside, the right half, whose middle is the body's own.
     if (t.kind === "split" && t.dir === "down") {
-      const a = groupsEl.getBoundingClientRect();
+      const a = groups[t.group].col.el.getBoundingClientRect();
       hint.style.top = Math.round(a.top + a.height / 2 - body.getBoundingClientRect().top) + "px";
     } else hint.style.top = "";
     if (hint.parentNode !== body) body.appendChild(hint);
@@ -1355,7 +1442,7 @@ function makeWorkspace(ctx) {
     showTarget(null);
     const t = commit ? d.target : null;
     if (!t || d.tab.closed) return;
-    if (t.kind === "split") splitOff(d.tab, t.dir);
+    if (t.kind === "split") splitOff(d.tab, t.dir, groups[t.group]);
     else moveTab(d.tab, groups[t.group], t.kind === "insert" ? t.index : null);
   }
 
@@ -1681,6 +1768,8 @@ function makeWorkspace(ctx) {
     wsEl.remove();
     root.style.removeProperty("--ws-tree-w");
     root.style.removeProperty("--ws-split");
+    root.style.removeProperty("--ws-split-l");
+    root.style.removeProperty("--ws-split-r");
   }
 
   function attach() {
@@ -1689,6 +1778,9 @@ function makeWorkspace(ctx) {
     root.appendChild(wsEl);
     if (treeW) root.style.setProperty("--ws-tree-w", treeW + "px");
     if (splitShare) root.style.setProperty("--ws-split", String(splitShare));
+    for (const side of ["l", "r"]) {
+      if (rowShare[side]) root.style.setProperty("--ws-split-" + side, String(rowShare[side]));
+    }
   }
 
   // The end of it: the pane closed, or the computer it was reading switched.
