@@ -660,7 +660,7 @@ function wsContext() {
     id, root, q,
     path: () => filesPath,
     home: () => filesHome,
-    refFor, fsList, cachedListing, openFileActions, openRendered,
+    refFor, fsList, cachedListing, openFileActions, openRendered, wireMoveTarget,
     readText: fsReadText,
     navigate: (path) => navigateDir(path),
   };

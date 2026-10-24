@@ -14,14 +14,26 @@
 // tabs always act on the listing they sit in. The pane loads before this
 // fragment, so it reaches makeWorkspace only from a press, never while it loads.
 //
-// The tabs are one group, `groups[0]`, already an array so that a second group
-// beside or under it is an addition rather than a rewrite.
+// The tabs are in groups: `groups[0]`, which holds the folder tab and so never
+// empties, and while a tab has been dragged down into it a second one under
+// the first, VS Code's split down, gone again when its last tab leaves.
 
 // The tree's width, in pixels, before the user has dragged it, and the bounds
 // the drag is held to: wide enough for a name, never more than most of the pane.
 const WS_TREE_W = 220;
 const WS_TREE_MIN = 140;
 const WS_TREE_MAX = 0.6;
+
+// The least height either of two groups is held to by the seam between them:
+// a band of tabs and a few lines of what they show.
+const WS_GROUP_MIN = 120;
+
+// A tab's press becomes a drag after this much travel, the session list's
+// mouse slop, so a click still picks a tab and its cross still closes it; a
+// finger has to hold still this long first, since the band also scrolls.
+const WS_DRAG_SLOP = 6;
+const WS_TOUCH_SLOP = 8;
+const WS_LIFT_MS = 250;
 
 // The badges' order of importance when one folder holds several kinds of
 // change: an edit outranks a deletion, which outranks a rename, which outranks
@@ -107,6 +119,51 @@ function wsKindOf(path) {
   return "editor";
 }
 
+// Where a dragged tab would land, worked out from plain numbers so it reads
+// without a page: `pt` is the pointer, `geo.area` the groups' box, and each of
+// `geo.groups` its tab band's box (`row`), its body's box (`body`) and the
+// middles of its chips in strip order (`mids`). Over a band, the slot before
+// the first chip whose middle is right of the pointer. Over a body while there
+// is one group, its lower half is a split and its upper half that group; with
+// two, a body is its group, the tab added at the end. Anywhere else, nothing.
+function wsDropTarget(pt, geo) {
+  const inside = (r) => !!r && pt.x >= r.left && pt.x < r.right
+                        && pt.y >= r.top && pt.y < r.bottom;
+  for (let g = 0; g < geo.groups.length; g++) {
+    const G = geo.groups[g];
+    if (inside(G.row)) {
+      let index = 0;
+      while (index < G.mids.length && G.mids[index] < pt.x) index++;
+      return { kind: "insert", group: g, index };
+    }
+    if (inside(G.body)) {
+      const half = geo.area.top + (geo.area.bottom - geo.area.top) / 2;
+      if (geo.groups.length === 1 && pt.y >= half) return { kind: "split" };
+      return { kind: "append", group: g };
+    }
+  }
+  return null;
+}
+
+// A tab's move in the model alone: out of its group's list, into `to`'s at
+// `index` (a slot counted with the tab still where it was, as the drop target
+// counts it; null for the end), never ahead of a pinned folder tab. The folder
+// tab itself does not move. Says where it went and, when the move left the
+// group it came from with no tabs, that group, for the caller to take away.
+function wsMoveTab(tab, to, index) {
+  if (tab.pinned) return null;
+  const from = tab.group;
+  const at = from.tabs.indexOf(tab);
+  from.tabs.splice(at, 1);
+  if (index == null) index = to.tabs.length;
+  else if (from === to && index > at) index--;
+  const first = to.tabs[0] && to.tabs[0].pinned ? 1 : 0;
+  index = Math.max(first, Math.min(index, to.tabs.length));
+  to.tabs.splice(index, 0, tab);
+  tab.group = to;
+  return { index, emptied: from !== to && !from.tabs.length ? from : null };
+}
+
 // The name a folder goes by in the tree's head: ~ for home, as the crumbs say.
 function wsFolderLabel(path, home) {
   if (home && path === home) return "~";
@@ -163,6 +220,9 @@ function makeWorkspace(ctx) {
       node.el.setAttribute("aria-expanded", "false");
       node.kidsEl = el("div", { class: "ws-kids", role: "group" });
       node.kidsEl.hidden = true;
+      // A listing row dragged onto a folder of the tree moves into it, as it
+      // does onto a folder row of the listing.
+      ctx.wireMoveTarget(node.el, path);
     }
     nodes.set(path, node);
     paintNode(node);
@@ -378,6 +438,9 @@ function makeWorkspace(ctx) {
   const groups = [];
   const byPath = new Map();   // one tab per file across every group
   let tabSeq = 0;
+  // Where open() puts a new tab: the group last pressed in, VS Code's way;
+  // null for the first.
+  let focusGroup = null;
 
   function makeGroup() {
     const rowEl = el("div", { class: "ws-tab-row", role: "tablist" });
@@ -416,6 +479,7 @@ function makeWorkspace(ctx) {
       });
     }
     tab.chip = chip;
+    if (!tab.pinned) wireTabDrag(tab);
   }
 
   function paintChip(tab) {
@@ -497,7 +561,7 @@ function makeWorkspace(ctx) {
       return null;
     }
     if (kind === "pdf" && demoApiOn()) { toast("Not in the demo"); return null; }
-    const tab = addTab(groups[0], { path, kind, title: baseName(path) });
+    const tab = addTab(focusGroup || groups[0], { path, kind, title: baseName(path) });
     activate(tab);
     const ok = await fillTab(tab, opts || {}).catch((e) => { dbg("ws tab failed:", e); return false; });
     if (!ok && !tab.closed) drop(tab);
@@ -626,6 +690,277 @@ function makeWorkspace(ctx) {
       const next = g.tabs[at] || g.tabs[at - 1];
       if (next) activate(next);
     }
+    if (!g.tabs.length) unsplit();
+  }
+
+  // ---- the second group --------------------------------------------------------
+  // Made by the first tab dragged to the lower half of the files, under the
+  // first group with a seam between them; the seam's drag sets the top group's
+  // share of the height (--ws-split on the pane's root, remembered as
+  // cfg.wsSplit by the markup's own pane, as the tree's width is).
+
+  const groupSeam = el("div", { class: "ws-seam ws-group-seam", role: "separator",
+                                "aria-orientation": "horizontal",
+                                "aria-label": "Resize the file groups" });
+  let splitShare = 0;
+
+  function applySplit(share) {
+    splitShare = share;
+    root.style.setProperty("--ws-split", String(share));
+  }
+
+  function splitDown(tab) {
+    if (tab.pinned) return;
+    if (groups.length < 2) {
+      const g = makeGroup();
+      g.el.before(groupSeam);
+      groupsEl.classList.add("ws-two");
+      if (!splitShare) applySplit(cfg.wsSplit);
+    }
+    moveTab(tab, groups[1], null);
+  }
+
+  // The second group goes once nothing is left in it; the first never does.
+  function unsplit() {
+    const g = groups[1];
+    if (!g || g.tabs.length) return;
+    groups.splice(1, 1);
+    g.el.remove();
+    groupSeam.remove();
+    groupsEl.classList.remove("ws-two");
+    if (focusGroup === g) focusGroup = null;
+    relayout();
+  }
+
+  // A tab to `index` of `g` (null for the end), within its group or out of it.
+  // It moves rather than being copied, so one tab per path holds by itself;
+  // the group it left shows its neighbour, as a close would leave it.
+  function moveTab(tab, g, index) {
+    const from = tab.group;
+    const at = from.tabs.indexOf(tab);
+    const moved = wsMoveTab(tab, g, index);
+    if (!moved) return;
+    const next = g.tabs[moved.index + 1];
+    g.rowEl.insertBefore(tab.chip, next ? next.chip : null);
+    if (from !== g) {
+      g.bodyEl.appendChild(tab.body);
+      if (from.active === tab) {
+        from.active = null;
+        const n = from.tabs[at] || from.tabs[at - 1];
+        if (n) activate(n);
+      }
+    }
+    activate(tab);
+    focusGroup = g;
+    if (moved.emptied) unsplit();
+    relayout();
+  }
+
+  // On capture, so a press on an editor, a chip or a listing row counts
+  // before whatever it does next opens a file.
+  groupsEl.addEventListener("pointerdown", (e) => {
+    const at = e.target.closest(".ws-group");
+    const g = groups.find((x) => x.el === at);
+    if (g) focusGroup = g;
+  }, true);
+
+  // The tree seam's drag turned on its side: the top group is anchored at the
+  // top, so downward travel is a taller top group.
+  (function groupResize() {
+    let dragging = false, grab = 0;
+    groupSeam.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      grab = e.clientY - groupSeam.getBoundingClientRect().top;
+      groupSeam.classList.add("dragging");
+      groupSeam.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    groupSeam.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const r = groupsEl.getBoundingClientRect();
+      const avail = r.height - groupSeam.offsetHeight;
+      if (avail < 2 * WS_GROUP_MIN) return;
+      const top = Math.max(WS_GROUP_MIN, Math.min(e.clientY - grab - r.top, avail - WS_GROUP_MIN));
+      applySplit(Math.round(top / avail * 10000) / 10000);
+    });
+    const finish = () => {
+      if (!dragging) return;
+      dragging = false;
+      groupSeam.classList.remove("dragging");
+      if (ctx.id === "files") cfg.wsSplit = splitShare;
+      relayout();
+    };
+    groupSeam.addEventListener("pointerup", finish);
+    groupSeam.addEventListener("pointercancel", finish);
+  })();
+
+  // ---- dragging a tab ------------------------------------------------------------
+  // By pointer events rather than the HTML5 drag the listing's rows move files
+  // with: that drag would offer a tab to every folder row as a file to move.
+  // A copy of the chip follows the pointer and the chip stays in its place,
+  // dimmed, until the release says where it goes: a slot in a band (a bar
+  // between two chips), the lower half of the files while there is one group
+  // (a split), or the other group's body. Escape, or a cancelled pointer, puts
+  // it down where it was.
+  let tabDrag = null;
+  let swallowClick = false;
+  const insBar = el("div", { class: "ws-drop-ins", "aria-hidden": "true" });
+  const hint = el("div", { class: "ws-drop-hint", "aria-hidden": "true" });
+
+  function wireTabDrag(tab) {
+    const chip = tab.chip;
+    chip.addEventListener("pointerdown", (e) => {
+      if (tabDrag || !e.isPrimary) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      if (e.target.closest(".tab-del")) return;
+      const touch = e.pointerType !== "mouse";
+      tabDrag = { tab, id: e.pointerId, touch, x: e.clientX, y: e.clientY,
+                  lastX: e.clientX, lastY: e.clientY,
+                  lifted: false, timer: 0, ghost: null, target: null };
+      window.addEventListener("pointermove", onDragMove);
+      window.addEventListener("pointerup", onDragUp);
+      window.addEventListener("pointercancel", onDragCancel);
+      window.addEventListener("blur", onDragBlur);
+      if (touch) tabDrag.timer = setTimeout(liftTab, WS_LIFT_MS);
+    });
+    // The click a drag's release makes is not a press on the tab.
+    chip.addEventListener("click", (e) => {
+      if (!swallowClick) return;
+      swallowClick = false;
+      e.preventDefault();
+      e.stopPropagation();
+    }, true);
+    // Once lifted the finger belongs to the tab, and the band must not scroll
+    // under it; Android's long press would also open a menu on the same hold.
+    chip.addEventListener("touchmove", (e) => {
+      if (tabDrag && tabDrag.tab === tab && tabDrag.lifted) e.preventDefault();
+    }, { passive: false });
+    chip.addEventListener("contextmenu", (e) => {
+      if (tabDrag && tabDrag.tab === tab && tabDrag.touch) e.preventDefault();
+    });
+  }
+
+  function liftTab() {
+    const d = tabDrag;
+    clearTimeout(d.timer);
+    d.timer = 0;
+    d.lifted = true;
+    const chip = d.tab.chip;
+    try { chip.setPointerCapture(d.id); } catch (e) {}
+    const r = chip.getBoundingClientRect();
+    const copy = chip.cloneNode(true);
+    copy.classList.remove("on");
+    d.ghost = el("div", { class: "ws-tab-ghost", "aria-hidden": "true",
+                          style: "left:" + r.left + "px;top:" + r.top + "px;width:"
+                                 + r.width + "px;height:" + r.height + "px" }, copy);
+    document.body.appendChild(d.ghost);
+    chip.classList.add("dragging");
+    document.body.classList.add("ws-tab-dragging");
+    window.addEventListener("keydown", onDragKey, true);
+    if (d.touch && navigator.vibrate) navigator.vibrate(10);
+    followTab();
+  }
+
+  function followTab() {
+    const d = tabDrag;
+    d.ghost.style.transform = "translate(" + (d.lastX - d.x) + "px," + (d.lastY - d.y) + "px)";
+    d.target = dropAt(d.lastX, d.lastY);
+    showTarget(d.target);
+  }
+
+  // The drop target under the pointer, from the boxes on screen now (a band
+  // scrolls, and the seam moves). Only inside this workspace's groups: the
+  // ghost takes no pointer, so what is under it is what it is over.
+  function dropAt(x, y) {
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || !groupsEl.contains(hit) || hit.closest(".ws-group-seam")) return null;
+    const box = (n) => n.getBoundingClientRect();
+    const geo = { area: box(groupsEl), groups: groups.map((g) => ({
+      row: box(g.rowEl.parentNode), body: box(g.bodyEl),
+      mids: g.tabs.map((t) => { const r = box(t.chip); return r.left + r.width / 2; }),
+    })) };
+    const t = wsDropTarget({ x, y }, geo);
+    if (!t) return null;
+    // Dropped on the body of its own group, a tab stays where it is.
+    if (t.kind === "append" && groups[t.group] === tabDrag.tab.group) return null;
+    if (t.kind === "insert") {
+      const first = groups[t.group].tabs[0];
+      if (first && first.pinned) t.index = Math.max(1, t.index);
+    }
+    return t;
+  }
+
+  function showTarget(t) {
+    if (!t || t.kind !== "insert") insBar.remove();
+    if (!t || t.kind === "insert") hint.remove();
+    if (!t) return;
+    if (t.kind === "insert") {
+      const g = groups[t.group];
+      const band = g.rowEl.parentNode;
+      const tabs = g.tabs;
+      const x = t.index < tabs.length ? tabs[t.index].chip.getBoundingClientRect().left
+                                      : tabs[tabs.length - 1].chip.getBoundingClientRect().right;
+      insBar.style.left = Math.round(x - band.getBoundingClientRect().left - 1) + "px";
+      if (insBar.parentNode !== band) band.appendChild(insBar);
+      return;
+    }
+    const body = (t.kind === "split" ? groups[0] : groups[t.group]).bodyEl;
+    hint.classList.toggle("bot", t.kind === "split");
+    // The split's tint starts where the split starts, the middle of the
+    // groups' height rather than of the body under the band.
+    if (t.kind === "split") {
+      const a = groupsEl.getBoundingClientRect();
+      hint.style.top = Math.round(a.top + a.height / 2 - body.getBoundingClientRect().top) + "px";
+    } else hint.style.top = "";
+    if (hint.parentNode !== body) body.appendChild(hint);
+  }
+
+  function onDragMove(e) {
+    const d = tabDrag;
+    if (!d || e.pointerId !== d.id) return;
+    d.lastX = e.clientX;
+    d.lastY = e.clientY;
+    if (d.lifted) { followTab(); return; }
+    // Before the lift, a finger that moves is scrolling the band and the press
+    // is let go; a mouse that moves is dragging.
+    const far = Math.hypot(e.clientX - d.x, e.clientY - d.y);
+    if (d.touch ? far > WS_TOUCH_SLOP : far > WS_DRAG_SLOP) {
+      if (d.touch) endTabDrag(false); else liftTab();
+    }
+  }
+  function onDragUp(e) { if (tabDrag && e.pointerId === tabDrag.id) endTabDrag(true); }
+  function onDragCancel(e) { if (tabDrag && e.pointerId === tabDrag.id) endTabDrag(false); }
+  function onDragBlur() { endTabDrag(false); }
+  // Escape puts the tab down where it was, and is not also the pane's Escape.
+  function onDragKey(e) {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    endTabDrag(false);
+  }
+
+  function endTabDrag(commit) {
+    const d = tabDrag;
+    if (!d) return;
+    tabDrag = null;
+    clearTimeout(d.timer);
+    window.removeEventListener("pointermove", onDragMove);
+    window.removeEventListener("pointerup", onDragUp);
+    window.removeEventListener("pointercancel", onDragCancel);
+    window.removeEventListener("blur", onDragBlur);
+    window.removeEventListener("keydown", onDragKey, true);
+    if (!d.lifted) return;
+    swallowClick = true;
+    setTimeout(() => { swallowClick = false; }, 0);
+    d.ghost.remove();
+    d.tab.chip.classList.remove("dragging");
+    document.body.classList.remove("ws-tab-dragging");
+    showTarget(null);
+    const t = commit ? d.target : null;
+    if (!t || d.tab.closed) return;
+    if (t.kind === "split") splitDown(d.tab);
+    else moveTab(d.tab, groups[t.group], t.kind === "insert" ? t.index : null);
   }
 
   function fileTabs() {
@@ -786,6 +1121,7 @@ function makeWorkspace(ctx) {
     attached = false;
     wsEl.remove();
     root.style.removeProperty("--ws-tree-w");
+    root.style.removeProperty("--ws-split");
   }
 
   function attach() {
@@ -793,11 +1129,13 @@ function makeWorkspace(ctx) {
     attached = true;
     root.appendChild(wsEl);
     if (treeW) root.style.setProperty("--ws-tree-w", treeW + "px");
+    if (splitShare) root.style.setProperty("--ws-split", String(splitShare));
   }
 
   // The end of it: the pane closed, or the computer it was reading switched.
   // Nothing is asked here; the callers that need an answer ask first.
   function destroy() {
+    endTabDrag(false);
     for (const t of fileTabs()) drop(t);
     detach();
     document.removeEventListener("visibilitychange", onVisibility);

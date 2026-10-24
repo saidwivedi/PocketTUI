@@ -3179,6 +3179,92 @@ console.log(JSON.stringify(order));
     assert out == ["b", "a", ".env", "a.py", "dead"]
 
 
+def test_a_dragged_workspace_tab_lands_by_band_slot_or_body_half(doc, tmp_path):
+    """Over a tab band the slot is before the first chip whose middle is right
+    of the pointer; over the body of a lone group the lower half of the files
+    splits them and the upper half is that group; with two groups a body is
+    its group; outside both, nothing."""
+    chunk = _js_chunk(doc, "function wsDropTarget(")
+    out = _node_json(tmp_path, "drop.mjs", chunk + """
+const R = (left, top, right, bottom) => ({ left, top, right, bottom });
+const one = { area: R(0, 0, 800, 600), groups: [
+  { row: R(0, 0, 800, 28), body: R(0, 28, 800, 600), mids: [40, 120, 200] }] };
+const two = { area: R(0, 0, 800, 600), groups: [
+  { row: R(0, 0, 800, 28), body: R(0, 28, 800, 296), mids: [40, 120] },
+  { row: R(0, 303, 800, 331), body: R(0, 331, 800, 600), mids: [50] }] };
+const at = (x, y, geo) => wsDropTarget({ x, y }, geo);
+console.log(JSON.stringify({
+  first: at(10, 10, one), between: at(100, 10, one), onMid: at(120, 10, one),
+  end: at(700, 10, one), upper: at(400, 200, one), lower: at(400, 450, one),
+  halfLine: at(400, 300, one), topBody: at(400, 200, two), lowBody: at(400, 450, two),
+  lowBand: at(60, 310, two), seam: at(400, 299, two), outside: at(900, 10, one),
+}));
+""")
+    assert out["first"] == {"kind": "insert", "group": 0, "index": 0}
+    assert out["between"] == {"kind": "insert", "group": 0, "index": 1}
+    # A chip's middle itself is still before it: the slot moves once past it.
+    assert out["onMid"] == {"kind": "insert", "group": 0, "index": 1}
+    assert out["end"] == {"kind": "insert", "group": 0, "index": 3}
+    assert out["upper"] == {"kind": "append", "group": 0}
+    assert out["lower"] == {"kind": "split"} and out["halfLine"] == {"kind": "split"}
+    assert out["topBody"] == {"kind": "append", "group": 0}
+    assert out["lowBody"] == {"kind": "append", "group": 1}
+    assert out["lowBand"] == {"kind": "insert", "group": 1, "index": 1}
+    assert out["seam"] is None and out["outside"] is None
+
+
+def test_moving_a_workspace_tab_keeps_the_folder_tab_first_and_says_what_emptied(doc, tmp_path):
+    """wsMoveTab reorders within a group (slots counted with the tab still in
+    place), moves between groups, never puts a tab ahead of the pinned folder
+    tab, refuses to move the folder tab, and names the group a move left
+    empty so the second group can be taken away."""
+    chunk = _js_chunk(doc, "function wsMoveTab(")
+    out = _node_json(tmp_path, "move.mjs", chunk + """
+const g0 = { tabs: [] }, g1 = { tabs: [] };
+const mk = (g, name, pinned) => { const t = { name, pinned: !!pinned, group: g }; g.tabs.push(t); return t; };
+const folder = mk(g0, "folder", true), a = mk(g0, "a"), b = mk(g0, "b"), c = mk(g0, "c");
+const names = (g) => g.tabs.map((t) => t.name).join(",");
+const log = {};
+log.pinned = wsMoveTab(folder, g0, 3);
+log.pinnedOrder = names(g0);
+log.right = wsMoveTab(a, g0, 3); log.rightOrder = names(g0);
+log.front = wsMoveTab(c, g0, 0); log.frontOrder = names(g0);
+log.down = wsMoveTab(b, g1, null); log.downOrder = [names(g0), names(g1)];
+log.bGroup = b.group === g1;
+const back = wsMoveTab(b, g0, 2);
+log.back = { index: back.index, emptied: back.emptied === g1 };
+log.backOrder = [names(g0), names(g1)];
+console.log(JSON.stringify(log));
+""")
+    assert out["pinned"] is None and out["pinnedOrder"] == "folder,a,b,c"
+    # Slot 3 is before c with a still counted: a lands between b and c.
+    assert out["right"] == {"index": 2, "emptied": None}
+    assert out["rightOrder"] == "folder,b,a,c"
+    assert out["front"] == {"index": 1, "emptied": None}
+    assert out["frontOrder"] == "folder,c,b,a"
+    assert out["down"] == {"index": 0, "emptied": None}
+    assert out["downOrder"] == ["folder,c,a", "b"] and out["bGroup"]
+    assert out["back"] == {"index": 2, "emptied": True}
+    assert out["backOrder"] == ["folder,c,b,a", ""]
+
+
+def test_the_workspace_split_is_remembered_and_tree_folders_take_row_drops(doc):
+    """The top group's share is cfg.wsSplit (half by default), written only by
+    the markup's own pane as the tree's width is; a tree folder is wired as a
+    move target through the pane's own wireMoveTarget; the second group goes
+    when a close or a move leaves it empty."""
+    assert 'localStorage.getItem("pockettui_ws_split")' in doc
+    assert 'set wsSplit(v) { localStorage.setItem("pockettui_ws_split", String(v)); },' in doc
+    make = _js_chunk(doc, "function makeWorkspace(")
+    assert 'if (ctx.id === "files") cfg.wsSplit = splitShare;' in make
+    assert "if (!splitShare) applySplit(cfg.wsSplit);" in make
+    assert "ctx.wireMoveTarget(node.el, path);" in make
+    assert "    if (!g.tabs.length) unsplit();\n" in make
+    assert "    if (moved.emptied) unsplit();\n" in make
+    ctx = _js_chunk(doc, "function wsContext() {")
+    assert "wireMoveTarget," in ctx
+
+
 def test_a_copy_of_an_expanded_explorer_leaves_the_workspace_behind(doc):
     """filesMakeAt can copy the markup's pane while it is expanded: the copy's
     listing goes back where the markup has it and the copied workspace, its

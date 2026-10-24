@@ -838,6 +838,13 @@ const cfg = {
     return Number.isFinite(v) && v > 0 ? v : 0;
   },
   set wsTreeW(v) { localStorage.setItem("pockettui_ws_tree_w", String(v)); },
+  // The top group's share of the height once the workspace's files are split
+  // in two (47-workspace.js); half until the seam between them is dragged.
+  get wsSplit() {
+    const v = parseFloat(localStorage.getItem("pockettui_ws_split"));
+    return Number.isFinite(v) && v > 0 && v < 1 ? v : 0.5;
+  },
+  set wsSplit(v) { localStorage.setItem("pockettui_ws_split", String(v)); },
   // The same for the browser pane, kept apart from the explorer's: a page read
   // full width and a folder read full width are separate habits.
   get browserExpanded() { return localStorage.getItem("pockettui_browser_expanded") === "1"; },
