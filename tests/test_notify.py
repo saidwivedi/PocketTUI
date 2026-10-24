@@ -535,7 +535,7 @@ def kinds(events):
             for e in events]
 
 
-def test_prompt_fires_once_per_episode_with_chips_and_push():
+def test_prompt_fires_once_per_episode_with_a_push():
     rows = [row("work", notify="on", alias="My Run")]
     t = 1000
     # First sight mid-burst: baseline, never a notification.
@@ -544,14 +544,10 @@ def test_prompt_fires_once_per_episode_with_chips_and_push():
     # Still working 20 s later.
     assert A.watch_update(rows, [pane("work", t + 20, cmd="node")], t + 20,
                           20.0, classify_boom) == []
-    # Quiet for IDLE_S: the transition classifies once and fires both channels.
+    # Quiet for IDLE_S: the transition classifies once and pushes.
     events = A.watch_update(rows, [pane("work", t + 20, cmd="node")], t + 30,
                             30.0, classify_yn)
-    ws = [e for e in events if e["kind"] == "ws"]
     push = [e for e in events if e["kind"] == "push"]
-    assert ws == [{"kind": "ws", "session": "work", "payload":
-                   {"type": "prompt", "options": ["y", "n"],
-                    "line": "Continue? [y/n]"}}]
     assert len(push) == 1
     assert push[0]["payload"] == {
         "title": "My Run", "body": "Continue? [y/n]", "tag": "ptui-work",
@@ -562,30 +558,6 @@ def test_prompt_fires_once_per_episode_with_chips_and_push():
     assert A.watch_update(rows, [pane("work", t + 20, cmd="node")], t + 60,
                           60.0, classify_boom) == []
     assert A.WATCHER["work"].state == "waiting"
-
-
-def test_activity_resume_clears_the_chips_and_rearms():
-    rows = [row("work", notify="on")]
-    t = 1000
-    A.watch_update(rows, [pane("work", t, cmd="node")], t + 1, 0.0, classify_boom)
-    A.watch_update(rows, [pane("work", t + 20, cmd="node")], t + 20, 20.0,
-                   classify_boom)
-    A.watch_update(rows, [pane("work", t + 20, cmd="node")], t + 30, 30.0,
-                   classify_yn)
-    # The user answered; output resumes → the clear frame goes out.
-    events = A.watch_update(rows, [pane("work", t + 40, cmd="node")], t + 40,
-                            40.0, classify_boom)
-    assert events == [{"kind": "ws", "session": "work", "payload":
-                       {"type": "prompt", "options": [], "line": ""}}]
-    assert A.WATCHER["work"].state == "active"
-    # A second full episode fires again (the gap has passed by then). It has to
-    # be a different question: resumed output re-arms the episode, but only
-    # input through this server clears the repeat guard.
-    A.watch_update(rows, [pane("work", t + 60, cmd="node")], t + 60, 60.0,
-                   classify_boom)
-    events = A.watch_update(rows, [pane("work", t + 60, cmd="node")], t + 70,
-                            70.0, classify_other_yn)
-    assert ("push", "waiting") in kinds(events)
 
 
 def test_min_busy_gate_blocks_short_shell_episodes():
@@ -649,8 +621,8 @@ def test_notify_off_computes_state_but_dispatches_nothing():
                    classify_boom)
     events = A.watch_update(rows, [pane("work", t + 20, cmd="node")], t + 30,
                             30.0, classify_yn)
-    # The badge and the in-app chips still happen; the push does not.
-    assert [e["kind"] for e in events] == ["ws"]
+    # The badge still happens; the push does not.
+    assert "push" not in [e["kind"] for e in events]
     assert A.WATCHER["work"].state == "waiting"
 
 
@@ -688,8 +660,8 @@ def test_min_gap_swallows_a_second_notification_inside_30s():
                    classify_boom)
     events = A.watch_update(rows, [pane("work", t + 42, cmd="node")], t + 50,
                             50.0, classify_yn)
-    # Chips still go out; the push is inside the gap and dropped.
-    assert kinds(events) == [("ws", "prompt")]
+    # The push is inside the gap and dropped.
+    assert "push" not in [e["kind"] for e in events]
 
 
 def test_bell_edge_fires_immediately_even_while_busy():
@@ -725,7 +697,7 @@ def test_repeat_episode_with_the_same_verdict_notifies_once():
                                              classify_yn))
     # Well past the 30 s gap, so only the signature can be what silences it.
     events = spin(rows, "work", 1100, 100.0, classify_yn)
-    assert kinds(events) == [("ws", "prompt")]
+    assert "push" not in [e["kind"] for e in events]
     assert A.WATCHER["work"].state == "waiting"
 
 
@@ -755,8 +727,8 @@ def test_a_suppressed_repeat_does_not_spend_the_gap():
     rows = [row("work", notify="on")]
     assert ("push", "waiting") in kinds(spin(rows, "work", 1000, 0.0,
                                              classify_yn))
-    assert kinds(spin(rows, "work", 1100, 100.0, classify_yn)) == \
-        [("ws", "prompt")]
+    assert ("push", "waiting") not in kinds(spin(rows, "work", 1100, 100.0,
+                                                 classify_yn))
     # The suppressed transition was at mono 129; this one is 10 s behind it.
     assert ("push", "waiting") in kinds(spin(rows, "work", 1140, 110.0,
                                              classify_other_yn))
@@ -784,11 +756,8 @@ def test_typing_in_the_composer_never_pushes():
         events = spin(rows, "work", 1000 + 200 * i, 200.0 * i,
                       classify_drafting, cmd="claude")
         # A human at the keyboard is not a session waiting on anyone, so the
-        # badge stays off; the chip bar is told to go away; nothing reaches
-        # the phone.
-        assert kinds(events) == [("ws", "prompt")]
-        assert events[0]["payload"] == {"type": "prompt", "options": [],
-                                        "line": ""}
+        # badge stays off and nothing reaches the phone.
+        assert "push" not in [e["kind"] for e in events]
         assert A.WATCHER["work"].state == "idle"
 
 
@@ -803,13 +772,10 @@ def test_an_empty_composer_after_a_long_turn_pushes_once():
     # "done", not "needs input": there is nothing in an empty composer to
     # answer.
     assert A.WATCHER["work"].state == "ready"
-    # Nothing to answer, so the chip bar is taken down rather than filled.
-    ws = [e for e in events if e["kind"] == "ws"]
-    assert ws[0]["payload"] == {"type": "prompt", "options": [], "line": ""}
     # A redraw closes another episode over the same transcript: not news, and
     # far enough past NOTIFY_GAP_S that only the signature can be silencing it.
-    assert kinds(long_spin(rows, "work", 1200, 200.0, classify_ready)) == \
-        [("ws", "prompt")]
+    assert ("push", "ready") not in kinds(long_spin(rows, "work", 1200, 200.0,
+                                                    classify_ready))
     # The agent said something new: that is a different "done".
     assert ("push", "ready") in kinds(long_spin(rows, "work", 1400, 400.0,
                                                 classify_ready_again))
@@ -820,7 +786,7 @@ def test_a_short_ready_episode_sets_the_state_but_stays_silent():
     # composer. A shape, but nothing anyone walked away from.
     rows = [row("work", notify="on")]
     events = spin(rows, "work", 1000, 0.0, classify_ready, cmd="claude")
-    assert kinds(events) == [("ws", "prompt")]
+    assert "push" not in [e["kind"] for e in events]
     assert A.WATCHER["work"].state == "ready"
 
 
@@ -846,11 +812,9 @@ def test_a_dialog_three_seconds_into_a_tool_call_still_pushes():
                    classify_boom)
     events = A.watch_update(rows, [pane("work", t + 3, cmd="claude")], t + 10,
                             10.0, classify_menu)
-    assert kinds(events) == [("ws", "prompt"), ("push", "waiting")]
-    assert events[0]["payload"] == {"type": "prompt",
-                                    "options": ["1", "2", "3"],
-                                    "line": "Do you want to proceed?"}
-    assert events[1]["payload"]["body"] == "Do you want to proceed?"
+    push = [e for e in events if e["kind"] == "push"]
+    assert kinds(push) == [("push", "waiting")]
+    assert push[0]["payload"]["body"] == "Do you want to proceed?"
     # The dialog is still up and nothing has been written to the pane since,
     # so it is not read again — the capture is once per episode.
     assert A.watch_update(rows, [pane("work", t + 3, cmd="claude")], t + 12,
@@ -873,7 +837,7 @@ def test_typing_a_wrapped_draft_on_the_phone_never_pushes():
         A.watch_saw_input("work")
         events = spin(rows, "work", 1000 + 200 * i, 200.0 * i,
                       classify_fixture(name), cmd="claude")
-        assert kinds(events) == [("ws", "prompt")]
+        assert "push" not in [e["kind"] for e in events]
         assert A.WATCHER["work"].state == "idle"
 
 
@@ -884,7 +848,7 @@ def test_startup_and_clear_never_push_done_however_long_the_episode():
     for i, name in enumerate(["startup", "clear"]):
         events = long_spin(rows, "work", 1000 + 200 * i, 200.0 * i,
                            classify_fixture(name))
-        assert kinds(events) == [("ws", "prompt")]
+        assert "push" not in [e["kind"] for e in events]
         assert A.WATCHER["work"].state == "idle"
     # A real answer after that is the first task, and it does count.
     events = long_spin(rows, "work", 1400, 400.0, classify_fixture("idle"))
