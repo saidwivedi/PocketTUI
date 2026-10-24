@@ -784,6 +784,13 @@ function syncFilesExpand() {
       use.setAttribute("href", "#i-" + m + (on ? "collapse" : "expand"));
       btn.setAttribute("aria-label", on ? "Shrink the file pane" : "Expand the file pane");
     }
+    // The same key said in words at the bar's left end, written here so the
+    // word and the right key's glyph are always the same state.
+    for (const btn of box.querySelectorAll(".files-mode-key")) {
+      btn.querySelector("use").setAttribute("href", on ? "#i-m-collapse" : "#i-m-expand");
+      btn.querySelector(".files-mode-word").textContent = on ? "Normal view" : "File viewer";
+      btn.setAttribute("aria-label", on ? "Shrink the file pane" : "Expand the file pane");
+    }
   }
 }
 
@@ -879,11 +886,16 @@ function filesBack() {
 // The same pair in the three file views is wired once under the factory — there
 // is one editor, one reader and one viewer for both rows — and acts on whichever
 // listing owns them.
-for (const btn of root.querySelectorAll(".dock-expand")) {
+for (const btn of root.querySelectorAll(".dock-expand, .files-mode-key")) {
   btn.addEventListener("click", () => {
     filesSetExpanded(!filesExpanded);
     refit(0);
   });
+}
+// The terminal panel under the expanded pane: shown or put away, never resized
+// by this (26-side-pane.js).
+for (const btn of root.querySelectorAll(".dock-term")) {
+  btn.addEventListener("click", () => wsTermSetHidden(!cfg.wsTermHidden));
 }
 for (const btn of root.querySelectorAll(".dock-close")) {
   btn.addEventListener("click", () => closeDockedFiles());
