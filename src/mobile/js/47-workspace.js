@@ -127,8 +127,9 @@ function wsKindOf(path) {
 // `geo.groups` its tab band's box (`row`), its body's box (`body`) and the
 // middles of its chips in strip order (`mids`). Over a band, the slot before
 // the first chip whose middle is right of the pointer. Over a body while there
-// is one group, its lower half is a split and its upper half that group; with
-// two, a body is its group, the tab added at the end. Anywhere else, nothing.
+// is one group, its right third is a split beside it, the rest of its lower
+// half a split below it, and what is left that group; with two, a body is its
+// group, the tab added at the end. Anywhere else, nothing.
 function wsDropTarget(pt, geo) {
   const inside = (r) => !!r && pt.x >= r.left && pt.x < r.right
                         && pt.y >= r.top && pt.y < r.bottom;
@@ -140,8 +141,12 @@ function wsDropTarget(pt, geo) {
       return { kind: "insert", group: g, index };
     }
     if (inside(G.body)) {
-      const half = geo.area.top + (geo.area.bottom - geo.area.top) / 2;
-      if (geo.groups.length === 1 && pt.y >= half) return { kind: "split" };
+      if (geo.groups.length === 1) {
+        const side = geo.area.left + (geo.area.right - geo.area.left) * 2 / 3;
+        const half = geo.area.top + (geo.area.bottom - geo.area.top) / 2;
+        if (pt.x >= side) return { kind: "split", dir: "side" };
+        if (pt.y >= half) return { kind: "split", dir: "down" };
+      }
       return { kind: "append", group: g };
     }
   }
@@ -415,6 +420,51 @@ function wsMarksKit() {
   return wsMarksKitMemo;
 }
 
+// The badges' poll: one timer, and one question in flight at a time. `ask`
+// puts one status question and answers { ms, data } (ms: how long the backend
+// took), false for "ask nothing more until kicked", or null for an answer with
+// nothing in it; `paint` draws an answer's data. The next question waits
+// clamp(4 x ms, 2 s, 60 s), the diff pane's pace. A kick (a save, an upload, a
+// rename, a delete, a new folder, a move, a new root) asks at once in place of
+// the timer, and kicks that land while a question is out fold into one more
+// question after it, however many there were. A kick made while an answer is
+// being painted is that answer's own consequence and asks nothing: it would
+// otherwise turn every answer into the next question. `clock` is the timer
+// pair, for a test to stand in.
+function wsPoller(wanted, ask, paint, clock) {
+  const set = clock ? clock.set : (f, ms) => setTimeout(f, ms);
+  const clear = clock ? clock.clear : (t) => clearTimeout(t);
+  let timer = null, busy = false, again = false, painting = false, every = DIFF_POLL_MS;
+  function stop() {
+    if (timer !== null) clear(timer);
+    timer = null;
+  }
+  async function run() {
+    stop();
+    if (!wanted()) return;
+    if (busy) { again = true; return; }
+    busy = true;
+    let r = null;
+    try { r = await ask(); } catch (e) { r = null; }
+    if (r) {
+      every = Math.min(DIFF_POLL_MAX_MS,
+                       Math.max(DIFF_POLL_MS, Math.round((Number(r.ms) || 0) * DIFF_POLL_FACTOR)));
+      painting = true;
+      try { paint(r.data); } catch (e) { dbg("ws git status paint failed:", e); }
+      painting = false;
+    }
+    busy = false;
+    if (r === false) { again = false; return; }
+    if (again) { again = false; run(); return; }
+    stop();
+    if (wanted()) timer = set(run, every);
+  }
+  function kick() {
+    if (!painting) run();
+  }
+  return { kick, stop, get every() { return every; } };
+}
+
 function makeWorkspace(ctx) {
   const root = ctx.root;
   const wrap = root.querySelector(".files-wrap");
@@ -446,6 +496,11 @@ function makeWorkspace(ctx) {
   const nodes = new Map();
   let treeRoot = null;       // the node the tree is drawn from
   let selected = null;
+  // A folder closed by a click on its name while the listing goes there: the
+  // listing's answer (onListing -> reveal) would otherwise open it again.
+  // Kept while the listing stays on it, for its partial answers on a slow
+  // mount, and dropped once it moves elsewhere or the folder is opened.
+  let keepShut = null;
 
   function makeNode(path, name, type, depth, entry) {
     const node = { path, name, type, depth, entry, expanded: false, loaded: false,
@@ -580,8 +635,15 @@ function makeWorkspace(ctx) {
   // The folder the listing is on, found in the tree: every folder from the
   // tree's root down to it opened (and listed, where it never was), then it
   // is the selected row unless a file's tab is in front, whose row that is. A
-  // folder outside the tree's root is a new root.
+  // folder outside the tree's root is a new root. No folder yet (the pane
+  // expanded before its first listing landed, filesPath still "") is nothing
+  // to root at: a root of "" lists the backend's default folder, home, under
+  // a path of "", so every child would be "/" + name, and every folder
+  // counts as inside it, so the listing's own answer could never re-root it.
+  // The first listing's onListing reveals it instead.
   async function reveal(path) {
+    if (!path) return;
+    if (keepShut !== path) keepShut = null;
     if (!treeRoot || !insideDir(path, treeRoot.path)) reRoot(path);
     const parts = path.slice(treeRoot.path.length).split("/").filter(Boolean);
     let node = treeRoot, at = treeRoot.path;
@@ -590,6 +652,7 @@ function makeWorkspace(ctx) {
       at = joinPath(at, seg);
       node = nodes.get(at);
       if (!node || node.type !== "dir") return;
+      if (at === keepShut) break;
       if (!(await expand(node))) return;
     }
     if (on && !frontTab()) select(path);
@@ -606,15 +669,23 @@ function makeWorkspace(ctx) {
     if (!node) return;
     if (node.type === "dir") {
       // The chevron only opens or closes the branch. The name also takes the
-      // listing there, out of view, so the bar's crumbs say where it is.
+      // listing there, out of view, so the bar's crumbs say where it is, and
+      // toggles the branch as the chevron does: a second click on an open
+      // folder closes it.
       if (ev.target.closest(".ws-twisty")) {
         if (node.expanded) setExpanded(node, false);
-        else expand(node);
+        else { if (keepShut === node.path) keepShut = null; expand(node); }
         return;
       }
+      // A closed folder is opened by the listing's answer (onListing fills
+      // the node and reveal opens it), not by a list of its own: asking here
+      // as well read every folder twice, and a folder that fails failed twice.
       select(node.path);
+      if (node.expanded) {
+        keepShut = node.path;
+        setExpanded(node, false);
+      } else if (keepShut === node.path) keepShut = null;
       ctx.navigate(node.path);
-      expand(node);
       return;
     }
     // The file's letter opens it with its changes marked, whatever the
@@ -945,7 +1016,10 @@ function makeWorkspace(ctx) {
     }
     media.src = url;
     if (tab.kind === "pdf") tab.body.appendChild(media);
-    else tab.body.appendChild(el("div", { class: "ws-media" }, media));
+    // Not "ws-media": that is the class of a media tab's own pane (addTab's
+    // "ws-" + kind), and the box's display:flex on it would draw every
+    // picture's pane at once, stacked, whichever tab is in front.
+    else tab.body.appendChild(el("div", { class: "ws-media-box" }, media));
     media.onerror = () => toast("Couldn't load " + baseName(path));
     return true;
   }
@@ -1002,25 +1076,33 @@ function makeWorkspace(ctx) {
 
   // ---- the second group --------------------------------------------------------
   // Made by the first tab dragged to the lower half of the files, under the
-  // first group with a seam between them; the seam's drag sets the top group's
-  // share of the height (--ws-split on the pane's root, remembered as
-  // cfg.wsSplit by the markup's own pane, as the tree's width is).
+  // first group, or to their right third, beside it (.ws-side on the groups),
+  // with a seam between the two; the seam's drag sets the first group's share
+  // of the height or the width (--ws-split on the pane's root, remembered as
+  // cfg.wsSplit by the markup's own pane, as the tree's width is). One share
+  // serves both ways. The way is the drop's, kept while there are two groups
+  // and forgotten with the second: the next split is decided by its own drop,
+  // so it is not stored.
 
   const groupSeam = el("div", { class: "ws-seam ws-group-seam", role: "separator",
                                 "aria-orientation": "horizontal",
                                 "aria-label": "Resize the file groups" });
   let splitShare = 0;
+  let splitSide = false;
 
   function applySplit(share) {
     splitShare = share;
     root.style.setProperty("--ws-split", String(share));
   }
 
-  function splitDown(tab) {
+  function splitOff(tab, dir) {
     if (groups.length < 2) {
       const g = makeGroup();
       g.el.before(groupSeam);
+      splitSide = dir === "side";
       groupsEl.classList.add("ws-two");
+      groupsEl.classList.toggle("ws-side", splitSide);
+      groupSeam.setAttribute("aria-orientation", splitSide ? "vertical" : "horizontal");
       if (!splitShare) applySplit(cfg.wsSplit);
     }
     moveTab(tab, groups[1], null);
@@ -1036,7 +1118,8 @@ function makeWorkspace(ctx) {
     groups.splice(i, 1);
     g.el.remove();
     groupSeam.remove();
-    groupsEl.classList.remove("ws-two");
+    groupsEl.classList.remove("ws-two", "ws-side");
+    splitSide = false;
     if (focusGroup === g) focusGroup = null;
     relayout();
   }
@@ -1075,14 +1158,16 @@ function makeWorkspace(ctx) {
     if (g) focusGroup = g;
   }, true);
 
-  // The tree seam's drag turned on its side: the top group is anchored at the
-  // top, so downward travel is a taller top group.
+  // The tree seam's drag, turned on its side for groups one over the other:
+  // the first group is anchored at the top (or, side by side, at the left), so
+  // downward (rightward) travel is a bigger first group.
   (function groupResize() {
     let dragging = false, grab = 0;
     groupSeam.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       dragging = true;
-      grab = e.clientY - groupSeam.getBoundingClientRect().top;
+      const s = groupSeam.getBoundingClientRect();
+      grab = splitSide ? e.clientX - s.left : e.clientY - s.top;
       groupSeam.classList.add("dragging");
       groupSeam.setPointerCapture(e.pointerId);
       e.preventDefault();
@@ -1090,10 +1175,11 @@ function makeWorkspace(ctx) {
     groupSeam.addEventListener("pointermove", (e) => {
       if (!dragging) return;
       const r = groupsEl.getBoundingClientRect();
-      const avail = r.height - groupSeam.offsetHeight;
+      const avail = splitSide ? r.width - groupSeam.offsetWidth : r.height - groupSeam.offsetHeight;
       if (avail < 2 * WS_GROUP_MIN) return;
-      const top = Math.max(WS_GROUP_MIN, Math.min(e.clientY - grab - r.top, avail - WS_GROUP_MIN));
-      applySplit(Math.round(top / avail * 10000) / 10000);
+      const at = splitSide ? e.clientX - grab - r.left : e.clientY - grab - r.top;
+      const first = Math.max(WS_GROUP_MIN, Math.min(at, avail - WS_GROUP_MIN));
+      applySplit(Math.round(first / avail * 10000) / 10000);
     });
     const finish = () => {
       if (!dragging) return;
@@ -1111,8 +1197,8 @@ function makeWorkspace(ctx) {
   // with: that drag would offer a tab to every folder row as a file to move.
   // A copy of the chip follows the pointer and the chip stays in its place,
   // dimmed, until the release says where it goes: a slot in a band (a bar
-  // between two chips), the lower half of the files while there is one group
-  // (a split), or the other group's body. Escape, or a cancelled pointer, puts
+  // between two chips), the right third or the lower half of the files while
+  // there is one group (a split beside or below), or the other group's body. Escape, or a cancelled pointer, puts
   // it down where it was.
   let tabDrag = null;
   let swallowClick = false;
@@ -1214,10 +1300,12 @@ function makeWorkspace(ctx) {
       return;
     }
     const body = (t.kind === "split" ? groups[0] : groups[t.group]).bodyEl;
-    hint.classList.toggle("bot", t.kind === "split");
-    // The split's tint starts where the split starts, the middle of the
-    // groups' height rather than of the body under the band.
-    if (t.kind === "split") {
+    hint.classList.toggle("bot", t.kind === "split" && t.dir === "down");
+    hint.classList.toggle("side", t.kind === "split" && t.dir === "side");
+    // The split's tint covers what the new group would take: below, from the
+    // middle of the groups' height rather than of the body under the band;
+    // beside, the right half, whose middle is the body's own.
+    if (t.kind === "split" && t.dir === "down") {
       const a = groupsEl.getBoundingClientRect();
       hint.style.top = Math.round(a.top + a.height / 2 - body.getBoundingClientRect().top) + "px";
     } else hint.style.top = "";
@@ -1267,7 +1355,7 @@ function makeWorkspace(ctx) {
     showTarget(null);
     const t = commit ? d.target : null;
     if (!t || d.tab.closed) return;
-    if (t.kind === "split") splitDown(d.tab);
+    if (t.kind === "split") splitOff(d.tab, t.dir);
     else moveTab(d.tab, groups[t.group], t.kind === "insert" ? t.index : null);
   }
 
@@ -1306,59 +1394,44 @@ function makeWorkspace(ctx) {
   // repo-relative path: what an editor's change marks are read and staged by.
   let gitRoot = "";
   let gitFiles = new Map();
-  let pollTimer = null, pollBusy = false, pollAgain = false;
-  let pollEvery = DIFF_POLL_MS;
 
   function pollWanted() {
     return on && attached && !document.hidden && !!treeRoot && !demoApiOn()
            && hasCapStrict("git_status") && !ctx.refFor(treeRoot.path);
   }
 
-  function schedule() {
-    clearTimeout(pollTimer);
-    pollTimer = pollWanted() ? setTimeout(poll, pollEvery) : null;
-  }
-
-  async function poll() {
-    clearTimeout(pollTimer);
-    pollTimer = null;
-    if (!pollWanted()) return;
-    if (pollBusy) { pollAgain = true; return; }
-    pollBusy = true;
+  // One status question for the tree's root: wsPoller's { ms, data }, false
+  // on a 401, null on anything else (a failure, or a root that moved on while
+  // it was out).
+  async function askStatus() {
     const at = treeRoot.path;
-    let again = true;
     try {
       const r = await fetch(apiURL("api/git/status?path=" + encodeURIComponent(at)),
                             { cache: "no-store", headers: authHeaders() });
       // The pairing code is being asked for; nothing more is asked until the
       // workspace is shown again.
-      if (r.status === 401) { rejectToken(); again = false; return; }
+      if (r.status === 401) { rejectToken(); return false; }
       const data = r.ok ? await r.json().catch(() => null) : null;
-      if (data && treeRoot && treeRoot.path === at) {
-        marks = data.root ? wsAggregate(data.files, data.root) : new Map();
-        gitRoot = String(data.root || "").replace(/\/+$/, "");
-        gitFiles = new Map((data.files || []).map((f) => [f.path, f]));
-        const ms = Number(data.elapsed_ms) || 0;
-        pollEvery = Math.min(DIFF_POLL_MAX_MS,
-                             Math.max(DIFF_POLL_MS, Math.round(ms * DIFF_POLL_FACTOR)));
-        paintAll();
-      }
+      if (!data || !treeRoot || treeRoot.path !== at) return null;
+      return { ms: data.elapsed_ms, data };
     } catch (e) {
       dbg("ws git status failed:", e);
-    } finally {
-      pollBusy = false;
-      if (pollAgain && again) { pollAgain = false; poll(); }
-      else if (again) schedule();
+      return null;
     }
   }
 
-  function kickStatus() {
-    if (pollBusy) { pollAgain = true; return; }
-    poll();
+  function paintStatus(data) {
+    marks = data.root ? wsAggregate(data.files, data.root) : new Map();
+    gitRoot = String(data.root || "").replace(/\/+$/, "");
+    gitFiles = new Map((data.files || []).map((f) => [f.path, f]));
+    paintAll();
   }
 
+  const poller = wsPoller(pollWanted, askStatus, paintStatus);
+  const kickStatus = poller.kick;
+
   const onVisibility = () => {
-    if (document.hidden) { clearTimeout(pollTimer); pollTimer = null; }
+    if (document.hidden) poller.stop();
     else kickStatus();
   };
   document.addEventListener("visibilitychange", onVisibility);
@@ -1593,8 +1666,7 @@ function makeWorkspace(ctx) {
     } else {
       wsEl.before(wrap);
       for (const t of fileTabs()) pauseMedia(t);
-      clearTimeout(pollTimer);
-      pollTimer = null;
+      poller.stop();
     }
     // Off, this takes the listing's badges away with the poll that kept them.
     paintListing();
