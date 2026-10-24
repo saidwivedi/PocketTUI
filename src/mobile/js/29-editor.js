@@ -6,14 +6,16 @@
 // token is the content hash /api/fs/read handed over: Save sends it back, and
 // a 409 means the file moved underneath the editor.
 
-let edView = null;        // the live EditorView, one at a time
+// Every live view is a rec from edMakeView, held in edLive so that the theme,
+// Wrap and Vim, all global, reach each of them. The editor screen
+// (#screen-editor) owns one rec, edRec; the globals below mirror it for the
+// callers that predate the factory (09-image-viewer.js among them).
+const edLive = new Set();
+let edRec = null;
+let edView = null;        // edRec.view
 let edPath = "";
-let edHash = "";          // the hash this buffer was read at ("" = creating)
 let edDirty = false;
 let edReadOnly = false;   // a lossy (non-UTF-8) read must never be written back
-let edThemeComp = null;   // swapped when the app theme flips
-let edWrapComp = null;    // swapped when the Wrap button is tapped
-let edVimComp = null;     // swapped when the Vim button is tapped
 
 let cmLoading = null;
 function ensureCM() {
@@ -56,9 +58,9 @@ function edWraps(name) {
   return /\.(?:md|markdown|txt|text)$/i.test(name);
 }
 
-function edWrapExt() {
+function edWrapExt(path) {
   const CM = window.CM6;
-  return (edWraps(edPath) || cfg.editorWrapOn)
+  return (edWraps(path) || cfg.editorWrapOn)
     ? [CM.EditorView.lineWrapping, edHangExt()] : [];
 }
 
@@ -242,8 +244,10 @@ function edThemeExt() {
 }
 
 function edRetheme() {
-  if (edView && edThemeComp) {
-    edView.dispatch({ effects: edThemeComp.reconfigure(edThemeExt()) });
+  if (!edLive.size) return;
+  const ext = edThemeExt();
+  for (const rec of edLive) {
+    rec.view.dispatch({ effects: rec.comps.theme.reconfigure(ext) });
   }
 }
 
@@ -258,6 +262,7 @@ window.addEventListener("ptui-termtheme", edRetheme);
 
 function edSetDirty(on) {
   edDirty = on;
+  if (edRec) edRec.dirty = on;
   $("editor-dirty").classList.toggle("show", on);
   $("btn-editor-save").classList.toggle("armed", on && !edReadOnly);
 }
@@ -374,8 +379,25 @@ function edLoadVimrc() {
 //
 // Matching is by prefix of the full name — ":q" reaches "quit", but ":qa" and
 // ":wqa" reach nothing unless registered in their own right, so each *all form
-// is spelled out. One file per editor, so the all-buffer forms mean the same
+// is spelled out. One file per view, so the all-buffer forms mean the same
 // thing as the plain ones.
+//
+// The map is global, so each command finds the view it was typed in: the one
+// with focus, else the editor screen's. A rec's own onSave/onQuit stand in
+// for the screen's Save button and back arrow.
+function edVimRec() {
+  return [...edLive].find((r) => r.view.hasFocus) || edRec;
+}
+
+function edRecSave(rec) {
+  return rec.onSave ? rec.onSave(rec) : edViewSave(rec);
+}
+
+function edRecQuit(rec, bang) {
+  if (rec.onQuit) rec.onQuit(rec, bang);
+  else editorLeave();
+}
+
 let edVimExDone = false;
 function edDefineVimEx() {
   if (edVimExDone) return;
@@ -384,19 +406,24 @@ function edDefineVimEx() {
   // ":q!" arrives as command "q" with "!" as its argument.
   const bang = (params) => /^\s*!/.test((params && params.argString) || "");
   const quit = (cm, params) => {
+    const rec = edVimRec();
+    if (!rec) return;
     // Discarding is dropping the dirty flag before the pop: editorPopped's
     // confirm is what a bare :q is meant to hit and a :q! is meant to skip.
-    if (bang(params)) edSetDirty(false);
-    editorLeave();
+    const discard = bang(params);
+    if (discard) { rec.dirty = false; rec.onDirty(rec, false); }
+    edRecQuit(rec, discard);
   };
   const saveQuit = async () => {
-    // editorSave clears dirty only on a write that landed, and no-ops on a
-    // read-only buffer — either way, closing is what did not fail.
-    if (!edReadOnly) await editorSave();
-    if (!edDirty) editorLeave();
+    const rec = edVimRec();
+    if (!rec) return;
+    // A save clears dirty only on a write that landed, and a read-only buffer
+    // has nothing to save — either way, closing is what did not fail.
+    if (!rec.readOnly) await edRecSave(rec);
+    if (!rec.dirty) edRecQuit(rec, false);
   };
-  // The filename argument is ignored: this editor has exactly one file open.
-  V.defineEx("write", "w", () => { editorSave(); });
+  // The filename argument is ignored: a view has exactly one file open.
+  V.defineEx("write", "w", () => { const rec = edVimRec(); if (rec) edRecSave(rec); });
   V.defineEx("quit", "q", quit);
   V.defineEx("qall", "qa", quit);
   V.defineEx("wq", "wq", saveQuit);
@@ -425,7 +452,6 @@ async function openEditor(path, opts) {
   try { await ensureCM(); } catch (e) { toast("Couldn't load the editor"); return; }
 
   edPath = path;
-  edHash = hash;
   edReadOnly = lossy || atRef;
   $("editor-filename").textContent = baseName(path);
   // Read-only has nothing to save; hiding the button says so louder than
@@ -433,6 +459,7 @@ async function openEditor(path, opts) {
   $("btn-editor-save").style.display = edReadOnly ? "none" : "";
   $("btn-editor-download").style.display = canDownload(path) ? "" : "none";
   edBuild(content, path);
+  edRec.hash = hash;
   edSetDirty(false);
   edSyncWrapButton();
   edSyncVimButton();
@@ -450,42 +477,92 @@ async function openEditor(path, opts) {
   if (lossy) toast("Not valid UTF-8 — opened read-only");
 }
 
-function edBuild(content, path) {
+// One CodeMirror view in `host`. With `content` the state is built here; with
+// `state` and `comps` it is a stashed buffer coming back (edRestore), whose
+// extensions already live in the state and only need bringing up to date.
+// onDirty(rec, dirty) hears every flip of rec.dirty; onSave(rec) and
+// onQuit(rec, bang) are what vim's :w and :q do in this view (edDefineVimEx).
+function edMakeView(opts) {
   const CM = window.CM6;
-  if (edView) edView.destroy();
-  edThemeComp = new CM.Compartment();
-  edWrapComp = new CM.Compartment();
-  edVimComp = new CM.Compartment();
-  edView = new CM.EditorView({
-    state: CM.EditorState.create({
-      doc: content,
-      extensions: [
-        // First, before every other keymap: vim reads keys ahead of the
-        // default bindings or it never sees the ones they already claim.
-        edVimComp.of(edVimExt()),
-        CM.lineNumbers(),
-        CM.highlightActiveLineGutter(),
-        CM.highlightSpecialChars(),
-        CM.history(),
-        CM.drawSelection(),
-        CM.dropCursor(),
-        CM.indentOnInput(),
-        CM.bracketMatching(),
-        CM.highlightActiveLine(),
-        CM.keymap.of([...CM.defaultKeymap, ...CM.historyKeymap, CM.indentWithTab]),
-        edLanguage(path),
-        edWrapComp.of(edWrapExt()),
-        edThemeComp.of(edThemeExt()),
-        edReadOnly
-          ? [CM.EditorState.readOnly.of(true), CM.EditorView.editable.of(false)]
-          : [],
-        CM.EditorView.updateListener.of((u) => {
-          if (u.docChanged && !edDirty) edSetDirty(true);
-        }),
-      ],
-    }),
-    parent: $("editor-host"),
-  });
+  const rec = {
+    view: null, path: opts.path, hash: "", dirty: false, readOnly: !!opts.readOnly,
+    comps: opts.comps || {
+      theme: new CM.Compartment(),   // swapped when the app theme flips
+      wrap: new CM.Compartment(),    // swapped when the Wrap button is tapped
+      vim: new CM.Compartment(),     // swapped when the Vim button is tapped
+    },
+    onDirty: opts.onDirty, onSave: opts.onSave, onQuit: opts.onQuit,
+  };
+  if (opts.state) {
+    rec.view = new CM.EditorView({ state: opts.state, parent: opts.host });
+    // The theme, the wrap setting and vim can all have moved while the buffer
+    // was away: the observer above and the buttons only reach live views.
+    // Reconfiguring is not a document change, so dirty stays the buffer's own.
+    rec.view.dispatch({ effects: [
+      rec.comps.theme.reconfigure(edThemeExt()),
+      rec.comps.wrap.reconfigure(edWrapExt(rec.path)),
+      rec.comps.vim.reconfigure(edVimExt()),
+    ] });
+  } else {
+    rec.view = new CM.EditorView({
+      state: CM.EditorState.create({
+        doc: opts.content || "",
+        extensions: [
+          // First, before every other keymap: vim reads keys ahead of the
+          // default bindings or it never sees the ones they already claim.
+          rec.comps.vim.of(edVimExt()),
+          CM.lineNumbers(),
+          CM.highlightActiveLineGutter(),
+          CM.highlightSpecialChars(),
+          CM.history(),
+          CM.drawSelection(),
+          CM.dropCursor(),
+          CM.indentOnInput(),
+          CM.bracketMatching(),
+          CM.highlightActiveLine(),
+          CM.keymap.of([...CM.defaultKeymap, ...CM.historyKeymap, CM.indentWithTab]),
+          edLanguage(rec.path),
+          rec.comps.wrap.of(edWrapExt(rec.path)),
+          rec.comps.theme.of(edThemeExt()),
+          rec.readOnly
+            ? [CM.EditorState.readOnly.of(true), CM.EditorView.editable.of(false)]
+            : [],
+          CM.EditorView.updateListener.of((u) => {
+            if (!u.docChanged) return;
+            // Found by its view rather than closed over: the listener lives in
+            // the state, and a restored state comes back under a new rec.
+            for (const r of edLive) {
+              if (r.view === u.view && !r.dirty) { r.dirty = true; r.onDirty(r, true); }
+            }
+          }),
+        ],
+      }),
+      parent: opts.host,
+    });
+  }
+  edLive.add(rec);
+  return rec;
+}
+
+function edDropView(rec) {
+  rec.view.destroy();
+  edLive.delete(rec);
+}
+
+// The editor screen's rec: its dirty flag drives the screen's marks, and its
+// save is the Save button's, which disables the button while it runs.
+function edScreenView(opts) {
+  if (edRec) edDropView(edRec);
+  edRec = edMakeView(Object.assign({
+    host: $("editor-host"),
+    onDirty: (rec, on) => edSetDirty(on),
+    onSave: () => editorSave(),
+  }, opts));
+  edView = edRec.view;
+}
+
+function edBuild(content, path) {
+  edScreenView({ path, content, readOnly: edReadOnly });
 }
 
 // ---- putting the buffer away (see fileViews in 09-image-viewer.js) ---------
@@ -497,16 +574,17 @@ function edBuild(content, path) {
 
 function edStash() {
   const s = {
-    state: edView.state, path: edPath, hash: edHash,
+    state: edView.state, path: edPath, hash: edRec.hash,
     dirty: edDirty, readOnly: edReadOnly,
     // The compartments travel with the state they live in. They are handles
     // identified by object, so the toggles and the theme observer must
     // reconfigure these ones or they would address a compartment the rebuilt
     // view's state has never heard of.
-    comps: { theme: edThemeComp, wrap: edWrapComp, vim: edVimComp },
+    comps: edRec.comps,
   };
   // Only the view goes; the state above outlives it.
-  edView.destroy();
+  edDropView(edRec);
+  edRec = null;
   edView = null;
   edPath = "";
   edSetDirty(false);
@@ -519,25 +597,12 @@ function edStash() {
 
 function edRestore(s) {
   edPath = s.path;
-  edHash = s.hash;
   edReadOnly = s.readOnly;
-  edThemeComp = s.comps.theme;
-  edWrapComp = s.comps.wrap;
-  edVimComp = s.comps.vim;
   $("editor-filename").textContent = baseName(edPath);
   $("btn-editor-save").style.display = edReadOnly ? "none" : "";
   $("btn-editor-download").style.display = canDownload(edPath) ? "" : "none";
-  if (edView) edView.destroy();
-  edView = new window.CM6.EditorView({ state: s.state, parent: $("editor-host") });
-  // The theme, the wrap setting and vim can all have moved while the buffer was
-  // away: the observer above only reaches a live view, and the buttons only
-  // reconfigure the one that is up. Reconfiguring is not a document change, so
-  // the dirty flag below is still the buffer's own.
-  edView.dispatch({ effects: [
-    edThemeComp.reconfigure(edThemeExt()),
-    edWrapComp.reconfigure(edWrapExt()),
-    edVimComp.reconfigure(edVimExt()),
-  ] });
+  edScreenView({ path: s.path, state: s.state, comps: s.comps, readOnly: s.readOnly });
+  edRec.hash = s.hash;
   edSetDirty(s.dirty);
   edSyncWrapButton();
   edSyncVimButton();
@@ -548,60 +613,73 @@ function edRestore(s) {
   // The caret is in the state, so it is already back where it was left.
 }
 
-async function editorSave(baseHash) {
-  if (!edView || edReadOnly) return;
-  const btn = $("btn-editor-save");
-  btn.disabled = true;
+// Writes a rec's buffer back. True when the write landed; false on any other
+// outcome, the dirty flag then still saying what it said.
+async function edViewSave(rec, baseHash) {
+  if (rec.readOnly) return false;
   try {
     const r = await fetch(apiURL("api/fs/write"), {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
-        path: edPath,
-        content: edView.state.doc.toString(),
-        hash: baseHash === undefined ? edHash : baseHash,
+        path: rec.path,
+        content: rec.view.state.doc.toString(),
+        hash: baseHash === undefined ? rec.hash : baseHash,
       }),
     });
-    if (r.status === 401) { rejectToken(); return; }
+    if (r.status === 401) { rejectToken(); return false; }
     const data = await r.json().catch(() => null);
     if (r.status === 409) {
       // The file on disk is not what this buffer was read from. Overwrite is
       // a resend against the hash the 409 reported; reload drops the edits.
-      if (confirm("This file changed on disk since you opened it.\n\n"
-                  + "OK overwrites it with your version; Cancel reloads the "
-                  + "file and drops your edits.")) {
-        editorSave((data && data.hash) || "");
-      } else {
-        editorReload();
-      }
-      return;
+      const overwrite = await appConfirm(
+        baseName(rec.path) + " changed on disk since you opened it. Overwrite "
+        + "replaces it with your version; Cancel reloads the file and drops "
+        + "your edits.",
+        { title: "File changed on disk", confirmLabel: "Overwrite" });
+      if (overwrite) return edViewSave(rec, (data && data.hash) || "");
+      await edViewReload(rec);
+      return false;
     }
-    if (!r.ok || !data) { toast("Couldn't save"); return; }
-    edHash = data.hash;
-    edSetDirty(false);
+    if (!r.ok || !data) { toast("Couldn't save"); return false; }
+    rec.hash = data.hash;
+    rec.dirty = false;
+    rec.onDirty(rec, false);
     toast("Saved");
+    return true;
   } catch (e) {
     toast("Couldn't save");
-  } finally {
-    btn.disabled = false;
+    return false;
   }
 }
 
-async function editorReload() {
+async function edViewReload(rec) {
   try {
-    const r = await fetch(apiURL("api/fs/read?path=" + encodeURIComponent(edPath)),
+    const r = await fetch(apiURL("api/fs/read?path=" + encodeURIComponent(rec.path)),
                           { cache: "no-store", headers: authHeaders() });
     const data = await r.json().catch(() => null);
     if (!r.ok || !data) throw new Error("HTTP " + r.status);
-    edHash = data.hash;
-    edView.dispatch({
-      changes: { from: 0, to: edView.state.doc.length, insert: data.content },
+    rec.hash = data.hash;
+    rec.view.dispatch({
+      changes: { from: 0, to: rec.view.state.doc.length, insert: data.content },
     });
     // After the dispatch, whose docChanged just marked the buffer dirty.
-    edSetDirty(false);
+    rec.dirty = false;
+    rec.onDirty(rec, false);
     toast("Reloaded from disk");
   } catch (e) {
     toast("Couldn't reload");
+  }
+}
+
+async function editorSave() {
+  if (!edRec || edReadOnly) return;
+  const btn = $("btn-editor-save");
+  btn.disabled = true;
+  try {
+    await edViewSave(edRec);
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -618,7 +696,8 @@ function editorPopped() {
 function closeEditor() {
   $("screen-editor").classList.remove("active");
   undockFileView($("screen-editor"));
-  if (edView) { edView.destroy(); edView = null; }
+  if (edRec) { edDropView(edRec); edRec = null; }
+  edView = null;
   edSetDirty(false);
   edPath = "";
   // A save may have changed what the list shows — sizes, a file born on save —
@@ -658,12 +737,16 @@ $("btn-editor-download").addEventListener("click", () => {
 // and undo history all survive the tap.
 $("btn-editor-wrap").addEventListener("click", () => {
   cfg.editorWrapOn = !cfg.editorWrapOn;
-  if (edView) edView.dispatch({ effects: edWrapComp.reconfigure(edWrapExt()) });
+  for (const rec of edLive) {
+    rec.view.dispatch({ effects: rec.comps.wrap.reconfigure(edWrapExt(rec.path)) });
+  }
   edSyncWrapButton();
 });
 $("btn-editor-vim").addEventListener("click", () => {
   cfg.editorVimOn = !cfg.editorVimOn;
-  if (edView) edView.dispatch({ effects: edVimComp.reconfigure(edVimExt()) });
+  for (const rec of edLive) {
+    rec.view.dispatch({ effects: rec.comps.vim.reconfigure(edVimExt()) });
+  }
   edSyncVimButton();
   if (cfg.editorVimOn) { edDefineVimEx(); edLoadVimrc(); }
 });

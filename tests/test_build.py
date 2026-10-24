@@ -1446,6 +1446,120 @@ console.log(JSON.stringify(calls));
             '  btn.addEventListener("click", () => closeDockedFiles());') in doc
 
 
+_CM6_STUB = """
+const dispatched = [];
+let compN = 0;
+class Compartment {
+  constructor() { this.id = ++compN; }
+  of(x) { return { comp: this.id, x }; }
+  reconfigure(x) { return { reconf: this.id, x }; }
+}
+class EditorView {
+  constructor({ state, parent }) { this.state = state; this.parent = parent; }
+  dispatch(tr) { dispatched.push({ host: this.parent, tr }); }
+  destroy() { this.destroyed = true; }
+}
+EditorView.updateListener = { of: (f) => ({ listener: f }) };
+EditorView.editable = { of: (v) => ({ editable: v }) };
+const EditorState = {
+  create: (c) => ({ doc: c.doc, extensions: c.extensions }),
+  readOnly: { of: (v) => ({ readOnly: v }) },
+};
+const mark = () => "m";
+const window = { CM6: { Compartment, EditorView, EditorState,
+  keymap: { of: mark }, defaultKeymap: [], historyKeymap: [], indentWithTab: "tab",
+  lineNumbers: mark, highlightActiveLineGutter: mark, highlightSpecialChars: mark,
+  history: mark, drawSelection: mark, dropCursor: mark, indentOnInput: mark,
+  bracketMatching: mark, highlightActiveLine: mark } };
+function edVimExt() { return "vim"; }
+function edWrapExt(path) { return "wrap " + path; }
+function edThemeExt() { return "theme"; }
+function edLanguage(path) { return "lang"; }
+"""
+
+
+def test_every_live_editor_view_follows_the_theme_until_it_is_dropped(doc, tmp_path):
+    """The explorer will hold several editors at once, so the theme (and the
+    global Wrap and Vim prefs) must reach every live view, not just the
+    editor screen's; a dropped view must stop receiving them. A doc change
+    marks its own rec dirty once, and a stashed state mounted under a new rec
+    is brought up to date by the three compartment reconfigures."""
+    chunks = "\n".join(_js_chunk(doc, h) for h in (
+        "const edLive", "function edMakeView(", "function edDropView(",
+        "function edRetheme("))
+    out = _node_json(tmp_path, "views.mjs", _CM6_STUB + chunks + """
+const dirt = [];
+const onDirty = (rec, on) => dirt.push(rec.path + " " + on);
+const a = edMakeView({ host: "A", path: "/a.py", content: "x", readOnly: false, onDirty });
+const b = edMakeView({ host: "B", path: "/b.md", content: "y", readOnly: true, onDirty });
+edRetheme();
+const both = dispatched.splice(0).map((d) => d.host + " " + d.tr.effects.reconf);
+const listener = a.view.state.extensions.find((e) => e && e.listener).listener;
+listener({ docChanged: true, view: a.view });
+listener({ docChanged: true, view: a.view });
+listener({ docChanged: false, view: b.view });
+edDropView(a);
+edRetheme();
+const after = dispatched.splice(0).map((d) => d.host);
+const back = edMakeView({ host: "C", path: "/a.py", state: a.view.state, comps: a.comps, onDirty });
+const restore = dispatched.splice(0).map((d) => d.tr.effects.map((e) => e.reconf + " " + e.x));
+listener({ docChanged: true, view: back.view });
+console.log(JSON.stringify({ both, dirt, destroyed: !!a.view.destroyed, after,
+  live: edLive.size, restore, bRo: b.view.state.extensions.some((e) => Array.isArray(e) && e.length),
+  backDirty: back.dirty, sameComps: back.comps === a.comps }));
+""")
+    assert out["both"] == ["A 1", "B 4"]
+    assert out["destroyed"] and out["after"] == ["B"]
+    assert out["dirt"] == ["/a.py true", "/a.py true"]
+    assert out["restore"] == [["1 theme", "2 wrap /a.py", "3 vim"]]
+    assert out["live"] == 2 and out["sameComps"] and out["backDirty"]
+    assert out["bRo"]
+
+
+@pytest.mark.parametrize("overwrite", [True, False])
+def test_a_save_conflict_asks_in_the_app_and_resends_or_reloads(doc, tmp_path, overwrite):
+    """A 409 on save asks through appConfirm, not the browser's confirm().
+    Overwrite resends against the hash the 409 reported and the rec takes the
+    new hash and comes clean; Cancel reloads the file and sends nothing more."""
+    save = _js_chunk(doc, "async function edViewSave(")
+    out = _node_json(tmp_path, "save.mjs", f"""
+const posts = [], calls = [];
+const replies = [[409, {{ hash: "disk" }}], [200, {{ hash: "saved" }}]];
+async function fetch(url, init) {{
+  posts.push(JSON.parse(init.body));
+  const [status, body] = replies.shift();
+  return {{ status, ok: status === 200, json: async () => body }};
+}}
+function apiURL(p) {{ return p; }}
+function authHeaders(h) {{ return h; }}
+function rejectToken() {{ calls.push("reject"); }}
+function toast(t) {{ calls.push("toast " + t); }}
+function baseName(p) {{ return p.split("/").pop(); }}
+async function appConfirm(msg, opts) {{
+  calls.push("ask " + opts.title + " / " + opts.confirmLabel);
+  return {json.dumps(overwrite)};
+}}
+async function edViewReload(rec) {{ calls.push("reload " + rec.path); }}
+{save}
+const rec = {{ path: "/h/a.py", hash: "read", dirty: true, readOnly: false,
+  view: {{ state: {{ doc: {{ toString: () => "text" }} }} }},
+  onDirty: (r, on) => calls.push("dirty " + on) }};
+const ok = await edViewSave(rec);
+console.log(JSON.stringify({{ ok, posts, calls, hash: rec.hash, dirty: rec.dirty }}));
+""")
+    ask = "ask File changed on disk / Overwrite"
+    assert out["posts"][0] == {"path": "/h/a.py", "content": "text", "hash": "read"}
+    if overwrite:
+        assert [p["hash"] for p in out["posts"]] == ["read", "disk"]
+        assert out["calls"] == [ask, "dirty false", "toast Saved"]
+        assert out["ok"] is True and out["hash"] == "saved" and out["dirty"] is False
+    else:
+        assert len(out["posts"]) == 1
+        assert out["calls"] == [ask, "reload /h/a.py"]
+        assert out["ok"] is False and out["hash"] == "read"
+    assert "confirm(" not in save.replace("appConfirm(", "")
+
+
 # (viewer shown, stack depth) -> what the explorer's popstate does.
 POPSTATE_CASES = [
     ("viewer over a subfolder", True, 2, ["hide", 'push {"files":true,"path":"/h/a"}'], 2),
