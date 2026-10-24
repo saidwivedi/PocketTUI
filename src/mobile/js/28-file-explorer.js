@@ -938,6 +938,9 @@ function filesStash() {
     // A branch being read is part of what the session was looking at, so it
     // comes back with the folder rather than the pane returning to the disk.
     ref: filesRef, refRoot: filesRefRoot, repo: filesRepo, repoAsked: filesRepoAsked,
+    // Filling the main area is this session's choice, not the app's: the next
+    // session's pane opens the way that session left it.
+    expanded: filesExpanded,
     // The tree and every tab, unsaved edits included, go with the session.
     ws: (wsHanded = !!ws) ? ws : null,
   };
@@ -966,8 +969,11 @@ function filesTeardown() {
   // session's, and the terminal is about to be another session's. Whatever that
   // one had put away claims it again (restoreFileView), and a session that had
   // nothing gets the whole width. Same tail as closeDockedFiles, which is the
-  // other way the pane ends.
-  if (wasDocked) { syncFilesExpand(); sideDrop(id); }
+  // other way the pane ends. The expand goes with the folder, so the next
+  // session's fresh dock opens collapsed, and the remembered one (cfg) stops
+  // describing a pane that is no longer on screen.
+  filesSetExpanded(false);
+  if (wasDocked) sideDrop(id);
 }
 
 // Everything this pane is holding about the computer being left, for a switch to
@@ -1015,7 +1021,7 @@ function filesRestore(s) {
   root.classList.add("active");
   ws = s.ws || null;
   if (ws) ws.attach(root);
-  if (filesDocked) { sideClaim(id); syncFilesExpand(); }
+  if (filesDocked) { sideClaim(id); filesSetExpanded(!!s.expanded); }
   syncChrome();
   // The rows on screen are whichever folder the session we were away in left
   // there; the cache spares a round trip for a folder already listed.

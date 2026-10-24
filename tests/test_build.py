@@ -987,6 +987,179 @@ def test_a_session_switch_leaves_the_pane_one_empty_tab(doc):
     assert "pushState" not in restore
 
 
+# A docked pane's expand is its session's (founder, 2026-10-24: expanding the
+# explorer in one tmux session expanded it in the next). The stash carries it,
+# the restore puts it back through the one setter, a teardown forgets it, and
+# the remembered value (cfg) follows the pane on screen.
+FILES_EXPAND_HARNESS = """
+const cfg = {{ filesExpanded: {start} }};
+const id = "files";
+let filesExpanded = cfg.filesExpanded;
+let filesDocked = false, filesOrigin = null, filesStack = [], filesPath = "";
+let filesSyncedCwd = "", filesHeldAt = "", filesRef = "", filesRefRoot = "";
+let filesRepo = null, filesRepoAsked = "", ws = null, wsHanded = false;
+const full = [];
+function sideSetFull(pane, on) {{ full.push([pane, on]); }}
+function sideClaim() {{ return true; }}
+function sideDrop() {{}}
+function workspace() {{ return {{ setOn() {{}} }}; }}
+function filesEls() {{ return []; }}
+const cls = () => ({{ add() {{}}, remove() {{}}, toggle() {{}} }});
+const root = {{ classList: cls() }};
+function q() {{ return {{ style: {{}} }}; }}
+function $() {{ return {{ classList: cls() }}; }}
+function clearRefState() {{}}
+function filesClearListing() {{}}
+function syncRefBar() {{}}
+function syncRefActions() {{}}
+function syncChrome() {{}}
+function cachedListing() {{ return null; }}
+function applyListing() {{}}
+function loadDir() {{ return Promise.resolve(true); }}
+function navigateDir() {{ return Promise.resolve(true); }}
+{fns}
+const out = {{}};
+{body}
+console.log(JSON.stringify(out));
+"""
+
+
+def _files_expand(doc, tmp_path, start, body):
+    fns = "\n".join(_js_chunk(doc, head) for head in (
+        "function syncFilesExpand() {", "function filesSetExpanded(v) {",
+        "function openDockedFiles(path, opts, primed) {", "function filesStash() {",
+        "function filesTeardown() {", "function filesRestore(s) {"))
+    return _node_json(tmp_path, "files_expand.mjs", FILES_EXPAND_HARNESS.format(
+        start=start, fns=fns, body=body))
+
+
+def test_the_docked_explorer_s_expand_goes_with_its_session(doc, tmp_path):
+    """Session A expands its pane and is left: the record says expanded, the
+    teardown forgets it (flag and cfg), session B's fresh dock opens
+    collapsed, and each session's record brings back its own state."""
+    out = _files_expand(doc, tmp_path, "false", """
+openDockedFiles("/a");
+filesSetExpanded(true);
+const rec = filesStash();
+out.stashed = rec.expanded;
+filesTeardown();
+out.afterTeardown = [filesExpanded, cfg.filesExpanded];
+openDockedFiles("/b");
+out.freshDock = [filesExpanded, cfg.filesExpanded, full[full.length - 1]];
+const recB = filesStash();
+filesTeardown();
+filesRestore(rec);
+out.restoredA = [filesExpanded, cfg.filesExpanded, full[full.length - 1]];
+filesTeardown();
+filesRestore(recB);
+out.restoredB = [filesExpanded, cfg.filesExpanded, full[full.length - 1]];
+""")
+    assert out == {"stashed": True,
+                   "afterTeardown": [False, False],
+                   "freshDock": [False, False, ["files", False]],
+                   "restoredA": [True, True, ["files", True]],
+                   "restoredB": [False, False, ["files", False]]}
+
+
+def test_restoring_a_collapsed_record_collapses_an_expanded_flag(doc, tmp_path):
+    """The restore sets the record's expand before the pane is drawn, even
+    when the flag going in says expanded."""
+    out = _files_expand(doc, tmp_path, "true", """
+filesRestore({ stack: [], path: "/b", origin: "screen-term", docked: true, expanded: false });
+out.collapsed = [filesExpanded, cfg.filesExpanded, full];
+""")
+    assert out == {"collapsed": [False, False, [["files", False]]]}
+    restore = _js_chunk(doc, "function filesRestore(s) {")
+    assert "  if (filesDocked) { sideClaim(id); filesSetExpanded(!!s.expanded); }" in restore
+    assert "syncFilesExpand()" not in restore
+
+
+BROWSER_EXPAND_HARNESS = """
+const cfg = {{ browserExpanded: {start} }};
+const id = "browser";
+let browserExpanded = cfg.browserExpanded;
+let browserDocked = false, browserOpen = false, browserOriginFrom = null;
+let browserGen = 0, browserActive = 0;
+function browserNewTab() {{ return {{ stack: [], idx: -1, title: "", titleFor: "", lan: false }}; }}
+let browserTabs = [browserNewTab()];
+const full = [];
+function sideSetFull(pane, on) {{ full.push([pane, on]); }}
+function sideClaim() {{ return true; }}
+function sideDrop() {{}}
+const cls = () => ({{ add() {{}}, remove() {{}}, toggle() {{}} }});
+const root = {{ classList: cls() }};
+function q(name) {{ return name === "btn-browser-expand" ? null : {{ style: {{}} }}; }}
+function browserIsFull() {{ return false; }}
+function browserCancelGrab() {{}}
+function browserDropPages() {{}}
+function browserDropLink() {{}}
+function showBrowserZoomMenu() {{}}
+function browserSetField() {{}}
+function renderBrowserTabs() {{}}
+function syncBrowserNav() {{}}
+function syncBrowserFull() {{}}
+function browserRemember() {{}}
+function browserNormalize(u) {{ return u; }}
+function browserSeedMode() {{}}
+function browserCurrentUrl() {{ return ""; }}
+function browserNavigate() {{}}
+{fns}
+const out = {{}};
+{body}
+console.log(JSON.stringify(out));
+"""
+
+
+def _browser_expand(doc, tmp_path, start, body):
+    fns = "\n".join(_js_chunk(doc, head) for head in (
+        "function syncBrowserExpand() {", "function browserSetExpanded(v) {",
+        "function openDockedBrowser(opts) {", "function browserStash() {",
+        "function browserTeardown(fresh = false) {\n  const wasDocked",
+        "function browserRestore(s) {"))
+    return _node_json(tmp_path, "browser_expand.mjs", BROWSER_EXPAND_HARNESS.format(
+        start=start, fns=fns, body=body))
+
+
+def test_the_docked_browser_s_expand_goes_with_its_session(doc, tmp_path):
+    """The docked explorer's rule for the browser pane, including a collapsed
+    record restored over an expanded flag."""
+    out = _browser_expand(doc, tmp_path, "false", """
+openDockedBrowser();
+browserSetExpanded(true);
+const rec = browserStash();
+out.stashed = rec.expanded;
+browserTeardown(true);
+out.afterTeardown = [browserExpanded, cfg.browserExpanded];
+openDockedBrowser();
+out.freshDock = [browserExpanded, cfg.browserExpanded, full[full.length - 1]];
+const recB = browserStash();
+browserTeardown(true);
+browserRestore(rec);
+out.restoredA = [browserExpanded, cfg.browserExpanded, full[full.length - 1]];
+browserTeardown(true);
+browserSetExpanded(true);
+browserRestore(recB);
+out.restoredB = [browserExpanded, cfg.browserExpanded, full[full.length - 1]];
+""")
+    assert out == {"stashed": True,
+                   "afterTeardown": [False, False],
+                   "freshDock": [False, False, ["browser", False]],
+                   "restoredA": [True, True, ["browser", True]],
+                   "restoredB": [False, False, ["browser", False]]}
+
+
+def test_a_switch_folds_the_expand_a_closed_pane_kept(doc):
+    """A pane closed while it filled the main area is not stashed, so its
+    expand would ride into the tapped session's first dock: the switch folds
+    every row's expand once the leaving session's panes are down, before the
+    tapped session's records are restored."""
+    at = doc.index("    if (currentSession && name !== currentSession) {\n"
+                   "      for (const id of Object.keys(sideInst)) sideSetExpanded(id, false);\n"
+                   "    }\n")
+    assert doc.index("    } else if (browserAnyHeld() && name !== currentSession && currentSession) {") < at
+    assert at < doc.index("  if (fileViews.has(name)) restoreFileView(name);")
+
+
 def test_the_pane_offers_the_stream_where_a_proxied_page_did_not_work(doc):
     """A bar over the page, naming the key that would fix it.
 

@@ -627,6 +627,13 @@ function openTerminal(name, resumed) {
     } else if (browserAnyHeld() && name !== currentSession && currentSession) {
       stashFileView(currentSession, null);
     }
+    // Every pane is down by now, but one the leaving session closed while it
+    // filled the main area kept that expand, and the tapped session's first
+    // dock would open filling it. The tapped session's own records put theirs
+    // back (restoreFileView).
+    if (currentSession && name !== currentSession) {
+      for (const id of Object.keys(sideInst)) sideSetExpanded(id, false);
+    }
   }
   // Whether this open is a switch inside an already-open terminal pane —
   // only the rail makes that possible; read before the classes move below.

@@ -3200,6 +3200,8 @@ attachEdgeSwipe(root, () => history.back());
 function browserStash() {
   return {
     docked: browserDocked, active: browserActive,
+    // The session's own, as the docked explorer's is (filesStash).
+    expanded: browserExpanded,
     tabs: browserTabs.map((t) => ({
       stack: t.stack.slice(), idx: t.idx, title: t.title, titleFor: t.titleFor,
       lan: t.lan, full: browserIsFull(t), fid: t.fid, targetId: t.target,
@@ -3231,7 +3233,10 @@ function browserTeardown(fresh = false) {
   showBrowserZoomMenu(false);
   root.classList.remove("docked");
   root.classList.remove("active");
-  if (wasDocked) { syncBrowserExpand(); sideDrop(id); }
+  // The expand is the leaving session's, the docked explorer's rule
+  // (filesTeardown).
+  browserSetExpanded(false);
+  if (wasDocked) sideDrop(id);
   if (fresh) {
     browserTabs = [browserNewTab()];
     browserActive = 0;
@@ -3264,6 +3269,7 @@ function browserRestore(s) {
   renderBrowserTabs();
   syncBrowserFull();
   if (!s.docked) { syncBrowserNav(); return; }
+  browserSetExpanded(!!s.expanded);
   openDockedBrowser();
   // The tab that was on screen, and it alone: the rest load when a chip asks
   // for one, for browserShowTab's reason.
