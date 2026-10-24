@@ -174,6 +174,31 @@ function wsMoveTab(tab, to, index) {
   return { index, emptied: from !== to && !from.tabs.length ? from : null };
 }
 
+// What a drop does, in the model alone, for either thing the drag carries: a
+// tab (`{ kind: "tab", tab }`) or a file from the tree (`{ kind: "path",
+// path }`), with `have` the tab that file already has, if any. `t` is
+// wsDropTarget's answer and `groups` the groups it counts. A file that is
+// open is its tab, so it moves, as a tab drag would, and one path keeps one
+// tab; one that is not opens at the target ("open"). A tab dropped on its
+// own group's body stays put (null), and a tree file dropped there is only
+// brought to the front ("focus"). A split of a group with no tabs, which is
+// the files' only group, would leave an empty group beside the new one, so a
+// file dropped on such a group's split zone opens in it instead. Says the op,
+// the tab or path, the group, `split` (the direction, or null) and `index`
+// (a band slot, or null for the end).
+function wsDropPlan(payload, t, groups, have) {
+  if (!t) return null;
+  const tab = payload.kind === "tab" ? payload.tab : have || null;
+  const g = groups[t.group];
+  if (t.kind === "append" && tab && tab.group === g) {
+    return payload.kind === "tab" ? null
+      : { op: "focus", tab, path: tab.path, group: g, split: null, index: null };
+  }
+  const split = t.kind === "split" && (tab || g.tabs.length) ? t.dir : null;
+  return { op: tab ? "move" : "open", tab, path: tab ? tab.path : payload.path,
+           group: g, split, index: t.kind === "insert" ? t.index : null };
+}
+
 // A group with no tabs out of the grid in the model alone: `cols` the columns,
 // each with its `groups`, and each group knowing its `col`. The only group in
 // the grid stays, and a group still holding tabs is never taken, so no tab is
@@ -719,12 +744,32 @@ function makeWorkspace(ctx) {
     else if (node.entry) ctx.openFileActions(Object.assign({}, node.entry, { dir: parentOf(node.path) }));
   });
 
+  // A file row pressed and dragged goes into the file area as a tab would
+  // (the drag below); a folder has no tab to become, and stays a row the
+  // listing's own drag can drop files onto.
+  treeBody.addEventListener("pointerdown", (e) => {
+    const row = e.target.closest(".ws-node.file");
+    const node = row && nodes.get(row.dataset.path);
+    if (node && node.type === "file") startDrag(e, { kind: "path", path: node.path }, row);
+  });
+  treeBody.addEventListener("click", swallowDragClick, true);
+  treeBody.addEventListener("touchmove", (e) => {
+    if (drag && drag.lifted && treeBody.contains(drag.src)) e.preventDefault();
+  }, { passive: false });
+
   // The listing's right-click menu, over a row of the tree: the entry carries
   // the folder it is in, which is not the folder the listing is showing.
   treeBody.addEventListener("contextmenu", (ev) => {
     const row = ev.target.closest(".ws-node");
     const node = row && nodes.get(row.dataset.path);
     if (!node || !node.entry) return;
+    // Android's long press is this menu as well as the drag's lift: a finger
+    // that has carried the row somewhere is dragging, and one still held
+    // where it lifted wants the menu, so the drag gives way.
+    if (drag && drag.touch && treeBody.contains(drag.src)) {
+      if (drag.moved) { ev.preventDefault(); return; }
+      endDrag(false);
+    }
     ev.preventDefault();
     ctx.openFileActions(Object.assign({}, node.entry, { dir: parentOf(node.path) }),
                         { x: ev.clientX, y: ev.clientY, pane: root });
@@ -922,6 +967,9 @@ function makeWorkspace(ctx) {
   // caller's say over the tap rules (the action sheet's Edit on a page), and
   // `opts.create` a file the first save will make, and `opts.marks` an editor
   // that shows its change marks whatever the tabs' default (a badge's click).
+  // `opts.group` and `opts.index` put a new tab in that group at that slot of
+  // its band (a tree row's drop), rather than at the end of the last group
+  // pressed in.
   async function open(path, kind, opts) {
     const have = byPath.get(path);
     if (have) {
@@ -944,10 +992,12 @@ function makeWorkspace(ctx) {
       return null;
     }
     if (kind === "pdf" && demoApiOn()) { toast("Not in the demo"); return null; }
-    const tab = addTab(focusGroup || groups[0], {
+    const into = (opts && opts.group) || focusGroup || groups[0];
+    const tab = addTab(into, {
       path, kind, title: baseName(path),
       marksOn: kind === "editor" && (opts && opts.marks ? true : cfg.wsInlineDiff),
     });
+    if (opts && opts.index != null) moveTab(tab, into, opts.index);
     activate(tab);
     const ok = await fillTab(tab, opts || {}).catch((e) => { dbg("ws tab failed:", e); return false; });
     if (!ok && !tab.closed) drop(tab);
@@ -1191,7 +1241,14 @@ function makeWorkspace(ctx) {
   // the tab into it. Only what is new is put into the document, so no other
   // group's body moves (a PDF's frame would load again if it did).
   function splitOff(tab, dir, at) {
-    if (dir === "side" ? cols.length > 1 : at.col.groups.length > 1) return;
+    const g = makeSplit(dir, at);
+    if (g) moveTab(tab, g, null);
+  }
+
+  // The new group alone, empty, for a tab to be moved or a file opened into;
+  // null when the grid has no room that way.
+  function makeSplit(dir, at) {
+    if (dir === "side" ? cols.length > 1 : at.col.groups.length > 1) return null;
     const g = makeGroup();
     if (dir === "side") {
       const c = makeCol();
@@ -1209,7 +1266,7 @@ function makeWorkspace(ctx) {
       c.el.classList.add("ws-two");
     }
     syncGrid();
-    moveTab(tab, g, null);
+    return g;
   }
 
   // The group nothing is left in goes, and its column with it when that was
@@ -1278,78 +1335,104 @@ function makeWorkspace(ctx) {
     if (g) focusGroup = g;
   }, true);
 
-  // ---- dragging a tab ------------------------------------------------------------
+  // ---- dragging a tab, or a file from the tree -------------------------------------
   // By pointer events rather than the HTML5 drag the listing's rows move files
   // with: that drag would offer a tab to every folder row as a file to move.
-  // A copy of the chip follows the pointer and the chip stays in its place,
-  // dimmed, until the release says where it goes: a slot in a band (a bar
-  // between two chips), the right third or the lower half of a column while
-  // the grid has room that way (a split beside or below), or another group's
-  // body. Escape, or a cancelled pointer, puts it down where it was.
-  let tabDrag = null;
+  // One controller carries either a tab or a tree file (the payload, which
+  // wsDropPlan reads). A copy of the chip, or for a file its icon and name,
+  // follows the pointer and the source stays in its place, dimmed, until the
+  // release says where it goes: a slot in a band (a bar between two chips),
+  // the right third or the lower half of a column while the grid has room
+  // that way (a split beside or below), or another group's body. Escape, or a
+  // cancelled pointer, puts it down where it was; a tree file let go outside
+  // the file area does nothing.
+  let drag = null;
   let swallowClick = false;
   const insBar = el("div", { class: "ws-drop-ins", "aria-hidden": "true" });
   const hint = el("div", { class: "ws-drop-hint", "aria-hidden": "true" });
 
+  // A press on `src` that may become a drag of `payload`: a mouse after the
+  // slop, a finger only after holding still WS_LIFT_MS, since the band and
+  // the tree both scroll under a finger.
+  function startDrag(e, payload, src) {
+    if (drag || !e.isPrimary) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    const touch = e.pointerType !== "mouse";
+    drag = { payload, src, id: e.pointerId, touch, x: e.clientX, y: e.clientY,
+             lastX: e.clientX, lastY: e.clientY, lifted: false, moved: false,
+             timer: 0, ghost: null, target: null, plan: null };
+    window.addEventListener("pointermove", onDragMove);
+    window.addEventListener("pointerup", onDragUp);
+    window.addEventListener("pointercancel", onDragCancel);
+    window.addEventListener("blur", onDragBlur);
+    if (touch) drag.timer = setTimeout(lift, WS_LIFT_MS);
+  }
+
+  // The click a drag's release makes is not a press on the tab or the row.
+  function swallowDragClick(e) {
+    if (!swallowClick) return;
+    swallowClick = false;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
   function wireTabDrag(tab) {
     const chip = tab.chip;
     chip.addEventListener("pointerdown", (e) => {
-      if (tabDrag || !e.isPrimary) return;
-      if (e.pointerType === "mouse" && e.button !== 0) return;
       if (e.target.closest(".tab-del, .ws-marks-key")) return;
-      const touch = e.pointerType !== "mouse";
-      tabDrag = { tab, id: e.pointerId, touch, x: e.clientX, y: e.clientY,
-                  lastX: e.clientX, lastY: e.clientY,
-                  lifted: false, timer: 0, ghost: null, target: null };
-      window.addEventListener("pointermove", onDragMove);
-      window.addEventListener("pointerup", onDragUp);
-      window.addEventListener("pointercancel", onDragCancel);
-      window.addEventListener("blur", onDragBlur);
-      if (touch) tabDrag.timer = setTimeout(liftTab, WS_LIFT_MS);
+      startDrag(e, { kind: "tab", tab }, chip);
     });
-    // The click a drag's release makes is not a press on the tab.
-    chip.addEventListener("click", (e) => {
-      if (!swallowClick) return;
-      swallowClick = false;
-      e.preventDefault();
-      e.stopPropagation();
-    }, true);
+    chip.addEventListener("click", swallowDragClick, true);
     // Once lifted the finger belongs to the tab, and the band must not scroll
     // under it; Android's long press would also open a menu on the same hold.
     chip.addEventListener("touchmove", (e) => {
-      if (tabDrag && tabDrag.tab === tab && tabDrag.lifted) e.preventDefault();
+      if (drag && drag.src === chip && drag.lifted) e.preventDefault();
     }, { passive: false });
     chip.addEventListener("contextmenu", (e) => {
-      if (tabDrag && tabDrag.tab === tab && tabDrag.touch) e.preventDefault();
+      if (drag && drag.src === chip && drag.touch) e.preventDefault();
     });
   }
 
-  function liftTab() {
-    const d = tabDrag;
+  function lift() {
+    const d = drag;
     clearTimeout(d.timer);
     d.timer = 0;
     d.lifted = true;
-    const chip = d.tab.chip;
-    try { chip.setPointerCapture(d.id); } catch (e) {}
-    const r = chip.getBoundingClientRect();
-    const copy = chip.cloneNode(true);
-    copy.classList.remove("on");
-    d.ghost = el("div", { class: "ws-tab-ghost", "aria-hidden": "true",
-                          style: "left:" + r.left + "px;top:" + r.top + "px;width:"
-                                 + r.width + "px;height:" + r.height + "px" }, copy);
+    const src = d.src;
+    try { src.setPointerCapture(d.id); } catch (e) {}
+    const r = src.getBoundingClientRect();
+    let copy, box;
+    if (d.payload.kind === "tab") {
+      copy = src.cloneNode(true);
+      copy.classList.remove("on");
+      box = "left:" + r.left + "px;top:" + r.top + "px;width:" + r.width + "px;height:"
+            + r.height + "px";
+    } else {
+      // A tree row is the tree's width; its ghost is a chip of the file's
+      // icon and name, set beside the press so it does not jump.
+      const name = baseName(d.payload.path);
+      copy = el("div", { class: "tab-chip ws-path-ghost" },
+        el("span", { class: "file-ic file" }, svgIcon(kindIcon(fileKind(name)))),
+        el("span", { class: "tab-name" }, el("span", { class: "tab-word" }, name)));
+      box = "left:" + (d.x + 8) + "px;top:" + (d.y - r.height / 2) + "px;height:"
+            + r.height + "px";
+    }
+    d.ghost = el("div", { class: "ws-tab-ghost", "aria-hidden": "true", style: box }, copy);
     document.body.appendChild(d.ghost);
-    chip.classList.add("dragging");
+    src.classList.add("dragging");
     document.body.classList.add("ws-tab-dragging");
     window.addEventListener("keydown", onDragKey, true);
     if (d.touch && navigator.vibrate) navigator.vibrate(10);
-    followTab();
+    follow();
   }
 
-  function followTab() {
-    const d = tabDrag;
+  function follow() {
+    const d = drag;
     d.ghost.style.transform = "translate(" + (d.lastX - d.x) + "px," + (d.lastY - d.y) + "px)";
-    d.target = dropAt(d.lastX, d.lastY);
-    showTarget(d.target);
+    const t = dropAt(d.lastX, d.lastY);
+    d.plan = wsDropPlan(d.payload, t, groups,
+                        d.payload.kind === "path" ? byPath.get(d.payload.path) : null);
+    showTarget(d.plan ? t : null);
   }
 
   // The drop target under the pointer, from the boxes on screen now (a band
@@ -1364,11 +1447,7 @@ function makeWorkspace(ctx) {
       col: box(g.col.el), stack: g.col.groups.length,
       mids: g.tabs.map((t) => { const r = box(t.chip); return r.left + r.width / 2; }),
     })) };
-    const t = wsDropTarget({ x, y }, geo);
-    if (!t) return null;
-    // Dropped on the body of its own group, a tab stays where it is.
-    if (t.kind === "append" && groups[t.group] === tabDrag.tab.group) return null;
-    return t;
+    return wsDropTarget({ x, y }, geo);
   }
 
   function showTarget(t) {
@@ -1400,33 +1479,37 @@ function makeWorkspace(ctx) {
   }
 
   function onDragMove(e) {
-    const d = tabDrag;
+    const d = drag;
     if (!d || e.pointerId !== d.id) return;
     d.lastX = e.clientX;
     d.lastY = e.clientY;
-    if (d.lifted) { followTab(); return; }
-    // Before the lift, a finger that moves is scrolling the band and the press
-    // is let go; a mouse that moves is dragging.
     const far = Math.hypot(e.clientX - d.x, e.clientY - d.y);
+    if (d.lifted) {
+      if (far > WS_TOUCH_SLOP) d.moved = true;
+      follow();
+      return;
+    }
+    // Before the lift, a finger that moves is scrolling the band or the tree
+    // and the press is let go; a mouse that moves is dragging.
     if (d.touch ? far > WS_TOUCH_SLOP : far > WS_DRAG_SLOP) {
-      if (d.touch) endTabDrag(false); else liftTab();
+      if (d.touch) endDrag(false); else lift();
     }
   }
-  function onDragUp(e) { if (tabDrag && e.pointerId === tabDrag.id) endTabDrag(true); }
-  function onDragCancel(e) { if (tabDrag && e.pointerId === tabDrag.id) endTabDrag(false); }
-  function onDragBlur() { endTabDrag(false); }
+  function onDragUp(e) { if (drag && e.pointerId === drag.id) endDrag(true); }
+  function onDragCancel(e) { if (drag && e.pointerId === drag.id) endDrag(false); }
+  function onDragBlur() { endDrag(false); }
   // Escape puts the tab down where it was, and is not also the pane's Escape.
   function onDragKey(e) {
     if (e.key !== "Escape") return;
     e.preventDefault();
     e.stopPropagation();
-    endTabDrag(false);
+    endDrag(false);
   }
 
-  function endTabDrag(commit) {
-    const d = tabDrag;
+  function endDrag(commit) {
+    const d = drag;
     if (!d) return;
-    tabDrag = null;
+    drag = null;
     clearTimeout(d.timer);
     window.removeEventListener("pointermove", onDragMove);
     window.removeEventListener("pointerup", onDragUp);
@@ -1437,13 +1520,29 @@ function makeWorkspace(ctx) {
     swallowClick = true;
     setTimeout(() => { swallowClick = false; }, 0);
     d.ghost.remove();
-    d.tab.chip.classList.remove("dragging");
+    d.src.classList.remove("dragging");
     document.body.classList.remove("ws-tab-dragging");
     showTarget(null);
-    const t = commit ? d.target : null;
-    if (!t || d.tab.closed) return;
-    if (t.kind === "split") splitOff(d.tab, t.dir, groups[t.group]);
-    else moveTab(d.tab, groups[t.group], t.kind === "insert" ? t.index : null);
+    const p = commit ? d.plan : null;
+    if (!p || (p.tab && p.tab.closed) || !groups.includes(p.group)) return;
+    if (p.op === "focus") { activate(p.tab); focusGroup = p.group; return; }
+    if (p.op === "move") {
+      if (p.split) splitOff(p.tab, p.split, p.group);
+      else moveTab(p.tab, p.group, p.index);
+      return;
+    }
+    dropOpen(p);
+  }
+
+  // A tree file opened where it was dropped. A split's new group is made
+  // first; when the file does not become a tab there (a page opens in the
+  // browser, a preview the ref cannot give), that group goes again.
+  async function dropOpen(p) {
+    const g = p.split ? makeSplit(p.split, p.group) : p.group;
+    if (!g) return;
+    focusGroup = g;
+    await open(p.path, undefined, { group: g, index: p.index });
+    if (p.split && !g.tabs.length && groups.includes(g)) unsplit();
   }
 
   function fileTabs() {
@@ -1786,7 +1885,7 @@ function makeWorkspace(ctx) {
   // The end of it: the pane closed, or the computer it was reading switched.
   // Nothing is asked here; the callers that need an answer ask first.
   function destroy() {
-    endTabDrag(false);
+    endDrag(false);
     for (const t of fileTabs()) drop(t);
     detach();
     document.removeEventListener("visibilitychange", onVisibility);
