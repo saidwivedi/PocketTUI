@@ -1432,6 +1432,7 @@ def server_capabilities() -> dict:
         # /api/git/branches, and the ref= param the two /api/fs read routes
         # take, which is how the explorer browses a branch it has not checked out
         "git_ref": True,
+        "git_status": True,     # /api/git/status — the explorer's change badges
         "search": True,         # /api/search — the wide layout's find bar
         "ping": True,           # the attach socket's liveness probe: this
                                 # server answers it instead of typing it
@@ -4928,7 +4929,8 @@ def git_status_files(root: str, scope: str) -> tuple[list[dict], str]:
     Tracked is `status -uno`: the index against HEAD and the worktree against
     the index, with the untracked walk skipped entirely. Untracked is the walk
     on its own. Neither can see what the other lists, which is the point — the
-    pane asks for one of them, not for both.
+    pane asks for one of them, not for both. All is the one `status` that pays
+    for both, for the explorer's badges, which need every changed path at once.
     """
     key = (root, scope)
     with _git_status_lock:
@@ -4946,6 +4948,10 @@ def git_status_files(root: str, scope: str) -> tuple[list[dict], str]:
                 run.result = git(root, "ls-files", "--others",
                                  "--exclude-standard", "--directory",
                                  "--no-empty-directory", "-z",
+                                 timeout=GIT_STATUS_TIMEOUT)
+            elif scope == "all":
+                run.result = git(root, "status", "--porcelain=v1", "-z",
+                                 "--untracked-files=normal",
                                  timeout=GIT_STATUS_TIMEOUT)
             else:
                 run.result = git(root, "status", "--porcelain=v1", "-z", "-uno",
@@ -5053,6 +5059,43 @@ def git_branches_answer(path: str) -> Response:
         elif name.startswith("refs/remotes/"):
             remote.append(name[len("refs/remotes/"):])
     return answer(root, current, local + remote)
+
+
+@app.get("/api/git/status")
+async def api_git_status(request: Request, path: str = "") -> Response:
+    """Every changed path of the repository `path` sits in, for the explorer's badges.
+
+    Asked by folder rather than by session, like /api/git/branches, and with
+    the same walk up to the nearest folder that exists. Tracked and untracked
+    in one `status`, since a new file needs its badge as much as an edited one;
+    a folder with nothing tracked in it is still one row ending in "/". Outside
+    a repository it answers 200 with an empty root, and every answer carries
+    `elapsed_ms` to pace the poll by, as /api/git/changes does. On the git side
+    pool for the branches route's reason.
+    """
+    return await side_work(request, "git", git_status_answer, path)
+
+
+def git_status_answer(path: str) -> Response:
+    began = time.monotonic()
+
+    def answer(body: dict) -> Response:
+        body["elapsed_ms"] = int((time.monotonic() - began) * 1000)
+        return no_store(JSONResponse(body))
+
+    p = fs_path(path or "~")
+    if p is None:
+        return answer({"root": "", "files": []})
+    while not os.path.isdir(p) and p.parent != p:
+        p = p.parent
+    rc, out, _ = git(str(p), "rev-parse", "--show-toplevel")
+    root = out.decode("utf-8", "replace").strip()
+    if rc != 0 or not root:
+        return answer({"root": "", "files": []})
+    files, err = git_status_files(root, "all")
+    if err:
+        return answer({"root": root, "files": [], "error": err})
+    return answer({"root": root, "files": files})
 
 
 def git_target(root: str, path: str) -> tuple[str, str]:

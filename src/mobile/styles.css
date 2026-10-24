@@ -5831,10 +5831,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   /* The diff's own greens and reds rather than the app's status palette, so a
      row and the lines it opens are the same colour. */
-  .diff-file .badge.new { color: var(--diff-add-ink); }
-  .diff-file .badge.mod { color: var(--warn); }
-  .diff-file .badge.del { color: var(--diff-del-ink); }
-  .diff-file .badge.ren { color: var(--diff-blue); }
+  :is(.diff-file .badge, .git-badge, .ws-badge).new { color: var(--diff-add-ink); }
+  :is(.diff-file .badge, .git-badge, .ws-badge).mod { color: var(--warn); }
+  :is(.diff-file .badge, .git-badge, .ws-badge).del { color: var(--diff-del-ink); }
+  :is(.diff-file .badge, .git-badge, .ws-badge).ren { color: var(--diff-blue); }
   /* The name is what is being read; the folders it sits in are context, so
      they step back rather than compete with it. The full path is on the row's
      title for the one it does not fit. */
