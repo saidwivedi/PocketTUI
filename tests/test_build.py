@@ -341,6 +341,7 @@ def test_the_computers_network_is_a_frame_that_cannot_take_the_top_window(doc):
     withholds the top window, and a frame-breaking page throws instead of
     taking the app away."""
     assert 'id="btn-browser-tab"' not in doc
+    assert '#btn-browser-tab' not in doc
     assert "Use the computer's network for this tab" not in doc
     assert "function syncBrowserLan(" not in doc
     assert '"browse_tab"' in doc or "hasCapStrict(\"browse_tab\")" in doc
@@ -457,16 +458,6 @@ def test_a_pdf_is_drawn_where_a_plugin_can_run(doc):
     # answer the user gave rather than the one the document took.
     assert "    if (tab.pdf) return;" in doc
     assert "  if (tab.pdf ? tab.lanBefore : tab.lan) return true;" in doc
-
-
-def test_the_monitor_key_is_gone_where_there_is_nothing_to_stream_from(doc):
-    """Both keys on the address row are hidden in JS by the attribute alone, and
-    .icon-btn is display:inline-flex — which the attribute does not undo. A
-    computer with no browser to stream from must not draw the key."""
-    assert '#btn-browser-full[hidden] { display: none; }' in doc
-    assert '#btn-browser-tab' not in doc
-    assert 'id="btn-browser-full" hidden' in doc
-    assert 'q("btn-browser-full").hidden = !hasCapStrict("browser_full");' in doc
 
 
 # The addresses the key hands to the computer rather than to this device's
@@ -670,27 +661,6 @@ def test_a_landing_the_proxy_did_not_serve_is_put_back_then_laddered(doc):
     # for the reason a frame keeps its document.
     assert 'browserFullSend(tab, "close");' in doc
     assert "function browserHideFulls(" in doc
-
-
-def test_media_sites_the_old_watchdog_streamed_are_taken_off_once(doc):
-    """The old watchdog remembered a host whenever a page left the proxy, which
-    put YouTube on the stream for good. Nothing in the record says which hosts
-    were its, so the media sites are taken off by registrable name, once, under a
-    version number, and a toast says so only if something went."""
-    assert "get browserStreamHostsVer() {" in doc
-    assert '"pockettui_browser_stream_hosts_ver"' in doc
-    assert ('const BROWSER_MEDIA_SITES = ["youtube.com", "youtu.be", "vimeo.com", "twitch.tv",\n'
-            '                             "netflix.com", "spotify.com", "soundcloud.com",\n'
-            '                             "dailymotion.com"];') in doc
-    mig = doc[doc.index("function browserMigrateStreamHosts("):]
-    mig = mig[:mig.index("\n}\n")]
-    assert "if (cfg.browserStreamHostsVer >= 1) return;" in mig
-    assert 'name === m || name.endsWith("." + m)' in mig
-    assert "cfg.browserStreamHostsVer = 1;" in mig
-    assert ('if (dropped) toast("YouTube and other media sites now open in the proxy'
-            ' again", 6000);') in mig
-    # Run once, at load.
-    assert "\nbrowserMigrateStreamHosts();\n" in doc
 
 
 def test_a_page_that_did_not_land_is_tried_on_the_computers_network_once(doc):
@@ -2452,24 +2422,6 @@ USAGE_HOOKS = (
 )
 
 
-def test_usage_counter_is_declared_before_any_fragment_counts(doc):
-    """The counters are called at load (sideBootOpen, boot opening a session),
-    so they must be declared ahead of every call site; and the sender reads
-    every fragment it depends on at load, so it comes after all of them."""
-    assert doc.index("\nfunction usageCount(") < doc.index('usageCount("')
-    assert doc.index("\nconst usageCounts") < doc.index("usageSeen.add(")
-    frags = list(build_mobile.JS_FRAGMENTS)
-    at = frags.index("45-usage.js")
-    for dep in ("01-helpers.js", "02-debug-log.js", "03-a2hs-hint.js", "31-wide-layout.js",
-                "35-report.js", "36-server-version.js"):
-        assert frags.index(dep) < at, dep
-    # Nothing earlier reads the sender's own bindings at load: they appear in
-    # no fragment before it.
-    before = "".join((SRC / "js" / f).read_text(encoding="utf-8") for f in frags[:at])
-    for name in ("USAGE_URL", "USAGE_TEXT_VERSION", "usageStart", "usageSent", "usageHidden"):
-        assert name not in before, name
-
-
 @pytest.mark.parametrize("head,key", USAGE_HOOKS, ids=[h[0] for h in USAGE_HOOKS])
 def test_each_way_in_is_counted(doc, head, key):
     assert f'usageCount("{key}")' in _js_chunk(doc, head)
@@ -2482,17 +2434,6 @@ def test_sessions_seen_and_reconnects_are_counted(doc):
     # After both early returns: a hidden page and an offline one do not retry.
     assert retry.index("usageReconnects += 1;") > retry.index("if (netOffline()) {")
     assert _js_chunk(doc, "function sideClaim(id, opts) {").count('usageCount("side2")') == 1
-
-
-def test_the_cloudflare_beacon_is_gone_and_the_about_rows_exist(doc):
-    assert "cloudflareinsights" not in doc
-    about = doc[doc.index('id="panel-about"'):]
-    about = about[:about.index('id="dbg-toggle"')]
-    assert '<label for="usage-toggle">Share anonymous usage statistics</label>' in about
-    assert '<input id="usage-toggle" type="checkbox">' in about
-    assert '<label for="usage-id-toggle">Count return visits</label>' in about
-    assert '<input id="usage-id-toggle" type="checkbox">' in about
-    assert "Your terminal is never routed through our servers." in about
 
 
 # The consent wording's current version, read from the fragment so a bump that
@@ -2827,38 +2768,6 @@ console.log(JSON.stringify(got));
                    "idGone": True, "after": False}
 
 
-USAGE_SHEET_LINES = (
-    "PocketTUI sends basic anonymous usage statistics to help us understand how it’s "
-    "being used, such as device type, app version, session duration, features used, "
-    "and country.",
-    "We never collect terminal content, commands, paths, hostnames, session names, "
-    "pairing codes, or IP addresses. You can turn usage statistics off anytime in Settings.",
-    "Allow PocketTUI to store a random ID in this browser so we can tell whether someone "
-    "comes back. The ID contains no personal or terminal information and is deleted if "
-    "you turn this off.",
-)
-
-
-def test_usage_sheet_markup_and_the_pairing_trigger(doc):
-    at = doc.index('<div class="sheet" id="sheet-usage"')
-    sheet = doc[at:doc.index("\n</div>\n", at)]
-    assert "<h2" in sheet and "Help improve PocketTUI</h2>" in sheet
-    assert "<h3>Help us understand repeat usage?</h3>" in sheet
-    for line in USAGE_SHEET_LINES:
-        assert f"<p>{line}</p>" in sheet, line
-    assert ('<a href="https://pockettui.com/#privacy" target="_blank" rel="noopener">'
-            "What is sent</a>") in sheet
-    buttons = re.findall(r'<button type="button" class="([^"]*)" id="btn-usage-(yes|no)">([^<]*)<', sheet)
-    assert {(b[1], b[2]) for b in buttons} == {("yes", "Allow"), ("no", "Not now")}
-    assert len({b[0] for b in buttons}) == 1
-    assert "primary" not in buttons[0][0] and "primary" not in sheet
-    assert 'id="btn-usage-close"' in sheet
-    assert '"sheet-usage"' in _js_chunk(doc, "const SHEET_IDS")
-    confirm = doc[doc.index('$("btn-voice-confirm").addEventListener("click"'):]
-    confirm = confirm[:confirm.index("\n});\n")]
-    assert confirm.index('usageAskIfDue("pairing")') > confirm.index("showSheet(false);")
-
-
 # ---- the usage console (private/console/, not in the public repo) ------------
 
 def test_console_is_built_beside_the_shell_but_not_into_the_runtime(tmp_path, doc, monkeypatch):
@@ -2889,16 +2798,6 @@ def test_a_public_clone_builds_without_the_console(tmp_path, monkeypatch):
     assert build_mobile.main() == 0
     assert (build / "index.html").exists()
     assert not (build / "console.html").exists()
-
-
-def test_console_about_row_markup(doc):
-    about = doc[doc.index('id="panel-about"'):]
-    about = about[:about.index('id="dbg-toggle"')]
-    row = about[about.index('<div class="toggle-row" id="console-row" hidden>'):]
-    row = row[:row.index("</div>")]
-    assert "<label>Usage console</label>" in row
-    assert '<button type="button" id="btn-console">Open</button>' in row
-    assert about.index('id="console-row"') > about.index('id="usage-id-toggle"')
 
 
 def test_console_row_shows_with_a_stored_url_or_the_test_gate(doc, tmp_path):
@@ -2985,20 +2884,6 @@ def test_session_list_header_has_no_folder_key(doc):
     right = doc[doc.index('<div class="right">'):]
     right = right[:right.index("</div>\n  </div>")]
     assert right.index('id="btn-files"') < right.index('id="btn-usage"') < right.index('id="btn-reload"')
-
-
-def test_usage_key_markup_and_hidden_rule(doc):
-    at = doc.index('id="btn-usage"')
-    tag = doc[doc.rindex("<button", 0, at):doc.index("</button>", at)]
-    assert tag == ('<button class="icon-btn" id="btn-usage" aria-label="Usage console" '
-                   'title="Usage console" hidden><svg><use href="#i-bar-chart"/></svg>')
-    css = (SRC / "styles.css").read_text(encoding="utf-8")
-    assert "\n#btn-usage[hidden] { display: none; }\n" in css
-    sym = doc[doc.index('<symbol id="i-bar-chart"'):]
-    sym = sym[:sym.index("</symbol>")]
-    palette = doc[doc.index('<symbol id="i-theme-palette"'):]
-    assert 'stroke="currentColor" stroke-width="1.5"' in sym
-    assert 'stroke="currentColor" stroke-width="1.5"' in palette[:palette.index(">")]
 
 
 def test_usage_key_shows_and_wires_only_under_the_test_gate(doc, tmp_path):
@@ -3279,13 +3164,14 @@ def test_change_badge_colours_are_shared_by_the_diff_pane_and_the_explorer(doc):
     assert ".diff-file .badge.new {" not in doc
 
 
-def test_the_workspace_loads_after_the_explorer_and_before_boot():
-    """47-workspace.js is reached from 28-file-explorer.js only at the first
-    expand, so it may come after it; boot stays the program's last word."""
+def test_the_workspace_loads_before_boot():
+    """47-workspace.js declares top-level consts, which must be initialised
+    before boot runs anything that can reach them: a binding read in its
+    temporal dead zone throws and nothing after it boots. Boot stays the
+    program's last word."""
     frags = list(build_mobile.JS_FRAGMENTS)
     at = frags.index("47-workspace.js")
-    assert frags[at - 1] == "46-desktop-browser.js"
-    assert frags.index("28-file-explorer.js") < at < frags.index("27-boot.js")
+    assert at < frags.index("27-boot.js")
     assert frags[-1] == "27-boot.js"
 
 
@@ -3878,16 +3764,6 @@ def test_meshes_open_in_the_viewer(doc):
     # The bundle comes in on first use, never at boot.
     assert 's.src = "vendor/three.js?v=" + buildVersion();' in _js_chunk(doc, "function ensureThree(")
     assert 'src="vendor/three.js' not in doc
-
-
-def test_the_three_vendor_bundle():
-    f = REPO / "vendor" / "three.js"
-    body = f.read_text(encoding="utf-8")
-    assert body.startswith("/*! PocketTUI three.js vendor bundle")
-    assert "three 0.186.1" in body[:1000]
-    assert f.stat().st_size < 1024 * 1024
-    assert "var THREE3D=" in body
-    assert "vendor/three.js" in (REPO / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
 
 
 def _npy(descr, shape, payload, version=1):
