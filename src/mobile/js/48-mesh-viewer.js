@@ -297,11 +297,128 @@ function meshOpaqueRescue(materials) {
 }
 
 // The paper and ink of whatever theme and palette is on, read off the root so
-// the model sits on the same ground as the pane around it.
+// the model sits on the same ground as the pane around it; the hairline and
+// secondary text colours are what the ground grid is drawn in.
 function meshTheme() {
   const cs = getComputedStyle(document.documentElement);
   return { paper: cs.getPropertyValue("--paper").trim() || "#FAF8F3",
-           ink: cs.getPropertyValue("--ink").trim() || "#1a1814" };
+           ink: cs.getPropertyValue("--ink").trim() || "#1a1814",
+           hair: cs.getPropertyValue("--hair-strong").trim() || "#DDD4BE",
+           secondary: cs.getPropertyValue("--secondary").trim() || "#6b6357" };
+}
+
+// The ground grid under a model (founder, 2026-10-25: "something like MeshLab
+// so that it looks like it is 3D and people start rotating"). Y is up, as the
+// camera's offset in show() and OrbitControls' default up both assume, so the
+// grid lies in XZ just under the bottom of the model's box. Its cell is a
+// round power of ten, 5 to 50 cells across the model's largest side, so the
+// grid also reads as a scale; it reaches about 1.25 extents either side of the
+// centre, which is snapped to whole cells so the lines sit on round
+// coordinates. `min` and `max` are the model's box as [x, y, z].
+function meshGridPlan(min, max) {
+  const ext = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]) || 1;
+  const cell = Math.pow(10, Math.floor(Math.log10(ext / 5)));
+  const snap = (v) => Math.round(v / cell) * cell;
+  const n = Math.ceil(1.25 * ext / cell);
+  // A hair under the bottom, so faces resting on the floor do not z-fight it.
+  return { cell, n, half: n * cell, cx: snap((min[0] + max[0]) / 2),
+           cz: snap((min[2] + max[2]) / 2), y: min[1] - ext * 1e-3 };
+}
+
+// The plan's line segments, two points each, and per point whether the line is
+// a major one (every tenth cell counted from the origin, so a major line marks
+// the next power of ten up).
+function meshGridLines(p) {
+  const pos = [], major = [];
+  const ix = Math.round(p.cx / p.cell), iz = Math.round(p.cz / p.cell);
+  for (let i = -p.n; i <= p.n; i++) {
+    const x = p.cx + i * p.cell, z = p.cz + i * p.cell;
+    const mx = (ix + i) % 10 === 0 ? 1 : 0, mz = (iz + i) % 10 === 0 ? 1 : 0;
+    pos.push(x, p.y, p.cz - p.half, x, p.y, p.cz + p.half,
+             p.cx - p.half, p.y, z, p.cx + p.half, p.y, z);
+    major.push(mx, mx, mz, mz);
+  }
+  return { positions: new Float32Array(pos), major: new Float32Array(major) };
+}
+
+// Whether the "drag to rotate" hint has done its job: set by the first drag or
+// wheel on any model, and kept only for this page's life, so a returning user
+// sees it once per visit and never twice in one.
+let meshHintSeen = false;
+
+// The grid as one LineSegments. Its fade toward the edge is a radial alpha in
+// the fragment shader rather than more geometry, so the grid has no hard rim
+// and costs one draw call. colorspace_fragment is the chunk three's own
+// materials end with: the uniforms are linear (Color.set converts the CSS
+// hex), and the canvas is sRGB.
+function meshGridObject(plan) {
+  const T = THREE3D, lines = meshGridLines(plan);
+  const geom = new T.BufferGeometry();
+  geom.setAttribute("position", new T.BufferAttribute(lines.positions, 3));
+  geom.setAttribute("major", new T.BufferAttribute(lines.major, 1));
+  const mat = new T.ShaderMaterial({
+    uniforms: { uMinor: { value: new T.Color() }, uMajor: { value: new T.Color() },
+                uCenter: { value: new T.Vector2(plan.cx, plan.cz) }, uHalf: { value: plan.half } },
+    vertexShader: `attribute float major;
+varying float vMajor;
+varying vec2 vXZ;
+void main() {
+  vMajor = major;
+  vXZ = position.xz;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`,
+    fragmentShader: `uniform vec3 uMinor;
+uniform vec3 uMajor;
+uniform vec2 uCenter;
+uniform float uHalf;
+varying float vMajor;
+varying vec2 vXZ;
+void main() {
+  float d = length(vXZ - uCenter) / uHalf;
+  gl_FragColor = vec4(mix(uMinor, uMajor, vMajor), 1.0 - smoothstep(0.3, 1.0, d));
+  #include <colorspace_fragment>
+}`,
+    transparent: true, depthWrite: false });
+  return new T.LineSegments(geom, mat);
+}
+function meshGridTheme(grid, t) {
+  const u = grid.material.uniforms;
+  u.uMinor.value.set(t.hair);
+  u.uMajor.value.set(t.hair).lerp(new THREE3D.Color(t.secondary), 0.35);
+}
+
+// The XYZ triad for the lower-left corner: its own scene, drawn after the
+// model into a small viewport by a camera that copies the main camera's turn
+// but not its distance, so it rotates with the model and keeps its size.
+// Shafts are thin cylinders rather than lines, which WebGL draws 1px wide
+// whatever is asked; the letters are sprites, so they always face the viewer.
+function meshTriadScene() {
+  const T = THREE3D, s = new T.Scene();
+  const axes = [[new T.Vector3(1, 0, 0), "#d1493f", "X"], [new T.Vector3(0, 1, 0), "#3f9a4f", "Y"],
+                [new T.Vector3(0, 0, 1), "#3d6fd6", "Z"]];
+  const up = new T.Vector3(0, 1, 0);
+  for (const [dir, color, letter] of axes) {
+    const shaft = new T.Mesh(new T.CylinderGeometry(0.06, 0.06, 0.7, 8),
+                             new T.MeshBasicMaterial({ color }));
+    shaft.quaternion.setFromUnitVectors(up, dir);
+    shaft.position.copy(dir).multiplyScalar(0.35);
+    s.add(shaft);
+    const c = document.createElement("canvas");
+    c.width = c.height = 64;
+    const g = c.getContext("2d");
+    g.fillStyle = color;
+    g.font = "bold 52px system-ui, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(letter, 32, 35);
+    const tex = new T.CanvasTexture(c);
+    tex.colorSpace = T.SRGBColorSpace;
+    const sprite = new T.Sprite(new T.SpriteMaterial({ map: tex, depthTest: false }));
+    sprite.scale.setScalar(0.6);
+    sprite.position.copy(dir).multiplyScalar(0.95);
+    s.add(sprite);
+  }
+  return { scene: s, camera: new T.OrthographicCamera(-1.25, 1.25, 1.25, -1.25, 0.1, 10) };
 }
 
 // Open `path` into `host`. Resolves to { destroy(), resize() }, or to null
@@ -321,10 +438,28 @@ async function meshMount(host, path, opts = {}) {
   ctl.className = "mesh-ctl";
   stage.append(info, ctl);
   host.appendChild(stage);
+  // The grid and the triad go together: one key puts both away for a clean
+  // view, and the choice is how this user likes models shown, so it is kept.
+  let gridOn = cfg.meshGrid;
+  const gridKey = document.createElement("button");
+  gridKey.type = "button";
+  gridKey.className = "mesh-grid-key";
+  gridKey.textContent = "Grid";
+  gridKey.title = "Ground grid and axes";
+  gridKey.setAttribute("aria-pressed", String(gridOn));
+  gridKey.addEventListener("click", () => {
+    gridOn = !gridOn;
+    cfg.meshGrid = gridOn;
+    gridKey.setAttribute("aria-pressed", String(gridOn));
+    if (grid) grid.visible = gridOn;
+    request();
+  });
+  ctl.appendChild(gridKey);
 
   const blobs = [];
   let renderer = null, scene = null, controls = null, ro = null, mo = null;
   let raf = 0, current = null, themed = [];
+  let grid = null, triad = null, hint = null, hintTimer = 0;
   let materialsWarned = false;
   const refuse = (msg) => { const e = new Error(msg); e.userMsg = msg; return e; };
   const gone = () => !!(signal && signal.aborted);
@@ -379,6 +514,10 @@ async function meshMount(host, path, opts = {}) {
     if (controls) controls.dispose();
     if (current) dispose(current);
     current = null;
+    if (grid) dispose(grid);
+    if (triad) dispose(triad.scene);
+    grid = triad = null;
+    clearTimeout(hintTimer);
     if (renderer) { renderer.dispose(); renderer.forceContextLoss(); renderer = null; }
     for (const u of blobs) URL.revokeObjectURL(u);
     blobs.length = 0;
@@ -395,6 +534,27 @@ async function meshMount(host, path, opts = {}) {
     // change event that asks for the next frame; at rest it fires nothing.
     controls.update();
     renderer.render(scene, controls.object);
+    if (gridOn && triad) drawTriad(controls.object);
+  }
+  // The triad's pass, inside the same on-demand frame: the depth is cleared so
+  // the model cannot hide it, and the scissor keeps the clear to its square.
+  // It sits in the lower-left corner just above the label, whose top is
+  // measured because its bottom offset carries the safe-area inset.
+  function drawTriad(cam) {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    const size = touchOnly() ? 48 : 64;
+    const x = 6, y = Math.max(0, h - info.offsetTop + 2);
+    triad.camera.position.subVectors(cam.position, controls.target).setLength(4);
+    triad.camera.quaternion.copy(cam.quaternion);
+    renderer.autoClear = false;
+    renderer.setScissorTest(true);
+    renderer.setScissor(x, y, size, size);
+    renderer.setViewport(x, y, size, size);
+    renderer.clearDepth();
+    renderer.render(triad.scene, triad.camera);
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, w, h);
+    renderer.autoClear = true;
   }
   function resize() {
     if (!renderer) return;
@@ -410,6 +570,7 @@ async function meshMount(host, path, opts = {}) {
     const t = meshTheme();
     scene.background = new THREE3D.Color(t.paper);
     for (const m of themed) m.color.set(t.ink);
+    if (grid) meshGridTheme(grid, t);
     request();
   }
 
@@ -423,7 +584,8 @@ async function meshMount(host, path, opts = {}) {
     // Centred on the box, sized by the farthest vertex from that centre: the
     // box's own sphere reaches its corners, which leaves a round cloud at
     // about half the pane.
-    const center = new T.Box3().setFromObject(obj).getCenter(new T.Vector3());
+    const box = new T.Box3().setFromObject(obj);
+    const center = box.getCenter(new T.Vector3());
     const v = new T.Vector3();
     let far = 0;
     obj.updateMatrixWorld(true);
@@ -447,8 +609,39 @@ async function meshMount(host, path, opts = {}) {
     cam.updateProjectionMatrix();
     controls.target.copy(center);
     controls.update();
+    // The grid is context, not content: it is made after the framing above
+    // and lives beside the model rather than inside it, so neither the camera
+    // nor the counts in the label ever see it.
+    if (grid) { scene.remove(grid); dispose(grid); }
+    grid = meshGridObject(meshGridPlan(box.min.toArray(), box.max.toArray()));
+    meshGridTheme(grid, meshTheme());
+    grid.visible = gridOn;
+    scene.add(grid);
     info.textContent = label;
     request();
+  }
+
+  // "Drag to rotate" near the bottom, for someone who does not know a model
+  // here can be turned. It fades on the first drag or wheel (which also
+  // retires it for the rest of the visit) or after four seconds; the fade is
+  // a CSS transition, so it asks the scene for no frames.
+  function showHint() {
+    hint = document.createElement("div");
+    hint.className = "mesh-hint";
+    hint.textContent = touchOnly() ? "Drag to rotate · pinch to zoom" : "Drag to rotate · scroll to zoom";
+    stage.appendChild(hint);
+    const fade = () => {
+      if (!hint) return;
+      const el = hint;
+      hint = null;
+      clearTimeout(hintTimer);
+      el.classList.add("gone");
+      setTimeout(() => el.remove(), 400);
+    };
+    const used = () => { meshHintSeen = true; fade(); };
+    renderer.domElement.addEventListener("pointerdown", used, { once: true, passive: true });
+    renderer.domElement.addEventListener("wheel", used, { once: true, passive: true });
+    hintTimer = setTimeout(fade, 4000);
   }
 
   function bboxDiagonal(geom) {
@@ -621,7 +814,7 @@ async function meshMount(host, path, opts = {}) {
         attr.needsUpdate = true;
         request();
       });
-      ctl.appendChild(range);
+      ctl.insertBefore(range, gridKey);
     }
     return obj;
   }
@@ -699,6 +892,8 @@ async function meshMount(host, path, opts = {}) {
     // Sized first, so the framing below knows the pane's shape.
     resize();
     show(obj, label(obj));
+    triad = meshTriadScene();
+    if (!meshHintSeen) showHint();
     ro = new ResizeObserver(resize);
     ro.observe(stage);
     // The 29-editor.js pair: the attribute for light/dark, the event for a

@@ -874,6 +874,10 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_ws_term_hidden", "1");
     else localStorage.removeItem("pockettui_ws_term_hidden");
   },
+  // Whether the 3D viewer (48-mesh-viewer.js) draws its ground grid and axis
+  // triad: on until its key is first turned off, then the last way it was set.
+  get meshGrid() { return localStorage.getItem("pockettui_mesh_grid") !== "0"; },
+  set meshGrid(v) { localStorage.setItem("pockettui_mesh_grid", v ? "1" : "0"); },
   // The same for the browser pane, kept apart from the explorer's: a page read
   // full width and a folder read full width are separate habits.
   get browserExpanded() { return localStorage.getItem("pockettui_browser_expanded") === "1"; },
