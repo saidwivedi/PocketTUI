@@ -642,6 +642,35 @@ let filesRepo = null;
 // against, so this is what says whether the question needs asking again.
 let filesRepoAsked = "";
 
+// ---- the workspace (47-workspace.js) ---------------------------------------
+// The tree and the file tabs the pane becomes while it is docked and expanded.
+// Made on the first expand rather than here: this body runs while the bundle
+// loads, before the fragment that defines it, and a pane that is never
+// expanded never needs one.
+let ws = null;
+// Whether the workspace went into a stash (filesStash) rather than being
+// dropped with the pane: a teardown keeps one and discards the other.
+let wsHanded = false;
+function workspace() { return ws || (ws = makeWorkspace(wsContext())); }
+
+// What of this pane the workspace may use: its listing, its folder and how to
+// list and open things the way the pane itself does.
+function wsContext() {
+  return {
+    id, root, q,
+    path: () => filesPath,
+    home: () => filesHome,
+    refFor, fsList, cachedListing, openFileActions, openRendered,
+    readText: fsReadText,
+    navigate: (path) => navigateDir(path),
+  };
+}
+
+// A folder this pane wrote to, for the tree and the badges to catch up with.
+function wsWrote(dir) {
+  if (ws) { ws.refreshDir(dir); ws.kickStatus(); }
+}
+
 function openExplorer(path, opts, primed) {
   // Unpaired there is no computer to browse, and the demo's tree stands in
   // (17-fake-api.js), the same one its terminal lists.
@@ -741,6 +770,8 @@ function closeExplorer() {
 function syncFilesExpand() {
   const on = filesDocked && filesExpanded;
   sideSetFull(id, on);
+  if (on) workspace().setOn(true);
+  else if (ws) ws.setOn(false);
   // Every bar this pane can wear one in: the listing's own, and the editor's,
   // the reader's and the viewer's while a file of its own is open in one.
   for (const box of filesEls()) {
@@ -792,11 +823,26 @@ function openDockedFiles(path, opts, primed) {
 // column taking its row for another (the registry below).
 function closeDockedFiles() {
   if (!filesDocked) return;
+  // Unsaved tabs in the workspace get one question for all of them. The answer
+  // comes later, so this press closes nothing: the column's row stays taken,
+  // which is how sideClaim knows to refuse whatever was arriving, and a yes
+  // closes the pane on its own.
+  if (ws && ws.dirtyCount()) {
+    const asked = ws;
+    asked.askDiscardAll().then((ok) => {
+      if (!ok || ws !== asked) return;
+      ws.destroy();
+      ws = null;
+      closeDockedFiles();
+    });
+    return;
+  }
   // A file opened in this pane goes with it, and the editor gets the same say
   // about unsaved work that its own back gives it. Only a file of this pane's:
   // one seated over the other listing is that pane's to ask about, and a row
   // evicted from under a listing that owns nothing asks nothing.
   if (filesViewOwner === id && !closeDockedFileView()) return;
+  if (ws) { ws.destroy(); ws = null; }
   closeFilesMenus();
   closePathEdit();
   filesDocked = false;
@@ -891,6 +937,8 @@ function filesStash() {
     // A branch being read is part of what the session was looking at, so it
     // comes back with the folder rather than the pane returning to the disk.
     ref: filesRef, refRoot: filesRefRoot, repo: filesRepo, repoAsked: filesRepoAsked,
+    // The tree and every tab, unsaved edits included, go with the session.
+    ws: (wsHanded = !!ws) ? ws : null,
   };
 }
 
@@ -898,6 +946,13 @@ function filesStash() {
 // screen at once, so closeExplorer's return-to-origin (and its refit, which
 // would fit a terminal that is about to change session) is not what it wants.
 function filesTeardown() {
+  // A workspace in a stash is only taken off the pane; one nobody kept ends.
+  if (ws) {
+    if (wsHanded) ws.detach();
+    else ws.destroy();
+    ws = null;
+  }
+  wsHanded = false;
   root.classList.remove("active");
   filesOrigin = null;
   filesStack = [];
@@ -919,6 +974,8 @@ function filesTeardown() {
 // is in goes away, since a folder on that machine is not a folder on this one.
 // The caller puts the session list back on screen, so nothing is restored here.
 function filesReset() {
+  // Unsaved tabs are files on the computer being left, so nothing is asked.
+  if (ws) { ws.destroy(); ws = null; }
   closeFilesMenus();
   closePathEdit();
   if (filesDocked) closeDockedFiles();
@@ -955,6 +1012,8 @@ function filesRestore(s) {
   // screen it covers, and it stays on view.
   if (!filesDocked) $(filesOrigin || "screen-list").classList.remove("active");
   root.classList.add("active");
+  ws = s.ws || null;
+  if (ws) ws.attach(root);
   if (filesDocked) { sideClaim(id); syncFilesExpand(); }
   syncChrome();
   // The rows on screen are whichever folder the session we were away in left
@@ -1290,6 +1349,7 @@ function applyListing(data) {
   // After filesPath, which is the folder the question is about.
   syncRefBar();
   syncRepo();
+  if (ws) ws.onListing(data);
 }
 function showListError(e) {
   dbg("fs list failed:", e);
@@ -1650,6 +1710,8 @@ function fileRow(e) {
     el("div", { class: "file-name" }, e.name),
     el("div", { class: "file-meta" }, meta),
   );
+  // What the workspace's git badges find the row by (47-workspace.js).
+  row.dataset.name = e.name;
   wireRow(row, e);
   return row;
 }
@@ -1676,6 +1738,7 @@ function fileTile(e) {
     slot,
     el("div", { class: "file-name" }, e.name),
   );
+  tile.dataset.name = e.name;
   wireRow(tile, e);
   return tile;
 }
@@ -2066,6 +2129,9 @@ function wireRow(row, entry) {
 }
 
 function openEntry(e, dir=filesPath) {
+  // Expanded into the workspace, a file opens as a tab of it, beside the files
+  // already open there rather than over them.
+  if (ws && ws.on && e.type === "file") { ws.open(joinPath(dir, e.name)); return; }
   // There is one editor, one reader and one viewer for the two listings, so a
   // file already open over the other one is put away first — with the same say
   // about unsaved work its own back gives it, and a stay stops this open here.
@@ -2201,8 +2267,11 @@ function sheetEdit() {
   const e = filesSelected;
   if (!e) return;
   showSheet(false);
+  // An entry raised from the workspace's tree carries the folder it is in.
+  const dir = e.dir || filesPath;
+  if (ws && ws.on) { ws.open(joinPath(dir, e.name), "editor"); return; }
   if (!filesTakeView()) return;
-  openEditor(joinPath(filesPath, e.name), { pane: self() });
+  openEditor(joinPath(dir, e.name), { pane: self() });
 }
 
 async function sheetRename() {
@@ -2213,9 +2282,10 @@ async function sheetRename() {
                                { value: e.name, confirmLabel: "Rename" });
   if (next === null || !next.trim() || next.trim() === e.name) return;
   if (next.includes("/")) { toast("Names can't contain /"); return; }
+  const dir = e.dir || filesPath;
   const res = await fsPost("api/fs/rename", {
-    src: joinPath(filesPath, e.name),
-    dst: joinPath(filesPath, next.trim()),
+    src: joinPath(dir, e.name),
+    dst: joinPath(dir, next.trim()),
   });
   if (!res) return;
   if (!res.ok) {
@@ -2225,6 +2295,7 @@ async function sheetRename() {
   }
   loadDir(filesPath);
   filesRefreshPeers(id);
+  wsWrote(dir);
 }
 
 function sheetDownload() {
@@ -2235,11 +2306,12 @@ function sheetDownload() {
   // built as it is sent and nobody knows how big it is until it is over — so it
   // always goes the browser's way round rather than through a blob this page
   // would have to hold whole.
+  const dir = e.dir || filesPath;
   if (e.type === "dir") {
-    downloadViaLink(joinPath(filesPath, e.name), e.name + ".zip");
+    downloadViaLink(joinPath(dir, e.name), e.name + ".zip");
     return;
   }
-  downloadFile(joinPath(filesPath, e.name), e.name, e.size);
+  downloadFile(joinPath(dir, e.name), e.name, e.size);
 }
 
 async function sheetDelete() {
@@ -2248,7 +2320,8 @@ async function sheetDelete() {
   showSheet(false);
   const what = e.type === "dir" ? "folder " + e.name : e.name;
   if (!confirm("Delete " + what + "?")) return;
-  const res = await fsPost("api/fs/delete", { path: joinPath(filesPath, e.name) });
+  const dir = e.dir || filesPath;
+  const res = await fsPost("api/fs/delete", { path: joinPath(dir, e.name) });
   if (!res) return;
   if (!res.ok) {
     // The backend never deletes a non-empty folder — the shell is a tap away
@@ -2260,6 +2333,7 @@ async function sheetDelete() {
   toast("Deleted");
   loadDir(filesPath);
   filesRefreshPeers(id);
+  wsWrote(dir);
 }
 
 // Whether the header download in a file view has anything to offer — the action
@@ -2282,9 +2356,10 @@ async function addNewFile() {
   const name = await appPrompt("New file name", { confirmLabel: "Create" });
   if (name === null || !name.trim()) return;
   if (name.includes("/")) { toast("Names can't contain /"); return; }
-  if (!filesTakeView()) return;
   // Nothing is written yet: the editor opens empty and the first Save (hash "")
   // is what creates the file, so an abandoned name leaves no husk behind.
+  if (ws && ws.on) { ws.open(joinPath(filesPath, name.trim()), "editor", { create: true }); return; }
+  if (!filesTakeView()) return;
   openEditor(joinPath(filesPath, name.trim()), { create: true, pane: self() });
 }
 
@@ -2302,6 +2377,7 @@ async function addNewFolder() {
   }
   loadDir(filesPath);
   filesRefreshPeers(id);
+  wsWrote(filesPath);
 }
 
 // One file at a time, never in parallel: a 409 asks its own Replace? question,
@@ -2327,7 +2403,7 @@ async function uploadFiles(items, empty = [], unreadable = 0) {
   else if (done) toast("Uploaded " + done + (done === 1 ? " file" : " files")
                        + (failed ? ", " + failed + " failed" : ""));
   else if (failed) toast("Couldn't upload " + failed + " files");
-  if (done) { loadDir(filesPath); filesRefreshPeers(id); }
+  if (done) { loadDir(filesPath); filesRefreshPeers(id); wsWrote(filesPath); }
 }
 
 // A folder's worth, which can be hundreds of files: one line of progress held
@@ -2382,7 +2458,7 @@ async function uploadTree(items, empty, unreadable = 0) {
     if (failed) parts.push(failed + " failed");
     toast(parts.join(", "), 4000);
   }
-  if (done || made) { loadDir(filesPath); filesRefreshPeers(id); }
+  if (done || made) { loadDir(filesPath); filesRefreshPeers(id); wsWrote(dir); }
 }
 
 // One file of a tree: "ok", "exists" for the batch to decide on, "auth" when
@@ -2452,7 +2528,7 @@ function wireEntryDrag(node, entry) {
     // A listing read at a ref is a commit, not the disk. Nothing in it moves,
     // so the drag never starts.
     if (refFor(filesPath)) { ev.preventDefault(); return; }
-    filesDragEntry = { name: entry.name, type: entry.type, dir: filesPath,
+    filesDragEntry = { name: entry.name, type: entry.type, dir: entry.dir || filesPath,
                        from: id };
     ev.dataTransfer.effectAllowed = "move";
     ev.dataTransfer.setData(FILES_DRAG_TYPE, entry.name);
@@ -2525,6 +2601,8 @@ async function moveEntry(d, dir) {
   // Dropped from the other listing, the folder it came from is a folder short an
   // entry, wherever it is on screen.
   if (d.dir !== filesPath) filesRefreshPeers(id, d.dir);
+  wsWrote(dir);
+  wsWrote(d.dir);
 }
 
 // The whole scroll area rather than the rows, so an empty folder takes a drop
@@ -2640,6 +2718,21 @@ document.addEventListener("keydown", (e) => {
     if (view.id === "screen-editor" && $("editor-host").contains(e.target)) return;
     e.preventDefault();
     closeDockedFileView();
+    return;
+  }
+  // In the workspace Escape shrinks the pane back beside the terminal, one
+  // step short of the close it means at the pane's docked width. Not inside a
+  // file's editor, where it is vim's, and not over an open menu, an address
+  // field or a sheet, each of which answers it first below or on its own.
+  if (ws && ws.on && root.contains(e.target)
+      && !q("files-view-wrap").classList.contains("open")
+      && !q("files-ref-wrap").classList.contains("open")) {
+    if (e.target.closest(".cm-editor")) return;
+    if (q("files-path-wrap").classList.contains("editing")) return;
+    if ($("sheet-scrim").classList.contains("show")) return;
+    e.preventDefault();
+    filesSetExpanded(false);
+    refit(0);
     return;
   }
   // Docked, the terminal beside the pane is live and Escape is one of its
@@ -2773,7 +2866,10 @@ const api = {
   closeFull: closeExplorer,
   closePathEdit: closePathEdit,
   entryCount: filesEntryCount,
-  reloadAt: (path) => { if (filesPath && filesPath === path) loadDir(filesPath); },
+  reloadAt: (path) => {
+    if (filesPath && filesPath === path) loadDir(filesPath);
+    wsWrote(path);
+  },
   load: loadDir,
   readText: fsReadText,
   canDownload: canDownload,
@@ -2816,7 +2912,16 @@ function filesMakeAt(id) {
   const clone = src.cloneNode(true);
   clone.id = "screen-files-2";
   clone.classList.remove("active", "docked",
-                         "side-top", "side-bot", "side-hidden");
+                         "side-top", "side-bot", "side-hidden", "ws-on");
+  // Copied while the original is expanded, the copy would carry its workspace
+  // with the listing moved into it: the listing goes back where the markup has
+  // it, and the workspace stays the original's. The copy makes its own.
+  const cloneWs = clone.querySelector(".ws");
+  if (cloneWs) {
+    cloneWs.before(clone.querySelector(".files-wrap"));
+    cloneWs.remove();
+  }
+  clone.style.removeProperty("--ws-tree-w");
   for (const name of ["files-list", "files-crumbs", "files-suggest"]) {
     clone.querySelector("#" + name).innerHTML = "";
   }

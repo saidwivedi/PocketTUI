@@ -1348,6 +1348,42 @@
   "show": false
  },
  {
+  "id": "files.workspace",
+  "group": "Files and code",
+  "title": "Folder tree and file tabs",
+  "outcome": "Expand the file browser and it becomes a code editor's layout: the folder tree on the left at the width you drag it to, and files open as tabs on the right, with the folder itself as the first tab.",
+  "where": "Docked file browser > expand key; drag the seam beside the tree; Ctrl+S saves the tab you are typing in, Escape shrinks the pane",
+  "surface": "wide",
+  "gates": [],
+  "needs": "fs",
+  "hidden": 2,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/47-workspace.js:116-854",
+   "src/mobile/js/28-file-explorer.js:645-672"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "files.git-badges",
+  "group": "Files and code",
+  "title": "Uncommitted changes on every file",
+  "outcome": "In the expanded file browser, files you changed, added, deleted or renamed carry the letter the git diff pane shows, and each folder a dot for the changes inside it.",
+  "where": "Automatic in the expanded file browser, inside a git repository",
+  "surface": "wide",
+  "gates": [],
+  "needs": "git_status",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/47-workspace.js:35-85",
+   "app.py:5064-5098"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
   "id": "git.pane",
   "group": "Files and code",
   "title": "Review your code changes",

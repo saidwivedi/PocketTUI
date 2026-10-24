@@ -2051,6 +2051,7 @@ function hideToast() {{}}
 function toast(m) {{ toasts.push(m); }}
 function loadDir() {{}}
 function filesRefreshPeers() {{}}
+function wsWrote() {{}}
 async function appConfirm(msg, opts) {{ asked.push(opts.title); return {json.dumps(answer)}; }}
 async function fsPost(route, body) {{ mkdirs.push(body.path); return {{ ok: true, status: 200 }}; }}
 async function fetch(url) {{
@@ -3103,3 +3104,126 @@ def test_change_badge_colours_are_shared_by_the_diff_pane_and_the_explorer(doc):
         assert (f":is(.diff-file .badge, .git-badge, .ws-badge).{kind} "
                 f"{{ color: var({ink}); }}") in doc
     assert ".diff-file .badge.new {" not in doc
+
+
+def test_the_workspace_loads_after_the_explorer_and_before_boot():
+    """47-workspace.js is reached from 28-file-explorer.js only at the first
+    expand, so it may come after it; boot stays the program's last word."""
+    frags = list(build_mobile.JS_FRAGMENTS)
+    at = frags.index("47-workspace.js")
+    assert frags[at - 1] == "46-desktop-browser.js"
+    assert frags.index("28-file-explorer.js") < at < frags.index("27-boot.js")
+    assert frags[-1] == "27-boot.js"
+
+
+def _ws_badges(doc):
+    return "\n".join(_js_chunk(doc, h) for h in (
+        "function diffBadge(", "const WS_RANK", "function wsAggregate(",
+        "function wsMarkFor("))
+
+
+def test_workspace_badges_mark_files_and_the_folders_above_them(doc, tmp_path):
+    """Each file takes the diff pane's letter (unstaged first, a staged-only
+    change its staged letter); every folder up to the repository's root takes
+    the strongest kind beneath it, mod > del > ren > new; a "dir/" row marks
+    that folder new as a whole, and the files inside it, which status does not
+    list, are new too. diffBadge is the diff pane's, and it has to sit outside
+    that pane's factory for the workspace to reach it at all."""
+    assert doc.index("\nfunction diffBadge(") < doc.index("\nfunction makeDiffPane(")
+    out = _node_json(tmp_path, "badges.mjs", _ws_badges(doc) + """
+const files = [
+  { path: "src/app.py", status: " M", staged: false, unstaged: true },
+  { path: "src/new.py", status: "A ", staged: true, unstaged: false },
+  { path: "docs/old.md", status: " D", staged: false, unstaged: true },
+  { path: "docs/moved.md", status: "R ", staged: true, unstaged: false },
+  { path: "notes.txt", status: "??", staged: false, unstaged: true },
+  { path: "assets/", status: "??", staged: false, unstaged: true },
+  { path: "lib/deep/a.js", status: "UU", staged: true, unstaged: true },
+];
+const m = wsAggregate(files, "/h/repo/");
+const pick = (p) => { const x = m.get(p); return x ? [x.text, x.kind, x.dir, x.whole] : null; };
+const mark = (p, d) => { const x = wsMarkFor(m, p, d); return x ? [x.text, x.kind] : null; };
+console.log(JSON.stringify({
+  app: pick("/h/repo/src/app.py"), add: pick("/h/repo/src/new.py"),
+  src: pick("/h/repo/src"), docs: pick("/h/repo/docs"), root: pick("/h/repo"),
+  assets: pick("/h/repo/assets"), notes: pick("/h/repo/notes.txt"),
+  deep: pick("/h/repo/lib/deep/a.js"), lib: pick("/h/repo/lib"),
+  above: pick("/h"), inside: mark("/h/repo/assets/logo.png", false),
+  insideDir: mark("/h/repo/assets/icons", true), clean: mark("/h/repo/README.md", false),
+}));
+""")
+    assert out["app"] == ["M", "mod", False, False]
+    assert out["add"] == ["A", "new", False, False]
+    assert out["src"] == ["", "mod", True, False]
+    assert out["docs"] == ["", "del", True, False]
+    assert out["root"][1] == "mod" and out["above"] is None
+    assert out["assets"] == ["", "new", True, True]
+    assert out["notes"] == ["U", "new", False, False]
+    # A conflict has no kind in the diff pane and reads as an edit here.
+    assert out["deep"] == ["U", "mod", False, False] and out["lib"][1] == "mod"
+    assert out["inside"] == ["U", "new"] and out["insideDir"] == ["", "new"]
+    assert out["clean"] is None
+
+
+def test_the_workspace_tree_lists_folders_first_in_the_backends_order(doc, tmp_path):
+    """The tree ignores the listing's sort: folders first, then everything else,
+    each in the order the backend answered with."""
+    chunk = _js_chunk(doc, "function wsTreeOrder(")
+    out = _node_json(tmp_path, "order.mjs", chunk + """
+const order = wsTreeOrder([
+  { name: ".env", type: "file" }, { name: "b", type: "dir" }, { name: "a.py", type: "file" },
+  { name: "a", type: "dir" }, { name: "dead", type: "link" },
+]).map((e) => e.name);
+console.log(JSON.stringify(order));
+""")
+    assert out == ["b", "a", ".env", "a.py", "dead"]
+
+
+def test_a_copy_of_an_expanded_explorer_leaves_the_workspace_behind(doc):
+    """filesMakeAt can copy the markup's pane while it is expanded: the copy's
+    listing goes back where the markup has it and the copied workspace, its
+    class and its tree width are dropped, so the copy builds its own."""
+    make = _js_chunk(doc, "function filesMakeAt(")
+    assert '"side-top", "side-bot", "side-hidden", "ws-on");' in make
+    assert ('    cloneWs.before(clone.querySelector(".files-wrap"));\n'
+            "    cloneWs.remove();") in make
+    assert 'clone.style.removeProperty("--ws-tree-w");' in make
+    assert make.index("cloneWs.remove()") < make.index("src.after(clone)")
+
+
+@pytest.mark.parametrize("answer", [True, False])
+def test_closing_the_pane_asks_once_about_unsaved_tabs(doc, tmp_path, answer):
+    """A pane with unsaved workspace tabs asks one question and closes nothing
+    while it waits, so the column's row stays claimed and sideClaim refuses an
+    arrival; a yes discards the workspace and closes the pane, a no leaves it."""
+    close = _js_chunk(doc, "function closeDockedFiles() {")
+    out = _node_json(tmp_path, "close.mjs", f"""
+const calls = [];
+let filesDocked = true, filesViewOwner = null, filesOrigin = "screen-term";
+let filesStack = ["/h"], filesHeldAt = "";
+const id = "files";
+const root = {{ classList: {{ remove: (c) => calls.push("rm " + c) }} }};
+let ws = {{
+  dirtyCount: () => 2,
+  askDiscardAll: async () => {{ calls.push("ask"); return {json.dumps(answer)}; }},
+  destroy() {{ calls.push("destroy"); }},
+}};
+function closeDockedFileView() {{ return true; }}
+function closeFilesMenus() {{}}
+function closePathEdit() {{}}
+function clearRefState() {{}}
+function filesClearListing() {{}}
+function syncFilesExpand() {{}}
+function sideDrop(x) {{ calls.push("drop " + x); }}
+{close}
+closeDockedFiles();
+const before = calls.slice();
+await new Promise((r) => setTimeout(r, 0));
+console.log(JSON.stringify({{ before, calls, ws: ws === null, docked: filesDocked }}));
+""")
+    assert out["before"] == ["ask"]
+    if answer:
+        assert out["calls"] == ["ask", "destroy", "rm docked", "rm active", "drop files"]
+        assert out["ws"] and out["docked"] is False
+    else:
+        assert out["calls"] == ["ask"] and not out["ws"] and out["docked"] is True

@@ -46,6 +46,7 @@ curl -s -H "X-PocketTUI-Token: $(cat ~/pockettui/.token)" http://127.0.0.1:$PORT
 | `dbg` | `/api/dbg` | true |
 | `git` | `/api/git/changes|diff|apply` | true |
 | `git_ref` | `/api/git/branches` and `ref=` on `/api/fs/list|read` | true |
+| `git_status` | `/api/git/status` (the expanded explorer's change badges) | true |
 | `search` | `/api/search` | true |
 | `ping` | attach socket answers `{"type":"ping"}` | true |
 | `update` | `/api/update` | false with no `pockettui` wrapper or no tmux |
