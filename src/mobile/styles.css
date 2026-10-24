@@ -4274,6 +4274,24 @@ html.term-open #dbg-panel { opacity: 0.85; }
     width: 36px; height: 3px;
     margin: -1.5px 0 0 -18px;
   }
+  /* Two groups side by side: columns, the width shared out by --ws-split, and
+     the seam stood up as the tree's column seam is. */
+  .ws-groups.ws-side { flex-direction: row; }
+  .ws-groups.ws-side > .ws-group { min-width: 0; }
+  .ws-groups.ws-side > .ws-group-seam {
+    cursor: col-resize;
+    border-top: 0;
+    border-bottom: 0;
+    border-left: 1px solid var(--hair);
+    border-right: 1px solid var(--hair);
+    box-shadow: inset 1px 0 2px rgba(20, 16, 10, 0.05),
+                inset -1px 0 2px rgba(20, 16, 10, 0.05);
+  }
+  .ws-groups.ws-side > .ws-group-seam::before { left: -5px; right: -5px; top: 0; bottom: 0; }
+  .ws-groups.ws-side > .ws-group-seam::after {
+    width: 3px; height: 36px;
+    margin: -18px 0 0 -1.5px;
+  }
   /* The browser's tab band (#browser-tabs, #browser-tab-row) and its chips. */
   .ws-tabs {
     position: relative;
@@ -4366,6 +4384,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
     pointer-events: none;
   }
   .ws-drop-hint.bot { top: 50%; }   /* refined to the groups' midline by showTarget */
+  .ws-drop-hint.side { left: 50%; }
   /* A tree folder a dragged listing row would move into. */
   .ws-node.drop-into {
     background: var(--umber-soft);
@@ -4393,7 +4412,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
     overflow-y: auto;
     overscroll-behavior: contain;
   }
-  .ws-media {
+  .ws-media-box {
     flex: 1;
     min-height: 0;
     display: flex;
@@ -4402,7 +4421,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
     padding: 16px;
     overflow: auto;
   }
-  .ws-media :is(img, video) {
+  .ws-media-box :is(img, video) {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;

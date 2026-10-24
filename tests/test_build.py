@@ -3224,6 +3224,135 @@ console.log(JSON.stringify({
     assert out["clean"] is None
 
 
+def test_the_workspace_badge_poll_keeps_one_timer_and_the_diff_panes_pace(doc, tmp_path):
+    """The badges' poll on a fake clock: one timer at a time, the next question
+    clamp(4 x elapsed_ms, 2 s, 60 s) after an answer, kicks made while a
+    question is out folded into one more question, a kick made while an answer
+    is painted asking nothing, and a 401 (false) stopping it until the next
+    kick. A journal of /api/git/status every 1.2 s read as a runaway poll; it
+    was each question's CORS preflight logged beside it, at the 2 s floor."""
+    js = "\n".join(_js_chunk(doc, h) for h in (
+        "const DIFF_POLL_MS", "const DIFF_POLL_FACTOR", "const DIFF_POLL_MAX_MS",
+        "function wsPoller("))
+    out = _node_json(tmp_path, "poll.mjs", "const dbg = () => {};\n" + js + """
+let now = 0, nextId = 1;
+const timers = new Map();
+const clock = {
+  set: (f, ms) => { const id = nextId++; timers.set(id, { at: now + ms, f }); return id; },
+  clear: (id) => { timers.delete(id); },
+};
+const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+async function advance(ms) {
+  const end = now + ms;
+  for (;;) {
+    let due = null;
+    for (const [id, t] of timers) if (t.at <= end && (!due || t.at < due[1].at)) due = [id, t];
+    if (!due) break;
+    timers.delete(due[0]);
+    now = due[1].at;
+    due[1].f();
+    await flush();
+  }
+  now = end;
+}
+function rig(opts) {
+  const r = { asks: [], maxTimers: 0, pending: null, elapsed: opts.elapsed || 5, answer: opts.answer };
+  r.p = wsPoller(() => true, () => {
+    r.asks.push(now);
+    if (opts.hold) return new Promise((res) => { r.pending = res; });
+    return Promise.resolve(r.answer === undefined ? { ms: r.elapsed, data: {} } : r.answer);
+  }, () => { if (opts.kickOnPaint) r.p.kick(); }, clock);
+  return r;
+}
+const res = {};
+const track = async (r, ms) => {
+  for (let t = 0; t < ms; t += 500) { await advance(500); r.maxTimers = Math.max(r.maxTimers, timers.size); }
+};
+
+// The floor: an answer in 5 ms is asked again every 2 s.
+let r = rig({ elapsed: 5 });
+r.p.kick(); await flush();
+await track(r, 10000);
+res.floor = { asks: r.asks, maxTimers: r.maxTimers, every: r.p.every };
+r.p.stop(); timers.clear(); now = 0;
+
+// Four times the answer's time, and the one-minute ceiling.
+r = rig({ elapsed: 1000 });
+r.p.kick(); await flush();
+await advance(12000);
+res.slow = { asks: r.asks, every: r.p.every };
+r.p.stop(); timers.clear(); now = 0;
+r = rig({ elapsed: 100000 });
+r.p.kick(); await flush();
+res.ceiling = r.p.every;
+r.p.stop(); timers.clear(); now = 0;
+
+// Kicks while a question is out: one more question, then the timer again.
+r = rig({ hold: true });
+r.p.kick(); await flush();
+r.p.kick(); r.p.kick(); r.p.kick();
+res.heldAsks = r.asks.length;
+r.pending({ ms: 5, data: {} }); await flush();
+res.afterFold = r.asks.length;
+r.pending({ ms: 5, data: {} }); await flush();
+res.afterSecond = r.asks.length;
+res.timersAfterFold = timers.size;
+r.p.stop(); timers.clear(); now = 0;
+
+// A kick from the answer's own painting asks nothing.
+r = rig({ kickOnPaint: true });
+r.p.kick(); await flush();
+res.paintKickAsks = r.asks.length;
+await track(r, 4000);
+res.paintKick = { asks: r.asks, maxTimers: r.maxTimers };
+r.p.stop(); timers.clear(); now = 0;
+
+// A kick between timers asks at once and takes the timer's place.
+r = rig({});
+r.p.kick(); await flush();
+await advance(1000);
+r.p.kick(); await flush();
+res.kickNow = { asks: r.asks.slice(), timers: timers.size };
+await advance(2000);
+res.kickNext = r.asks.slice();
+r.p.stop(); timers.clear(); now = 0;
+
+// 401: nothing more until a kick.
+r = rig({ answer: false });
+r.p.kick(); await flush();
+await advance(10000);
+res.unauth = { asks: r.asks.length, timers: timers.size };
+console.log(JSON.stringify(res));
+""")
+    assert out["floor"] == {"asks": [0, 2000, 4000, 6000, 8000, 10000], "maxTimers": 1, "every": 2000}
+    assert out["slow"] == {"asks": [0, 4000, 8000, 12000], "every": 4000}
+    assert out["ceiling"] == 60000
+    assert out["heldAsks"] == 1 and out["afterFold"] == 2 and out["afterSecond"] == 2
+    assert out["timersAfterFold"] == 1
+    assert out["paintKickAsks"] == 1
+    assert out["paintKick"] == {"asks": [0, 2000, 4000], "maxTimers": 1}
+    assert out["kickNow"] == {"asks": [0, 1000], "timers": 1}
+    assert out["kickNext"] == [0, 1000, 3000]
+    assert out["unauth"] == {"asks": 1, "timers": 0}
+
+
+def test_the_workspace_tree_never_roots_at_an_empty_path(doc):
+    """Founder, 2026-10-25: tree folders under home did not open, and the
+    journal showed /api/fs/list?path=/Downloads. The pane expanded before its
+    first listing landed (expand remembered), so the tree was revealed at
+    filesPath "": the root listed home under a path of "", every child became
+    "/" + name, and every folder counted as inside "", so the listing could
+    never re-root it. reveal now waits for a folder. A folder's name no longer
+    lists the folder itself: the listing it navigates to fills and opens the
+    node, so a click reads the folder once."""
+    body = _js_chunk(doc, "function makeWorkspace(")
+    assert "  async function reveal(path) {\n    if (!path) return;\n" in body
+    click = body[body.index('treeBody.addEventListener("click"'):]
+    click = click[:click.index("\n  });\n")]
+    assert "expand(node);\n      }\n      ctx.navigate(node.path);" not in click
+    assert "} else if (keepShut === node.path) keepShut = null;\n      ctx.navigate(node.path);" in click
+
+
 def test_the_workspace_tree_lists_folders_first_in_the_backends_order(doc, tmp_path):
     """The tree ignores the listing's sort: folders first, then everything else,
     each in the order the backend answered with."""
@@ -3240,9 +3369,10 @@ console.log(JSON.stringify(order));
 
 def test_a_dragged_workspace_tab_lands_by_band_slot_or_body_half(doc, tmp_path):
     """Over a tab band the slot is before the first chip whose middle is right
-    of the pointer; over the body of a lone group the lower half of the files
-    splits them and the upper half is that group; with two groups a body is
-    its group; outside both, nothing."""
+    of the pointer; over the body of a lone group its right third splits the
+    files side by side, the rest of the lower half splits them one over the
+    other, and the upper left is that group; with two groups (either way) a
+    body is its group; outside both, nothing."""
     chunk = _js_chunk(doc, "function wsDropTarget(")
     out = _node_json(tmp_path, "drop.mjs", chunk + """
 const R = (left, top, right, bottom) => ({ left, top, right, bottom });
@@ -3251,12 +3381,18 @@ const one = { area: R(0, 0, 800, 600), groups: [
 const two = { area: R(0, 0, 800, 600), groups: [
   { row: R(0, 0, 800, 28), body: R(0, 28, 800, 296), mids: [40, 120] },
   { row: R(0, 303, 800, 331), body: R(0, 331, 800, 600), mids: [50] }] };
+const side = { area: R(0, 0, 800, 600), groups: [
+  { row: R(0, 0, 396, 28), body: R(0, 28, 396, 600), mids: [40, 120] },
+  { row: R(403, 0, 800, 28), body: R(403, 28, 800, 600), mids: [450] }] };
 const at = (x, y, geo) => wsDropTarget({ x, y }, geo);
 console.log(JSON.stringify({
   first: at(10, 10, one), between: at(100, 10, one), onMid: at(120, 10, one),
   end: at(700, 10, one), upper: at(400, 200, one), lower: at(400, 450, one),
   halfLine: at(400, 300, one), topBody: at(400, 200, two), lowBody: at(400, 450, two),
   lowBand: at(60, 310, two), seam: at(400, 299, two), outside: at(900, 10, one),
+  rightTop: at(700, 100, one), rightLow: at(700, 500, one), thirdLine: at(534, 100, one),
+  leftOfThird: at(532, 100, one), sideLeft: at(700, 100, side), sideRight: at(420, 100, side),
+  sideBand: at(500, 10, side), sideSeam: at(398, 100, side),
 }));
 """)
     assert out["first"] == {"kind": "insert", "group": 0, "index": 0}
@@ -3265,11 +3401,32 @@ console.log(JSON.stringify({
     assert out["onMid"] == {"kind": "insert", "group": 0, "index": 1}
     assert out["end"] == {"kind": "insert", "group": 0, "index": 3}
     assert out["upper"] == {"kind": "append", "group": 0}
-    assert out["lower"] == {"kind": "split"} and out["halfLine"] == {"kind": "split"}
+    assert out["lower"] == {"kind": "split", "dir": "down"}
+    assert out["halfLine"] == {"kind": "split", "dir": "down"}
+    # The right third is beside, top to bottom, the lower right corner too.
+    assert out["rightTop"] == out["rightLow"] == {"kind": "split", "dir": "side"}
+    assert out["thirdLine"] == {"kind": "split", "dir": "side"}
+    assert out["leftOfThird"] == {"kind": "append", "group": 0}
+    # Side by side, a body is its group and nothing splits again.
+    assert out["sideLeft"] == {"kind": "append", "group": 1}
+    assert out["sideRight"] == {"kind": "append", "group": 1}
+    assert out["sideBand"] == {"kind": "insert", "group": 1, "index": 1}
+    assert out["sideSeam"] is None
     assert out["topBody"] == {"kind": "append", "group": 0}
     assert out["lowBody"] == {"kind": "append", "group": 1}
     assert out["lowBand"] == {"kind": "insert", "group": 1, "index": 1}
     assert out["seam"] is None and out["outside"] is None
+
+
+def test_a_workspace_tab_kind_class_is_styled_only_through_ws_pane(doc):
+    """A tab's pane carries "ws-" + its kind (addTab), so no rule may style a
+    bare .ws-media, .ws-editor and so on: the media box once shared the media
+    pane's class, and its display:flex drew every picture tab at once, stacked
+    under the one in front."""
+    css = (REPO / "src" / "mobile" / "styles.css").read_text(encoding="utf-8")
+    assert 'tab.body = el("div", { class: "ws-pane ws-" + tab.kind });' in doc
+    assert not re.search(r"\.ws-(editor|reader|mesh|pdf|media|html)(?![\w-])", css)
+    assert 'el("div", { class: "ws-media-box" }, media)' in doc
 
 
 def test_moving_a_workspace_tab_says_what_emptied(doc, tmp_path):
