@@ -3849,6 +3849,22 @@ console.log(JSON.stringify(r));
     assert out["sib"] == ["/w/m/a.mtl", "/w/m/tex/b.png", "/w/t/c.jpg", "/w/m/d.png", "/abs/e.png"]
 
 
+def test_an_mtl_tr_1_material_is_drawn_opaque(doc, tmp_path):
+    """Founder, 2026-10-24: a Magic123 mesh.obj showed its vertex count over a
+    blank canvas. Its .mtl says `Tr 1`, which three's MTLLoader reads as fully
+    transparent (opacity 0) while the exporter meant opaque. A material that
+    would be invisible is drawn opaque; partial transparency is kept."""
+    src = _js_chunk(doc, "function meshOpaqueRescue(")
+    out = _node_json(tmp_path, "rescue.mjs", src + """
+const mats = [{ opacity: 0, transparent: true }, { opacity: 0.005, transparent: true },
+              { opacity: 0.5, transparent: true }, { opacity: 1, transparent: false }, null];
+meshOpaqueRescue(mats);
+console.log(JSON.stringify(mats.slice(0, 4).map(m => [m.opacity, m.transparent])));
+""")
+    assert out == [[1, False], [1, False], [0.5, True], [1, False]]
+    obj = _js_chunk(doc, "async function meshMount(")
+    assert "for (const m of mats) m.side = T.DoubleSide;\n        meshOpaqueRescue(mats);" in obj
+
 def test_the_workspace_terminal_height_defaults_and_clamps(doc, tmp_path):
     """The expanded explorer's terminal panel (26-side-pane.js): 30% of the
     window until the seam is dragged, never under 120px or over 70%."""
