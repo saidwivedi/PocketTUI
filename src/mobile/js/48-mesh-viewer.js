@@ -308,37 +308,23 @@ function meshTheme() {
 }
 
 // The ground grid under a model (founder, 2026-10-25: "something like MeshLab
-// so that it looks like it is 3D and people start rotating"). Y is up, as the
-// camera's offset in show() and OrbitControls' default up both assume, so the
-// grid lies in XZ just under the bottom of the model's box. Its cell is a
-// round power of ten, 5 to 50 cells across the model's largest side, so the
-// grid also reads as a scale; it reaches about 1.25 extents either side of the
-// centre, which is snapped to whole cells so the lines sit on round
-// coordinates. `min` and `max` are the model's box as [x, y, z].
+// so that it looks like it is 3D and people start rotating", then "should not
+// the grid be bigger or maybe infinite"). Y is up, as the camera's offset in
+// show() and OrbitControls' default up both assume, so the grid lies in XZ
+// just under the bottom of the model's box. It is endless: the lines are
+// worked out per pixel in a shader, not built as geometry. `cell` is the
+// model's own scale, a round power of ten about a fifth of its largest side;
+// the shader picks its levels from there, so every line drawn sits on a round
+// power of ten. `ox`/`oz` is an origin snapped to a thousand cells, which
+// keeps the coordinates the shader takes `mod` of small for a model far from
+// zero without moving any line. `min` and `max` are the model's box as [x, y, z].
 function meshGridPlan(min, max) {
   const ext = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]) || 1;
   const cell = Math.pow(10, Math.floor(Math.log10(ext / 5)));
-  const snap = (v) => Math.round(v / cell) * cell;
-  const n = Math.ceil(1.25 * ext / cell);
+  const snap = (v) => Math.round(v / (cell * 1000)) * cell * 1000;
   // A hair under the bottom, so faces resting on the floor do not z-fight it.
-  return { cell, n, half: n * cell, cx: snap((min[0] + max[0]) / 2),
-           cz: snap((min[2] + max[2]) / 2), y: min[1] - ext * 1e-3 };
-}
-
-// The plan's line segments, two points each, and per point whether the line is
-// a major one (every tenth cell counted from the origin, so a major line marks
-// the next power of ten up).
-function meshGridLines(p) {
-  const pos = [], major = [];
-  const ix = Math.round(p.cx / p.cell), iz = Math.round(p.cz / p.cell);
-  for (let i = -p.n; i <= p.n; i++) {
-    const x = p.cx + i * p.cell, z = p.cz + i * p.cell;
-    const mx = (ix + i) % 10 === 0 ? 1 : 0, mz = (iz + i) % 10 === 0 ? 1 : 0;
-    pos.push(x, p.y, p.cz - p.half, x, p.y, p.cz + p.half,
-             p.cx - p.half, p.y, z, p.cx + p.half, p.y, z);
-    major.push(mx, mx, mz, mz);
-  }
-  return { positions: new Float32Array(pos), major: new Float32Array(major) };
+  return { cell, ox: snap((min[0] + max[0]) / 2), oz: snap((min[2] + max[2]) / 2),
+           y: min[1] - ext * 1e-3 };
 }
 
 // Whether the "drag to rotate" hint has done its job: set by the first drag or
@@ -346,40 +332,82 @@ function meshGridLines(p) {
 // sees it once per visit and never twice in one.
 let meshHintSeen = false;
 
-// The grid as one LineSegments. Its fade toward the edge is a radial alpha in
-// the fragment shader rather than more geometry, so the grid has no hard rim
-// and costs one draw call. colorspace_fragment is the chunk three's own
-// materials end with: the uniforms are linear (Color.set converts the CSS
-// hex), and the canvas is sRGB.
+// The grid as one quad that follows the camera (meshGridFollow moves it each
+// frame), drawn by a fragment shader in the manner of Blender's floor. The
+// pixel's footprint on the floor (fwidth of the world XZ) picks the level:
+// the finest cell drawn is the power of ten that puts lines 20 to 200 px
+// apart, it fades out as the camera pulls back and they close up to 20 px,
+// the next level up takes over, and the one above that is drawn in the major
+// colour, so zooming crossfades between scales rather than popping. Because
+// the level follows the footprint, the far floor and the floor seen edge-on
+// get coarser cells instead of moiré. Alpha falls to zero before the quad's
+// rim and toward the horizon, so no edge is ever seen. Depth is tested but
+// not written, so the model hides the floor where it stands in front, and a
+// polygon offset on top of the y hair keeps the floor behind faces that rest
+// on it. three 0.186 renders WebGL2 only, where fwidth is core. The uniforms
+// are linear (Color.set converts the CSS hex); colorspace_fragment, the chunk
+// three's own materials end with, converts them for the sRGB canvas.
 function meshGridObject(plan) {
-  const T = THREE3D, lines = meshGridLines(plan);
-  const geom = new T.BufferGeometry();
-  geom.setAttribute("position", new T.BufferAttribute(lines.positions, 3));
-  geom.setAttribute("major", new T.BufferAttribute(lines.major, 1));
+  const T = THREE3D;
+  const geom = new T.PlaneGeometry(2, 2);
+  geom.rotateX(-Math.PI / 2);
   const mat = new T.ShaderMaterial({
     uniforms: { uMinor: { value: new T.Color() }, uMajor: { value: new T.Color() },
-                uCenter: { value: new T.Vector2(plan.cx, plan.cz) }, uHalf: { value: plan.half } },
-    vertexShader: `attribute float major;
-varying float vMajor;
-varying vec2 vXZ;
+                uCell: { value: plan.cell }, uOrigin: { value: new T.Vector2(plan.ox, plan.oz) },
+                uY: { value: plan.y }, uEye: { value: new T.Vector3() }, uReach: { value: 1 } },
+    vertexShader: `uniform float uY;
+uniform vec3 uEye;
+uniform float uReach;
+varying vec3 vWorld;
 void main() {
-  vMajor = major;
-  vXZ = position.xz;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vWorld = vec3(uEye.x + position.x * uReach, uY, uEye.z + position.z * uReach);
+  gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
 }`,
     fragmentShader: `uniform vec3 uMinor;
 uniform vec3 uMajor;
-uniform vec2 uCenter;
-uniform float uHalf;
-varying float vMajor;
-varying vec2 vXZ;
+uniform float uCell;
+uniform vec2 uOrigin;
+uniform vec3 uEye;
+uniform float uReach;
+varying vec3 vWorld;
+float lines(vec2 uv, vec2 w, float size) {
+  vec2 a = 1.0 - abs(clamp(mod(uv, size) / w, 0.0, 1.0) * 2.0 - 1.0);
+  return max(a.x, a.y); }
 void main() {
-  float d = length(vXZ - uCenter) / uHalf;
-  gl_FragColor = vec4(mix(uMinor, uMajor, vMajor), 1.0 - smoothstep(0.3, 1.0, d));
+  vec2 uv = vWorld.xz - uOrigin;
+  vec2 dudv = fwidth(uv);
+  float level = log2(20.0 * max(length(dudv), uCell * 1e-6) / uCell) / log2(10.0);
+  float fade = fract(level);
+  float lod0 = uCell * pow(10.0, floor(level));
+  vec2 w = dudv * 2.0;
+  float a0 = lines(uv, w, lod0);
+  float a1 = lines(uv, w, lod0 * 10.0);
+  float a2 = lines(uv, w, lod0 * 100.0);
+  vec3 c = a2 > 0.0 ? uMajor : a1 > 0.0 ? mix(uMajor, uMinor, fade) : uMinor;
+  float a = a2 > 0.0 ? a2 : a1 > 0.0 ? a1 : a0 * (1.0 - fade);
+  vec3 toFrag = vWorld - uEye;
+  a *= 1.0 - smoothstep(0.3, 1.0, length(toFrag.xz) / uReach);
+  a *= smoothstep(0.0, 0.12, abs(toFrag.y) / length(toFrag));
+  if (a <= 0.0) discard;
+  gl_FragColor = vec4(c, a);
   #include <colorspace_fragment>
 }`,
-    transparent: true, depthWrite: false });
-  return new T.LineSegments(geom, mat);
+    transparent: true, depthWrite: false, depthTest: true,
+    polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+  const grid = new T.Mesh(geom, mat);
+  // The vertex shader places the quad, so the box three would cull by is not
+  // where it is drawn.
+  grid.frustumCulled = false;
+  return grid;
+}
+// Centre the floor under the camera and size it to the view: out to ten
+// times the camera's distance from what it orbits, which is beyond where the
+// alpha has fallen to nothing, but never past the far plane, which would cut
+// the floor with a hard line.
+function meshGridFollow(grid, cam, target) {
+  const u = grid.material.uniforms;
+  u.uEye.value.copy(cam.position);
+  u.uReach.value = Math.min(10 * cam.position.distanceTo(target), 0.9 * cam.far);
 }
 function meshGridTheme(grid, t) {
   const u = grid.material.uniforms;
@@ -533,6 +561,7 @@ async function meshMount(host, path, opts = {}) {
     // While the damping settles, update() moves the camera and fires the
     // change event that asks for the next frame; at rest it fires nothing.
     controls.update();
+    if (grid) meshGridFollow(grid, controls.object, controls.target);
     renderer.render(scene, controls.object);
     if (gridOn && triad) drawTriad(controls.object);
   }
