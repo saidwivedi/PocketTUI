@@ -189,6 +189,10 @@
       <path d="M5.2 8.5v9a2 2 0 0 0 2 2h9.6a2 2 0 0 0 2-2v-9"/>
       <path d="M10 12h4"/>
     </symbol>
+    <symbol id="i-mesh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.5l7.5 4.2v8.6L12 20.5l-7.5-4.2V7.7z"/>
+      <path d="M4.5 7.7L12 12l7.5-4.3M12 12v8.5"/>
+    </symbol>
     <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 3.5v11"/>
       <path d="M7.5 10.5l4.5 4.5 4.5-4.5"/>
@@ -1814,6 +1818,9 @@
        — its own scripts run inside the reader, with no reach into this
        document or the token it holds. -->
   <iframe id="viewer-frame" title="PDF"></iframe>
+  <!-- A mesh or point cloud, drawn by 48-mesh-viewer.js into a canvas it
+       puts here on open and takes away on close. -->
+  <div id="viewer-mesh" class="viewer-mesh"></div>
 </div>
 
 <script src="vendor/xterm.js?v=__CACHE_VERSION__"></script>
