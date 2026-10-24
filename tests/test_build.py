@@ -3224,6 +3224,135 @@ console.log(JSON.stringify({
     assert out["clean"] is None
 
 
+def test_the_workspace_badge_poll_keeps_one_timer_and_the_diff_panes_pace(doc, tmp_path):
+    """The badges' poll on a fake clock: one timer at a time, the next question
+    clamp(4 x elapsed_ms, 2 s, 60 s) after an answer, kicks made while a
+    question is out folded into one more question, a kick made while an answer
+    is painted asking nothing, and a 401 (false) stopping it until the next
+    kick. A journal of /api/git/status every 1.2 s read as a runaway poll; it
+    was each question's CORS preflight logged beside it, at the 2 s floor."""
+    js = "\n".join(_js_chunk(doc, h) for h in (
+        "const DIFF_POLL_MS", "const DIFF_POLL_FACTOR", "const DIFF_POLL_MAX_MS",
+        "function wsPoller("))
+    out = _node_json(tmp_path, "poll.mjs", "const dbg = () => {};\n" + js + """
+let now = 0, nextId = 1;
+const timers = new Map();
+const clock = {
+  set: (f, ms) => { const id = nextId++; timers.set(id, { at: now + ms, f }); return id; },
+  clear: (id) => { timers.delete(id); },
+};
+const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+async function advance(ms) {
+  const end = now + ms;
+  for (;;) {
+    let due = null;
+    for (const [id, t] of timers) if (t.at <= end && (!due || t.at < due[1].at)) due = [id, t];
+    if (!due) break;
+    timers.delete(due[0]);
+    now = due[1].at;
+    due[1].f();
+    await flush();
+  }
+  now = end;
+}
+function rig(opts) {
+  const r = { asks: [], maxTimers: 0, pending: null, elapsed: opts.elapsed || 5, answer: opts.answer };
+  r.p = wsPoller(() => true, () => {
+    r.asks.push(now);
+    if (opts.hold) return new Promise((res) => { r.pending = res; });
+    return Promise.resolve(r.answer === undefined ? { ms: r.elapsed, data: {} } : r.answer);
+  }, () => { if (opts.kickOnPaint) r.p.kick(); }, clock);
+  return r;
+}
+const res = {};
+const track = async (r, ms) => {
+  for (let t = 0; t < ms; t += 500) { await advance(500); r.maxTimers = Math.max(r.maxTimers, timers.size); }
+};
+
+// The floor: an answer in 5 ms is asked again every 2 s.
+let r = rig({ elapsed: 5 });
+r.p.kick(); await flush();
+await track(r, 10000);
+res.floor = { asks: r.asks, maxTimers: r.maxTimers, every: r.p.every };
+r.p.stop(); timers.clear(); now = 0;
+
+// Four times the answer's time, and the one-minute ceiling.
+r = rig({ elapsed: 1000 });
+r.p.kick(); await flush();
+await advance(12000);
+res.slow = { asks: r.asks, every: r.p.every };
+r.p.stop(); timers.clear(); now = 0;
+r = rig({ elapsed: 100000 });
+r.p.kick(); await flush();
+res.ceiling = r.p.every;
+r.p.stop(); timers.clear(); now = 0;
+
+// Kicks while a question is out: one more question, then the timer again.
+r = rig({ hold: true });
+r.p.kick(); await flush();
+r.p.kick(); r.p.kick(); r.p.kick();
+res.heldAsks = r.asks.length;
+r.pending({ ms: 5, data: {} }); await flush();
+res.afterFold = r.asks.length;
+r.pending({ ms: 5, data: {} }); await flush();
+res.afterSecond = r.asks.length;
+res.timersAfterFold = timers.size;
+r.p.stop(); timers.clear(); now = 0;
+
+// A kick from the answer's own painting asks nothing.
+r = rig({ kickOnPaint: true });
+r.p.kick(); await flush();
+res.paintKickAsks = r.asks.length;
+await track(r, 4000);
+res.paintKick = { asks: r.asks, maxTimers: r.maxTimers };
+r.p.stop(); timers.clear(); now = 0;
+
+// A kick between timers asks at once and takes the timer's place.
+r = rig({});
+r.p.kick(); await flush();
+await advance(1000);
+r.p.kick(); await flush();
+res.kickNow = { asks: r.asks.slice(), timers: timers.size };
+await advance(2000);
+res.kickNext = r.asks.slice();
+r.p.stop(); timers.clear(); now = 0;
+
+// 401: nothing more until a kick.
+r = rig({ answer: false });
+r.p.kick(); await flush();
+await advance(10000);
+res.unauth = { asks: r.asks.length, timers: timers.size };
+console.log(JSON.stringify(res));
+""")
+    assert out["floor"] == {"asks": [0, 2000, 4000, 6000, 8000, 10000], "maxTimers": 1, "every": 2000}
+    assert out["slow"] == {"asks": [0, 4000, 8000, 12000], "every": 4000}
+    assert out["ceiling"] == 60000
+    assert out["heldAsks"] == 1 and out["afterFold"] == 2 and out["afterSecond"] == 2
+    assert out["timersAfterFold"] == 1
+    assert out["paintKickAsks"] == 1
+    assert out["paintKick"] == {"asks": [0, 2000, 4000], "maxTimers": 1}
+    assert out["kickNow"] == {"asks": [0, 1000], "timers": 1}
+    assert out["kickNext"] == [0, 1000, 3000]
+    assert out["unauth"] == {"asks": 1, "timers": 0}
+
+
+def test_the_workspace_tree_never_roots_at_an_empty_path(doc):
+    """Founder, 2026-10-25: tree folders under home did not open, and the
+    journal showed /api/fs/list?path=/Downloads. The pane expanded before its
+    first listing landed (expand remembered), so the tree was revealed at
+    filesPath "": the root listed home under a path of "", every child became
+    "/" + name, and every folder counted as inside "", so the listing could
+    never re-root it. reveal now waits for a folder. A folder's name no longer
+    lists the folder itself: the listing it navigates to fills and opens the
+    node, so a click reads the folder once."""
+    body = _js_chunk(doc, "function makeWorkspace(")
+    assert "  async function reveal(path) {\n    if (!path) return;\n" in body
+    click = body[body.index('treeBody.addEventListener("click"'):]
+    click = click[:click.index("\n  });\n")]
+    assert "expand(node);\n      }\n      ctx.navigate(node.path);" not in click
+    assert "} else if (keepShut === node.path) keepShut = null;\n      ctx.navigate(node.path);" in click
+
+
 def test_the_workspace_tree_lists_folders_first_in_the_backends_order(doc, tmp_path):
     """The tree ignores the listing's sort: folders first, then everything else,
     each in the order the backend answered with."""
