@@ -420,6 +420,51 @@ function wsMarksKit() {
   return wsMarksKitMemo;
 }
 
+// The badges' poll: one timer, and one question in flight at a time. `ask`
+// puts one status question and answers { ms, data } (ms: how long the backend
+// took), false for "ask nothing more until kicked", or null for an answer with
+// nothing in it; `paint` draws an answer's data. The next question waits
+// clamp(4 x ms, 2 s, 60 s), the diff pane's pace. A kick (a save, an upload, a
+// rename, a delete, a new folder, a move, a new root) asks at once in place of
+// the timer, and kicks that land while a question is out fold into one more
+// question after it, however many there were. A kick made while an answer is
+// being painted is that answer's own consequence and asks nothing: it would
+// otherwise turn every answer into the next question. `clock` is the timer
+// pair, for a test to stand in.
+function wsPoller(wanted, ask, paint, clock) {
+  const set = clock ? clock.set : (f, ms) => setTimeout(f, ms);
+  const clear = clock ? clock.clear : (t) => clearTimeout(t);
+  let timer = null, busy = false, again = false, painting = false, every = DIFF_POLL_MS;
+  function stop() {
+    if (timer !== null) clear(timer);
+    timer = null;
+  }
+  async function run() {
+    stop();
+    if (!wanted()) return;
+    if (busy) { again = true; return; }
+    busy = true;
+    let r = null;
+    try { r = await ask(); } catch (e) { r = null; }
+    if (r) {
+      every = Math.min(DIFF_POLL_MAX_MS,
+                       Math.max(DIFF_POLL_MS, Math.round((Number(r.ms) || 0) * DIFF_POLL_FACTOR)));
+      painting = true;
+      try { paint(r.data); } catch (e) { dbg("ws git status paint failed:", e); }
+      painting = false;
+    }
+    busy = false;
+    if (r === false) { again = false; return; }
+    if (again) { again = false; run(); return; }
+    stop();
+    if (wanted()) timer = set(run, every);
+  }
+  function kick() {
+    if (!painting) run();
+  }
+  return { kick, stop, get every() { return every; } };
+}
+
 function makeWorkspace(ctx) {
   const root = ctx.root;
   const wrap = root.querySelector(".files-wrap");
@@ -590,8 +635,14 @@ function makeWorkspace(ctx) {
   // The folder the listing is on, found in the tree: every folder from the
   // tree's root down to it opened (and listed, where it never was), then it
   // is the selected row unless a file's tab is in front, whose row that is. A
-  // folder outside the tree's root is a new root.
+  // folder outside the tree's root is a new root. No folder yet (the pane
+  // expanded before its first listing landed, filesPath still "") is nothing
+  // to root at: a root of "" lists the backend's default folder, home, under
+  // a path of "", so every child would be "/" + name, and every folder
+  // counts as inside it, so the listing's own answer could never re-root it.
+  // The first listing's onListing reveals it instead.
   async function reveal(path) {
+    if (!path) return;
     if (keepShut !== path) keepShut = null;
     if (!treeRoot || !insideDir(path, treeRoot.path)) reRoot(path);
     const parts = path.slice(treeRoot.path.length).split("/").filter(Boolean);
@@ -626,14 +677,14 @@ function makeWorkspace(ctx) {
         else { if (keepShut === node.path) keepShut = null; expand(node); }
         return;
       }
+      // A closed folder is opened by the listing's answer (onListing fills
+      // the node and reveal opens it), not by a list of its own: asking here
+      // as well read every folder twice, and a folder that fails failed twice.
       select(node.path);
       if (node.expanded) {
         keepShut = node.path;
         setExpanded(node, false);
-      } else {
-        if (keepShut === node.path) keepShut = null;
-        expand(node);
-      }
+      } else if (keepShut === node.path) keepShut = null;
       ctx.navigate(node.path);
       return;
     }
@@ -1343,59 +1394,44 @@ function makeWorkspace(ctx) {
   // repo-relative path: what an editor's change marks are read and staged by.
   let gitRoot = "";
   let gitFiles = new Map();
-  let pollTimer = null, pollBusy = false, pollAgain = false;
-  let pollEvery = DIFF_POLL_MS;
 
   function pollWanted() {
     return on && attached && !document.hidden && !!treeRoot && !demoApiOn()
            && hasCapStrict("git_status") && !ctx.refFor(treeRoot.path);
   }
 
-  function schedule() {
-    clearTimeout(pollTimer);
-    pollTimer = pollWanted() ? setTimeout(poll, pollEvery) : null;
-  }
-
-  async function poll() {
-    clearTimeout(pollTimer);
-    pollTimer = null;
-    if (!pollWanted()) return;
-    if (pollBusy) { pollAgain = true; return; }
-    pollBusy = true;
+  // One status question for the tree's root: wsPoller's { ms, data }, false
+  // on a 401, null on anything else (a failure, or a root that moved on while
+  // it was out).
+  async function askStatus() {
     const at = treeRoot.path;
-    let again = true;
     try {
       const r = await fetch(apiURL("api/git/status?path=" + encodeURIComponent(at)),
                             { cache: "no-store", headers: authHeaders() });
       // The pairing code is being asked for; nothing more is asked until the
       // workspace is shown again.
-      if (r.status === 401) { rejectToken(); again = false; return; }
+      if (r.status === 401) { rejectToken(); return false; }
       const data = r.ok ? await r.json().catch(() => null) : null;
-      if (data && treeRoot && treeRoot.path === at) {
-        marks = data.root ? wsAggregate(data.files, data.root) : new Map();
-        gitRoot = String(data.root || "").replace(/\/+$/, "");
-        gitFiles = new Map((data.files || []).map((f) => [f.path, f]));
-        const ms = Number(data.elapsed_ms) || 0;
-        pollEvery = Math.min(DIFF_POLL_MAX_MS,
-                             Math.max(DIFF_POLL_MS, Math.round(ms * DIFF_POLL_FACTOR)));
-        paintAll();
-      }
+      if (!data || !treeRoot || treeRoot.path !== at) return null;
+      return { ms: data.elapsed_ms, data };
     } catch (e) {
       dbg("ws git status failed:", e);
-    } finally {
-      pollBusy = false;
-      if (pollAgain && again) { pollAgain = false; poll(); }
-      else if (again) schedule();
+      return null;
     }
   }
 
-  function kickStatus() {
-    if (pollBusy) { pollAgain = true; return; }
-    poll();
+  function paintStatus(data) {
+    marks = data.root ? wsAggregate(data.files, data.root) : new Map();
+    gitRoot = String(data.root || "").replace(/\/+$/, "");
+    gitFiles = new Map((data.files || []).map((f) => [f.path, f]));
+    paintAll();
   }
 
+  const poller = wsPoller(pollWanted, askStatus, paintStatus);
+  const kickStatus = poller.kick;
+
   const onVisibility = () => {
-    if (document.hidden) { clearTimeout(pollTimer); pollTimer = null; }
+    if (document.hidden) poller.stop();
     else kickStatus();
   };
   document.addEventListener("visibilitychange", onVisibility);
@@ -1630,8 +1666,7 @@ function makeWorkspace(ctx) {
     } else {
       wsEl.before(wrap);
       for (const t of fileTabs()) pauseMedia(t);
-      clearTimeout(pollTimer);
-      pollTimer = null;
+      poller.stop();
     }
     // Off, this takes the listing's badges away with the poll that kept them.
     paintListing();
