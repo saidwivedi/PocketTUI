@@ -1806,3 +1806,79 @@ def test_a_path_absent_at_the_ref_is_not_found_rather_than_empty(client, branche
 
 def test_version_names_the_ref_routes_as_a_capability(client):
     assert client.get("/api/version").json()["capabilities"]["git_ref"] is True
+
+
+# ---------------------------------------------------------------------------
+# git status for the explorer's badges
+# ---------------------------------------------------------------------------
+# /api/git/status: every changed path of the repo a folder sits in, tracked and
+# untracked in one answer, asked by path the way /api/git/branches is.
+
+
+def git_status(client, path):
+    r = client.get("/api/git/status", params={"path": str(path)})
+    assert r.status_code == 200
+    return r.json()
+
+
+@needs_git
+def test_git_status_answers_for_the_repo_a_subfolder_sits_in(client, repo):
+    data = git_status(client, repo / "sub")
+    assert data["root"] == str(repo)
+    assert "error" not in data
+    by_path = {f["path"]: f for f in data["files"]}
+    assert sorted(by_path) == ["staged.txt", "sub/", "tracked.txt"]
+    assert (by_path["tracked.txt"]["status"], by_path["tracked.txt"]["staged"],
+            by_path["tracked.txt"]["unstaged"]) == (" M", False, True)
+    assert (by_path["staged.txt"]["status"], by_path["staged.txt"]["staged"],
+            by_path["staged.txt"]["unstaged"]) == ("A ", True, False)
+    # sub/ holds one untracked file and nothing tracked: one collapsed row.
+    assert (by_path["sub/"]["status"], by_path["sub/"]["staged"],
+            by_path["sub/"]["unstaged"]) == ("??", False, True)
+
+
+@needs_git
+def test_git_status_walks_up_from_a_path_that_does_not_exist(client, repo):
+    assert git_status(client, repo / "sub" / "gone" / "deeper")["root"] == str(repo)
+
+
+def test_git_status_outside_any_repo_is_an_empty_root_not_an_error(client, tmp_path):
+    data = git_status(client, tmp_path)
+    assert (data["root"], data["files"]) == ("", [])
+    assert "error" not in data
+
+
+@needs_git
+def test_git_status_says_how_long_it_took(client, repo, tmp_path):
+    for path in (repo, tmp_path):
+        data = git_status(client, path)
+        assert isinstance(data["elapsed_ms"], int)
+        assert data["elapsed_ms"] >= 0
+
+
+@needs_git
+def test_concurrent_git_status_of_one_repo_share_one_walk(repo, monkeypatch):
+    """Two devices polling the same repo while a slow walk runs: one `status`,
+    both answered from it."""
+    real = A.git
+    walks = []
+
+    def slow_git(cwd, *args, **kw):
+        if args and args[0] == "status":
+            walks.append(cwd)
+            time.sleep(0.4)
+        return real(cwd, *args, **kw)
+    monkeypatch.setattr(A, "git", slow_git)
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(
+        A.git_status_answer(str(repo)))) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert walks == [str(repo)]
+    assert [r.status_code for r in out] == [200] * 2
+
+
+def test_version_names_git_status_as_a_capability(client):
+    assert client.get("/api/version").json()["capabilities"]["git_status"] is True

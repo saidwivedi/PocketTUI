@@ -2979,3 +2979,13 @@ console.log(JSON.stringify(results));
     assert out["old"] == [True, False]
     assert out["app"] == [False, True]
     assert out["hooked"] == "function"
+
+
+def test_change_badge_colours_are_shared_by_the_diff_pane_and_the_explorer(doc):
+    """One colour per kind wherever a change is badged, so a modified file
+    reads the same in the diff pane, the listing and the workspace tree."""
+    for kind, ink in (("new", "--diff-add-ink"), ("mod", "--warn"),
+                      ("del", "--diff-del-ink"), ("ren", "--diff-blue")):
+        assert (f":is(.diff-file .badge, .git-badge, .ws-badge).{kind} "
+                f"{{ color: var({ink}); }}") in doc
+    assert ".diff-file .badge.new {" not in doc
