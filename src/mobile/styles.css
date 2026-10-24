@@ -4159,8 +4159,30 @@ html.term-open #dbg-panel { opacity: 0.85; }
     display: flex;
     flex-direction: column;
   }
+  /* Two groups, one over the other: the height left past the seam is shared
+     out by --ws-split, the top group's part of it. */
+  .ws-groups.ws-two > .ws-group { flex: 1 1 0; }
+  .ws-groups.ws-two > .ws-group:first-child { flex-grow: var(--ws-split, 0.5); }
+  .ws-groups.ws-two > .ws-group:last-child { flex-grow: calc(1 - var(--ws-split, 0.5)); }
+  /* The seam between them: the column seam's recess and grip on its side
+     (#side-hsplit). */
+  .ws-group-seam {
+    cursor: row-resize;
+    border-left: 0;
+    border-right: 0;
+    border-top: 1px solid var(--hair);
+    border-bottom: 1px solid var(--hair);
+    box-shadow: inset 0 1px 2px rgba(20, 16, 10, 0.05),
+                inset 0 -1px 2px rgba(20, 16, 10, 0.05);
+  }
+  .ws-group-seam::before { left: 0; right: 0; top: -5px; bottom: -5px; }
+  .ws-group-seam::after {
+    width: 36px; height: 3px;
+    margin: -1.5px 0 0 -18px;
+  }
   /* The browser's tab band (#browser-tabs, #browser-tab-row) and its chips. */
   .ws-tabs {
+    position: relative;
     flex: 0 0 auto;
     display: flex;
     align-items: stretch;
@@ -4203,6 +4225,47 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   .ws-tabs .tab-chip.dirty:not(:hover):not(:focus-within) .ws-dirty { display: block; }
   .ws-tabs .tab-chip.dirty:not(:hover):not(:focus-within) .tab-del { visibility: hidden; }
+
+  /* A tab being dragged: the chip stays in its place dimmed, a lifted copy of
+     it follows the pointer, and where it would land is drawn in umber, a bar
+     between two chips or a tint over the files it would join. */
+  .ws-tabs .tab-chip.dragging { opacity: 0.4; }
+  .ws-tab-ghost {
+    position: fixed;
+    z-index: 1000;
+    display: flex;
+    pointer-events: none;
+    opacity: 0.94;
+    border-radius: 5px;
+    background: var(--paper);
+    box-shadow: 0 0 0 0.5px var(--m-sep), 0 6px 16px rgba(20, 16, 10, 0.22);
+  }
+  .ws-tab-ghost > * { flex: 1; max-width: none; }
+  .ws-tab-ghost .tab-name { color: var(--ink); }
+  body.ws-tab-dragging { -webkit-user-select: none; user-select: none; cursor: grabbing; }
+  .ws-drop-ins {
+    position: absolute;
+    top: 4px; bottom: 4px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--umber);
+    pointer-events: none;
+    z-index: 2;
+  }
+  .ws-drop-hint {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    background: var(--umber-soft);
+    box-shadow: inset 0 0 0 2px var(--umber);
+    pointer-events: none;
+  }
+  .ws-drop-hint.bot { top: 50%; }   /* refined to the groups' midline by showTarget */
+  /* A tree folder a dragged listing row would move into. */
+  .ws-node.drop-into {
+    background: var(--umber-soft);
+    box-shadow: inset 0 0 0 2px var(--umber);
+  }
 
   /* One body per tab, stacked, and only the active one drawn. */
   .ws-body {
