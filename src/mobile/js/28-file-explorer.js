@@ -53,6 +53,7 @@ const FILE_KIND_EXT = {
   text:    "md txt rst log csv tsv",
   pdf:     "pdf",
   archive: "zip tar gz tgz bz2 xz 7z rar",
+  mesh:    "ply obj stl glb gltf pcd xyz pts off npy npz",
 };
 const FILE_KIND_BY_EXT = (() => {
   const m = new Map();
@@ -2078,7 +2079,7 @@ function openEntry(e, dir=filesPath) {
   // The viewer and the sandboxed page both fetch the file straight off the
   // disk, and neither route takes a ref — so at a ref an image says so, and a
   // page opens as the source it is, in the editor that already opens read-only.
-  if (FILES_MEDIA_RE.test(e.name)) {
+  if (FILES_MEDIA_RE.test(e.name) || MESH_EXT_RE.test(e.name)) {
     if (filesRef) toast("Can't preview images from " + filesRef);
     else showImage(full, self());
     return;

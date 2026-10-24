@@ -111,6 +111,7 @@ JS_FRAGMENTS = (
     "44-features-guide.js",
     "45-usage.js",
     "46-desktop-browser.js",
+    "48-mesh-viewer.js",
     "27-boot.js",
 )
 

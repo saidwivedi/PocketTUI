@@ -418,12 +418,17 @@ const VIDEO_EXT_RE = /\.(?:mp4|webm|mov)$/i;
 // two-pane layout — see openPdf (28-file-explorer.js) for what a phone does
 // instead.
 const PDF_EXT_RE = /\.pdf$/i;
+// The fourth: meshes and point clouds, drawn by 48-mesh-viewer.js into a
+// canvas of its own. Here rather than there so the kind below, and the
+// explorer's open, can read it whichever fragment comes first.
+const MESH_EXT_RE = /\.(?:ply|obj|stl|glb|gltf|pcd|xyz|pts|off|npy|npz)$/i;
 
-// Which of the three the overlay is showing. The name alone says it: the path
+// Which of the four the overlay is showing. The name alone says it: the path
 // is all a tap carries, and it is what the tile, the row and the terminal link
 // all agree on.
 function viewerKind(path) {
   if (VIDEO_EXT_RE.test(path)) return "video";
+  if (MESH_EXT_RE.test(path)) return "mesh";
   return PDF_EXT_RE.test(path) ? "pdf" : "image";
 }
 
@@ -432,6 +437,21 @@ function viewerKind(path) {
 // URL, so two views of one file never carry the same string.
 let viewerPath = "";
 let viewerFill = 0;
+// The model on show (meshMount's handle) and the open still loading one,
+// which putting the overlay away abandons.
+let viewerMesh = null;
+let viewerMeshLoad = null;
+
+// A model holds a WebGL context, its buffers and its textures, none of which
+// the page gets back until they are handed back, so leaving one is a teardown
+// rather than a hide.
+function dropMesh() {
+  if (viewerMeshLoad) viewerMeshLoad.abort();
+  viewerMeshLoad = null;
+  if (viewerMesh) viewerMesh.destroy();
+  viewerMesh = null;
+  $("viewer-mesh").style.display = "none";
+}
 
 // Dropping the bytes takes the failure handler with it: the handler belongs to
 // the load it was attached for, and left behind it can read a clear as that
@@ -466,11 +486,12 @@ function showImage(path, pane) {
   // showing what it already holds, it is replaced rather than emptied, and
   // every reference below has to be to the element that survives.
   if (fresh || kind !== "pdf") dropFrame();
+  if (fresh || kind !== "mesh") dropMesh();
   const img = $("viewer-img"), video = $("viewer-video"), frame = $("viewer-frame");
   viewerPath = path;
   viewerOpenedAt = Date.now();
   resetZoom();
-  const on = kind === "video" ? video : kind === "pdf" ? frame : img;
+  const on = kind === "video" ? video : kind === "pdf" ? frame : kind === "mesh" ? null : img;
   // The two that are not showing go away empty: a video left with a src keeps
   // its decoder running off-screen, and a frame left with one keeps a whole
   // document alive behind the picture that replaced it.
@@ -480,8 +501,9 @@ function showImage(path, pane) {
     if (el === video) video.pause();
     dropSrc(el);
   }
-  on.style.display = on === img ? "" : "block";
-  if (fresh) {
+  if (on) on.style.display = on === img ? "" : "block";
+  else $("viewer-mesh").style.display = "block";
+  if (fresh && on) {
     if (on === video) video.pause();
     dropSrc(on);
   }
@@ -510,6 +532,18 @@ function showImage(path, pane) {
 // dropped instead of overwriting what is now on screen.
 async function fillViewer(path, kind) {
   const fill = ++viewerFill;
+  // A model is parsed here rather than handed to a tag, so it takes the
+  // header-authenticated route and needs no link; meshMount says its own
+  // failures.
+  if (kind === "mesh") {
+    const load = viewerMeshLoad = new AbortController();
+    const h = await meshMount($("viewer-mesh"), path, { signal: load.signal });
+    if (load.signal.aborted || fill !== viewerFill) { if (h) h.destroy(); return; }
+    viewerMeshLoad = null;
+    if (!h) { hideImage(); return; }
+    viewerMesh = h;
+    return;
+  }
   const fail = () => {
     hideImage();
     toast(kind === "video" ? "Couldn't load video"
@@ -550,6 +584,7 @@ function hideImage() {
   // And the document the frame was holding, for the same reason — plus the
   // history entries it would otherwise leave behind.
   dropFrame();
+  dropMesh();
   // Seated in a pane, the row it was in is no longer holding a file view
   // (28-file-explorer.js).
   if ($("viewer").classList.contains("docked")) filesSetViewOwner(null);
@@ -595,6 +630,9 @@ $("viewer").addEventListener("click", (e) => {
   // answer to the press — expanding the pane, closing it — and dismissing as
   // well would undo the one that was asked for.
   if (e.target.closest(".viewer-actions")) return;
+  // A model is turned by dragging it, and a drag ends in a click; its stage
+  // covers the overlay, so the buttons are its way out.
+  if (e.target.closest("#viewer-mesh")) return;
   if (e.target !== $("viewer-img") && e.target !== $("viewer-video")
       && e.target !== $("viewer-frame")) hideImage();
 });
