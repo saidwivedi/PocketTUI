@@ -170,6 +170,30 @@ function wsFolderLabel(path, home) {
   return baseName(path) || "/";
 }
 
+// A file tab can show its git changes in place of its text: the diff pane's
+// blocks with the same tick and cross (diffRender, 37-git-diff.js). What the
+// Changes key at the end of the tab band says for the group's front tab, from
+// the tab, its badge (wsMarkFor) and whether this computer answers the diff
+// routes at all. Shown for a text tab whose file is marked, and kept while the
+// tab is showing changes even once the mark has cleared, so there is always a
+// way back to the editor. Off while the editor holds unsaved edits: the hunks
+// are read from the disk, which does not have them yet.
+function wsModeKeyState(tab, mark, git) {
+  const text = !!tab && (tab.kind === "editor" || tab.kind === "reader");
+  const changes = text && tab.mode === "changes";
+  const marked = !!mark && !mark.dir && WS_RANK[mark.kind] !== undefined
+                 && mark.kind !== "del";
+  const show = text && (changes || (git && marked));
+  const disabled = show && !changes && !!tab.dirty;
+  return { show, pressed: changes, disabled,
+           title: disabled ? "Save to see changes"
+                : changes ? "Back to the file" : "Show the changes" };
+}
+
+// The actions that write the working tree rather than only the index: after
+// one of these the file on disk is not what an open editor was read from.
+const WS_DISK_ACTIONS = new Set(["revert_hunk", "apply_hunk", "discard_file"]);
+
 function makeWorkspace(ctx) {
   const root = ctx.root;
   const wrap = root.querySelector(".files-wrap");
@@ -366,6 +390,11 @@ function makeWorkspace(ctx) {
       expand(node);
       return;
     }
+    // The file's letter opens its changes; the rest of the row its text.
+    if (node.type === "file" && ev.target.closest(".ws-badge.ws-changes-link")) {
+      openChanges(node.path);
+      return;
+    }
     if (node.type === "file") open(node.path);
     else if (node.entry) ctx.openFileActions(Object.assign({}, node.entry, { dir: parentOf(node.path) }));
   });
@@ -445,9 +474,19 @@ function makeWorkspace(ctx) {
   function makeGroup() {
     const rowEl = el("div", { class: "ws-tab-row", role: "tablist" });
     const bodyEl = el("div", { class: "ws-body" });
+    // The Changes key, after the strip at the band's right end, acting on
+    // whichever tab is in front of this group (wsModeKeyState).
+    const modeKey = el("button", { type: "button", class: "ws-mode-key",
+                                   "aria-pressed": "false" },
+      svgIcon("i-m-branch"), el("span", {}, "Changes"));
+    modeKey.hidden = true;
     const g = { el: el("div", { class: "ws-group", "data-group": String(groups.length) },
-                    el("div", { class: "ws-tabs" }, rowEl), bodyEl),
-                rowEl, bodyEl, tabs: [], active: null };
+                    el("div", { class: "ws-tabs" }, rowEl, modeKey), bodyEl),
+                rowEl, bodyEl, modeKey, tabs: [], active: null };
+    modeKey.addEventListener("click", () => {
+      const t = g.active;
+      if (t) setMode(t, t.mode === "changes" ? "edit" : "changes");
+    });
     groupsEl.appendChild(g.el);
     groups.push(g);
     return g;
@@ -492,9 +531,12 @@ function makeWorkspace(ctx) {
   }
 
   function addTab(g, props) {
+    // `mode` is "edit" or "changes" (setMode); `changes` the view of the
+    // latter, made the first time it is asked for.
     const tab = Object.assign({ id: ++tabSeq, path: "", kind: "editor", title: "",
                                 dirty: false, pinned: false, chip: null, body: null,
-                                rec: null, mesh: null, closed: false, group: g }, props);
+                                rec: null, mesh: null, closed: false, group: g,
+                                mode: "edit", changes: null }, props);
     tab.body = el("div", { class: "ws-pane ws-" + tab.kind });
     makeChip(tab);
     g.tabs.push(tab);
@@ -520,6 +562,7 @@ function makeWorkspace(ctx) {
     if (tab.rec) tab.rec.view.requestMeasure();
     if (tab.mesh) tab.mesh.resize();
     select(tab.pinned ? ctx.path() : tab.path);
+    syncModeKeys();
     // A strip wider than the group can leave the tab being switched to off its
     // end; scrolled to only then.
     requestAnimationFrame(() => {
@@ -583,7 +626,7 @@ function makeWorkspace(ctx) {
       if (tab.closed) return true;
       tab.rec = edMakeView({
         host: tab.body, path, content, readOnly,
-        onDirty: (rec, dirty) => { tab.dirty = dirty; paintChip(tab); },
+        onDirty: (rec, dirty) => { tab.dirty = dirty; paintChip(tab); syncModeKeys(); },
         onSave: () => save(tab),
         onQuit: (rec, bang) => close(tab, bang),
       });
@@ -994,6 +1037,10 @@ function makeWorkspace(ctx) {
   // up to a minute. A write made here asks at once.
 
   let marks = new Map();
+  // The repository the marks are about, as status named it, and its rows by
+  // repo-relative path: what a tab showing changes asks the diff routes with.
+  let gitRoot = "";
+  let gitFiles = new Map();
   let pollTimer = null, pollBusy = false, pollAgain = false;
   let pollEvery = DIFF_POLL_MS;
 
@@ -1024,6 +1071,8 @@ function makeWorkspace(ctx) {
       const data = r.ok ? await r.json().catch(() => null) : null;
       if (data && treeRoot && treeRoot.path === at) {
         marks = data.root ? wsAggregate(data.files, data.root) : new Map();
+        gitRoot = String(data.root || "").replace(/\/+$/, "");
+        gitFiles = new Map((data.files || []).map((f) => [f.path, f]));
         const ms = Number(data.elapsed_ms) || 0;
         pollEvery = Math.min(DIFF_POLL_MAX_MS,
                              Math.max(DIFF_POLL_MS, Math.round(ms * DIFF_POLL_FACTOR)));
@@ -1060,6 +1109,16 @@ function makeWorkspace(ctx) {
     const m = markOf(node.path, isDir);
     node.badgeEl.className = "ws-badge" + (m ? " " + m.kind + (isDir ? " dot" : "") : "");
     node.badgeEl.textContent = m && !isDir ? m.text : "";
+    badgeTitle(node.badgeEl, node.path, m, isDir);
+  }
+
+  // A file's letter is also the way to its changes (openChanges), and says so
+  // under the pointer.
+  function badgeTitle(b, path, m, isDir) {
+    const live = !!m && !isDir && changesFor(path);
+    b.classList.toggle("ws-changes-link", live);
+    if (live) b.title = "Show the changes";
+    else b.removeAttribute("title");
   }
 
   // The listing's rows and tiles, by the name fileRow and fileTile stamp on
@@ -1078,13 +1137,194 @@ function makeWorkspace(ctx) {
       }
       b.className = "git-badge " + m.kind + (isDir ? " dot" : "");
       b.textContent = isDir ? "" : m.text;
+      badgeTitle(b, joinPath(dir, row.dataset.name), m, isDir);
     }
   }
 
   function paintAll() {
     for (const n of nodes.values()) paintNode(n);
     paintListing();
+    syncModeKeys();
+    // A tab showing changes is a view of the repo the poll has just read
+    // again; its own answer is compared before anything is redrawn.
+    for (const g of groups) {
+      if (g.active && g.active.mode === "changes") loadChanges(g.active);
+    }
   }
+
+  // ---- a tab's changes -------------------------------------------------------
+  // The editor and the reader can swap their text for the file's git changes:
+  // the diff pane's blocks, drawn by its renderer with its tick, cross and
+  // unstage (37-git-diff.js), the working tree's half under Changes and the
+  // index's under Staged. The Changes key at the end of the band toggles it
+  // for the tab in front, and a file's badge in the tree or the listing opens
+  // the file straight into it. Asked of the diff routes by the repository the
+  // badges came from and the file's path inside it, so no session is involved.
+
+  // Whether the file at `path` can show its changes here: a text file (a page
+  // opens as its source for this) inside the repository the marks are about,
+  // on a computer that answers the diff routes.
+  function changesFor(path) {
+    const kind = wsKindOf(path);
+    return (kind === "editor" || kind === "reader" || kind === "html")
+           && !!relPath(path) && hasCapStrict("git");
+  }
+
+  // The path git knows `path` by, or "" for one outside the repository.
+  function relPath(path) {
+    return gitRoot && path.startsWith(gitRoot + "/") ? path.slice(gitRoot.length + 1) : "";
+  }
+
+  function syncModeKeys() {
+    for (const g of groups) {
+      const t = g.active;
+      const text = !!t && (t.kind === "editor" || t.kind === "reader");
+      const s = wsModeKeyState(t, text ? markOf(t.path, false) : null,
+                               text && !!relPath(t.path) && hasCapStrict("git"));
+      const key = g.modeKey;
+      key.hidden = !s.show;
+      key.disabled = s.disabled;
+      key.title = s.title;
+      key.setAttribute("aria-pressed", s.pressed ? "true" : "false");
+    }
+  }
+
+  // The tab's text or its changes. Changes are refused while the editor holds
+  // edits the disk has not seen; back to the text, the editor is told its box
+  // is back so it measures again.
+  function setMode(tab, mode) {
+    if (tab.closed || tab.mode === mode) { syncModeKeys(); return; }
+    if (mode === "changes" && tab.dirty) { toast("Save to see changes"); return; }
+    tab.mode = mode;
+    tab.body.classList.toggle("ws-show-changes", mode === "changes");
+    if (mode === "changes") {
+      if (!tab.changes) makeChanges(tab);
+      tab.changes.key = "";
+      loadChanges(tab);
+    } else if (tab.rec) {
+      tab.rec.view.requestMeasure();
+    }
+    syncModeKeys();
+  }
+
+  // The view: the blocks in a scroller, and the diff pane's toast over its
+  // foot for Undo and for git's refusals.
+  function makeChanges(tab) {
+    const body = el("div", { class: "ws-diff-body" });
+    const toastEl = el("div", { class: "ws-diff-toast", role: "status" });
+    tab.changes = { body, toastEl, key: "", seq: 0 };
+    tab.body.appendChild(el("div", { class: "ws-changes" }, body, toastEl));
+  }
+
+  // A badge's click: the file's tab, made if it is not open, in front and
+  // showing its changes.
+  async function openChanges(path) {
+    const tab = byPath.get(path)
+                || await open(path, wsKindOf(path) === "html" ? "editor" : undefined);
+    if (!tab || tab.closed) return;
+    activate(tab);
+    if (tab.kind === "editor" || tab.kind === "reader") setMode(tab, "changes");
+  }
+
+  // Both halves of the file's diff, drawn when either differs from what is on
+  // screen. The number guards against an older answer landing last.
+  async function loadChanges(tab) {
+    const c = tab.changes;
+    if (!c || tab.closed || tab.mode !== "changes") return;
+    const root = gitRoot, rel = relPath(tab.path);
+    if (!rel || !hasCapStrict("git")) {
+      if (c.key !== "none") {
+        c.key = "none";
+        c.body.textContent = "";
+        c.body.appendChild(diffNote("No changes in " + baseName(tab.path)));
+      }
+      return;
+    }
+    const seq = ++c.seq;
+    const ask = (scope) => diffFetchJSON("api/git/diff?root=" + encodeURIComponent(root)
+      + "&path=" + encodeURIComponent(rel) + "&scope=" + scope);
+    let un, st;
+    try {
+      [un, st] = await Promise.all([ask("unstaged"), ask("staged")]);
+    } catch (e) {
+      dbg("ws changes failed:", e);
+      return;
+    }
+    if (seq !== c.seq || tab.closed || tab.mode !== "changes" || !un || !st) return;
+    const key = root + "\n" + un.body + "\n" + st.body;
+    if (key === c.key) return;
+    c.key = key;
+    drawChanges(tab, root, rel, un.data, st.data);
+  }
+
+  // The working tree's half, then the index's, each under the diff pane's
+  // eyebrow with the file's own actions beside it, and a half with nothing in
+  // it left out. With neither, the pane's empty state, and the key stays up to
+  // go back to the text.
+  function drawChanges(tab, root, rel, un, st) {
+    const c = tab.changes;
+    const keep = c.body.scrollTop;
+    c.body.textContent = "";
+    // Status lists every changed tracked file by name; one it does not list is
+    // inside a folder git has never seen, which is untracked as a whole.
+    const f = gitFiles.get(rel) || { path: rel, status: "??" };
+    const h = {
+      apply: (payload) => applyChange(tab, root, payload),
+      toast: (text, label, run) => diffToastIn(c.toastEl, text, label, run),
+    };
+    let any = false;
+    for (const [scope, label, data] of [["unstaged", "Changes", un], ["staged", "Staged", st]]) {
+      if (!data.diff && !data.binary && !data.error) continue;
+      any = true;
+      const lines = el("div", { class: "ws-diff-lines" });
+      diffRender(lines, data, scope, rel, h);
+      c.body.appendChild(el("div", { class: "diff-section" },
+        el("div", { class: "diff-eyebrow" }, el("span", {}, label),
+           diffFileActs(scope, f, h)),
+        lines));
+    }
+    if (!any) c.body.appendChild(diffNote("No changes in " + baseName(tab.path)));
+    c.body.scrollTop = keep;
+  }
+
+  // One action from the view. Whatever git said, the view, the badges and,
+  // where the working tree was written, the text behind the view are now
+  // behind the repo: the view asks again, the poll runs at once, and an editor
+  // with nothing unsaved is read from the disk again, as a reader is redrawn,
+  // so the key back shows the file as it now is.
+  async function applyChange(tab, root, payload) {
+    const c = tab.changes;
+    try {
+      return await diffApplyTo(root, payload, (text) => diffToastIn(c.toastEl, text));
+    } finally {
+      c.key = "";
+      kickStatus();
+      loadChanges(tab);
+      if (WS_DISK_ACTIONS.has(payload.action) && !tab.closed) {
+        if (tab.rec && !tab.dirty) edViewReload(tab.rec);
+        else if (tab.kind === "reader") refillReader(tab);
+      }
+    }
+  }
+
+  async function refillReader(tab) {
+    const old = tab.body.querySelector(":scope > .ws-scroll");
+    if (old) old.remove();
+    await fillTab(tab, {}).catch((e) => dbg("ws reader refill failed:", e));
+  }
+
+  // A badge in the listing opens the changes rather than the row's own open;
+  // on capture, so the row's click never sees it. Any other press on the row
+  // is the row's.
+  ctx.q("files-list").addEventListener("click", (ev) => {
+    if (!on) return;
+    const b = ev.target.closest(".git-badge.ws-changes-link");
+    const row = b && b.closest("[data-name]");
+    if (!row) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    openChanges(joinPath(ctx.path(), row.dataset.name));
+  }, true);
 
   // ---- on and off ------------------------------------------------------------
 

@@ -1384,6 +1384,25 @@
   "show": true
  },
  {
+  "id": "files.workspace-changes",
+  "group": "Files and code",
+  "title": "A file's changes in its tab",
+  "outcome": "Flip a changed file's tab from its text to its git changes, the same blocks the diff pane shows, and stage or revert each one with its tick and cross; flip back to keep editing.",
+  "where": "Expanded file browser > a changed file's tab > Changes, or click the file's letter in the tree or the listing",
+  "surface": "wide",
+  "gates": [],
+  "needs": "git",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/47-workspace.js:173-195",
+   "src/mobile/js/47-workspace.js:1155-1327",
+   "src/mobile/js/37-git-diff.js:201-421"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
   "id": "git.pane",
   "group": "Files and code",
   "title": "Review your code changes",
