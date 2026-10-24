@@ -3313,3 +3313,123 @@ console.log(JSON.stringify({{ before, calls, ws: ws === null, docked: filesDocke
         assert out["ws"] and out["docked"] is False
     else:
         assert out["calls"] == ["ask"] and not out["ws"] and out["docked"] is True
+
+
+# ---- 3D viewer (48-mesh-viewer.js) ------------------------------------------
+
+def test_meshes_open_in_the_viewer(doc):
+    """Meshes and point clouds open from the explorer in the viewer, drawn into
+    a host of their own beside the image, the video and the PDF frame. The
+    extension table lives in 08-links.js so the viewer's kind and the
+    explorer's open can read it; it is not in FILES_MEDIA_RE, which also
+    decides grid thumbnails."""
+    at = build_mobile.JS_FRAGMENTS.index
+    assert at("46-desktop-browser.js") < at("48-mesh-viewer.js") < at("27-boot.js")
+    assert ("const MESH_EXT_RE = /\\.(?:ply|obj|stl|glb|gltf|pcd|xyz|pts|off|npy|npz)$/i;"
+            in doc)
+    assert doc.index("const MESH_EXT_RE") < doc.index("\nfunction viewerKind(")
+    assert 'if (MESH_EXT_RE.test(path)) return "mesh";' in _js_chunk(doc, "function viewerKind(")
+    assert '<div id="viewer-mesh" class="viewer-mesh"></div>' in doc
+    assert 'id="i-mesh"' in doc
+    assert "mesh" not in _js_chunk(doc, "const FILES_MEDIA_RE")
+    assert ("if (FILES_MEDIA_RE.test(e.name) || MESH_EXT_RE.test(e.name)) {"
+            in _js_chunk(doc, "function openEntry("))
+    # Closing tears the model down, and a drag on it is not a dismiss.
+    assert "  dropMesh();\n" in _js_chunk(doc, "function hideImage(")
+    assert 'if (e.target.closest("#viewer-mesh")) return;' in doc
+    # The bundle comes in on first use, never at boot.
+    assert 's.src = "vendor/three.js?v=" + buildVersion();' in _js_chunk(doc, "function ensureThree(")
+    assert 'src="vendor/three.js' not in doc
+
+
+def test_the_three_vendor_bundle():
+    f = REPO / "vendor" / "three.js"
+    body = f.read_text(encoding="utf-8")
+    assert body.startswith("/*! PocketTUI three.js vendor bundle")
+    assert "three 0.186.1" in body[:1000]
+    assert f.stat().st_size < 1024 * 1024
+    assert "var THREE3D=" in body
+    assert "vendor/three.js" in (REPO / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+
+
+def _npy(descr, shape, payload, version=1):
+    import struct
+    dims = f"{shape[0]}," if len(shape) == 1 else ", ".join(str(n) for n in shape)
+    head = "{'descr': '%s', 'fortran_order': False, 'shape': (%s), }" % (descr, dims)
+    pre = 10 if version == 1 else 12
+    head += " " * (-(pre + len(head) + 1) % 64) + "\n"
+    size = struct.pack("<H" if version == 1 else "<I", len(head))
+    return b"\x93NUMPY" + bytes([version, 0]) + size + head.encode() + payload
+
+
+def test_the_mesh_parsers(doc, tmp_path):
+    """The formats three has no loader for, parsed by hand: OFF, .npy, .npz
+    (a zip of .npy read through its central directory), the .pts columns, the
+    Gaussian-splat PLY refusal, and how a sibling file named inside a model
+    resolves against the model's folder."""
+    import base64
+    import io
+    import struct
+    import zipfile
+
+    f4 = _npy("<f4", (2, 3), struct.pack("<6f", 1, 2, 3, 4, 5, 6))
+    f8 = _npy("<f8", (2, 3, 3), struct.pack("<18d", *range(18)), version=2)
+    u2 = _npy("<u2", (2, 3), b"\0" * 12)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("labels.npy", _npy("<i8", (4,), struct.pack("<4q", 1, 2, 3, 4)))
+        z.writestr("points.npy", f4)
+        # numpy's own way of writing an entry: zip64 placeholders up front.
+        with z.open("seq.npy", "w", force_zip64=True) as fh:
+            fh.write(f8)
+    splat = (b"ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\n"
+             b"property float f_dc_0\nproperty float scale_0\nend_header\n\x00\x01")
+    plain = b"ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nend_header\n0\n"
+    b64 = {k: base64.b64encode(v).decode() for k, v in {
+        "f4": f4, "f8": f8, "u2": u2, "npz": buf.getvalue(),
+        "splat": splat, "plain": plain}.items()}
+
+    names = ["function meshSibling(", "function meshIsSplatPly(", "function meshPtsToXyz(",
+             "function meshParseOff(", "function meshParseNpyHeader(", "function meshParseNpy(",
+             "function meshNpyCloud(", "function meshZipEntries(", "async function meshReadNpz("]
+    src = "\n".join(_js_chunk(doc, n) for n in names)
+    out = _node_json(tmp_path, "mesh.mjs", src + """
+const b = (s) => { const u = Buffer.from(s, "base64"); return u.buffer.slice(u.byteOffset, u.byteOffset + u.length); };
+const bufs = """ + json.dumps(b64) + r""";
+const r = {};
+const off = meshParseOff("COFF\n# a quad\n5 1 0\n0 0 0 255 0 0\n1 0 0 0 255 0\n" +
+                         "1 1 0 0 0 255\n0 1 0 255 255 255\n2 2 2 0 0 0\n4 0 1 2 3\n");
+r.off = [off.positions.length, Array.from(off.indices), Array.from(off.colors.slice(0, 6)), off.faces];
+r.offPoints = meshParseOff("OFF 2 0 0\n0 0 0\n1 2 3\n").indices.length;
+r.hdr = meshParseNpyHeader(new Uint8Array(b(bufs.f4)));
+const a4 = meshParseNpy(b(bufs.f4));
+r.f4 = [a4.shape, Array.from(a4.data)];
+const a8 = meshParseNpy(b(bufs.f8));
+r.f8 = [a8.shape, Array.from(a8.data.slice(0, 4))];
+const c8 = meshNpyCloud(a8);
+r.cloud8 = [c8.frames, c8.count];
+try { meshParseNpy(b(bufs.u2)); r.u2 = "parsed"; } catch (e) { r.u2 = !!e.dtype; }
+const z = await meshReadNpz(b(bufs.npz));
+r.npz = z.map(e => [e.name, e.arr.shape, !!meshNpyCloud(e.arr)]);
+r.npzSeq = Array.from(z[2].arr.data.slice(15, 18));
+r.pts = meshPtsToXyz("3\n1 2 3 9 10 20 30\n4 5 6 7\n7 8 9\n");
+r.splat = [meshIsSplatPly(new Uint8Array(b(bufs.splat))), meshIsSplatPly(new Uint8Array(b(bufs.plain)))];
+r.sib = [meshSibling("/w/m/a.obj", "a.mtl"), meshSibling("/w/m/a.obj", "tex\\b.png"),
+         meshSibling("/w/m/a.obj", "../t/./c.jpg"), meshSibling("/w/m/a.obj", "C:\\x\\d.png"),
+         meshSibling("/w/m/a.obj", "/abs/e.png")];
+console.log(JSON.stringify(r));
+""")
+    assert out["off"] == [15, [0, 1, 2, 0, 2, 3], [1, 0, 0, 0, 1, 0], 1]
+    assert out["offPoints"] == 0
+    assert out["hdr"]["descr"] == "<f4" and out["hdr"]["shape"] == [2, 3]
+    assert out["hdr"]["offset"] % 64 == 0 and out["hdr"]["fortran"] is False
+    assert out["f4"] == [[2, 3], [1, 2, 3, 4, 5, 6]]
+    assert out["f8"] == [[2, 3, 3], [0, 1, 2, 3]]
+    assert out["cloud8"] == [2, 3]
+    assert out["u2"] is True
+    assert out["npz"] == [["labels", [4], False], ["points", [2, 3], True],
+                          ["seq", [2, 3, 3], True]]
+    assert out["npzSeq"] == [15, 16, 17]
+    assert out["pts"] == "1 2 3 10 20 30\n4 5 6\n7 8 9"
+    assert out["splat"] == [True, False]
+    assert out["sib"] == ["/w/m/a.mtl", "/w/m/tex/b.png", "/w/t/c.jpg", "/w/m/d.png", "/abs/e.png"]
