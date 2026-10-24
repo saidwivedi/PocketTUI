@@ -849,13 +849,26 @@ const cfg = {
     return Number.isFinite(v) && v > 0 ? v : 0;
   },
   set wsTreeW(v) { localStorage.setItem("pockettui_ws_tree_w", String(v)); },
-  // The top group's share of the height once the workspace's files are split
-  // in two (47-workspace.js); half until the seam between them is dragged.
+  // The left column's share of the width once the workspace's files are in
+  // two columns (47-workspace.js); half until the seam between them is dragged.
   get wsSplit() {
     const v = parseFloat(localStorage.getItem("pockettui_ws_split"));
     return Number.isFinite(v) && v > 0 && v < 1 ? v : 0.5;
   },
   set wsSplit(v) { localStorage.setItem("pockettui_ws_split", String(v)); },
+  // A column's top group's share of its height once the column holds two
+  // groups (47-workspace.js), the left column's and the right one's; half
+  // until that column's seam is dragged.
+  get wsSplitL() {
+    const v = parseFloat(localStorage.getItem("pockettui_ws_split_l"));
+    return Number.isFinite(v) && v > 0 && v < 1 ? v : 0.5;
+  },
+  set wsSplitL(v) { localStorage.setItem("pockettui_ws_split_l", String(v)); },
+  get wsSplitR() {
+    const v = parseFloat(localStorage.getItem("pockettui_ws_split_r"));
+    return Number.isFinite(v) && v > 0 && v < 1 ? v : 0.5;
+  },
+  set wsSplitR(v) { localStorage.setItem("pockettui_ws_split_r", String(v)); },
   // Whether a changed file opened in a workspace editor tab shows its change
   // marks: the last way the key on a tab was set, on until it is first set off.
   get wsInlineDiff() { return localStorage.getItem("pockettui_ws_inline_diff") !== "0"; },

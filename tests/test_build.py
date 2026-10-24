@@ -3369,21 +3369,30 @@ console.log(JSON.stringify(order));
 
 def test_a_dragged_workspace_tab_lands_by_band_slot_or_body_half(doc, tmp_path):
     """Over a tab band the slot is before the first chip whose middle is right
-    of the pointer; over the body of a lone group its right third splits the
-    files side by side, the rest of the lower half splits them one over the
-    other, and the upper left is that group; with two groups (either way) a
-    body is its group; outside both, nothing."""
+    of the pointer. Over a body, the right third of its column adds a column
+    while there is one, the lower half of its column adds a group under it
+    while that column holds one group, and anything else moves the tab into
+    that group; in a full 2x2 every body drop moves. Outside, nothing."""
     chunk = _js_chunk(doc, "function wsDropTarget(")
     out = _node_json(tmp_path, "drop.mjs", chunk + """
 const R = (left, top, right, bottom) => ({ left, top, right, bottom });
-const one = { area: R(0, 0, 800, 600), groups: [
-  { row: R(0, 0, 800, 28), body: R(0, 28, 800, 600), mids: [40, 120, 200] }] };
-const two = { area: R(0, 0, 800, 600), groups: [
-  { row: R(0, 0, 800, 28), body: R(0, 28, 800, 296), mids: [40, 120] },
-  { row: R(0, 303, 800, 331), body: R(0, 331, 800, 600), mids: [50] }] };
-const side = { area: R(0, 0, 800, 600), groups: [
-  { row: R(0, 0, 396, 28), body: R(0, 28, 396, 600), mids: [40, 120] },
-  { row: R(403, 0, 800, 28), body: R(403, 28, 800, 600), mids: [450] }] };
+const L = R(0, 0, 396, 600), Rt = R(403, 0, 800, 600), W = R(0, 0, 800, 600);
+const one = { cols: 1, groups: [
+  { row: R(0, 0, 800, 28), body: R(0, 28, 800, 600), col: W, stack: 1, mids: [40, 120, 200] }] };
+// One column of two groups.
+const two = { cols: 1, groups: [
+  { row: R(0, 0, 800, 28), body: R(0, 28, 800, 296), col: W, stack: 2, mids: [40, 120] },
+  { row: R(0, 303, 800, 331), body: R(0, 331, 800, 600), col: W, stack: 2, mids: [50] }] };
+// Two columns of one group each.
+const side = { cols: 2, groups: [
+  { row: R(0, 0, 396, 28), body: R(0, 28, 396, 600), col: L, stack: 1, mids: [40, 120] },
+  { row: R(403, 0, 800, 28), body: R(403, 28, 800, 600), col: Rt, stack: 1, mids: [450] }] };
+// The full 2x2.
+const full = { cols: 2, groups: [
+  { row: R(0, 0, 396, 28), body: R(0, 28, 396, 296), col: L, stack: 2, mids: [40] },
+  { row: R(0, 303, 396, 331), body: R(0, 331, 396, 600), col: L, stack: 2, mids: [40] },
+  { row: R(403, 0, 800, 28), body: R(403, 28, 800, 296), col: Rt, stack: 2, mids: [450] },
+  { row: R(403, 303, 800, 331), body: R(403, 331, 800, 600), col: Rt, stack: 2, mids: [450] }] };
 const at = (x, y, geo) => wsDropTarget({ x, y }, geo);
 console.log(JSON.stringify({
   first: at(10, 10, one), between: at(100, 10, one), onMid: at(120, 10, one),
@@ -3391,8 +3400,14 @@ console.log(JSON.stringify({
   halfLine: at(400, 300, one), topBody: at(400, 200, two), lowBody: at(400, 450, two),
   lowBand: at(60, 310, two), seam: at(400, 299, two), outside: at(900, 10, one),
   rightTop: at(700, 100, one), rightLow: at(700, 500, one), thirdLine: at(534, 100, one),
-  leftOfThird: at(532, 100, one), sideLeft: at(700, 100, side), sideRight: at(420, 100, side),
-  sideBand: at(500, 10, side), sideSeam: at(398, 100, side),
+  leftOfThird: at(532, 100, one),
+  twoRightTop: at(700, 100, two), twoRightLow: at(700, 500, two),
+  sideLeftLow: at(200, 500, side), sideRightLow: at(700, 500, side),
+  sideLeftRight: at(380, 100, side), sideRightRight: at(790, 100, side),
+  sideLeftUp: at(200, 100, side), sideBand: at(500, 10, side), sideSeam: at(398, 100, side),
+  full: [[200, 100], [380, 280], [200, 500], [380, 590], [500, 100], [790, 290],
+         [500, 500], [790, 590]].map(([x, y]) => at(x, y, full)),
+  fullBand: at(500, 310, full),
 }));
 """)
     assert out["first"] == {"kind": "insert", "group": 0, "index": 0}
@@ -3400,21 +3415,33 @@ console.log(JSON.stringify({
     # A chip's middle itself is still before it: the slot moves once past it.
     assert out["onMid"] == {"kind": "insert", "group": 0, "index": 1}
     assert out["end"] == {"kind": "insert", "group": 0, "index": 3}
+    # A lone group: both bands, as before.
     assert out["upper"] == {"kind": "append", "group": 0}
-    assert out["lower"] == {"kind": "split", "dir": "down"}
-    assert out["halfLine"] == {"kind": "split", "dir": "down"}
+    assert out["lower"] == {"kind": "split", "dir": "down", "group": 0}
+    assert out["halfLine"] == {"kind": "split", "dir": "down", "group": 0}
     # The right third is beside, top to bottom, the lower right corner too.
-    assert out["rightTop"] == out["rightLow"] == {"kind": "split", "dir": "side"}
-    assert out["thirdLine"] == {"kind": "split", "dir": "side"}
+    assert out["rightTop"] == out["rightLow"] == {"kind": "split", "dir": "side", "group": 0}
+    assert out["thirdLine"] == {"kind": "split", "dir": "side", "group": 0}
     assert out["leftOfThird"] == {"kind": "append", "group": 0}
-    # Side by side, a body is its group and nothing splits again.
-    assert out["sideLeft"] == {"kind": "append", "group": 1}
-    assert out["sideRight"] == {"kind": "append", "group": 1}
-    assert out["sideBand"] == {"kind": "insert", "group": 1, "index": 1}
-    assert out["sideSeam"] is None
+    # One column of two: the right band of either group adds a column, the
+    # lower halves move.
+    assert out["twoRightTop"] == {"kind": "split", "dir": "side", "group": 0}
+    assert out["twoRightLow"] == {"kind": "split", "dir": "side", "group": 1}
     assert out["topBody"] == {"kind": "append", "group": 0}
     assert out["lowBody"] == {"kind": "append", "group": 1}
     assert out["lowBand"] == {"kind": "insert", "group": 1, "index": 1}
+    # Two columns of one: the lower half adds a row in that column, the right
+    # bands move.
+    assert out["sideLeftLow"] == {"kind": "split", "dir": "down", "group": 0}
+    assert out["sideRightLow"] == {"kind": "split", "dir": "down", "group": 1}
+    assert out["sideLeftRight"] == {"kind": "append", "group": 0}
+    assert out["sideRightRight"] == {"kind": "append", "group": 1}
+    assert out["sideLeftUp"] == {"kind": "append", "group": 0}
+    assert out["sideBand"] == {"kind": "insert", "group": 1, "index": 1}
+    assert out["sideSeam"] is None
+    # The full 2x2: every body drop moves into the group under the pointer.
+    assert out["full"] == [{"kind": "append", "group": g} for g in (0, 0, 1, 1, 2, 2, 3, 3)]
+    assert out["fullBand"] == {"kind": "insert", "group": 3, "index": 1}
     assert out["seam"] is None and out["outside"] is None
 
 
@@ -3466,16 +3493,44 @@ console.log(JSON.stringify(log));
     assert out["firstEmptied"]
 
 
+def test_workspace_groups_collapse_one_at_a_time(doc, tmp_path):
+    """wsDropGroup takes an emptied group out of the grid: its column keeps the
+    other group, a column left with none goes, a group holding tabs is never
+    taken, and the only group stays, empty."""
+    chunk = _js_chunk(doc, "function wsDropGroup(")
+    out = _node_json(tmp_path, "collapse.mjs", chunk + """
+const cols = [{ groups: [] }, { groups: [] }];
+const mk = (c, name, tabs) => { const g = { name, tabs, col: c }; c.groups.push(g); return g; };
+const a = mk(cols[0], "a", [1]), b = mk(cols[0], "b", [1]);
+const c = mk(cols[1], "c", [1]), d = mk(cols[1], "d", [1]);
+const shape = () => cols.map((x) => x.groups.map((g) => g.name).join("")).join("|");
+const log = [];
+log.push([wsDropGroup(cols, a), shape()]);       // still has a tab
+a.tabs = []; log.push([wsDropGroup(cols, a), shape()]);
+b.tabs = []; log.push([wsDropGroup(cols, b), shape()]);
+c.tabs = []; log.push([wsDropGroup(cols, c), shape()]);
+d.tabs = []; log.push([wsDropGroup(cols, d), shape()]);
+console.log(JSON.stringify(log));
+""")
+    assert out == [[None, "ab|cd"], ["group", "b|cd"], ["col", "cd"],
+                   ["group", "d"], [None, "d"]]
+
+
 def test_the_workspace_split_is_remembered_and_tree_folders_take_row_drops(doc):
-    """The top group's share is cfg.wsSplit (half by default), written only by
-    the markup's own pane as the tree's width is; a tree folder is wired as a
-    move target through the pane's own wireMoveTarget; the second group goes
-    when a close or a move leaves it empty."""
+    """The columns' share is cfg.wsSplit and each column's own height share
+    cfg.wsSplitL / wsSplitR (half by default), written only by the markup's
+    own pane as the tree's width is; a tree folder is wired as a move target
+    through the pane's own wireMoveTarget; a group goes when a close or a
+    move leaves it empty."""
     assert 'localStorage.getItem("pockettui_ws_split")' in doc
     assert 'set wsSplit(v) { localStorage.setItem("pockettui_ws_split", String(v)); },' in doc
+    assert 'set wsSplitL(v) { localStorage.setItem("pockettui_ws_split_l", String(v)); },' in doc
+    assert 'set wsSplitR(v) { localStorage.setItem("pockettui_ws_split_r", String(v)); },' in doc
     make = _js_chunk(doc, "function makeWorkspace(")
-    assert 'if (ctx.id === "files") cfg.wsSplit = splitShare;' in make
-    assert "if (!splitShare) applySplit(cfg.wsSplit);" in make
+    assert 'if (ctx.id === "files") keep();' in make
+    assert "seamDrag(colSeam, true, groupsEl, applySplit, () => { cfg.wsSplit = splitShare; });" in make
+    assert "if (sideOf(c) === \"l\") cfg.wsSplitL = rowShare.l;" in make
+    assert "if (cols.length > 1 && !splitShare) applySplit(cfg.wsSplit);" in make
     assert "ctx.wireMoveTarget(node.el, path);" in make
     assert "    if (!g.tabs.length) unsplit();\n" in make
     assert "    if (moved.emptied) unsplit();\n" in make
@@ -3840,7 +3895,7 @@ def test_an_expanded_explorer_keeps_the_listing_out_of_view_and_says_how_to_open
     folder, which was confusing; with nothing open it says to pick a file. The
     listing moves into a hidden holder (the same element, so the bar keeps
     driving it) and back after the bar on a collapse; a group with no tabs
-    shows the hint under its band; of two groups whichever empties goes."""
+    shows the hint under its band; whichever group empties goes, unless it is the only one."""
     ws = _js_chunk(doc, "function makeWorkspace(")
     assert "folderTab" not in ws and "pinned" not in ws
     assert 'const hold = el("div", { class: "ws-hold" });\n  hold.hidden = true;' in ws
@@ -3851,8 +3906,8 @@ def test_an_expanded_explorer_keeps_the_listing_out_of_view_and_says_how_to_open
     assert '.ws-group.ws-none .ws-empty { display: flex; }' in doc
     un = ws[ws.index("function unsplit("):]
     un = un[:un.index("\n  }\n")]
-    assert "const i = groups.findIndex((x) => !x.tabs.length);" in un
-    assert "groups.splice(i, 1);" in un
+    assert "const g = groups.find((x) => !x.tabs.length);" in un
+    assert "const went = wsDropGroup(cols, g);" in un
     # A tree folder still takes the listing there, so the crumbs follow it.
     tree = ws[ws.index('treeBody.addEventListener("click"'):]
     assert "ctx.navigate(node.path);" in tree[:tree.index("\n  });\n")]
