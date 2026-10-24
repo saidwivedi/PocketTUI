@@ -3762,6 +3762,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
    hidden a class further: it is worth pressing only while there are two
    (26-side-pane.js). */
 .dock-swap { display: none; }
+/* The expanded explorer's terminal-panel key (26-side-pane.js), hidden a class
+   further still: it is shown only while the workspace is up (.ws-on below). */
+:is(#screen-files, #screen-files-2) .dock-term { display: none; }
 /* The key that opens another pane in the column, and the menu it drops. The wrap
    wears .dock-only with the pane's other controls, so it comes and goes with
    them and is absent from the phone with them; it exists at all because the menu
@@ -3859,6 +3862,36 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-editor.docked .dock-only,
   #screen-reader.docked .dock-only,
   #viewer.docked .dock-only { display: inline-flex; }
+  :is(#screen-files, #screen-files-2).ws-on .dock-term { display: inline-flex; }
+  /* On while the panel is up, in the mode-key idiom the workspace's Changes
+     key and the browser's monitor key wear: the accent over the pressed fill. */
+  :is(#screen-files, #screen-files-2) .files-toolrow .dock-term[aria-pressed="true"] {
+    color: var(--umber);
+    background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
+  }
+  /* "File viewer" / "Normal view" at the bar's left end: the expand key said in
+     words. The head's quiet idiom, no fill: the title's 13px sans in the keys'
+     grey, ink under the pointer. It sits in .files-nav, which grows with the
+     right-hand group in equal shares, so the centred title gives way to an
+     ellipsis before this does (see .files-toolrow). */
+  .files-mode-key {
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    height: var(--m-key-h);
+    margin-left: 2px;
+    padding: 0 8px 0 6px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    font-family: var(--sans);
+    font-size: 13px;
+    white-space: nowrap;
+    color: var(--m-g1);
+    cursor: pointer;
+  }
+  .files-mode-key svg { flex: 0 0 auto; width: 13px; height: 13px; }
+  .files-mode-key:hover { color: var(--ink); }
   /* Living inside #screen-term is what saves the diff pane a visibility rule;
      this pane is a screen of its own, so it says the same thing in a selector:
      it is only on view while the terminal it is docked to is. The plain
@@ -3895,6 +3928,28 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* One class more than the rule that shows it (see GIT DIFF PANE below),
      which comes later in the file and would otherwise win the tie. */
   #screen-term.side-open.side-full > #side-gutter { display: none; }
+  /* The expanded EXPLORER (the browser keeps the rule above) does not cover the
+     terminal: the terminal becomes a full-width panel along the bottom,
+     --ws-term-h tall, with a seam above it to drag (26-side-pane.js). Moving
+     the screen's top and right edges is the whole of it: the grid, the
+     compose strip and the key pill are laid out inside this box and come
+     along, and the one fit that follows is #term-host's ResizeObserver
+     noticing the new box. The pane and the file views seated in its row stop
+     at the seam, whose own variable (--ws-term-seam) is what a drag moves
+     until it lets go, so the terminal is re-fitted once, on release. */
+  #screen-term.side-open.ws-term { top: calc(100% - var(--ws-term-h)); right: 0; }
+  #screen-term.ws-term:not(.ws-term-hidden).active ~ :is(#screen-files, #screen-files-2).docked.active,
+  #screen-term.ws-term:not(.ws-term-hidden).active ~ #screen-editor.docked.active,
+  #screen-term.ws-term:not(.ws-term-hidden).active ~ #screen-reader.docked.active,
+  #screen-term.ws-term:not(.ws-term-hidden).active ~ #viewer.docked.show {
+    bottom: calc(var(--ws-term-seam) + var(--side-gutter));
+    padding-bottom: 0;
+  }
+  /* Put away, the panel keeps its box and only stops being drawn: a box that
+     changed size would be a resize tmux hears about and an agent's whole
+     screen reflowed, twice over for one look at the files. The pane, back at
+     bottom:0, covers where it was. */
+  #screen-term.ws-term.ws-term-hidden { visibility: hidden; }
   /* A full-screen view over the terminal has to cover the pane's seam too,
      and that is fixed at z-index 60. Only here: on a phone these screens have
      nothing beside them to out-stack. */
@@ -5919,13 +5974,16 @@ html.term-open #dbg-panel { opacity: 0.85; }
    the one the markup ships and the copy made beside it (37-git-diff.js) — and
    every rule keyed on the pane names both. .diff-open then says only that one
    of them is up; which one is that pane's own .open, below. */
-:is(#diff-pane, #diff-pane-2), #side-gutter, #side-hsplit { display: none; }
+:is(#diff-pane, #diff-pane-2), #side-gutter, #side-hsplit, #ws-term-seam { display: none; }
 
 @media (min-width: 768px) and (min-height: 500px) {
   /* The slot's width, dragged and remembered (26-side-pane.js), and the seam
      between it and the terminal — the rail's gutter by another name and the
      same 7px, because it is the same seam read from the other side. */
   :root { --side-w: 460px; --side-gutter: 7px; --side-split: 50%; }
+  /* The expanded explorer's terminal panel, until 26-side-pane.js sets both
+     from cfg.wsTermH. */
+  :root { --ws-term-h: 30vh; --ws-term-seam: 30vh; }
 
   /* The split is the terminal screen's right edge moving in. Nothing inside
      the flex column has to know: #term-host, the compose strip and the key bar
@@ -6028,13 +6086,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
                 inset 0 -1px 2px rgba(20, 16, 10, 0.05);
     transition: background 0.18s var(--ease-out);
   }
-  #side-hsplit::before {
+  #side-hsplit::before, #ws-term-seam::before {
     content: "";
     position: absolute;
     left: 0; right: 0;
     top: -5px; bottom: -5px;
   }
-  #side-hsplit::after {
+  #side-hsplit::after, #ws-term-seam::after {
     content: "";
     position: absolute;
     left: 50%; top: 50%;
@@ -6046,6 +6104,31 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   #side-hsplit:hover, #side-hsplit.dragging { background: var(--umber-soft); }
   #side-hsplit:hover::after, #side-hsplit.dragging::after { background: var(--umber); }
+
+  /* The seam over the terminal panel of an expanded explorer (26-side-pane.js):
+     the row seam above at the main area's full width, placed from the bottom
+     by the panel's height. It is a child of #screen-term, so the panel's
+     visibility:hidden puts it away with the panel. */
+  #screen-term.ws-term > #ws-term-seam {
+    display: block;
+    position: fixed;
+    left: calc(var(--sidebar-w) + var(--rail-gutter));
+    right: 0;
+    bottom: var(--ws-term-seam);
+    height: var(--side-gutter);
+    cursor: row-resize;
+    touch-action: none;
+    z-index: 60;
+    -webkit-user-select: none; user-select: none;
+    background: var(--paper-rec);
+    border-top: 1px solid var(--hair);
+    border-bottom: 1px solid var(--hair);
+    box-shadow: inset 0 1px 2px rgba(20, 16, 10, 0.05),
+                inset 0 -1px 2px rgba(20, 16, 10, 0.05);
+    transition: background 0.18s var(--ease-out);
+  }
+  #ws-term-seam:hover, #ws-term-seam.dragging { background: var(--umber-soft); }
+  #ws-term-seam:hover::after, #ws-term-seam.dragging::after { background: var(--umber); }
 
   /* Header: the repo's name, the poll's dot, the way out. The rail's eyebrow
      scale, since the pane is the rail's opposite number. */

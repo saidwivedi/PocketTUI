@@ -219,6 +219,7 @@ function sideDrop(id) {
     sideFull = null;
     cfg.sidePane = null;
     $("screen-term").classList.remove("side-open", "side-full", "side-two");
+    wsTermSync();
   } else {
     sideRemember();
     // The row that left may have been the one holding the width's floor up, so
@@ -304,6 +305,7 @@ function sideSetFull(id, on) {
     sideFull = id;
   } else if (sideFull === id) sideFull = null;
   $("screen-term").classList.toggle("side-full", sideFull !== null);
+  wsTermSync();
   sideLayout();
 }
 
@@ -544,6 +546,144 @@ sideWireBar(document);
       const inst = sideInst[id];
       if (inst && inst.onRowResize) inst.onRowResize();
     }
+  };
+  handle.addEventListener("pointerup", finish);
+  handle.addEventListener("pointercancel", finish);
+})();
+
+// ---- the terminal under an expanded explorer --------------------------------
+// Expanded, the explorer is a workspace, and the terminal it was docked beside
+// is still where the work runs: so instead of disappearing behind the pane it
+// becomes a full-width panel along the bottom of the main area, with a seam to
+// trade height across and a key (and Ctrl+`) to put it away. The browser's
+// expand keeps covering the terminal; only an explorer row does this.
+//
+// The host is an agent's terminal, and every change of the panel's box is a
+// resize tmux passes on and the agent answers by redrawing everything. So the
+// box changes only when the shape really changes — expanding, collapsing, a
+// seam drag let go — and each of those is one fit (the refit debounce, and
+// #term-host's ResizeObserver feeding the same timer). Putting the panel away
+// is not one of them: it is visibility:hidden over the same box (the
+// stylesheet), so showing it again costs nothing either.
+
+// The seam is made here rather than shipped in the markup: it is the panel's,
+// and the panel is this section's. Inside #screen-term so that hiding the
+// panel hides it too.
+$("screen-term").appendChild(el("div", { id: "ws-term-seam", role: "separator",
+  "aria-orientation": "horizontal", "aria-label": "Resize the terminal panel" }));
+
+// The panel's height as last applied: --ws-term-h (the terminal's box) and
+// --ws-term-seam (where the pane stops) are both this outside a drag.
+let wsTermPx = 0;
+
+function applyWsTermH(px) {
+  wsTermPx = px;
+  const root = document.documentElement.style;
+  root.setProperty("--ws-term-h", px + "px");
+  root.setProperty("--ws-term-seam", px + "px");
+}
+
+// Whether the main area is an expanded explorer over a terminal panel, read off
+// the column's one expanded row and nothing else, so every way an expand comes
+// and goes (the key, Escape, a rail switch's restore, a close) lands here
+// through sideSetFull or sideDrop. The refit is for the box that just moved:
+// in, the terminal goes from beside the column to under the whole main area;
+// out, back. A change of hidden alone moves no box and fits nothing.
+function wsTermSync() {
+  const scr = $("screen-term");
+  const on = sideFull !== null && sideType(sideFull) === "files";
+  const was = scr.classList.contains("ws-term");
+  if (on && !was) applyWsTermH(cfg.wsTermH);
+  scr.classList.toggle("ws-term", on);
+  scr.classList.toggle("ws-term-hidden", on && cfg.wsTermHidden);
+  if (on && cfg.wsTermHidden) wsTermBlur();
+  wsTermKeys();
+  if (on !== was) refit(0);
+}
+
+// A hidden terminal must not go on taking keys: typing would land in a shell
+// nobody can see.
+function wsTermBlur() {
+  const a = document.activeElement;
+  if (a && a !== document.body && $("screen-term").contains(a)) a.blur();
+}
+
+// Put away or brought back, remembered for the app. Deliberately no refit: the
+// box is the same box either way.
+function wsTermSetHidden(v) {
+  cfg.wsTermHidden = v;
+  const scr = $("screen-term");
+  scr.classList.toggle("ws-term-hidden", v && scr.classList.contains("ws-term"));
+  if (v) wsTermBlur();
+  else if (term && scr.classList.contains("ws-term")) term.focus();
+  wsTermKeys();
+}
+
+// The key in every explorer bar (the second pane's copy carries its own): a
+// mode key, lit while the panel is up.
+function wsTermKeys() {
+  const shown = !cfg.wsTermHidden;
+  const say = shown ? "Hide the terminal" : "Show the terminal";
+  for (const btn of document.querySelectorAll(".dock-term")) {
+    btn.setAttribute("aria-pressed", shown ? "true" : "false");
+    btn.setAttribute("aria-label", say);
+    btn.title = say + " (Ctrl+`)";
+  }
+}
+
+// A window that changed height may leave a remembered panel past its clamp.
+window.addEventListener("resize", () => {
+  if ($("screen-term").classList.contains("ws-term")) applyWsTermH(cfg.wsTermH);
+});
+
+// Ctrl+` puts the panel away and brings it back, the key an editor's terminal
+// panel answers to. Ctrl and not Cmd on a Mac too: Cmd+` is the system's
+// next-window key and never reaches the page. No browser reserves Ctrl+` on
+// Windows, Linux or macOS (Ctrl+J would have been Chrome's and Edge's
+// downloads on two of them). Matched by the physical key or by the character,
+// so a layout whose backquote sits elsewhere still has it. Claimed only while
+// there is a panel, on capture so xterm does not read it first.
+document.addEventListener("keydown", (e) => {
+  if (!e.ctrlKey || e.altKey || e.metaKey) return;
+  if ((e.code || "") !== "Backquote" && e.key !== "`") return;
+  const scr = $("screen-term");
+  if (!scr.classList.contains("ws-term") || !scr.classList.contains("active")) return;
+  if ($("sheet-scrim").classList.contains("show")) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (!e.repeat) wsTermSetHidden(!cfg.wsTermHidden);
+}, true);
+
+// Dragging the seam, sideRowResize's recipe on the panel. Only the seam's
+// variable follows the pointer: the pane's bottom edge moves with it and the
+// terminal's box does not, so nothing is re-fitted mid-drag. On release the
+// terminal takes the height in one move, one fit, and the height is kept.
+// Release-only rather than a throttled live resize because each fit is a tmux
+// resize an agent redraws its whole screen for.
+(function wsTermResize() {
+  const handle = $("ws-term-seam");
+  let dragging = false, startY = 0, startH = 0, h = 0;
+  handle.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    startY = e.clientY;
+    startH = h = wsTermPx;
+    handle.classList.add("dragging");
+    handle.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    h = wsTermClamp(startH + startY - e.clientY, window.innerHeight);
+    document.documentElement.style.setProperty("--ws-term-seam", h + "px");
+  });
+  const finish = () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove("dragging");
+    if (h === wsTermPx) return;
+    applyWsTermH(h);
+    cfg.wsTermH = h;
+    refit(0);
   };
   handle.addEventListener("pointerup", finish);
   handle.addEventListener("pointercancel", finish);
