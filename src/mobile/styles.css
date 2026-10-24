@@ -3870,12 +3870,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
     background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
   }
   /* "File viewer" / "Normal view" at the bar's left end: the expand key said in
-     words, and the one key in this bar drawn as a filled accent pill (the
-     app's primary-button recipe, umber under paper): it is the way into the
-     workspace, which nobody would find behind the small expand glyph alone
-     (founder, 2026-10-24). It sits in .files-nav, which grows with the
-     right-hand group in equal shares, so the centred title gives way to an
-     ellipsis before this does (see .files-toolrow). */
+     words, which is what makes the way into the workspace findable when the
+     small expand glyph alone was not (founder, 2026-10-24). It is a quiet
+     accent pill in both states, the accent over a soft tint; the full fill
+     was tried and sat too loud at the head of the pane (founder, 2026-10-25).
+     It sits in .files-nav, which grows with the right-hand group in equal
+     shares, so the centred title gives way to an ellipsis before this does
+     (see .files-toolrow). */
   .files-mode-key {
     flex: 0 0 auto;
     align-items: center;
@@ -3886,25 +3887,16 @@ html.term-open #dbg-panel { opacity: 0.85; }
     padding: 0 11px 0 9px;
     border: none;
     border-radius: 999px;
-    background: var(--umber);
+    background: var(--umber-soft);
     font-family: var(--sans);
     font-size: 12.5px;
     font-weight: 600;
     white-space: nowrap;
-    color: var(--paper);
+    color: var(--umber);
     cursor: pointer;
   }
   .files-mode-key svg { flex: 0 0 auto; width: 13px; height: 13px; }
-  .files-mode-key:hover { background: color-mix(in srgb, var(--umber) 86%, var(--ink)); }
-  /* Expanded, the same key reads "Normal view" and is the way back rather than
-     the way in: a quiet tint in the accent, not the full fill, which sat too
-     loud at the head of a workspace the eye should rest in (founder,
-     2026-10-25). The pane root wears .ws-on exactly while it is expanded. */
-  .ws-on .files-mode-key {
-    background: var(--umber-soft);
-    color: var(--umber);
-  }
-  .ws-on .files-mode-key:hover { background: color-mix(in srgb, var(--umber) 20%, transparent); }
+  .files-mode-key:hover { background: color-mix(in srgb, var(--umber) 20%, transparent); }
   /* Living inside #screen-term is what saves the diff pane a visibility rule;
      this pane is a screen of its own, so it says the same thing in a selector:
      it is only on view while the terminal it is docked to is. The plain
