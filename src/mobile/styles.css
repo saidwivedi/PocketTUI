@@ -4272,6 +4272,14 @@ html.term-open #dbg-panel { opacity: 0.85; }
     flex: 1;
     min-width: 0;
     display: flex;
+  }
+  /* A column of the grid: one group its full height, or two one over the
+     other. */
+  .ws-col {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
     flex-direction: column;
   }
   .ws-group {
@@ -4280,13 +4288,20 @@ html.term-open #dbg-panel { opacity: 0.85; }
     display: flex;
     flex-direction: column;
   }
-  /* Two groups, one over the other: the height left past the seam is shared
-     out by --ws-split, the top group's part of it. */
-  .ws-groups.ws-two > .ws-group { flex: 1 1 0; }
-  .ws-groups.ws-two > .ws-group:first-child { flex-grow: var(--ws-split, 0.5); }
-  .ws-groups.ws-two > .ws-group:last-child { flex-grow: calc(1 - var(--ws-split, 0.5)); }
-  /* The seam between them: the column seam's recess and grip on its side
-     (#side-hsplit). */
+  /* Two columns: the width left past the seam is shared out by --ws-split,
+     the left column's part of it. */
+  .ws-groups.ws-two > .ws-col:first-child { flex-grow: var(--ws-split, 0.5); }
+  .ws-groups.ws-two > .ws-col:last-child { flex-grow: calc(1 - var(--ws-split, 0.5)); }
+  /* Two groups in a column: the height past its seam is shared out by the
+     column's own share, the top group's part, --ws-split-l on the left column
+     and --ws-split-r on the right one. */
+  .ws-col:first-child { --ws-col-split: var(--ws-split-l, 0.5); }
+  .ws-col:last-child:not(:first-child) { --ws-col-split: var(--ws-split-r, 0.5); }
+  .ws-col.ws-two > .ws-group { flex: 1 1 0; }
+  .ws-col.ws-two > .ws-group:first-child { flex-grow: var(--ws-col-split); }
+  .ws-col.ws-two > .ws-group:last-child { flex-grow: calc(1 - var(--ws-col-split)); }
+  /* A seam between two groups of a column: the column seam's recess and grip
+     on its side (#side-hsplit). */
   .ws-group-seam {
     cursor: row-resize;
     border-left: 0;
@@ -4301,11 +4316,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
     width: 36px; height: 3px;
     margin: -1.5px 0 0 -18px;
   }
-  /* Two groups side by side: columns, the width shared out by --ws-split, and
-     the seam stood up as the tree's column seam is. */
-  .ws-groups.ws-side { flex-direction: row; }
-  .ws-groups.ws-side > .ws-group { min-width: 0; }
-  .ws-groups.ws-side > .ws-group-seam {
+  /* The seam between the two columns, stood up as the tree's column seam is. */
+  .ws-groups > .ws-col-seam {
     cursor: col-resize;
     border-top: 0;
     border-bottom: 0;
@@ -4314,8 +4326,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
     box-shadow: inset 1px 0 2px rgba(20, 16, 10, 0.05),
                 inset -1px 0 2px rgba(20, 16, 10, 0.05);
   }
-  .ws-groups.ws-side > .ws-group-seam::before { left: -5px; right: -5px; top: 0; bottom: 0; }
-  .ws-groups.ws-side > .ws-group-seam::after {
+  .ws-groups > .ws-col-seam::before { left: -5px; right: -5px; top: 0; bottom: 0; }
+  .ws-groups > .ws-col-seam::after {
     width: 3px; height: 36px;
     margin: -18px 0 0 -1.5px;
   }
