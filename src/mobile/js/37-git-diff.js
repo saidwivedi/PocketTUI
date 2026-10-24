@@ -199,6 +199,227 @@ function diffBadge(scope, code) {
 }
 
 // ------------------------------------------------------------
+// One file's diff, drawn and acted on
+// ------------------------------------------------------------
+// Out here rather than in the pane below for diffBadge's reason: a file open in
+// the explorer's workspace shows its changes as these same blocks with these
+// same ticks and crosses (47-workspace.js). What differs between the two is
+// only where an action is sent and where its toast lands, so each caller hands
+// that over as `h`, {apply(payload) -> Promise<bool>, toast(text, label, run)};
+// everything else is read from the arguments.
+
+// The actions a file row or a block carries, as icon buttons: a green tick to
+// stage, a red cross to revert or discard, a neutral curved arrow to unstage —
+// VS Code's inline accept and reject, which is where a reader has already met
+// this pair. The verb is the button's title and its aria-label rather than its
+// face, so the tooltip still says it and a screen reader still reads it. Dim
+// until the thing they belong to is hovered or focused rather than absent
+// until then: a button that only exists under a pointer cannot be tabbed to at
+// all, and a pane opened by a chord should not then need a mouse.
+function diffActs(defs) {
+  const box = el("span", { class: "diff-acts" });
+  for (const [verb, icon, kind, run] of defs) {
+    box.appendChild(el("button", {
+      type: "button",
+      class: "diff-act " + kind,
+      title: verb,
+      "aria-label": verb,
+      onclick: (e) => { e.stopPropagation(); run(); },
+    }, svgIcon(icon)));
+  }
+  return box;
+}
+
+function diffNote(text) {
+  return el("div", { class: "diff-note" }, text);
+}
+
+// What a whole file earns in the list it is in: Unstage on the staged side,
+// Stage and Discard on the other.
+function diffFileActs(scope, f, h) {
+  return scope === "staged"
+    ? diffActs([["Unstage", "i-undo", "undo",
+        () => h.apply({ path: f.path, action: "unstage_file" })]])
+    : diffActs([["Stage", "i-check", "ok",
+        () => h.apply({ path: f.path, action: "stage_file" })],
+        ["Discard", "i-x", "danger", () => diffDiscard(f, h)]]);
+}
+
+// The actions one block earns in the list it is in, floated over its first
+// line by the stylesheet. Suppressed on a truncated diff: its last hunk is cut
+// off mid-way, and --recount would happily apply the half of it that arrived.
+function diffBlockActs(scope, path, header, hunk, block, h) {
+  return scope === "staged"
+    ? diffActs([["Unstage", "i-undo", "undo",
+        () => h.apply({ path: path, action: "unstage_hunk",
+                        patch: diffBlockPatch(header, hunk, block, true) })]])
+    : diffActs([["Stage", "i-check", "ok",
+        () => h.apply({ path: path, action: "stage_hunk",
+                        patch: diffBlockPatch(header, hunk, block, false) })],
+        ["Revert", "i-x", "danger",
+          () => diffRevertBlock(path, header, hunk, block, h)]]);
+}
+
+// VS Code asks nothing before reverting one block, and neither does this. What
+// stands in for the question is the patch itself: it is kept here and the toast
+// offers it straight back, which is a truer undo than a confirmation is a
+// safeguard — the block returns exactly as it was rather than being retyped.
+async function diffRevertBlock(path, header, hunk, block, h) {
+  const patch = diffBlockPatch(header, hunk, block, true);
+  if (!await h.apply({ path: path, action: "revert_hunk", patch: patch })) return;
+  h.toast("Reverted 1 block", "Undo",
+    () => h.apply({ path: path, action: "apply_hunk", patch: patch }));
+}
+
+// The one action that asks first, because it is the one with nothing to undo:
+// a tracked file's worktree goes back to the index and an untracked file is
+// deleted outright, which the question says in as many words.
+async function diffDiscard(f, h) {
+  const gone = f.status === "??";
+  const ok = await appConfirm(diffIsDir(f.path)
+    ? "It is untracked, so discarding deletes the folder and everything in it."
+    : gone
+    ? "It is untracked, so discarding deletes the file."
+    : "Your changes to " + f.path + " cannot be brought back.",
+    { title: gone || diffIsDir(f.path) ? "Discard " + f.path + "?" : "Discard changes?",
+      confirmLabel: "Discard" });
+  if (ok) await h.apply({ path: f.path, action: "discard_file" });
+}
+
+// One row of the diff: the two gutter numbers, then the text. A blank context
+// line comes over as "" rather than " "; without a character the row would
+// collapse to nothing at all.
+function diffLineEl(line, a, b) {
+  return el("div", { class: "diff-line " + diffLineClass(line) },
+    el("span", { class: "nos" }, el("span", {}, a), el("span", {}, b)),
+    el("span", { class: "tx" }, line || " "));
+}
+
+// One /api/git/diff answer into `body`, which it replaces. `scope` and `path`
+// are what the answer was asked for under, and what every block's actions are
+// then sent for.
+//
+// The left gutter's numbers come from the hunk headers and nothing else: a
+// `@@ -12,7 +12,9 @@` says where both sides resume, and each line after it
+// advances the side or sides it belongs to. A file with no hunks — a pure
+// rename, a mode change — never sets them, and its header lines get blanks.
+//
+// The text is split into the preamble and its hunks before a row is drawn,
+// because the actions belong to blocks and a block's patch is built from the
+// whole hunk around it: the hunk has to exist as a thing before the row that
+// acts on it can be made. Each block's own lines are then wrapped in a box of
+// their own, which is what gives the group a corner to sit in and a run of
+// lines to be hovered over.
+function diffRender(body, data, scope, path, h) {
+  body.textContent = "";
+  if (data.binary) { body.appendChild(diffNote("Binary file")); return; }
+  if (data.error) { body.appendChild(diffNote(data.error)); return; }
+  const text = data.diff || "";
+  if (!text) { body.appendChild(diffNote("No diff for this file")); return; }
+
+  const frag = document.createDocumentFragment();
+  const header = [];
+  const hunks = [];
+  for (const line of text.replace(/\n$/, "").split("\n")) {
+    if (line.startsWith("@@")) hunks.push({ lines: [line] });
+    else if (hunks.length) hunks[hunks.length - 1].lines.push(line);
+    else header.push(line);
+  }
+
+  for (const line of header) frag.appendChild(diffLineEl(line, "", ""));
+  for (const hunk of hunks) {
+    let oldNo = 0, newNo = 0;
+    const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(hunk.lines[0]);
+    if (m) { oldNo = +m[1]; newNo = +m[2]; }
+    frag.appendChild(diffLineEl(hunk.lines[0], "", ""));
+    const blocks = data.truncated ? [] : diffBlocks(hunk);
+    let bi = 0, box = null;   // the block being filled, or null between blocks
+    for (let i = 1; i < hunk.lines.length; i++) {
+      const line = hunk.lines[i];
+      const block = blocks[bi];
+      if (block && i === block.from) {
+        box = el("div", { class: "diff-block" },
+          diffBlockActs(scope, path, header, hunk, block, h));
+        frag.appendChild(box);
+      }
+      const kind = diffLineClass(line);
+      let a = "", b = "";
+      if (kind === "add") {
+        b = newNo ? String(newNo++) : "";
+      } else if (kind === "del") {
+        a = oldNo ? String(oldNo++) : "";
+      } else if (kind === "ctx") {
+        a = oldNo ? String(oldNo++) : "";
+        b = newNo ? String(newNo++) : "";
+      }
+      (box || frag).appendChild(diffLineEl(line, a, b));
+      if (block && i === block.to) { box = null; bi++; }
+    }
+  }
+  body.appendChild(frag);
+  if (data.truncated) {
+    body.appendChild(el("div", { class: "diff-notice" },
+      "Diff truncated at 1 MB — the rest is in the terminal."));
+  }
+}
+
+// A toast with an optional button (DIFF_TOAST_MS says why it is not the
+// app's). `box` is that toast's element, which keeps its own timer.
+function diffToastIn(box, text, actionLabel, run) {
+  box.textContent = "";
+  box.appendChild(el("span", { class: "msg" }, text));
+  if (actionLabel) {
+    box.appendChild(el("span", { class: "sep" }, "·"));
+    box.appendChild(el("button", {
+      type: "button",
+      class: "diff-act",
+      onclick: () => { diffToastOff(box); run(); },
+    }, actionLabel));
+  }
+  box.classList.add("on");
+  clearTimeout(box.diffTimer);
+  box.diffTimer = setTimeout(() => diffToastOff(box), DIFF_TOAST_MS);
+}
+
+function diffToastOff(box) {
+  clearTimeout(box.diffTimer);
+  box.classList.remove("on");
+}
+
+async function diffFetchJSON(url) {
+  const r = await fetch(apiURL(url), { cache: "no-store", headers: authHeaders() });
+  if (r.status === 401) { rejectToken(); return null; }
+  const data = await r.json().catch(() => null);
+  if (!r.ok || !data) return null;
+  return { body: JSON.stringify(data), data: data };
+}
+
+// One action sent for the repo at `root`; true when git took it. A refusal is
+// git's own sentence — the file moved under the view — and goes to `say`, the
+// caller's toast. What the caller does next, worked or not, is its own: it is
+// now behind the repo either way.
+async function diffApplyTo(root, payload, say) {
+  try {
+    const r = await fetch(apiURL("api/git/apply"), {
+      method: "POST",
+      cache: "no-store",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(Object.assign({ root: root }, payload)),
+    });
+    if (r.status === 401) { rejectToken(); return false; }
+    if (!r.ok) {
+      const data = await r.json().catch(() => null);
+      say((data && data.detail) || "git refused that change");
+      return false;
+    }
+    return true;
+  } catch (e) {
+    say("Could not reach the server");
+    return false;
+  }
+}
+
+// ------------------------------------------------------------
 // One pane
 // ------------------------------------------------------------
 
@@ -397,27 +618,9 @@ function applyDiffListH(px) {
 // The file list
 // ------------------------------------------------------------
 
-// The actions a file row or a block carries, as icon buttons: a green tick to
-// stage, a red cross to revert or discard, a neutral curved arrow to unstage —
-// VS Code's inline accept and reject, which is where a reader has already met
-// this pair. The verb is the button's title and its aria-label rather than its
-// face, so the tooltip still says it and a screen reader still reads it. Dim
-// until the thing they belong to is hovered or focused rather than absent
-// until then: a button that only exists under a pointer cannot be tabbed to at
-// all, and a pane opened by a chord should not then need a mouse.
-function diffActs(defs) {
-  const box = el("span", { class: "diff-acts" });
-  for (const [verb, icon, kind, run] of defs) {
-    box.appendChild(el("button", {
-      type: "button",
-      class: "diff-act " + kind,
-      title: verb,
-      "aria-label": verb,
-      onclick: (e) => { e.stopPropagation(); run(); },
-    }, svgIcon(icon)));
-  }
-  return box;
-}
+// Where this pane's actions go and where their toast lands (diffRender and
+// the action builders above it take this as `h`).
+const diffHooks = { apply: diffApply, toast: diffToast };
 
 // One row: the badge, then the path with everything but the file's own name
 // stepped back, then the row's actions. Deep trees are how a repo actually
@@ -445,12 +648,7 @@ function diffFileRow(scope, f) {
   inner.appendChild(document.createTextNode(f.path.slice(cut + 1)));
   path.appendChild(inner);
   label.appendChild(path);
-  return el("div", { class: "diff-row" }, label, scope === "staged"
-    ? diffActs([["Unstage", "i-undo", "undo",
-        () => diffFileAct("unstage_file", f.path)]])
-    : diffActs([["Stage", "i-check", "ok",
-        () => diffFileAct("stage_file", f.path)],
-        ["Discard", "i-x", "danger", () => diffDiscard(f)]]));
+  return el("div", { class: "diff-row" }, label, diffFileActs(scope, f, diffHooks));
 }
 
 // A list with its own eyebrow and count, hidden entirely when it is empty:
@@ -461,10 +659,6 @@ function diffSection(scope, label, files) {
       el("span", {}, label), el("span", { class: "n" }, String(files.length))));
   for (const f of files) sec.appendChild(diffFileRow(scope, f));
   return sec;
-}
-
-function diffNote(text) {
-  return el("div", { class: "diff-note" }, text);
 }
 
 // A no-op poll must leave the pane exactly as it found it — the same rows in
@@ -631,120 +825,19 @@ function diffSelect(scope, path) {
 // The diff
 // ------------------------------------------------------------
 
-// The actions one block earns in the list it is in, floated over its first
-// line by the stylesheet. Suppressed on a truncated diff: its last hunk is cut
-// off mid-way, and --recount would happily apply the half of it that arrived.
-function diffBlockActs(scope, path, header, hunk, block) {
-  return scope === "staged"
-    ? diffActs([["Unstage", "i-undo", "undo",
-        () => diffBlockAct("unstage_hunk", path, header, hunk, block, true)]])
-    : diffActs([["Stage", "i-check", "ok",
-        () => diffBlockAct("stage_hunk", path, header, hunk, block, false)],
-        ["Revert", "i-x", "danger",
-          () => diffRevertBlock(path, header, hunk, block)]]);
-}
-
-// One row of the diff: the two gutter numbers, then the text. A blank context
-// line comes over as "" rather than " "; without a character the row would
-// collapse to nothing at all.
-function diffLineEl(line, a, b) {
-  return el("div", { class: "diff-line " + diffLineClass(line) },
-    el("span", { class: "nos" }, el("span", {}, a), el("span", {}, b)),
-    el("span", { class: "tx" }, line || " "));
-}
-
-// The left gutter's numbers come from the hunk headers and nothing else: a
-// `@@ -12,7 +12,9 @@` says where both sides resume, and each line after it
-// advances the side or sides it belongs to. A file with no hunks — a pure
-// rename, a mode change — never sets them, and its header lines get blanks.
-//
-// The text is split into the preamble and its hunks before a row is drawn,
-// because the actions belong to blocks and a block's patch is built from the
-// whole hunk around it: the hunk has to exist as a thing before the row that
-// acts on it can be made. Each block's own lines are then wrapped in a box of
-// their own, which is what gives the group a corner to sit in and a run of
-// lines to be hovered over.
+// The selected file's diff, drawn by diffRender (above the factory) with this
+// pane's actions. The pair is read before anything is drawn, so every block's
+// actions are for the file the answer was asked for.
 function renderDiff(data) {
-  const body = q("diff-body");
-  body.textContent = "";
-  if (data.binary) { body.appendChild(diffNote("Binary file")); return; }
-  if (data.error) { body.appendChild(diffNote(data.error)); return; }
-  const text = data.diff || "";
-  if (!text) { body.appendChild(diffNote("No diff for this file")); return; }
-
-  const frag = document.createDocumentFragment();
-  const header = [];
-  const hunks = [];
-  const path = diffSelected, scope = diffScope;
-  for (const line of text.replace(/\n$/, "").split("\n")) {
-    if (line.startsWith("@@")) hunks.push({ lines: [line] });
-    else if (hunks.length) hunks[hunks.length - 1].lines.push(line);
-    else header.push(line);
-  }
-
-  for (const line of header) frag.appendChild(diffLineEl(line, "", ""));
-  for (const hunk of hunks) {
-    let oldNo = 0, newNo = 0;
-    const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(hunk.lines[0]);
-    if (m) { oldNo = +m[1]; newNo = +m[2]; }
-    frag.appendChild(diffLineEl(hunk.lines[0], "", ""));
-    const blocks = data.truncated ? [] : diffBlocks(hunk);
-    let bi = 0, box = null;   // the block being filled, or null between blocks
-    for (let i = 1; i < hunk.lines.length; i++) {
-      const line = hunk.lines[i];
-      const block = blocks[bi];
-      if (block && i === block.from) {
-        box = el("div", { class: "diff-block" },
-          diffBlockActs(scope, path, header, hunk, block));
-        frag.appendChild(box);
-      }
-      const kind = diffLineClass(line);
-      let a = "", b = "";
-      if (kind === "add") {
-        b = newNo ? String(newNo++) : "";
-      } else if (kind === "del") {
-        a = oldNo ? String(oldNo++) : "";
-      } else if (kind === "ctx") {
-        a = oldNo ? String(oldNo++) : "";
-        b = newNo ? String(newNo++) : "";
-      }
-      (box || frag).appendChild(diffLineEl(line, a, b));
-      if (block && i === block.to) { box = null; bi++; }
-    }
-  }
-  body.appendChild(frag);
-  if (data.truncated) {
-    body.appendChild(el("div", { class: "diff-notice" },
-      "Diff truncated at 1 MB — the rest is in the terminal."));
-  }
+  diffRender(q("diff-body"), data, diffScope, diffSelected, diffHooks);
 }
 
 // ------------------------------------------------------------
 // The actions
 // ------------------------------------------------------------
 
-let diffToastTimer = 0;
-
 function diffToast(text, actionLabel, run) {
-  const box = q("diff-toast");
-  box.textContent = "";
-  box.appendChild(el("span", { class: "msg" }, text));
-  if (actionLabel) {
-    box.appendChild(el("span", { class: "sep" }, "·"));
-    box.appendChild(el("button", {
-      type: "button",
-      class: "diff-act",
-      onclick: () => { diffToastHide(); run(); },
-    }, actionLabel));
-  }
-  box.classList.add("on");
-  clearTimeout(diffToastTimer);
-  diffToastTimer = setTimeout(diffToastHide, DIFF_TOAST_MS);
-}
-
-function diffToastHide() {
-  clearTimeout(diffToastTimer);
-  q("diff-toast").classList.remove("on");
+  diffToastIn(q("diff-toast"), text, actionLabel, run);
 }
 
 // Every action ends the same way whether it worked or not: the pane is now
@@ -754,22 +847,7 @@ function diffToastHide() {
 // is what shows the state it moved to.
 async function diffApply(payload) {
   try {
-    const r = await fetch(apiURL("api/git/apply"), {
-      method: "POST",
-      cache: "no-store",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(Object.assign({ root: diffRoot }, payload)),
-    });
-    if (r.status === 401) { rejectToken(); return false; }
-    if (!r.ok) {
-      const data = await r.json().catch(() => null);
-      diffToast((data && data.detail) || "git refused that change");
-      return false;
-    }
-    return true;
-  } catch (e) {
-    diffToast("Could not reach the server");
-    return false;
+    return await diffApplyTo(diffRoot, payload, diffToast);
   } finally {
     // The pane is now behind the repo on both counts: the list it drew and the
     // diff under it are answers to a question that has since changed.
@@ -777,41 +855,6 @@ async function diffApply(payload) {
     diffTextKey = "";
     diffPoll(true);
   }
-}
-
-function diffBlockAct(action, path, header, hunk, block, reverse) {
-  return diffApply({ path: path, action: action,
-                     patch: diffBlockPatch(header, hunk, block, reverse) });
-}
-
-function diffFileAct(action, path) {
-  return diffApply({ path: path, action: action });
-}
-
-// VS Code asks nothing before reverting one block, and neither does this. What
-// stands in for the question is the patch itself: it is kept here and the toast
-// offers it straight back, which is a truer undo than a confirmation is a
-// safeguard — the block returns exactly as it was rather than being retyped.
-async function diffRevertBlock(path, header, hunk, block) {
-  const patch = diffBlockPatch(header, hunk, block, true);
-  if (!await diffApply({ path: path, action: "revert_hunk", patch: patch })) return;
-  diffToast("Reverted 1 block", "Undo",
-    () => diffApply({ path: path, action: "apply_hunk", patch: patch }));
-}
-
-// The one action that asks first, because it is the one with nothing to undo:
-// a tracked file's worktree goes back to the index and an untracked file is
-// deleted outright, which the question says in as many words.
-async function diffDiscard(f) {
-  const gone = f.status === "??";
-  const ok = await appConfirm(diffIsDir(f.path)
-    ? "It is untracked, so discarding deletes the folder and everything in it."
-    : gone
-    ? "It is untracked, so discarding deletes the file."
-    : "Your changes to " + f.path + " cannot be brought back.",
-    { title: gone || diffIsDir(f.path) ? "Discard " + f.path + "?" : "Discard changes?",
-      confirmLabel: "Discard" });
-  if (ok) await diffApply({ path: f.path, action: "discard_file" });
 }
 
 // ------------------------------------------------------------
@@ -825,14 +868,6 @@ let diffBusyN = 0;
 function diffBusy(on) {
   diffBusyN = Math.max(0, diffBusyN + (on ? 1 : -1));
   q("diff-busy").classList.toggle("on", diffBusyN > 0);
-}
-
-async function diffFetchJSON(url) {
-  const r = await fetch(apiURL(url), { cache: "no-store", headers: authHeaders() });
-  if (r.status === 401) { rejectToken(); return null; }
-  const data = await r.json().catch(() => null);
-  if (!r.ok || !data) return null;
-  return { body: JSON.stringify(data), data: data };
 }
 
 // A folder the untracked walk collapsed is not a file and has no diff: what the

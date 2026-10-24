@@ -3450,6 +3450,142 @@ def test_a_copy_of_an_expanded_explorer_leaves_the_workspace_behind(doc):
     assert make.index("cloneWs.remove()") < make.index("src.after(clone)")
 
 
+def test_the_diff_pane_s_renderer_and_actions_sit_outside_its_factory(doc):
+    """Founder, 2026-10-24: a modified file open in the workspace shows its
+    changes as the diff pane's blocks, tick and cross included. The renderer
+    and the action builders are the pane's own, hoisted out of makeDiffPane
+    (as diffBadge was) so 47-workspace.js can reach them, and the pane now
+    calls them with its own hooks instead of keeping a copy inside."""
+    # The factory's body is not indented (see its comment), so it runs to the
+    # first line after it rather than to a lone closing brace.
+    at = doc.index("\nfunction makeDiffPane(")
+    factory = doc[at:doc.index('\nmakeDiffPane("diff", $("diff-pane"));', at)]
+    for name in ("diffActs", "diffNote", "diffFileActs", "diffBlockActs",
+                 "diffRevertBlock", "diffDiscard", "diffLineEl", "diffRender",
+                 "diffToastIn", "diffToastOff", "diffFetchJSON", "diffApplyTo"):
+        head = ("\nasync function " if name in ("diffRevertBlock", "diffDiscard",
+                                                "diffFetchJSON", "diffApplyTo")
+                else "\nfunction ") + name + "("
+        assert doc.index(head) < doc.index("\nfunction makeDiffPane("), name
+        assert head.lstrip("\n") not in factory, name
+    assert "const diffHooks = { apply: diffApply, toast: diffToast };" in factory
+    assert 'diffRender(q("diff-body"), data, diffScope, diffSelected, diffHooks);' in factory
+    assert "diffFileActs(scope, f, diffHooks)" in factory
+    assert "return await diffApplyTo(diffRoot, payload, diffToast);" in factory
+    # 37 loads before 47, so the workspace may call these; never the reverse.
+    frags = list(build_mobile.JS_FRAGMENTS)
+    assert frags.index("37-git-diff.js") < frags.index("47-workspace.js")
+
+
+def test_block_actions_send_the_pane_s_patches_through_the_caller_s_hooks(doc, tmp_path):
+    """The tick stages the one block, the cross reverts it and offers Undo
+    (apply_hunk with the same patch) in the caller's toast, the staged side's
+    arrow unstages, and the file's own actions are Stage/Discard or Unstage,
+    whoever is asking: the diff pane or a workspace tab."""
+    code = "\n".join(_js_chunk(doc, h) for h in (
+        "function diffMark(", "function diffBlockPatch(", "function diffIsDir(",
+        "function diffActs(", "function diffFileActs(", "function diffBlockActs(",
+        "async function diffRevertBlock(", "async function diffDiscard("))
+    out = _node_json(tmp_path, "acts.mjs", """
+const el = (tag, attrs, ...kids) => ({ tag, attrs, kids, appendChild(k) { this.kids.push(k); } });
+const svgIcon = (id) => id;
+let confirmed = true;
+const appConfirm = async () => confirmed;
+""" + code + """
+const sent = [], toasts = [];
+const h = { apply: async (p) => { sent.push(p); return true; },
+            toast: (text, label, run) => toasts.push({ text, label, run }) };
+const hunk = { lines: ["@@ -1,3 +1,3 @@", " a", "-b", "+B", " c"] };
+const header = ["diff --git a/x b/x", "--- a/x", "+++ b/x"];
+const block = { from: 2, to: 3 };
+const press = (box, i) => box.kids[i].attrs.onclick({ stopPropagation() {} });
+const un = diffBlockActs("unstaged", "x", header, hunk, block, h);
+const st = diffBlockActs("staged", "x", header, hunk, block, h);
+press(un, 0);
+await press(un, 1);
+await toasts[0].run();
+press(st, 0);
+const fu = diffFileActs("unstaged", { path: "x", status: " M" }, h);
+const fs = diffFileActs("staged", { path: "x", status: "M " }, h);
+press(fu, 0); await press(fu, 1); press(fs, 0);
+console.log(JSON.stringify({
+  verbs: [un, st, fu, fs].map((b) => b.kids.map((k) => k.attrs.title + ":" + k.attrs.class)),
+  sent: sent.map((p) => [p.action, p.path, p.patch ? p.patch.split("\\n").filter(Boolean).slice(3) : null]),
+  toast: [toasts[0].text, toasts[0].label],
+}));
+""")
+    assert out["verbs"] == [
+        ["Stage:diff-act ok", "Revert:diff-act danger"], ["Unstage:diff-act undo"],
+        ["Stage:diff-act ok", "Discard:diff-act danger"], ["Unstage:diff-act undo"]]
+    patch = ["@@ -1,3 +1,3 @@", " a", "-b", "+B", " c"]
+    assert out["sent"] == [
+        ["stage_hunk", "x", patch], ["revert_hunk", "x", patch],
+        ["apply_hunk", "x", patch], ["unstage_hunk", "x", patch],
+        ["stage_file", "x", None], ["discard_file", "x", None],
+        ["unstage_file", "x", None]]
+    assert out["toast"] == ["Reverted 1 block", "Undo"]
+
+
+def test_the_changes_key_follows_the_front_tab_s_mark_and_unsaved_edits(doc, tmp_path):
+    """The Changes key at the end of a workspace group's band is a mode toggle
+    with its state on it: shown for a text tab whose file carries a mod, ren or
+    new mark on a computer that answers the diff routes, pressed while the tab
+    shows changes (and kept then, so there is a way back once the mark
+    clears), and off while the editor holds unsaved edits, because the hunks
+    are read from the disk."""
+    code = "\n".join(_js_chunk(doc, h) for h in ("const WS_RANK", "function wsModeKeyState("))
+    out = _node_json(tmp_path, "modekey.mjs", code + """
+const mod = { text: "M", kind: "mod", dir: false };
+const cases = {
+  marked: wsModeKeyState({ kind: "editor", mode: "edit", dirty: false }, mod, true),
+  reader: wsModeKeyState({ kind: "reader", mode: "edit" }, { text: "A", kind: "new", dir: false }, true),
+  renamed: wsModeKeyState({ kind: "editor", mode: "edit" }, { text: "R", kind: "ren", dir: false }, true),
+  clean: wsModeKeyState({ kind: "editor", mode: "edit" }, null, true),
+  deleted: wsModeKeyState({ kind: "editor", mode: "edit" }, { text: "D", kind: "del", dir: false }, true),
+  folder: wsModeKeyState({ kind: "folder", mode: "edit" }, mod, true),
+  media: wsModeKeyState({ kind: "media", mode: "edit" }, mod, true),
+  nogit: wsModeKeyState({ kind: "editor", mode: "edit" }, mod, false),
+  dirty: wsModeKeyState({ kind: "editor", mode: "edit", dirty: true }, mod, true),
+  showing: wsModeKeyState({ kind: "editor", mode: "changes" }, mod, true),
+  cleared: wsModeKeyState({ kind: "editor", mode: "changes" }, null, false),
+  none: wsModeKeyState(null, null, true),
+};
+console.log(JSON.stringify(cases));
+""")
+    shown = {k: v["show"] for k, v in out.items()}
+    assert shown == {"marked": True, "reader": True, "renamed": True, "clean": False,
+                     "deleted": False, "folder": False, "media": False, "nogit": False,
+                     "dirty": True, "showing": True, "cleared": True, "none": False}
+    assert out["marked"] == {"show": True, "pressed": False, "disabled": False,
+                             "title": "Show the changes"}
+    assert out["dirty"] == {"show": True, "pressed": False, "disabled": True,
+                            "title": "Save to see changes"}
+    assert out["showing"] == {"show": True, "pressed": True, "disabled": False,
+                              "title": "Back to the file"}
+
+
+def test_a_file_badge_opens_its_tab_in_changes(doc):
+    """A click on a file's letter, in the tree or on a listing row or tile,
+    opens that file's tab (or brings it forward) showing its changes; the rest
+    of the row still opens the text. The listing's is caught on capture so the
+    row's own open never runs, and a tile's badge, which takes no pointer at
+    rest, takes it once it is a link."""
+    ws = _js_chunk(doc, "function makeWorkspace(")
+    tree = ws[ws.index('treeBody.addEventListener("click"'):]
+    assert (tree.index('ev.target.closest(".ws-badge.ws-changes-link")')
+            < tree.index("openChanges(node.path);")
+            < tree.index('if (node.type === "file") open(node.path);'))
+    listing = ws[ws.index('ctx.q("files-list").addEventListener("click"'):]
+    listing = listing[:listing.index("}, true);") + 9]
+    assert 'ev.target.closest(".git-badge.ws-changes-link")' in listing
+    assert "ev.stopPropagation();" in listing
+    assert "openChanges(joinPath(ctx.path(), row.dataset.name));" in listing
+    opener = ws[ws.index("async function openChanges("):]
+    opener = opener[:opener.index("\n  }\n")]
+    assert "byPath.get(path)" in opener and 'setMode(tab, "changes")' in opener
+    assert ".file-slot .git-badge.ws-changes-link { pointer-events: auto; }" in doc
+
+
 @pytest.mark.parametrize("answer", [True, False])
 def test_closing_the_pane_asks_once_about_unsaved_tabs(doc, tmp_path, answer):
     """A pane with unsaved workspace tabs asks one question and closes nothing

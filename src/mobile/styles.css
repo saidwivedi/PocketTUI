@@ -4338,6 +4338,60 @@ html.term-open #dbg-panel { opacity: 0.85; }
     object-fit: contain;
   }
   .ws-frame { flex: 1; min-height: 0; width: 100%; border: 0; }
+
+  /* A text tab showing its git changes (setMode, 47-workspace.js): the view
+     takes the tab's box and the editor or the reader under it is set aside,
+     kept rather than redrawn, for the key back. The blocks inside are the
+     diff pane's and wear its rules (GIT DIFF PANE). Important because
+     CodeMirror's own theme puts `display: flex !important` on its root. */
+  .ws-pane.ws-show-changes > :not(.ws-changes) { display: none !important; }
+  .ws-pane:not(.ws-show-changes) > .ws-changes { display: none; }
+  .ws-changes {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+  .ws-changes .diff-section { padding-top: 6px; }
+  .ws-changes .diff-eyebrow { align-items: center; padding: 2px 12px 4px; }
+  .ws-changes .diff-eyebrow .diff-acts { margin-left: auto; }
+  .ws-changes .diff-eyebrow:hover .diff-acts,
+  .ws-changes .diff-eyebrow:focus-within .diff-acts { opacity: 1; }
+
+  /* The Changes key at the band's right end: a mode toggle that shows its
+     state, lit in the accent while the tab is showing its changes, in the
+     browser's mode key's manner (#btn-browser-full). */
+  .ws-mode-key {
+    flex: 0 0 auto;
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    margin-left: auto;
+    padding: 0 8px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--m-g1);
+    cursor: pointer;
+  }
+  .ws-mode-key[hidden] { display: none; }
+  .ws-mode-key svg { width: 13px; height: 13px; }
+  .ws-mode-key:hover:not(:disabled) { background: var(--m-fill2); color: var(--ink); }
+  .ws-mode-key[aria-pressed="true"] {
+    color: var(--umber);
+    background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
+  }
+  .ws-mode-key:disabled { opacity: 0.45; cursor: default; }
+
+  /* A file's badge is also the way to its changes. */
+  :is(.ws-badge, .git-badge).ws-changes-link { cursor: pointer; border-radius: 3px; }
+  :is(.ws-badge, .git-badge).ws-changes-link:hover { background: var(--m-fill2); }
+  .file-slot .git-badge.ws-changes-link { pointer-events: auto; }
 }
 
 /* Stacked full-width choices — the action sheets are menus, not forms. */
@@ -6186,7 +6240,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* The diff itself. Scrolls down through the file only: a line longer than
      the pane wraps under its own line numbers rather than running off to the
      side, so the whole diff is read without a sideways scroll. */
-  #diff-body {
+  :is(#diff-body, .ws-diff-body) {
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
@@ -6340,7 +6394,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* The pane's own toast, over the foot of the diff: what Revert leaves behind
      instead of asking first, and where a refused apply says why. Out of the
      layout entirely, so a message never shortens the diff it is about. */
-  #diff-toast {
+  :is(#diff-toast, .ws-diff-toast) {
     position: absolute;
     left: 12px; right: 12px;
     bottom: calc(12px + var(--safe-bot));
@@ -6357,13 +6411,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
     color: var(--ink-2);
     z-index: 1;
   }
-  #diff-toast.on { display: flex; }
+  :is(#diff-toast, .ws-diff-toast).on { display: flex; }
   /* One phrase — "Reverted 1 block · Undo" — rather than a message pinned left
      and a button pinned right: the separator only reads as a separator with
      the two halves beside it. */
-  #diff-toast .msg { flex: 0 1 auto; min-width: 0; }
-  #diff-toast .sep { flex: 0 0 auto; color: var(--whisper); }
-  #diff-toast .diff-act { flex: 0 0 auto; opacity: 1; color: var(--umber); }
+  :is(#diff-toast, .ws-diff-toast) .msg { flex: 0 1 auto; min-width: 0; }
+  :is(#diff-toast, .ws-diff-toast) .sep { flex: 0 0 auto; color: var(--whisper); }
+  :is(#diff-toast, .ws-diff-toast) .diff-act { flex: 0 0 auto; opacity: 1; color: var(--umber); }
 }
 
 /* The test deployment's password panel (index.src.html #test-gate). Over
