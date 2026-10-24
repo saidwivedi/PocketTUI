@@ -4061,7 +4061,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
     min-width: 0;
     display: flex;
     flex-direction: column;
-    background: var(--m-fill0);
+    background: var(--paper-rec);
   }
   /* The folder the tree is drawn from, in the sidebar's eyebrow scale. */
   .ws-tree-head {
