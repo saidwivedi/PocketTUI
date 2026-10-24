@@ -3493,6 +3493,57 @@ console.log(JSON.stringify(log));
     assert out["firstEmptied"]
 
 
+def test_a_tree_file_dropped_on_the_workspace_opens_or_moves_its_tab(doc, tmp_path):
+    """One drag controller carries a tab or a tree file. wsDropPlan opens a file
+    with no tab at the target (a band slot, a group's body, a split), moves the
+    tab of a file already open as a tab drag would, brings that tab forward
+    when its file is dropped on its own group, keeps a tab dropped on its own
+    body where it is, and opens into a group with no tabs rather than
+    splitting it. The tree's file rows start that drag; its folders do not."""
+    chunk = _js_chunk(doc, "function wsDropPlan(")
+    out = _node_json(tmp_path, "plan.mjs", chunk + """
+const g0 = { tabs: [] }, g1 = { tabs: [] }, lone = { tabs: [] };
+const a = { path: "/w/a.py", group: g0 }; g0.tabs.push(a);
+const b = { path: "/w/b.py", group: g1 }; g1.tabs.push(b);
+const groups = [g0, g1];
+const P = { kind: "path", path: "/w/new.py" };
+const brief = (p) => p && { op: p.op, path: p.path, group: groups.indexOf(p.group),
+                            split: p.split, index: p.index, tab: p.tab ? p.tab.path : null };
+console.log(JSON.stringify({
+  slot: brief(wsDropPlan(P, { kind: "insert", group: 1, index: 0 }, groups, null)),
+  body: brief(wsDropPlan(P, { kind: "append", group: 0 }, groups, null)),
+  band: brief(wsDropPlan(P, { kind: "split", dir: "down", group: 0 }, groups, null)),
+  openMoves: brief(wsDropPlan({ kind: "path", path: a.path },
+                              { kind: "insert", group: 1, index: 1 }, groups, a)),
+  openSplits: brief(wsDropPlan({ kind: "path", path: a.path },
+                               { kind: "split", dir: "side", group: 0 }, groups, a)),
+  ownBody: brief(wsDropPlan({ kind: "path", path: a.path },
+                            { kind: "append", group: 0 }, groups, a)),
+  tabOwnBody: wsDropPlan({ kind: "tab", tab: a }, { kind: "append", group: 0 }, groups, null),
+  tabOther: brief(wsDropPlan({ kind: "tab", tab: a }, { kind: "append", group: 1 }, groups, null)),
+  nowhere: wsDropPlan(P, null, groups, null),
+  emptySplit: wsDropPlan(P, { kind: "split", dir: "side", group: 0 }, [lone], null).split,
+}));
+""")
+    assert out["slot"] == {"op": "open", "path": "/w/new.py", "group": 1,
+                           "split": None, "index": 0, "tab": None}
+    assert out["body"] == {"op": "open", "path": "/w/new.py", "group": 0,
+                           "split": None, "index": None, "tab": None}
+    assert out["band"] == {"op": "open", "path": "/w/new.py", "group": 0,
+                           "split": "down", "index": None, "tab": None}
+    assert out["openMoves"] == {"op": "move", "path": "/w/a.py", "group": 1,
+                                "split": None, "index": 1, "tab": "/w/a.py"}
+    assert out["openSplits"]["op"] == "move" and out["openSplits"]["split"] == "side"
+    assert out["ownBody"]["op"] == "focus"
+    assert out["tabOwnBody"] is None
+    assert out["tabOther"]["op"] == "move" and out["tabOther"]["group"] == 1
+    assert out["nowhere"] is None
+    assert out["emptySplit"] is None
+    assert 'closest(".ws-node.file")' in doc
+    assert 'startDrag(e, { kind: "path", path: node.path }, row)' in doc
+    assert 'startDrag(e, { kind: "tab", tab }, chip)' in doc
+
+
 def test_workspace_groups_collapse_one_at_a_time(doc, tmp_path):
     """wsDropGroup takes an emptied group out of the grid: its column keeps the
     other group, a column left with none goes, a group holding tabs is never
