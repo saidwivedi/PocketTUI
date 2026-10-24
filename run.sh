@@ -7,6 +7,8 @@
 
 set -eu
 
+ghero
+
 # `readlink -f` is GNU-only (macOS ships the BSD one, which has no -f), so
 # resolve the directory the portable way instead.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

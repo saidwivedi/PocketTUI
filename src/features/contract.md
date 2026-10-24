@@ -47,6 +47,7 @@ curl -s -H "X-PocketTUI-Token: $(cat ~/pockettui/.token)" http://127.0.0.1:$PORT
 | `git` | `/api/git/changes|diff|apply` | true |
 | `git_ref` | `/api/git/branches` and `ref=` on `/api/fs/list|read` | true |
 | `git_status` | `/api/git/status` (the expanded explorer's change badges) | true |
+| `git_index` | `/api/fs/read` with `ref=":"` (the file as the index holds it, the base of the workspace editor's inline change marks) | true |
 | `search` | `/api/search` | true |
 | `ping` | attach socket answers `{"type":"ping"}` | true |
 | `update` | `/api/update` | false with no `pockettui` wrapper or no tmux |
