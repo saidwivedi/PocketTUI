@@ -283,6 +283,19 @@ function meshMtlTextures(text) {
   return [...names];
 }
 
+// `Tr` in an .mtl is ambiguous: the spec reads it as transparency (1 = clear),
+// but many exporters (Magic123 and other mesh tools among them) write `Tr 1`
+// meaning opaque, and three's MTLLoader takes the spec's side, so such a
+// model loads at opacity 0 and draws nothing. Flipping the loader's
+// invertTrProperty would break the files that follow the spec, so only the
+// case no one intends is fixed: a material that would be fully invisible is
+// read as meant opaque. Partial transparency (d 0.5, Tr 0.5) is left alone.
+function meshOpaqueRescue(materials) {
+  for (const m of materials) {
+    if (m && m.opacity <= 0.01) { m.opacity = 1; m.transparent = false; }
+  }
+}
+
 // The paper and ink of whatever theme and palette is on, read off the root so
 // the model sits on the same ground as the pane around it.
 function meshTheme() {
@@ -529,6 +542,10 @@ async function meshMount(host, path, opts = {}) {
       } else if (o.isMesh) {
         const mats = Array.isArray(o.material) ? o.material : [o.material];
         for (const m of mats) m.side = T.DoubleSide;
+        meshOpaqueRescue(mats);
+        // OBJLoader adds face normals when the file has no vn lines; this is a
+        // guard so a lit material never gets a geometry without normals.
+        if (!o.geometry.getAttribute("normal")) o.geometry.computeVertexNormals();
       }
     });
     if (drawn) return group;
