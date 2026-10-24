@@ -1,6 +1,6 @@
 # Third-party notices
 
-PocketTUI ships the following third-party software in `vendor/`. The vendor files are the upstream build outputs (the KaTeX script and the CodeMirror bundle carry a short comment added by PocketTUI at the top) and are copied unchanged into the built app (`mobile_build/vendor/`, served under `/app/vendor/`) and into the install tarball. Each component is listed with its version, upstream source, the files it covers, and its license text as published with that version.
+PocketTUI ships the following third-party software in `vendor/`. The vendor files are the upstream build outputs (the KaTeX script, the CodeMirror bundle and the three.js bundle carry a short comment added by PocketTUI at the top) and are copied unchanged into the built app (`mobile_build/vendor/`, served under `/app/vendor/`) and into the install tarball. Each component is listed with its version, upstream source, the files it covers, and its license text as published with that version.
 
 ## xterm.js (@xterm/xterm)
 
@@ -470,6 +470,37 @@ Used by: `@marijn/find-cluster-break`
 MIT License
 
 Copyright (C) 2024 by Marijn Haverbeke <marijn@haverbeke.berlin>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+## three.js bundle
+
+- Version: 0.186.1 (pinned in the bundle's header comment and in `explore/build_three_vendor.sh`)
+- Upstream: https://github.com/mrdoob/three.js
+- Files: `vendor/three.js` (one esbuild IIFE bundle exposing the `THREE3D` global: the `three` package plus `OrbitControls`, `PLYLoader`, `OBJLoader`, `MTLLoader`, `STLLoader`, `GLTFLoader`, `PCDLoader` and `XYZLoader` from `three/examples/jsm`, all part of the same package)
+- License: MIT
+
+```
+The MIT License
+
+Copyright © 2010-2026 three.js authors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
