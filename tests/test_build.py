@@ -3240,9 +3240,10 @@ console.log(JSON.stringify(order));
 
 def test_a_dragged_workspace_tab_lands_by_band_slot_or_body_half(doc, tmp_path):
     """Over a tab band the slot is before the first chip whose middle is right
-    of the pointer; over the body of a lone group the lower half of the files
-    splits them and the upper half is that group; with two groups a body is
-    its group; outside both, nothing."""
+    of the pointer; over the body of a lone group its right third splits the
+    files side by side, the rest of the lower half splits them one over the
+    other, and the upper left is that group; with two groups (either way) a
+    body is its group; outside both, nothing."""
     chunk = _js_chunk(doc, "function wsDropTarget(")
     out = _node_json(tmp_path, "drop.mjs", chunk + """
 const R = (left, top, right, bottom) => ({ left, top, right, bottom });
@@ -3251,12 +3252,18 @@ const one = { area: R(0, 0, 800, 600), groups: [
 const two = { area: R(0, 0, 800, 600), groups: [
   { row: R(0, 0, 800, 28), body: R(0, 28, 800, 296), mids: [40, 120] },
   { row: R(0, 303, 800, 331), body: R(0, 331, 800, 600), mids: [50] }] };
+const side = { area: R(0, 0, 800, 600), groups: [
+  { row: R(0, 0, 396, 28), body: R(0, 28, 396, 600), mids: [40, 120] },
+  { row: R(403, 0, 800, 28), body: R(403, 28, 800, 600), mids: [450] }] };
 const at = (x, y, geo) => wsDropTarget({ x, y }, geo);
 console.log(JSON.stringify({
   first: at(10, 10, one), between: at(100, 10, one), onMid: at(120, 10, one),
   end: at(700, 10, one), upper: at(400, 200, one), lower: at(400, 450, one),
   halfLine: at(400, 300, one), topBody: at(400, 200, two), lowBody: at(400, 450, two),
   lowBand: at(60, 310, two), seam: at(400, 299, two), outside: at(900, 10, one),
+  rightTop: at(700, 100, one), rightLow: at(700, 500, one), thirdLine: at(534, 100, one),
+  leftOfThird: at(532, 100, one), sideLeft: at(700, 100, side), sideRight: at(420, 100, side),
+  sideBand: at(500, 10, side), sideSeam: at(398, 100, side),
 }));
 """)
     assert out["first"] == {"kind": "insert", "group": 0, "index": 0}
@@ -3265,11 +3272,32 @@ console.log(JSON.stringify({
     assert out["onMid"] == {"kind": "insert", "group": 0, "index": 1}
     assert out["end"] == {"kind": "insert", "group": 0, "index": 3}
     assert out["upper"] == {"kind": "append", "group": 0}
-    assert out["lower"] == {"kind": "split"} and out["halfLine"] == {"kind": "split"}
+    assert out["lower"] == {"kind": "split", "dir": "down"}
+    assert out["halfLine"] == {"kind": "split", "dir": "down"}
+    # The right third is beside, top to bottom, the lower right corner too.
+    assert out["rightTop"] == out["rightLow"] == {"kind": "split", "dir": "side"}
+    assert out["thirdLine"] == {"kind": "split", "dir": "side"}
+    assert out["leftOfThird"] == {"kind": "append", "group": 0}
+    # Side by side, a body is its group and nothing splits again.
+    assert out["sideLeft"] == {"kind": "append", "group": 1}
+    assert out["sideRight"] == {"kind": "append", "group": 1}
+    assert out["sideBand"] == {"kind": "insert", "group": 1, "index": 1}
+    assert out["sideSeam"] is None
     assert out["topBody"] == {"kind": "append", "group": 0}
     assert out["lowBody"] == {"kind": "append", "group": 1}
     assert out["lowBand"] == {"kind": "insert", "group": 1, "index": 1}
     assert out["seam"] is None and out["outside"] is None
+
+
+def test_a_workspace_tab_kind_class_is_styled_only_through_ws_pane(doc):
+    """A tab's pane carries "ws-" + its kind (addTab), so no rule may style a
+    bare .ws-media, .ws-editor and so on: the media box once shared the media
+    pane's class, and its display:flex drew every picture tab at once, stacked
+    under the one in front."""
+    css = (REPO / "src" / "mobile" / "styles.css").read_text(encoding="utf-8")
+    assert 'tab.body = el("div", { class: "ws-pane ws-" + tab.kind });' in doc
+    assert not re.search(r"\.ws-(editor|reader|mesh|pdf|media|html)(?![\w-])", css)
+    assert 'el("div", { class: "ws-media-box" }, media)' in doc
 
 
 def test_moving_a_workspace_tab_says_what_emptied(doc, tmp_path):
