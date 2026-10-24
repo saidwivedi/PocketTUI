@@ -4085,7 +4085,7 @@ def test_the_mesh_viewer_draws_a_ground_grid_and_axis_triad(doc, tmp_path):
     camera is framed and outside the model so neither the framing nor the
     label's counts see it, is recoloured on a theme flip, and one key (kept
     in cfg, on by default) hides it together with the corner triad."""
-    names = ["function meshGridPlan(", "function meshGridLines(", "function meshGridObject(",
+    names = ["function meshGridPlan(", "function meshGridObject(", "function meshGridFollow(",
              "function meshGridTheme("]
     src = "\n".join(_js_chunk(doc, n) for n in names)
     at = doc.index("\n  get meshGrid()", doc.index("\nconst cfg = {"))
@@ -4107,31 +4107,37 @@ const r = {{ cfgDefault: cfg.meshGrid }};
 cfg.meshGrid = false; r.cfgOff = [cfg.meshGrid, store.get("pockettui_mesh_grid")];
 cfg.meshGrid = true; r.cfgOn = cfg.meshGrid;
 const unit = meshGridPlan([-0.5, 0.2, -0.3], [0.5, 1.2, 0.3]);
-r.unit = [unit.cell, unit.n, unit.cx, unit.cz, unit.y];
-r.big = meshGridPlan([100, 0, 100], [140, 10, 120]).cell;
+r.unit = [unit.cell, unit.ox, unit.oz, unit.y];
+r.big = meshGridPlan([100, 0, 100], [140, 10, 120]);
 r.tiny = meshGridPlan([0, 0, 0], [0.003, 0.001, 0.002]).cell;
 r.flat = meshGridPlan([1, 1, 1], [1, 1, 1]).cell;
-const lines = meshGridLines(meshGridPlan([-0.5, 0, -0.5], [0.5, 1, 0.5]));
-r.lines = [lines.positions.length / 6, lines.major.reduce((a, b) => a + b, 0),
-           Array.from(lines.positions.slice(0, 6)).map((v) => +v.toFixed(4))];
 const g = meshGridObject(unit);
-r.obj = [g.isLineSegments, g.material.transparent, g.material.depthWrite,
-         !!g.geometry.getAttribute("major"), g.material.uniforms.uHalf.value];
+const m = g.material;
+r.obj = [g.isMesh, g.frustumCulled, m.transparent, m.depthWrite, m.depthTest, m.polygonOffset,
+         m.uniforms.uCell.value, m.uniforms.uY.value === unit.y,
+         /fwidth\(uv\)/.test(m.fragmentShader), /lod0 \* 100\.0/.test(m.fragmentShader)];
+const cam = new THREE3D.PerspectiveCamera(45, 1, 0.01, 100);
+cam.position.set(3, 4, 0);
+meshGridFollow(g, cam, new THREE3D.Vector3(0, 0, 0));
+r.follow = [m.uniforms.uEye.value.toArray(), m.uniforms.uReach.value];
+cam.far = 20; meshGridFollow(g, cam, new THREE3D.Vector3(0, 0, 0));
+r.followFar = m.uniforms.uReach.value;
 meshGridTheme(g, {{ hair: "#DDD4BE", secondary: "#6b6357" }});
-const light = g.material.uniforms.uMinor.value.getHexString();
+const light = m.uniforms.uMinor.value.getHexString();
 meshGridTheme(g, {{ hair: "#3b362a", secondary: "#a89e8c" }});
-r.theme = [light, g.material.uniforms.uMinor.value.getHexString()];
+r.theme = [light, m.uniforms.uMinor.value.getHexString()];
 console.log(JSON.stringify(r));
 """)
     assert out["cfgDefault"] is True
     assert out["cfgOff"] == [False, "0"] and out["cfgOn"] is True
-    # A 1-unit model: 0.1 cells, 13 out from the centre, under the bottom.
-    assert out["unit"][:4] == [0.1, 13, 0, 0] and out["unit"][4] < 0.2
-    assert out["big"] == 1 and out["tiny"] == 0.0001 and out["flat"] == 0.1
-    # 27 lines each way; every tenth cell from the origin is a major line.
-    assert out["lines"][0] == 54 and out["lines"][1] == 3 * 2 * 2
-    assert out["lines"][2] == [-1.3, -0.001, -1.3, -1.3, -0.001, 1.3]
-    assert out["obj"] == [True, True, False, True, 1.3]
+    # A 1-unit model: 0.1 cells, the origin at zero, under the bottom.
+    assert out["unit"][:3] == [0.1, 0, 0] and out["unit"][3] < 0.2
+    assert out["big"]["cell"] == 1 and out["big"]["ox"] == 0 and out["big"]["oz"] == 0
+    assert out["tiny"] == 0.0001 and out["flat"] == 0.1
+    # One camera-following quad, shaded per pixel, depth-tested but not written.
+    assert out["obj"] == [True, False, True, False, True, True, 0.1, True, True, True]
+    # Centred on the eye, ten view distances out, but never past the far plane.
+    assert out["follow"] == [[3, 4, 0], 50] and out["followFar"] == 18
     assert out["theme"][0] != out["theme"][1]
 
     mount = _js_chunk(doc, "async function meshMount(")
@@ -4144,6 +4150,7 @@ console.log(JSON.stringify(r));
     # The triad is a second pass inside the on-demand frame, in a corner viewport.
     frame = mount[mount.index("  function frame() {"):mount.index("  function resize() {")]
     assert "renderer.render(scene, controls.object);\n    if (gridOn && triad) drawTriad(controls.object);" in frame
+    assert "controls.update();\n    if (grid) meshGridFollow(grid, controls.object, controls.target);" in frame
     assert "renderer.setScissor(x, y, size, size);" in frame and "renderer.autoClear = false;" in frame
     assert "const size = touchOnly() ? 48 : 64;" in frame
     assert "requestAnimationFrame" not in frame
