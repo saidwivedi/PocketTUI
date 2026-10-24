@@ -3742,3 +3742,73 @@ console.log(JSON.stringify(r));
     assert out["pts"] == "1 2 3 10 20 30\n4 5 6\n7 8 9"
     assert out["splat"] == [True, False]
     assert out["sib"] == ["/w/m/a.mtl", "/w/m/tex/b.png", "/w/t/c.jpg", "/w/m/d.png", "/abs/e.png"]
+
+
+def test_the_workspace_terminal_height_defaults_and_clamps(doc, tmp_path):
+    """The expanded explorer's terminal panel (26-side-pane.js): 30% of the
+    window until the seam is dragged, never under 120px or over 70%."""
+    clamp = _js_chunk(doc, "function wsTermClamp(")
+    out = _node_json(tmp_path, "clamp.mjs", f"""
+{clamp}
+console.log(JSON.stringify({{
+  unset: wsTermClamp(NaN, 800), zero: wsTermClamp(0, 800), kept: wsTermClamp(300, 800),
+  low: wsTermClamp(50, 800), high: wsTermClamp(700, 800), tiny: wsTermClamp(NaN, 300),
+}}));
+""")
+    assert out == {"unset": 240, "zero": 240, "kept": 300, "low": 120,
+                   "high": 560, "tiny": 120}
+    assert 'wsTermClamp(parseInt(localStorage.getItem("pockettui_ws_term_h"), 10),' in doc
+    assert 'localStorage.getItem("pockettui_ws_term_hidden") === "1"' in doc
+
+
+def test_the_workspace_terminal_fits_once_and_hiding_never_fits(doc):
+    """Founder, 2026-10-24: expanding the explorer puts the terminal along the
+    bottom. The host runs agents, so the panel's box moves (one fit) only on
+    expand, collapse and a seam released; hiding is visibility over the same
+    box and fits nothing; the drag moves only the seam's variable."""
+    full = _js_chunk(doc, "function sideSetFull(")
+    assert "wsTermSync();" in full
+    drop = _js_chunk(doc, "function sideDrop(")
+    assert "wsTermSync();" in drop
+    sync = _js_chunk(doc, "function wsTermSync(")
+    assert 'sideType(sideFull) === "files"' in sync
+    assert sync.count("refit(") == 1 and "if (on !== was) refit(0);" in sync
+    hide = _js_chunk(doc, "function wsTermSetHidden(")
+    assert "refit" not in hide and "fitAddon" not in hide
+    keys = _js_chunk(doc, "function wsTermKeys(")
+    assert "refit" not in keys
+    drag = doc[doc.index("(function wsTermResize() {"):]
+    drag = drag[:drag.index("\n})();\n")]
+    move = drag[drag.index('"pointermove"'):drag.index("const finish")]
+    assert "refit" not in move and '"--ws-term-seam"' in move
+    finish = drag[drag.index("const finish"):]
+    assert "cfg.wsTermH = h;" in finish and finish.count("refit(0)") == 1
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    assert "#screen-term.ws-term.ws-term-hidden { visibility: hidden; }" in css
+    assert ("#screen-term.side-open.ws-term { top: calc(100% - var(--ws-term-h)); right: 0; }"
+            in css)
+    # Ctrl+` toggles it only while there is a panel, and claims nothing else.
+    key = doc[doc.index('if ((e.code || "") !== "Backquote" && e.key !== "`") return;'):]
+    key = key[:key.index("}, true);")]
+    assert 'scr.classList.contains("ws-term")' in key
+    assert "wsTermSetHidden(!cfg.wsTermHidden)" in key
+
+
+def test_the_docked_explorer_says_file_viewer(doc):
+    """Founder, 2026-10-24: the docked pane's bar says "File viewer" at its
+    left end and expands like the right-hand key; expanded it says "Normal
+    view" and collapses. One handler for both keys, one writer for both faces,
+    docked only (so never on the phone). The terminal-panel key shows only
+    while the workspace is up."""
+    nav = doc[doc.index('<span class="files-nav">'):]
+    nav = nav[:nav.index("</span>\n")]
+    assert 'class="files-mode-key dock-only" id="btn-files-mode"' in nav
+    assert '<span class="files-mode-word">File viewer</span>' in nav
+    assert 'querySelectorAll(".dock-expand, .files-mode-key")' in doc
+    sync = _js_chunk(doc, "function syncFilesExpand(")
+    assert '"Normal view" : "File viewer"' in sync
+    assert 'on ? "#i-m-collapse" : "#i-m-expand"' in sync
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    assert ":is(#screen-files, #screen-files-2) .dock-term { display: none; }" in css
+    assert ":is(#screen-files, #screen-files-2).ws-on .dock-term { display: inline-flex; }" in css
+    assert 'id="btn-files-term-panel"' in doc and 'querySelectorAll(".dock-term")' in doc

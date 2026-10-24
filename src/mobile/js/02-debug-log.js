@@ -635,6 +635,17 @@ function migrateProfiles() {
 }
 migrateProfiles();
 
+// How tall the terminal under the expanded explorer is (26-side-pane.js), in
+// pixels against a window `viewH` tall: whatever the seam was last dragged to,
+// else 30% of the window, and never under 120px (a prompt and a few lines of
+// what an agent is saying) or over 70% (the files it shares the window with
+// have to stay worth reading). Clamped on every read rather than when stored,
+// because the window the number was dragged in may since have changed height.
+function wsTermClamp(px, viewH) {
+  const v = Number.isFinite(px) && px > 0 ? px : viewH * 0.3;
+  return Math.round(Math.max(120, Math.min(viewH * 0.7, v)));
+}
+
 const cfg = {
   // The active profile's address, or whatever the build itself knows when this
   // device is paired with nothing yet — the fallback this getter always had. A
@@ -845,6 +856,20 @@ const cfg = {
     return Number.isFinite(v) && v > 0 && v < 1 ? v : 0.5;
   },
   set wsSplit(v) { localStorage.setItem("pockettui_ws_split", String(v)); },
+  // The terminal panel under the expanded explorer: its height (wsTermClamp)
+  // and whether it is put away. App preferences rather than per session, like
+  // the tree's width: they are how this user likes the workspace laid out,
+  // not something about one session's folder.
+  get wsTermH() {
+    return wsTermClamp(parseInt(localStorage.getItem("pockettui_ws_term_h"), 10),
+                       window.innerHeight);
+  },
+  set wsTermH(v) { localStorage.setItem("pockettui_ws_term_h", String(v)); },
+  get wsTermHidden() { return localStorage.getItem("pockettui_ws_term_hidden") === "1"; },
+  set wsTermHidden(v) {
+    if (v) localStorage.setItem("pockettui_ws_term_hidden", "1");
+    else localStorage.removeItem("pockettui_ws_term_hidden");
+  },
   // The same for the browser pane, kept apart from the explorer's: a page read
   // full width and a folder read full width are separate habits.
   get browserExpanded() { return localStorage.getItem("pockettui_browser_expanded") === "1"; },

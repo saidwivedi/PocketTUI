@@ -288,6 +288,11 @@
     <symbol id="i-m-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9">
       <path d="M20 10h-6V4M4 14h6v6M14 10l5.5-5.5M10 14l-5.5 5.5"/>
     </symbol>
+    <!-- A window with a panel along its bottom: the expanded explorer's
+         terminal panel key (26-side-pane.js). -->
+    <symbol id="i-m-term-panel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 13.5h17M7 16.5h4"/>
+    </symbol>
     <symbol id="i-m-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
       <path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>
     </symbol>
@@ -731,6 +736,13 @@
     <button class="icon-btn" id="btn-files-term" aria-label="Back to the terminal"
             style="display:none"><svg><use href="#i-logo"/></svg></button>
     <button class="icon-btn" id="btn-files-back" aria-label="Back"><svg><use href="#i-m-chev-left"/></svg></button>
+    <!-- The expand said in words, for a docked pane on the wide layout: the
+         icon on the right is easy to miss, and nobody finds the workspace
+         without it. "File viewer" while docked, "Normal view" while expanded;
+         the glyph and the word are written by syncFilesExpand with the right
+         key's, so the two never disagree. -->
+    <button type="button" class="files-mode-key dock-only" id="btn-files-mode"
+            aria-label="Expand the file pane"><svg aria-hidden="true"><use href="#i-m-expand"/></svg><span class="files-mode-word">File viewer</span></button>
     </span>
     <!-- The folder being listed, centred on the row whatever the keys either
          side of it add up to (renderCrumbs writes the name). Not a control:
@@ -797,6 +809,10 @@
     </div>
     <button class="icon-btn dock-swap" type="button" data-more
             aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
+    <!-- Expanded only: the terminal panel under the workspace, up or put away
+         (26-side-pane.js), lit while it is up. -->
+    <button type="button" class="icon-btn dock-term" id="btn-files-term-panel"
+            aria-pressed="true" aria-label="Hide the terminal"><svg><use href="#i-m-term-panel"/></svg></button>
     <span class="m-rule dock-only" aria-hidden="true"></span>
     <button class="icon-btn dock-only dock-expand" id="btn-files-expand"
             aria-label="Expand the file pane"><svg><use href="#i-m-expand"/></svg></button>
