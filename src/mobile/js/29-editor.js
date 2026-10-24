@@ -482,6 +482,7 @@ async function openEditor(path, opts) {
 // extensions already live in the state and only need bringing up to date.
 // onDirty(rec, dirty) hears every flip of rec.dirty; onSave(rec) and
 // onQuit(rec, bang) are what vim's :w and :q do in this view (edDefineVimEx).
+// `extensions` are added to a new state after the editor's own.
 function edMakeView(opts) {
   const CM = window.CM6;
   const rec = {
@@ -535,6 +536,8 @@ function edMakeView(opts) {
               if (r.view === u.view && !r.dirty) { r.dirty = true; r.onDirty(r, true); }
             }
           }),
+          // A caller's own, last: the workspace's change marks (47-workspace.js).
+          opts.extensions || [],
         ],
       }),
       parent: opts.host,

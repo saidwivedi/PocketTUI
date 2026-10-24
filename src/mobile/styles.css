@@ -4041,10 +4041,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
 
 /* ---- the explorer workspace (47-workspace.js) -------------------------------
    The expanded pane as a code editor lays itself out: the folder tree, a seam
-   to drag it wider by, and the files as tabs with the listing pinned first.
-   Made only on a wide layout, and shown only while the pane is expanded; the
-   listing itself is moved into the first tab rather than drawn twice, so every
-   rule the docked listing has still holds inside it. */
+   to drag it wider by, and the files as tabs. Made only on a wide layout, and
+   shown only while the pane is expanded; the listing waits out of view in the
+   workspace's holder meanwhile, and is back under the bar on a collapse. */
 .ws { display: none; }
 @media (min-width: 768px) and (min-height: 500px) {
   :is(#screen-files, #screen-files-2).ws-on > .ws {
@@ -4236,16 +4235,27 @@ html.term-open #dbg-panel { opacity: 0.85; }
     scrollbar-width: none;
   }
   .ws-tab-row::-webkit-scrollbar { display: none; }
-  /* The folder tab has no cross to keep a slot for; its glyph leads instead. */
-  .ws-tabs .tab-chip.ws-pinned .tab-name { padding-left: 10px; }
-  .ws-tab-ic {
+  /* The change-marks key after an editor tab's name: tiny, a mode toggle that
+     shows its state, lit in the accent while the tab's marks are on. */
+  .ws-marks-key {
+    flex: 0 0 auto;
     display: inline-flex;
-    width: 13px; height: 13px;
-    margin-right: 5px;
-    vertical-align: -2px;
-    color: var(--umber);
+    align-items: center;
+    justify-content: center;
+    width: 16px; height: 16px;
+    margin-right: 6px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--m-g2);
+    cursor: pointer;
   }
-  .ws-tab-ic svg { width: 100%; height: 100%; }
+  .ws-marks-key[hidden] { display: none; }
+  .ws-marks-key svg { width: 11px; height: 11px; }
+  .ws-marks-key:hover { color: var(--ink); background: var(--m-fill2); }
+  .ws-marks-key[aria-pressed="true"] { color: var(--umber); background: var(--umber-soft); }
+  .ws-tabs .tab-chip.ws-keyed .tab-name { padding-right: 4px; }
   /* Unsaved edits: a dot where the cross sits, until the pointer is over the
      tab and the cross is what it wants. */
   .ws-dirty {
@@ -4339,59 +4349,68 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   .ws-frame { flex: 1; min-height: 0; width: 100%; border: 0; }
 
-  /* A text tab showing its git changes (setMode, 47-workspace.js): the view
-     takes the tab's box and the editor or the reader under it is set aside,
-     kept rather than redrawn, for the key back. The blocks inside are the
-     diff pane's and wear its rules (GIT DIFF PANE). Important because
-     CodeMirror's own theme puts `display: flex !important` on its root. */
-  .ws-pane.ws-show-changes > :not(.ws-changes) { display: none !important; }
-  .ws-pane:not(.ws-show-changes) > .ws-changes { display: none; }
-  .ws-changes {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    position: relative;
-  }
-  .ws-changes .diff-section { padding-top: 6px; }
-  .ws-changes .diff-eyebrow { align-items: center; padding: 2px 12px 4px; }
-  .ws-changes .diff-eyebrow .diff-acts { margin-left: auto; }
-  .ws-changes .diff-eyebrow:hover .diff-acts,
-  .ws-changes .diff-eyebrow:focus-within .diff-acts { opacity: 1; }
-
-  /* The Changes key at the band's right end: a mode toggle that shows its
-     state, lit in the accent while the tab is showing its changes, in the
-     browser's mode key's manner (#btn-browser-full). */
-  .ws-mode-key {
-    flex: 0 0 auto;
-    align-self: center;
-    display: inline-flex;
+  /* A group with no tabs: what to do, in the middle of where a file would be. */
+  .ws-empty {
+    position: absolute;
+    inset: 0;
+    display: none;
     align-items: center;
-    gap: 5px;
-    height: 22px;
-    margin-left: auto;
-    padding: 0 8px;
-    border: none;
-    border-radius: 5px;
-    background: transparent;
+    justify-content: center;
+    padding: 20px;
+    text-align: center;
     font-family: var(--sans);
-    font-size: 12px;
-    color: var(--m-g1);
-    cursor: pointer;
+    font-size: 13px;
+    color: var(--tertiary);
+    pointer-events: none;
   }
-  .ws-mode-key[hidden] { display: none; }
-  .ws-mode-key svg { width: 13px; height: 13px; }
-  .ws-mode-key:hover:not(:disabled) { background: var(--m-fill2); color: var(--ink); }
-  .ws-mode-key[aria-pressed="true"] {
-    color: var(--umber);
-    background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
-  }
-  .ws-mode-key:disabled { opacity: 0.45; cursor: default; }
+  .ws-group.ws-none .ws-empty { display: flex; }
 
-  /* A file's badge is also the way to its changes. */
-  :is(.ws-badge, .git-badge).ws-changes-link { cursor: pointer; border-radius: 3px; }
-  :is(.ws-badge, .git-badge).ws-changes-link:hover { background: var(--m-fill2); }
-  .file-slot .git-badge.ws-changes-link { pointer-events: auto; }
+  /* A file's badge in the tree also opens it with its changes marked. */
+  .ws-badge.ws-marks-link { cursor: pointer; border-radius: 3px; }
+  .ws-badge.ws-marks-link:hover { background: var(--m-fill2); }
+
+  /* An editor tab's inline change marks (47-workspace.js), in the diff pane's
+     colours (GIT DIFF PANE): added lines tinted, removed lines as a block where
+     they were, a 3px bar in the gutter, and each change's tick and cross in a
+     pill at the right of its first line, as the pane floats them over a block. */
+  .ws-pane .cm-ws-add { background-color: var(--diff-add-bg); }
+  .ws-pane .cm-ws-head { position: relative; }
+  .ws-pane .cm-ws-del {
+    position: relative;
+    padding: 0 2px 0 8px;
+    background: var(--diff-del-bg);
+    color: var(--diff-del-ink);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    -webkit-user-select: none; user-select: none;
+  }
+  .ws-pane .cm-ws-gutter .cm-gutterElement { width: 3px; padding: 0; }
+  .ws-pane .cm-ws-bar { display: block; width: 3px; height: 100%; }
+  .ws-pane .cm-ws-bar.add { background: var(--diff-add-ink); }
+  .ws-pane .cm-ws-bar.mod { background: var(--warn); }
+  /* Where lines went: a short wedge at the top of the line that follows them. */
+  .ws-pane .cm-ws-bar.del {
+    height: 6px;
+    background: var(--diff-del-ink);
+    clip-path: polygon(0 0, 100% 0, 0 100%);
+    width: 6px;
+  }
+  .ws-pane .cm-ws-acts.diff-acts {
+    position: absolute;
+    top: 0;
+    right: 10px;
+    z-index: 2;
+    opacity: 1;
+    gap: 0;
+    padding: 0 1px;
+    border: 1px solid var(--hair-strong);
+    border-radius: 6px;
+    background: var(--paper);
+    box-shadow: 0 1px 4px rgba(20, 16, 10, 0.16);
+    font-family: var(--sans);
+  }
+  .ws-pane .cm-ws-acts .diff-act { width: 20px; height: 18px; }
+  .ws-pane .cm-ws-acts .diff-act svg { width: 12px; height: 12px; }
 }
 
 /* Stacked full-width choices — the action sheets are menus, not forms. */
@@ -6240,7 +6259,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* The diff itself. Scrolls down through the file only: a line longer than
      the pane wraps under its own line numbers rather than running off to the
      side, so the whole diff is read without a sideways scroll. */
-  :is(#diff-body, .ws-diff-body) {
+  #diff-body {
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
@@ -6394,7 +6413,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* The pane's own toast, over the foot of the diff: what Revert leaves behind
      instead of asking first, and where a refused apply says why. Out of the
      layout entirely, so a message never shortens the diff it is about. */
-  :is(#diff-toast, .ws-diff-toast) {
+  #diff-toast {
     position: absolute;
     left: 12px; right: 12px;
     bottom: calc(12px + var(--safe-bot));
@@ -6411,13 +6430,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
     color: var(--ink-2);
     z-index: 1;
   }
-  :is(#diff-toast, .ws-diff-toast).on { display: flex; }
+  #diff-toast.on { display: flex; }
   /* One phrase — "Reverted 1 block · Undo" — rather than a message pinned left
      and a button pinned right: the separator only reads as a separator with
      the two halves beside it. */
-  :is(#diff-toast, .ws-diff-toast) .msg { flex: 0 1 auto; min-width: 0; }
-  :is(#diff-toast, .ws-diff-toast) .sep { flex: 0 0 auto; color: var(--whisper); }
-  :is(#diff-toast, .ws-diff-toast) .diff-act { flex: 0 0 auto; opacity: 1; color: var(--umber); }
+  #diff-toast .msg { flex: 0 1 auto; min-width: 0; }
+  #diff-toast .sep { flex: 0 0 auto; color: var(--whisper); }
+  #diff-toast .diff-act { flex: 0 0 auto; opacity: 1; color: var(--umber); }
 }
 
 /* The test deployment's password panel (index.src.html #test-gate). Over

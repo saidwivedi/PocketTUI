@@ -1804,6 +1804,43 @@ def test_a_path_absent_at_the_ref_is_not_found_rather_than_empty(client, branche
         "root": str(branched)}).status_code == 404
 
 
+@needs_git
+def test_read_at_the_index_gives_the_staged_bytes_not_the_disk_s_or_head_s(client, repo):
+    """ref=":" reads the file as the index holds it: the base the workspace
+    editor's inline marks compare the buffer with, so a staged hunk drops out
+    of them as `git diff` drops it."""
+    (repo / "tracked.txt").write_text("one\nTWO\nthree\nfour\n")
+    run_git(repo, "add", "tracked.txt")
+    (repo / "tracked.txt").write_text("one\nTWO\nthree\nfour\nfive\n")
+    at = lambda name: client.get("/api/fs/read", params={
+        "path": str(repo / name), "ref": ":", "root": str(repo)})
+    r = at("tracked.txt")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["content"] == "one\nTWO\nthree\nfour\n"
+    assert body["readonly"] is True
+    # Staged but never committed: the index has it.
+    assert at("staged.txt").json()["content"] == "staged\n"
+    # Untracked: nothing in the index, which is not the same as empty.
+    assert at("sub/fresh.txt").status_code == 404
+
+
+@needs_git
+def test_the_index_ref_is_only_for_reads_and_only_inside_the_root(client, repo, tmp_path):
+    # A listing has no ls-tree of the index to answer with.
+    assert client.get("/api/fs/list", params={
+        "path": str(repo), "ref": ":", "root": str(repo)}).status_code == 400
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("x\n")
+    for params in ({"path": str(outside), "ref": ":", "root": str(repo)},
+                   {"path": "/etc/passwd", "ref": ":", "root": str(repo)},
+                   {"path": str(repo / "sub" / "fresh.txt"), "ref": ":",
+                    "root": str(repo / "sub")},
+                   {"path": str(repo / "tracked.txt"), "ref": "::", "root": str(repo)}):
+        assert client.get("/api/fs/read", params=params).status_code == 400, params
+    assert client.get("/api/version").json()["capabilities"]["git_index"] is True
+
+
 def test_version_names_the_ref_routes_as_a_capability(client):
     assert client.get("/api/version").json()["capabilities"]["git_ref"] is True
 

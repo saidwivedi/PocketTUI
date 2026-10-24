@@ -1432,6 +1432,9 @@ def server_capabilities() -> dict:
         # /api/git/branches, and the ref= param the two /api/fs read routes
         # take, which is how the explorer browses a branch it has not checked out
         "git_ref": True,
+        # /api/fs/read with ref=":" (GIT_INDEX_REF): a file as the index holds
+        # it, the base the workspace editor's inline change marks compare with
+        "git_index": True,
         "git_status": True,     # /api/git/status — the explorer's change badges
         "search": True,         # /api/search — the wide layout's find bar
         "ping": True,           # the attach socket's liveness probe: this
@@ -3618,7 +3621,20 @@ def git_ref_rel(root: str, raw: str) -> str | None:
     return None
 
 
-def git_ref_at(root: str, path: str, ref: str) -> tuple[str, str]:
+# The one ref value that is not a commit: the index, which `git show :path`
+# reads. A ref name cannot contain ":" (git check-ref-format), so it can never
+# shadow a branch. Only the file read takes it; a listing at the index has no
+# `ls-tree` to answer with.
+GIT_INDEX_REF = ":"
+
+
+def git_ref_obj(ref: str, rel: str) -> str:
+    """The object name for `rel` at `ref`: `ref:rel`, or `:rel` in the index."""
+    return (":" if ref == GIT_INDEX_REF else ref + ":") + rel
+
+
+def git_ref_at(root: str, path: str, ref: str,
+               index_ok: bool = False) -> tuple[str, str]:
     """(the repo-relative path, "") for a triple that checks out, else ("", why).
 
     One place, because the two read routes have to agree exactly on what a ref
@@ -3636,6 +3652,8 @@ def git_ref_at(root: str, path: str, ref: str) -> tuple[str, str]:
     rel = git_ref_rel(root, path)
     if rel is None:
         return "", "bad_path"
+    if index_ok and ref == GIT_INDEX_REF:
+        return rel, ""
     if not ref or ref.startswith("-"):
         return "", "bad_ref"
     if git(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}")[0] != 0:
@@ -3650,7 +3668,7 @@ def git_ref_kind(root: str, ref: str, rel: str) -> str:
     that is not on this branch with a clean empty listing — indistinguishable
     from an empty one, and the explorer's "not found" has to be honest.
     """
-    rc, out, _ = git(root, "cat-file", "-t", ref + ":" + rel)
+    rc, out, _ = git(root, "cat-file", "-t", git_ref_obj(ref, rel))
     return out.decode("utf-8", "replace").strip() if rc == 0 else ""
 
 
@@ -3718,7 +3736,7 @@ def api_fs_read_at_ref(path: str, ref: str, root: str) -> Response:
     and the lossy-decode fallback are the disk route's, applied to the blob, so
     the editor cannot tell the two answers apart except by `readonly`.
     """
-    rel, bad = git_ref_at(root, path, ref)
+    rel, bad = git_ref_at(root, path, ref, index_ok=True)
     if bad:
         return fs_error(bad, 400)
     if not rel or git_ref_kind(root, ref, rel) != "blob":
@@ -3726,12 +3744,12 @@ def api_fs_read_at_ref(path: str, ref: str, root: str) -> Response:
     # Asked before the bytes are: a generated blob can be far past what this
     # route would ever return, and there is no reason to pipe it through only
     # to measure it.
-    rc, out, _ = git(root, "cat-file", "-s", ref + ":" + rel)
+    rc, out, _ = git(root, "cat-file", "-s", git_ref_obj(ref, rel))
     raw = out.decode("utf-8", "replace").strip()
     size = int(raw) if raw.isdigit() else 0
     if size > MAX_TEXT_BYTES:
         return fs_error("too_large", 413, size=size)
-    rc, data, _ = git(root, "show", ref + ":" + rel)
+    rc, data, _ = git(root, "show", git_ref_obj(ref, rel))
     if rc != 0:
         return fs_error("not_readable", 403)
     if b"\x00" in data:
@@ -3933,6 +3951,8 @@ def api_fs_read(path: str = "", ref: str = "", root: str = "") -> Response:
     `ref` and `root` read the file at another branch instead, as on the listing
     route; a file read that way is `readonly` and has no hash worth writing
     back against, since /api/fs/write only ever writes the working tree.
+    `ref=":"` (GIT_INDEX_REF) reads the file as the index holds it, which is
+    what `git diff` compares the working tree against.
     """
     if ref:
         return api_fs_read_at_ref(path, ref, root)

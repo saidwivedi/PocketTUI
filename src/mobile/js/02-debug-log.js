@@ -845,6 +845,10 @@ const cfg = {
     return Number.isFinite(v) && v > 0 && v < 1 ? v : 0.5;
   },
   set wsSplit(v) { localStorage.setItem("pockettui_ws_split", String(v)); },
+  // Whether a changed file opened in a workspace editor tab shows its change
+  // marks: the last way the key on a tab was set, on until it is first set off.
+  get wsInlineDiff() { return localStorage.getItem("pockettui_ws_inline_diff") !== "0"; },
+  set wsInlineDiff(v) { localStorage.setItem("pockettui_ws_inline_diff", v ? "1" : "0"); },
   // The same for the browser pane, kept apart from the explorer's: a page read
   // full width and a folder read full width are separate habits.
   get browserExpanded() { return localStorage.getItem("pockettui_browser_expanded") === "1"; },

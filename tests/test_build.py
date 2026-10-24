@@ -3386,39 +3386,41 @@ console.log(JSON.stringify({
     assert out["seam"] is None and out["outside"] is None
 
 
-def test_moving_a_workspace_tab_keeps_the_folder_tab_first_and_says_what_emptied(doc, tmp_path):
+def test_moving_a_workspace_tab_says_what_emptied(doc, tmp_path):
     """wsMoveTab reorders within a group (slots counted with the tab still in
-    place), moves between groups, never puts a tab ahead of the pinned folder
-    tab, refuses to move the folder tab, and names the group a move left
-    empty so the second group can be taken away."""
+    place), moves between groups, and names the group a move left empty so
+    that group can be taken away. There is no folder tab to keep first."""
     chunk = _js_chunk(doc, "function wsMoveTab(")
     out = _node_json(tmp_path, "move.mjs", chunk + """
 const g0 = { tabs: [] }, g1 = { tabs: [] };
-const mk = (g, name, pinned) => { const t = { name, pinned: !!pinned, group: g }; g.tabs.push(t); return t; };
-const folder = mk(g0, "folder", true), a = mk(g0, "a"), b = mk(g0, "b"), c = mk(g0, "c");
+const mk = (g, name) => { const t = { name, group: g }; g.tabs.push(t); return t; };
+const a = mk(g0, "a"), b = mk(g0, "b"), c = mk(g0, "c");
 const names = (g) => g.tabs.map((t) => t.name).join(",");
 const log = {};
-log.pinned = wsMoveTab(folder, g0, 3);
-log.pinnedOrder = names(g0);
-log.right = wsMoveTab(a, g0, 3); log.rightOrder = names(g0);
+log.right = wsMoveTab(a, g0, 2); log.rightOrder = names(g0);
 log.front = wsMoveTab(c, g0, 0); log.frontOrder = names(g0);
 log.down = wsMoveTab(b, g1, null); log.downOrder = [names(g0), names(g1)];
 log.bGroup = b.group === g1;
-const back = wsMoveTab(b, g0, 2);
+const back = wsMoveTab(b, g0, 1);
 log.back = { index: back.index, emptied: back.emptied === g1 };
 log.backOrder = [names(g0), names(g1)];
+const solo = { tabs: [] }, other = { tabs: [] };
+const s1 = mk(solo, "s1");
+const up = wsMoveTab(s1, other, null);
+log.firstEmptied = up.emptied === solo;
 console.log(JSON.stringify(log));
 """)
-    assert out["pinned"] is None and out["pinnedOrder"] == "folder,a,b,c"
-    # Slot 3 is before c with a still counted: a lands between b and c.
-    assert out["right"] == {"index": 2, "emptied": None}
-    assert out["rightOrder"] == "folder,b,a,c"
-    assert out["front"] == {"index": 1, "emptied": None}
-    assert out["frontOrder"] == "folder,c,b,a"
+    # Slot 2 is before c with a still counted: a lands between b and c.
+    assert out["right"] == {"index": 1, "emptied": None}
+    assert out["rightOrder"] == "b,a,c"
+    assert out["front"] == {"index": 0, "emptied": None}
+    assert out["frontOrder"] == "c,b,a"
     assert out["down"] == {"index": 0, "emptied": None}
-    assert out["downOrder"] == ["folder,c,a", "b"] and out["bGroup"]
-    assert out["back"] == {"index": 2, "emptied": True}
-    assert out["backOrder"] == ["folder,c,b,a", ""]
+    assert out["downOrder"] == ["c,a", "b"] and out["bGroup"]
+    assert out["back"] == {"index": 1, "emptied": True}
+    assert out["backOrder"] == ["c,b,a", ""]
+    # The first group can empty too now; the caller takes it away.
+    assert out["firstEmptied"]
 
 
 def test_the_workspace_split_is_remembered_and_tree_folders_take_row_drops(doc):
@@ -3526,64 +3528,291 @@ console.log(JSON.stringify({
     assert out["toast"] == ["Reverted 1 block", "Undo"]
 
 
-def test_the_changes_key_follows_the_front_tab_s_mark_and_unsaved_edits(doc, tmp_path):
-    """The Changes key at the end of a workspace group's band is a mode toggle
-    with its state on it: shown for a text tab whose file carries a mod, ren or
-    new mark on a computer that answers the diff routes, pressed while the tab
-    shows changes (and kept then, so there is a way back once the mark
-    clears), and off while the editor holds unsaved edits, because the hunks
-    are read from the disk."""
-    code = "\n".join(_js_chunk(doc, h) for h in ("const WS_RANK", "function wsModeKeyState("))
-    out = _node_json(tmp_path, "modekey.mjs", code + """
+def _ws_marks(doc):
+    return "\n".join(_js_chunk(doc, h) for h in (
+        "const WS_RANK", "const WS_DIFF_MAX_LINES", "const WS_DIFF_MAX_EDITS",
+        "const WS_PATCH_CONTEXT", "function wsSplitLines(", "function wsLineKeys(",
+        "function wsLineDiff(", "function wsHunkPatch(", "function wsRevertEdit(",
+        "function wsMarksKeyState("))
+
+
+# Base (the index) and buffer pairs the marks are drawn between, as text.
+WS_DIFF_PAIRS = {
+    "insert": ("a\nb\nc\n", "a\nb\nNEW\nc\n"),
+    "delete": ("a\nb\nc\nd\n", "a\nd\n"),
+    "modify": ("a\nb\nc\n", "a\nB\nc\n"),
+    "leading": ("a\nb\n", "top\na\nb\n"),
+    "trailing": ("a\nb\n", "a\nb\nend\n"),
+    "identical": ("a\nb\n", "a\nb\n"),
+    "empty_base": ("", "x\ny\n"),
+    "emptied": ("x\ny\n", ""),
+    "two_hunks": ("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n", "1\nTWO\n3\n4\n5\n6\n7\n8\n9\n10\neleven\n"),
+    "near_hunks": ("1\n2\n3\n4\n5\n", "1\nB\n3\nD\n5\n"),
+    "eol_added": ("a\nb", "a\nb\n"),
+    "eol_lost": ("a\nb\n", "a\nb"),
+    "no_eol_both": ("a\nb", "a\nB"),
+    "end_delete": ("a\nb\nc\n", "a\n"),
+}
+
+
+def test_ws_line_diff_finds_each_kind_of_change(doc, tmp_path):
+    """wsLineDiff turns the base's lines into the buffer's as hunks {a, al,
+    b, bl}: an insertion has al 0, a deletion bl 0, a modified line both; a
+    newline added or lost at the end is a change of the last line, as git sees
+    it. A seeded fuzz checks that the hunks rebuild the buffer from the base
+    and that the lines between them are equal."""
+    out = _node_json(tmp_path, "linediff.mjs", _ws_marks(doc) + """
+const pairs = %s;
+const res = {};
+for (const [name, [x, y]] of Object.entries(pairs)) {
+  res[name] = wsLineDiff(wsLineKeys(wsSplitLines(x)), wsLineKeys(wsSplitLines(y)));
+}
+// Fuzz: random edits of a random file over a small alphabet, so equal lines
+// recur and Myers has real choices to make.
+let seed = 7;
+const rnd = (n) => { seed = (seed * 1103515245 + 12345) %% 2147483648; return seed %% n; };
+const bad = [];
+for (let t = 0; t < 400; t++) {
+  const a = Array.from({ length: rnd(30) }, () => "abcde"[rnd(5)]);
+  const b = a.slice();
+  for (let e = rnd(6); e > 0; e--) {
+    const at = rnd(b.length + 1);
+    if (rnd(2) && b.length) b.splice(at, 1); else b.splice(at, 0, "abcdefg"[rnd(7)]);
+  }
+  const hs = wsLineDiff(a, b);
+  const out = [];
+  let i = 0, j = 0;
+  for (const h of hs) {
+    if (h.a - i !== h.b - j) { bad.push(["offset", a, b, hs]); break; }
+    for (; i < h.a; i++, j++) if (a[i] !== b[j]) bad.push(["equal", a, b, hs]);
+    out.push(...b.slice(h.b, h.b + h.bl));
+    i = h.a + h.al; j = h.b + h.bl;
+    if (!h.al && !h.bl) bad.push(["empty", a, b, hs]);
+  }
+  const rebuilt = [];
+  let k = 0;
+  for (const h of hs) { rebuilt.push(...a.slice(k, h.a), ...b.slice(h.b, h.b + h.bl)); k = h.a + h.al; }
+  rebuilt.push(...a.slice(k));
+  if (rebuilt.join() !== b.join()) bad.push(["rebuild", a, b, hs]);
+}
+res.fuzzBad = bad.slice(0, 3);
+console.log(JSON.stringify(res));
+""" % json.dumps(WS_DIFF_PAIRS))
+    H = lambda a, al, b, bl: {"a": a, "al": al, "b": b, "bl": bl}
+    assert out["insert"] == [H(2, 0, 2, 1)]
+    assert out["delete"] == [H(1, 2, 1, 0)]
+    assert out["modify"] == [H(1, 1, 1, 1)]
+    assert out["leading"] == [H(0, 0, 0, 1)]
+    assert out["trailing"] == [H(2, 0, 2, 1)]
+    assert out["identical"] == []
+    assert out["empty_base"] == [H(0, 0, 0, 2)]
+    assert out["emptied"] == [H(0, 2, 0, 0)]
+    assert out["two_hunks"] == [H(1, 1, 1, 1), H(10, 0, 10, 1)]
+    assert out["near_hunks"] == [H(1, 1, 1, 1), H(3, 1, 3, 1)]
+    assert out["eol_added"] == [H(1, 1, 1, 1)]
+    assert out["eol_lost"] == [H(1, 1, 1, 1)]
+    assert out["no_eol_both"] == [H(1, 1, 1, 1)]
+    assert out["end_delete"] == [H(1, 2, 1, 0)]
+    assert out["fuzzBad"] == []
+
+
+def _git(cwd, *args, stdin=None):
+    return subprocess.run(["git", "-C", str(cwd), *args], input=stdin,
+                          capture_output=True, check=False)
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_ws_hunk_patches_stage_one_change_with_real_git(doc, tmp_path):
+    """The tick's patch, built in node from the index's text and the buffer,
+    is what `git apply --cached` (the stage_hunk action) takes: for every hunk
+    of every pair, the patch checks out against the index, and applying it
+    leaves the index as the base with that one hunk taken from the buffer."""
+    out = _node_json(tmp_path, "patches.mjs", _ws_marks(doc) + """
+const pairs = %s;
+const res = {};
+for (const [name, [x, y]] of Object.entries(pairs)) {
+  const base = wsSplitLines(x), buf = wsSplitLines(y);
+  const hs = wsLineDiff(wsLineKeys(base), wsLineKeys(buf));
+  res[name] = hs.map((h) => {
+    // The base with only this hunk applied, as the patch should leave it.
+    const lines = base.lines.slice(0, h.a).concat(buf.lines.slice(h.b, h.b + h.bl),
+                                                   base.lines.slice(h.a + h.al));
+    const lastFromBuf = h.b + h.bl === buf.lines.length && h.a + h.al === base.lines.length;
+    const eol = lastFromBuf ? buf.eol : base.eol;
+    const want = lines.length ? lines.join("\\n") + (eol ? "\\n" : "") : "";
+    return { patch: wsHunkPatch("f.txt", base, buf, h), want };
+  });
+}
+console.log(JSON.stringify(res));
+""" % json.dumps(WS_DIFF_PAIRS))
+    checked = 0
+    for name, (base, _buf) in WS_DIFF_PAIRS.items():
+        for i, case in enumerate(out[name]):
+            repo = tmp_path / f"{name}-{i}"
+            repo.mkdir()
+            _git(repo, "init", "-q", ".")
+            (repo / "f.txt").write_text(base, encoding="utf-8", newline="")
+            assert _git(repo, "add", "f.txt").returncode == 0
+            patch = case["patch"].encode()
+            # The route's own call, less --recount, so the header's counts
+            # are checked rather than repaired.
+            chk = _git(repo, "apply", "--cached", "--check", "-", stdin=patch)
+            assert chk.returncode == 0, (name, case["patch"], chk.stderr.decode())
+            assert _git(repo, "apply", "--cached", "-", stdin=patch).returncode == 0
+            staged = _git(repo, "show", ":f.txt").stdout.decode()
+            assert staged == case["want"], (name, case["patch"])
+            checked += 1
+    assert checked == 15
+
+
+def test_ws_revert_edit_puts_one_hunk_back_in_the_buffer(doc, tmp_path):
+    """The cross's edit, as CodeMirror's {from, to, insert} in the buffer's
+    offsets, turns exactly that hunk back into the base's lines and leaves the
+    rest of the buffer, newline at the end included, as it was."""
+    out = _node_json(tmp_path, "revert.mjs", _ws_marks(doc) + """
+const pairs = %s;
+const res = {};
+for (const [name, [x, y]] of Object.entries(pairs)) {
+  const base = wsSplitLines(x), buf = wsSplitLines(y);
+  const hs = wsLineDiff(wsLineKeys(base), wsLineKeys(buf));
+  res[name] = hs.map((h) => {
+    const e = wsRevertEdit(base, buf, h);
+    const got = y.slice(0, e.from) + e.insert + y.slice(e.to);
+    // Reverting every hunk, last first, gives the base back.
+    return got;
+  });
+  let all = y;
+  for (const h of hs.slice().reverse()) {
+    const e = wsRevertEdit(base, buf, h);
+    all = all.slice(0, e.from) + e.insert + all.slice(e.to);
+  }
+  res[name + ":all"] = all;
+}
+console.log(JSON.stringify(res));
+""" % json.dumps(WS_DIFF_PAIRS))
+    for name, (base, buf) in WS_DIFF_PAIRS.items():
+        assert out[name + ":all"] == base, name
+    assert out["two_hunks"] == ["1\n2\n3\n4\n5\n6\n7\n8\n9\n10\neleven\n",
+                                "1\nTWO\n3\n4\n5\n6\n7\n8\n9\n10\n"]
+    assert out["near_hunks"] == ["1\n2\n3\nD\n5\n", "1\nB\n3\n4\n5\n"]
+
+
+def test_the_marks_key_shows_on_a_changed_editor_tab_and_lights_while_on(doc, tmp_path):
+    """The key on a workspace tab's chip is there for an editor tab whose file
+    carries a mod, ren or new mark, or whose buffer already differs from the
+    index, on a computer that reads the index; pressed while the marks are on.
+    Never for a clean file, a deleted one, a non-editor tab or without git."""
+    out = _node_json(tmp_path, "markskey.mjs", _ws_marks(doc) + """
 const mod = { text: "M", kind: "mod", dir: false };
-const cases = {
-  marked: wsModeKeyState({ kind: "editor", mode: "edit", dirty: false }, mod, true),
-  reader: wsModeKeyState({ kind: "reader", mode: "edit" }, { text: "A", kind: "new", dir: false }, true),
-  renamed: wsModeKeyState({ kind: "editor", mode: "edit" }, { text: "R", kind: "ren", dir: false }, true),
-  clean: wsModeKeyState({ kind: "editor", mode: "edit" }, null, true),
-  deleted: wsModeKeyState({ kind: "editor", mode: "edit" }, { text: "D", kind: "del", dir: false }, true),
-  folder: wsModeKeyState({ kind: "folder", mode: "edit" }, mod, true),
-  media: wsModeKeyState({ kind: "media", mode: "edit" }, mod, true),
-  nogit: wsModeKeyState({ kind: "editor", mode: "edit" }, mod, false),
-  dirty: wsModeKeyState({ kind: "editor", mode: "edit", dirty: true }, mod, true),
-  showing: wsModeKeyState({ kind: "editor", mode: "changes" }, mod, true),
-  cleared: wsModeKeyState({ kind: "editor", mode: "changes" }, null, false),
-  none: wsModeKeyState(null, null, true),
-};
-console.log(JSON.stringify(cases));
+const ed = (on) => ({ kind: "editor", marksOn: on });
+console.log(JSON.stringify({
+  on: wsMarksKeyState(ed(true), mod, true, 0),
+  off: wsMarksKeyState(ed(false), mod, true, 0),
+  renamed: wsMarksKeyState(ed(true), { text: "R", kind: "ren", dir: false }, true, 0).show,
+  added: wsMarksKeyState(ed(true), { text: "U", kind: "new", dir: false }, true, 0).show,
+  typing: wsMarksKeyState(ed(true), null, true, 2).show,
+  clean: wsMarksKeyState(ed(true), null, true, 0),
+  deleted: wsMarksKeyState(ed(true), { text: "D", kind: "del", dir: false }, true, 0).show,
+  folder: wsMarksKeyState(ed(true), { text: "", kind: "mod", dir: true }, true, 0).show,
+  reader: wsMarksKeyState({ kind: "reader", marksOn: true }, mod, true, 0).show,
+  media: wsMarksKeyState({ kind: "media" }, mod, true, 0).show,
+  nogit: wsMarksKeyState(ed(true), mod, false, 3).show,
+  none: wsMarksKeyState(null, mod, true, 0).show,
+}));
 """)
-    shown = {k: v["show"] for k, v in out.items()}
-    assert shown == {"marked": True, "reader": True, "renamed": True, "clean": False,
-                     "deleted": False, "folder": False, "media": False, "nogit": False,
-                     "dirty": True, "showing": True, "cleared": True, "none": False}
-    assert out["marked"] == {"show": True, "pressed": False, "disabled": False,
-                             "title": "Show the changes"}
-    assert out["dirty"] == {"show": True, "pressed": False, "disabled": True,
-                            "title": "Save to see changes"}
-    assert out["showing"] == {"show": True, "pressed": True, "disabled": False,
-                              "title": "Back to the file"}
+    assert out["on"] == {"show": True, "pressed": True, "title": "Hide the changes"}
+    assert out["off"] == {"show": True, "pressed": False, "title": "Show the changes"}
+    assert out["renamed"] and out["added"] and out["typing"]
+    assert out["clean"] == {"show": False, "pressed": False, "title": "Show the changes"}
+    for k in ("deleted", "folder", "reader", "media", "nogit", "none"):
+        assert out[k] is False, k
 
 
-def test_a_file_badge_opens_its_tab_in_changes(doc):
-    """A click on a file's letter, in the tree or on a listing row or tile,
-    opens that file's tab (or brings it forward) showing its changes; the rest
-    of the row still opens the text. The listing's is caught on capture so the
-    row's own open never runs, and a tile's badge, which takes no pointer at
-    rest, takes it once it is a link."""
+def test_the_marks_default_is_the_last_key_press_and_starts_on(doc, tmp_path):
+    """cfg.wsInlineDiff, key pockettui_ws_inline_diff: on before anyone has
+    pressed the key, then whatever the last press left. A badge's click opens
+    its file with marks on without changing it; a new editor tab otherwise
+    takes it."""
+    at = doc.index("  get wsInlineDiff()")
+    getset = doc[at:doc.index("\n", doc.index("  set wsInlineDiff(", at))]
+    out = _node_json(tmp_path, "marksdefault.mjs", """
+const store = {};
+const localStorage = { getItem: (k) => (k in store ? store[k] : null),
+                       setItem: (k, v) => { store[k] = String(v); } };
+const cfg = {
+""" + getset + """
+};
+const seen = [cfg.wsInlineDiff];
+cfg.wsInlineDiff = false; seen.push(cfg.wsInlineDiff, store.pockettui_ws_inline_diff);
+cfg.wsInlineDiff = true; seen.push(cfg.wsInlineDiff, store.pockettui_ws_inline_diff);
+console.log(JSON.stringify(seen));
+""")
+    assert out == [True, False, "0", True, "1"]
+    ws = _js_chunk(doc, "function makeWorkspace(")
+    assert ('marksOn: kind === "editor" && (opts && opts.marks ? true : cfg.wsInlineDiff),'
+            in ws)
+    key = ws[ws.index('key.addEventListener("click"'):]
+    assert "setMarks(tab, !tab.marksOn, true);" in key[:300]
+    sm = ws[ws.index("function setMarks("):]
+    assert sm.index("if (remember) cfg.wsInlineDiff = on;") < sm.index("\n  }\n")
+
+
+def test_a_tree_badge_opens_its_file_with_marks_and_the_changes_mode_is_gone(doc):
+    """Founder, 2026-10-24: a file's changes are shown in the file itself,
+    toggled from a tiny key on its tab, not as a separate view. A click on a
+    file's letter in the tree opens it with its marks on; the rest of the row
+    opens it as the default says. The Changes mode's key and view are gone."""
     ws = _js_chunk(doc, "function makeWorkspace(")
     tree = ws[ws.index('treeBody.addEventListener("click"'):]
-    assert (tree.index('ev.target.closest(".ws-badge.ws-changes-link")')
-            < tree.index("openChanges(node.path);")
+    assert (tree.index('ev.target.closest(".ws-badge.ws-marks-link")')
+            < tree.index("open(node.path, undefined, { marks: true });")
             < tree.index('if (node.type === "file") open(node.path);'))
-    listing = ws[ws.index('ctx.q("files-list").addEventListener("click"'):]
-    listing = listing[:listing.index("}, true);") + 9]
-    assert 'ev.target.closest(".git-badge.ws-changes-link")' in listing
-    assert "ev.stopPropagation();" in listing
-    assert "openChanges(joinPath(ctx.path(), row.dataset.name));" in listing
-    opener = ws[ws.index("async function openChanges("):]
-    opener = opener[:opener.index("\n  }\n")]
-    assert "byPath.get(path)" in opener and 'setMode(tab, "changes")' in opener
-    assert ".file-slot .git-badge.ws-changes-link { pointer-events: auto; }" in doc
+    for gone in ("ws-mode-key", "ws-changes", "wsModeKeyState", "openChanges",
+                 "setMode(", "ws-diff-body", "ws-diff-toast"):
+        assert gone not in doc, gone
+    # The marks read the index through the fs route's reserved ref, and the
+    # tick sends the diff pane's stage_hunk through its apply request.
+    assert '"&ref=%3A&root=" + encodeURIComponent(gitRoot)' in ws
+    assert 'action: "stage_hunk"' in ws and "wsHunkPatch(rel, m.base, m.buf, h)" in ws
+    assert 'hasCapStrict("git") && hasCapStrict("git_index")' in ws
+    # Only the workspace's editors carry them: the view factory takes a
+    # caller's extensions, and nothing but the workspace passes any.
+    assert "opts.extensions || []," in _js_chunk(doc, "function edMakeView(")
+    assert doc.count("extensions: [tab.marks.comp.of(") == 1
+    assert 'id="i-m-diff"' in doc
+
+
+def test_the_codemirror_bundle_exports_what_the_marks_build_on():
+    body = (REPO / "vendor" / "codemirror.js").read_text(encoding="utf-8")
+    assert body.startswith("/*! PocketTUI CodeMirror 6 vendor bundle")
+    assert "explore/build_codemirror_vendor.sh" in body[:1500]
+    head = body[body.index("var CM6="):][:3000]
+    for name in ("WidgetType", "StateField", "StateEffect", "gutter", "GutterMarker",
+                 "Decoration", "RangeSetBuilder", "Compartment", "EditorView", "vim"):
+        assert re.search(r"[{,]" + name + r":\(\)=>", head), name
+
+
+def test_an_expanded_explorer_keeps_the_listing_out_of_view_and_says_how_to_open(doc):
+    """Founder, 2026-10-24: the expanded explorer's file area must not show the
+    folder, which was confusing; with nothing open it says to pick a file. The
+    listing moves into a hidden holder (the same element, so the bar keeps
+    driving it) and back after the bar on a collapse; a group with no tabs
+    shows the hint under its band; of two groups whichever empties goes."""
+    ws = _js_chunk(doc, "function makeWorkspace(")
+    assert "folderTab" not in ws and "pinned" not in ws
+    assert 'const hold = el("div", { class: "ws-hold" });\n  hold.hidden = true;' in ws
+    on = ws[ws.index("function setOn("):]
+    on = on[:on.index("\n  }\n")]
+    assert "hold.appendChild(wrap);" in on and "wsEl.before(wrap);" in on
+    assert 'el("div", { class: "ws-empty" }, "Select a file in the tree to open it")' in ws
+    assert '.ws-group.ws-none .ws-empty { display: flex; }' in doc
+    un = ws[ws.index("function unsplit("):]
+    un = un[:un.index("\n  }\n")]
+    assert "const i = groups.findIndex((x) => !x.tabs.length);" in un
+    assert "groups.splice(i, 1);" in un
+    # A tree folder still takes the listing there, so the crumbs follow it.
+    tree = ws[ws.index('treeBody.addEventListener("click"'):]
+    assert "ctx.navigate(node.path);" in tree[:tree.index("\n  });\n")]
 
 
 @pytest.mark.parametrize("answer", [True, False])
