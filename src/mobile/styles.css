@@ -4404,6 +4404,12 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   .ws-tab-ghost > * { flex: 1; max-width: none; }
   .ws-tab-ghost .tab-name { color: var(--ink); }
+  /* A file carried from the tree: its icon and name, no close slot to keep, and
+     the row it came from dimmed as a dragged chip is. */
+  .ws-tab-ghost .ws-path-ghost { padding-left: 8px; gap: 5px; max-width: 220px; }
+  .ws-tab-ghost .ws-path-ghost .file-ic { flex: 0 0 15px; width: 15px; height: 15px; }
+  .ws-tab-ghost .ws-path-ghost .tab-name { padding: 0 12px 0 0; }
+  .ws-node.dragging { opacity: 0.5; }
   body.ws-tab-dragging { -webkit-user-select: none; user-select: none; cursor: grabbing; }
   .ws-drop-ins {
     position: absolute;
