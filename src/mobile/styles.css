@@ -3896,6 +3896,15 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   .files-mode-key svg { flex: 0 0 auto; width: 13px; height: 13px; }
   .files-mode-key:hover { background: color-mix(in srgb, var(--umber) 86%, var(--ink)); }
+  /* Expanded, the same key reads "Normal view" and is the way back rather than
+     the way in: a quiet tint in the accent, not the full fill, which sat too
+     loud at the head of a workspace the eye should rest in (founder,
+     2026-10-25). The pane root wears .ws-on exactly while it is expanded. */
+  .ws-on .files-mode-key {
+    background: var(--umber-soft);
+    color: var(--umber);
+  }
+  .ws-on .files-mode-key:hover { background: color-mix(in srgb, var(--umber) 20%, transparent); }
   /* Living inside #screen-term is what saves the diff pane a visibility rule;
      this pane is a screen of its own, so it says the same thing in a selector:
      it is only on view while the terminal it is docked to is. The plain
