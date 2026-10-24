@@ -831,6 +831,13 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_files_expanded", "1");
     else localStorage.removeItem("pockettui_files_expanded");
   },
+  // How wide the expanded explorer's folder tree was dragged (47-workspace.js),
+  // in pixels; 0 until it has been, which reads as the default width.
+  get wsTreeW() {
+    const v = parseInt(localStorage.getItem("pockettui_ws_tree_w"), 10);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  },
+  set wsTreeW(v) { localStorage.setItem("pockettui_ws_tree_w", String(v)); },
   // The same for the browser pane, kept apart from the explorer's: a page read
   // full width and a folder read full width are separate habits.
   get browserExpanded() { return localStorage.getItem("pockettui_browser_expanded") === "1"; },

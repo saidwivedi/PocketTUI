@@ -4004,6 +4004,244 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
 }
 
+/* ---- the explorer workspace (47-workspace.js) -------------------------------
+   The expanded pane as a code editor lays itself out: the folder tree, a seam
+   to drag it wider by, and the files as tabs with the listing pinned first.
+   Made only on a wide layout, and shown only while the pane is expanded; the
+   listing itself is moved into the first tab rather than drawn twice, so every
+   rule the docked listing has still holds inside it. */
+.ws { display: none; }
+@media (min-width: 768px) and (min-height: 500px) {
+  :is(#screen-files, #screen-files-2).ws-on > .ws {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    border-top: 1px solid var(--m-sep);
+    outline: none;
+  }
+  /* Held to its bounds here as well as by the drag, so a window made narrower
+     after the drag cannot leave the tree wider than the files beside it. */
+  .ws-tree {
+    flex: 0 0 clamp(140px, var(--ws-tree-w, 220px), 60%);
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--m-fill0);
+  }
+  /* The folder the tree is drawn from, in the sidebar's eyebrow scale. */
+  .ws-tree-head {
+    flex: 0 0 auto;
+    padding: 9px 12px 6px;
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--m-g2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ws-tree-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding-bottom: 24px;
+  }
+  /* A row per entry, indented by its depth: the chevron, the listing's own
+     icon, the name, and the git badge at the right. */
+  .ws-node {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 24px;
+    padding: 0 8px 0 calc(6px + var(--depth, 0) * 12px);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-2);
+    white-space: nowrap;
+    cursor: pointer;
+    -webkit-user-select: none; user-select: none;
+  }
+  .ws-node:hover { background: var(--m-fill); }
+  .ws-node.sel { background: var(--umber-tint); color: var(--ink); }
+  .ws-twisty {
+    flex: 0 0 12px;
+    width: 12px; height: 12px;
+    display: inline-flex;
+    color: var(--m-g2);
+    transition: transform 0.12s var(--ease-out);
+  }
+  .ws-twisty svg { width: 100%; height: 100%; }
+  .ws-node.open > .ws-twisty { transform: rotate(90deg); }
+  .ws-node .file-ic { width: 15px; height: 15px; }
+  .ws-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .ws-node.pending .file-ic { animation: files-wait 0.8s ease-in-out infinite alternate; }
+
+  /* The badges: the diff pane's letter on a file, and on a folder a dot in the
+     colour of the strongest change inside it (the colours are the shared
+     :is(.diff-file .badge, .git-badge, .ws-badge) rules). */
+  :is(.ws-badge, .git-badge) {
+    flex: 0 0 auto;
+    min-width: 1.1em;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    text-align: center;
+  }
+  :is(.ws-badge, .git-badge).dot::before {
+    content: "";
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    vertical-align: 1px;
+  }
+  /* On a tile, hung off the icon's top right corner on a chip of the card
+     colour, where the extension chip hangs off its bottom. */
+  .file-slot .git-badge {
+    position: absolute;
+    top: -3px; right: -6px;
+    min-width: 14px;
+    padding: 0 2px;
+    border-radius: 4px;
+    background: var(--card);
+    border: 1px solid var(--hair);
+    line-height: 1.4;
+    pointer-events: none;
+  }
+
+  /* The column seam's recess and grip (#side-gutter), standing between the
+     tree and the files. */
+  .ws-seam {
+    flex: 0 0 var(--side-gutter);
+    position: relative;
+    cursor: col-resize;
+    touch-action: none;
+    z-index: 1;
+    -webkit-user-select: none; user-select: none;
+    background: var(--paper-rec);
+    border-left: 1px solid var(--hair);
+    border-right: 1px solid var(--hair);
+    box-shadow: inset 1px 0 2px rgba(20, 16, 10, 0.05),
+                inset -1px 0 2px rgba(20, 16, 10, 0.05);
+    transition: background 0.18s var(--ease-out);
+  }
+  .ws-seam::before {
+    content: "";
+    position: absolute;
+    top: 0; bottom: 0;
+    left: -5px; right: -5px;
+  }
+  .ws-seam::after {
+    content: "";
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 3px; height: 36px;
+    margin: -18px 0 0 -1.5px;
+    border-radius: 2px;
+    background: var(--hair-strong);
+    transition: background 0.18s var(--ease-out);
+  }
+  .ws-seam:hover, .ws-seam.dragging { background: var(--umber-soft); }
+  .ws-seam:hover::after, .ws-seam.dragging::after { background: var(--umber); }
+
+  .ws-groups {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .ws-group {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  /* The browser's tab band (#browser-tabs, #browser-tab-row) and its chips. */
+  .ws-tabs {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: stretch;
+    height: 28px;
+    padding-right: 4px;
+    background: var(--m-fill);
+    border-bottom: 1px solid var(--m-sep);
+  }
+  .ws-tab-row {
+    flex: 0 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: stretch;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .ws-tab-row::-webkit-scrollbar { display: none; }
+  /* The folder tab has no cross to keep a slot for; its glyph leads instead. */
+  .ws-tabs .tab-chip.ws-pinned .tab-name { padding-left: 10px; }
+  .ws-tab-ic {
+    display: inline-flex;
+    width: 13px; height: 13px;
+    margin-right: 5px;
+    vertical-align: -2px;
+    color: var(--umber);
+  }
+  .ws-tab-ic svg { width: 100%; height: 100%; }
+  /* Unsaved edits: a dot where the cross sits, until the pointer is over the
+     tab and the cross is what it wants. */
+  .ws-dirty {
+    display: none;
+    position: absolute;
+    left: 10px; top: 50%;
+    width: 7px; height: 7px;
+    margin-top: -3.5px;
+    border-radius: 50%;
+    background: var(--ink-2);
+    pointer-events: none;
+  }
+  .ws-tabs .tab-chip.dirty:not(:hover):not(:focus-within) .ws-dirty { display: block; }
+  .ws-tabs .tab-chip.dirty:not(:hover):not(:focus-within) .tab-del { visibility: hidden; }
+
+  /* One body per tab, stacked, and only the active one drawn. */
+  .ws-body {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+  }
+  .ws-pane {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+  }
+  .ws-pane.on { display: flex; }
+  .ws-pane > .cm-editor { flex: 1; min-height: 0; }
+  .ws-pane > .cm-editor.cm-focused { outline: none; }
+  .ws-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .ws-media {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    overflow: auto;
+  }
+  .ws-media :is(img, video) {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+  .ws-frame { flex: 1; min-height: 0; width: 100%; border: 0; }
+}
+
 /* Stacked full-width choices — the action sheets are menus, not forms. */
 .sheet-menu { display: flex; flex-direction: column; gap: 8px; }
 .sheet-menu button {

@@ -29,9 +29,6 @@ CAPS_WITHOUT_RECORD = {
     # PDF page-one thumbnails are part of the grid previews record
     # (files.thumbnails, needs thumbs); the flag only says which tool draws them.
     "pdf_thumbs",
-    # /api/git/status is served ahead of the explorer workspace that paints its
-    # badges; the record arrives with that UI.
-    "git_status",
 }
 
 

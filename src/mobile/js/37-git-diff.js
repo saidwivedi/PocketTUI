@@ -179,6 +179,25 @@ function syncDiffOpen() {
   $("screen-term").classList.toggle("diff-open", diffAnyOpen());
 }
 
+// The letter and the colour a porcelain XY code earns in one of the two lists.
+// X is the index and Y the worktree, so each list reads its own half: a file
+// staged and then edited again is "MM" and says M in both, but one added to the
+// index and then deleted from disk is "AD" and truthfully says A above and D
+// below. `??` is untracked and shows as U — the two question marks are git's
+// shorthand for "I have never seen this", not a state anyone reads as one.
+// Out here rather than in the pane below, because the explorer's workspace
+// marks its rows with the same letters (47-workspace.js).
+function diffBadge(scope, code) {
+  if (code === "??") return { text: "U", kind: "new" };
+  const c = (scope === "staged" ? code[0] : code[1]) || "?";
+  return {
+    text: c,
+    kind: c === "A" ? "new" : c === "D" ? "del"
+        : c === "R" || c === "C" ? "ren"
+        : c === "U" ? "" : "mod",
+  };
+}
+
 // ------------------------------------------------------------
 // One pane
 // ------------------------------------------------------------
@@ -377,23 +396,6 @@ function applyDiffListH(px) {
 // ------------------------------------------------------------
 // The file list
 // ------------------------------------------------------------
-
-// The letter and the colour a porcelain XY code earns in one of the two lists.
-// X is the index and Y the worktree, so each list reads its own half: a file
-// staged and then edited again is "MM" and says M in both, but one added to the
-// index and then deleted from disk is "AD" and truthfully says A above and D
-// below. `??` is untracked and shows as U — the two question marks are git's
-// shorthand for "I have never seen this", not a state anyone reads as one.
-function diffBadge(scope, code) {
-  if (code === "??") return { text: "U", kind: "new" };
-  const c = (scope === "staged" ? code[0] : code[1]) || "?";
-  return {
-    text: c,
-    kind: c === "A" ? "new" : c === "D" ? "del"
-        : c === "R" || c === "C" ? "ren"
-        : c === "U" ? "" : "mod",
-  };
-}
 
 // The actions a file row or a block carries, as icon buttons: a green tick to
 // stage, a red cross to revert or discard, a neutral curved arrow to unstage —
