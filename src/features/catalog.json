@@ -1351,7 +1351,7 @@
   "id": "files.workspace",
   "group": "Files and code",
   "title": "Folder tree and file tabs",
-  "outcome": "Expand the file browser and it becomes a code editor's layout: the folder tree on the left at the width you drag it to, and files open as tabs on the right, with the folder itself as the first tab.",
+  "outcome": "Expand the file browser and it becomes a code editor's layout: the folder tree on the left at the width you drag it to, and the files you pick in the tree open as tabs on the right.",
   "where": "Docked file browser > expand key; drag the seam beside the tree; Ctrl+S saves the tab you are typing in, Escape shrinks the pane",
   "surface": "wide",
   "gates": [],
@@ -1359,7 +1359,7 @@
   "hidden": 2,
   "agent": null,
   "sources": [
-   "src/mobile/js/47-workspace.js:116-854",
+   "src/mobile/js/47-workspace.js:418-1660",
    "src/mobile/js/28-file-explorer.js:645-672"
   ],
   "shot": null,
@@ -1384,20 +1384,20 @@
   "show": true
  },
  {
-  "id": "files.workspace-changes",
+  "id": "files.workspace-inline-changes",
   "group": "Files and code",
-  "title": "A file's changes in its tab",
-  "outcome": "Flip a changed file's tab from its text to its git changes, the same blocks the diff pane shows, and stage or revert each one with its tick and cross; flip back to keep editing.",
-  "where": "Expanded file browser > a changed file's tab > Changes, or click the file's letter in the tree or the listing",
+  "title": "A file's changes marked in its text",
+  "outcome": "A changed file opened in a tab shows its git changes in the text as you type: added lines tinted green, removed lines in red where they were, a bar in the margin, and a tick and a cross on each change to stage it or put it back.",
+  "where": "Expanded file browser > a changed file's tab > the small +/- key beside its name, or click the file's letter in the tree",
   "surface": "wide",
   "gates": [],
-  "needs": "git",
+  "needs": "git_index",
   "hidden": 3,
   "agent": null,
   "sources": [
-   "src/mobile/js/47-workspace.js:173-195",
-   "src/mobile/js/47-workspace.js:1155-1327",
-   "src/mobile/js/37-git-diff.js:201-421"
+   "src/mobile/js/47-workspace.js:173-416",
+   "src/mobile/js/47-workspace.js:1416-1573",
+   "app.py:3624-3655"
   ],
   "shot": null,
   "show": true

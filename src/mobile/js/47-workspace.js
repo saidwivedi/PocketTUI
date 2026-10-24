@@ -4,8 +4,10 @@
 // When the docked explorer fills the main area (filesSetExpanded,
 // 28-file-explorer.js) it lays itself out the way a code editor does: the
 // folder tree on the left at a width the user drags, and the files on the right
-// as tabs, the folder listing itself pinned as the first of them. Rows in both
-// carry the working tree's git status as the diff pane draws it. Nothing here
+// as tabs. The tree carries the working tree's git status as the diff pane
+// draws it, and an editor tab can mark its file's changes in the text (the
+// inline change marks below). The folder listing is not one of the tabs: it
+// stays alive out of view, so the bar above keeps driving it. Nothing here
 // exists until the first expand: a phone, the pane at its docked width and the
 // full-screen explorer are the listing they always were.
 //
@@ -14,9 +16,10 @@
 // tabs always act on the listing they sit in. The pane loads before this
 // fragment, so it reaches makeWorkspace only from a press, never while it loads.
 //
-// The tabs are in groups: `groups[0]`, which holds the folder tab and so never
-// empties, and while a tab has been dragged down into it a second one under
-// the first, VS Code's split down, gone again when its last tab leaves.
+// The tabs are in groups: `groups[0]`, which may be empty and then says how to
+// open a file, and while a tab has been dragged down into it a second one
+// under the first, VS Code's split down. Whichever of the two empties goes,
+// and the other is the files again.
 
 // The tree's width, in pixels, before the user has dragged it, and the bounds
 // the drag is held to: wide enough for a name, never more than most of the pane.
@@ -147,18 +150,15 @@ function wsDropTarget(pt, geo) {
 
 // A tab's move in the model alone: out of its group's list, into `to`'s at
 // `index` (a slot counted with the tab still where it was, as the drop target
-// counts it; null for the end), never ahead of a pinned folder tab. The folder
-// tab itself does not move. Says where it went and, when the move left the
+// counts it; null for the end). Says where it went and, when the move left the
 // group it came from with no tabs, that group, for the caller to take away.
 function wsMoveTab(tab, to, index) {
-  if (tab.pinned) return null;
   const from = tab.group;
   const at = from.tabs.indexOf(tab);
   from.tabs.splice(at, 1);
   if (index == null) index = to.tabs.length;
   else if (from === to && index > at) index--;
-  const first = to.tabs[0] && to.tabs[0].pinned ? 1 : 0;
-  index = Math.max(first, Math.min(index, to.tabs.length));
+  index = Math.max(0, Math.min(index, to.tabs.length));
   to.tabs.splice(index, 0, tab);
   tab.group = to;
   return { index, emptied: from !== to && !from.tabs.length ? from : null };
@@ -170,29 +170,250 @@ function wsFolderLabel(path, home) {
   return baseName(path) || "/";
 }
 
-// A file tab can show its git changes in place of its text: the diff pane's
-// blocks with the same tick and cross (diffRender, 37-git-diff.js). What the
-// Changes key at the end of the tab band says for the group's front tab, from
-// the tab, its badge (wsMarkFor) and whether this computer answers the diff
-// routes at all. Shown for a text tab whose file is marked, and kept while the
-// tab is showing changes even once the mark has cleared, so there is always a
-// way back to the editor. Off while the editor holds unsaved edits: the hunks
-// are read from the disk, which does not have them yet.
-function wsModeKeyState(tab, mark, git) {
-  const text = !!tab && (tab.kind === "editor" || tab.kind === "reader");
-  const changes = text && tab.mode === "changes";
-  const marked = !!mark && !mark.dir && WS_RANK[mark.kind] !== undefined
-                 && mark.kind !== "del";
-  const show = text && (changes || (git && marked));
-  const disabled = show && !changes && !!tab.dirty;
-  return { show, pressed: changes, disabled,
-           title: disabled ? "Save to see changes"
-                : changes ? "Back to the file" : "Show the changes" };
+// ---- inline change marks -----------------------------------------------------
+// A changed file's editor tab shows its git changes inside the text, VS Code's
+// way: added lines tinted, removed lines as a block where they were, a bar in
+// the gutter, and a tick and a cross on each change to stage or revert it.
+// The base is the index's copy of the file (/api/fs/read with ref ":"), which
+// is what `git diff` compares the working tree with, so a staged change drops
+// out of the marks; the other side is the buffer, so the marks follow typing.
+// The functions here are plain arithmetic on lines, for node to test.
+
+// Past this many lines on either side the marks are off: the diff below is
+// Myers', whose cost grows with the product of the length and the changes.
+const WS_DIFF_MAX_LINES = 20000;
+// Edits past which Myers' trace (its memory is the square of this) is not
+// worth keeping; the changed middle is then one change, which is still true.
+const WS_DIFF_MAX_EDITS = 1000;
+// The unchanged lines a staged change carries on each side, as `git diff`.
+const WS_PATCH_CONTEXT = 3;
+
+// A text as its lines and whether it ends in a newline. "" is no lines at all,
+// and "a\n" one line, as git counts them.
+function wsSplitLines(text) {
+  const lines = String(text).split("\n");
+  const eol = lines[lines.length - 1] === "";
+  if (eol) lines.pop();
+  return { lines, eol };
 }
 
-// The actions that write the working tree rather than only the index: after
-// one of these the file on disk is not what an open editor was read from.
-const WS_DISK_ACTIONS = new Set(["revert_hunk", "apply_hunk", "discard_file"]);
+// What the diff compares: the lines, the last one marked when the file has no
+// newline after it, so that adding or losing that newline is a change of the
+// last line rather than nothing at all (git's "\ No newline at end of file").
+function wsLineKeys(t) {
+  if (t.eol || !t.lines.length) return t.lines;
+  const keys = t.lines.slice();
+  keys[keys.length - 1] += "\u0000";
+  return keys;
+}
+
+// The changes that turn line list `a` (the base) into `b` (the buffer), as
+// hunks {a, al, b, bl}: `al` lines of `a` from index `a` replaced by `bl`
+// lines of `b` from index `b`. A run of removed lines next to a run of added
+// ones is one hunk, a modified line; al 0 is a pure addition and bl 0 a pure
+// deletion. The common head and tail are trimmed before Myers' O(ND) walk.
+function wsLineDiff(a, b) {
+  let s = 0;
+  while (s < a.length && s < b.length && a[s] === b[s]) s++;
+  let ea = a.length, eb = b.length;
+  while (ea > s && eb > s && a[ea - 1] === b[eb - 1]) { ea--; eb--; }
+  const A = a.slice(s, ea), B = b.slice(s, eb);
+  const N = A.length, M = B.length;
+  if (!N && !M) return [];
+  if (!N || !M) return [{ a: s, al: N, b: s, bl: M }];
+  // Each step's furthest x on every diagonal, kept from -d to d for the walk
+  // back; a diff with more edits than the cap is the one change it trims to.
+  const max = N + M, off = max;
+  const v = new Int32Array(2 * max + 2);
+  const trace = [];
+  let found = -1;
+  for (let d = 0; d <= Math.min(max, WS_DIFF_MAX_EDITS) && found < 0; d++) {
+    trace.push(v.slice(off - d, off + d + 2));
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[off + k - 1] < v[off + k + 1])
+        ? v[off + k + 1] : v[off + k - 1] + 1;
+      let y = x - k;
+      while (x < N && y < M && A[x] === B[y]) { x++; y++; }
+      v[off + k] = x;
+      if (x >= N && y >= M) { found = d; break; }
+    }
+  }
+  if (found < 0) return [{ a: s, al: N, b: s, bl: M }];
+  // Back from the end: each step was one deletion or one insertion after a
+  // run of equal lines; collected in reverse, then read forwards as hunks.
+  const ops = [];
+  let x = N, y = M;
+  for (let d = found; d > 0; d--) {
+    const V = trace[d], at = (k) => V[k + d];   // V holds diagonals -d..d+1
+    const k = x - y;
+    const down = k === -d || (k !== d && at(k - 1) < at(k + 1));
+    const pk = down ? k + 1 : k - 1;
+    const px = at(pk), py = px - pk;
+    while (x > (down ? px : px + 1) && y > (down ? py + 1 : py)) { ops.push("="); x--; y--; }
+    if (down) { ops.push("+"); y--; } else { ops.push("-"); x--; }
+  }
+  while (x > 0 && y > 0) { ops.push("="); x--; y--; }
+  ops.reverse();
+  const hunks = [];
+  let i = s, j = s, h = null;
+  for (const op of ops) {
+    if (op === "=") { h = null; i++; j++; continue; }
+    if (!h) { h = { a: i, al: 0, b: j, bl: 0 }; hunks.push(h); }
+    if (op === "-") { h.al++; i++; } else { h.bl++; j++; }
+  }
+  return hunks;
+}
+
+// One hunk as the patch /api/git/apply stages with `git apply --cached`:
+// the base's lines with WS_PATCH_CONTEXT of context, in diffBlockPatch's
+// header and layout (37-git-diff.js). It applies to the base alone, which is
+// the index, so its new side starts where its old side does.
+function wsHunkPatch(path, base, buf, h) {
+  const pre = Math.max(0, h.a - WS_PATCH_CONTEXT);
+  const post = Math.min(base.lines.length, h.a + h.al + WS_PATCH_CONTEXT);
+  const lastA = base.lines.length - 1, lastB = buf.lines.length - 1;
+  const noEol = "\\ No newline at end of file";
+  const out = [];
+  const ctx = (i) => {
+    out.push(" " + base.lines[i]);
+    if (i === lastA && !base.eol) out.push(noEol);
+  };
+  for (let i = pre; i < h.a; i++) ctx(i);
+  for (let i = h.a; i < h.a + h.al; i++) {
+    out.push("-" + base.lines[i]);
+    if (i === lastA && !base.eol) out.push(noEol);
+  }
+  for (let i = h.b; i < h.b + h.bl; i++) {
+    out.push("+" + buf.lines[i]);
+    if (i === lastB && !buf.eol) out.push(noEol);
+  }
+  for (let i = h.a + h.al; i < post; i++) ctx(i);
+  const olds = (h.a - pre) + h.al + (post - h.a - h.al);
+  const news = (h.a - pre) + h.bl + (post - h.a - h.al);
+  // A side with no lines names the line before it, 0 for an empty file.
+  const at = (n) => (n ? pre + 1 : pre) + "," + n;
+  return ["diff --git a/" + path + " b/" + path, "--- a/" + path, "+++ b/" + path,
+          "@@ -" + at(olds) + " +" + at(news) + " @@"].concat(out).join("\n") + "\n";
+}
+
+// The buffer edit that puts one hunk back the way the base has it, as
+// CodeMirror's change {from, to, insert} in offsets of the buffer's text.
+function wsRevertEdit(base, buf, h) {
+  const starts = [0];
+  for (const line of buf.lines) starts.push(starts[starts.length - 1] + line.length + 1);
+  const end = buf.lines.length ? starts[buf.lines.length] - (buf.eol ? 0 : 1) : 0;
+  const pos = (i) => (i >= buf.lines.length ? end : starts[i]);
+  let insert = "";
+  for (let i = h.a; i < h.a + h.al; i++) {
+    insert += base.lines[i];
+    if (i < base.lines.length - 1 || base.eol) insert += "\n";
+  }
+  return { from: pos(h.b), to: pos(h.b + h.bl), insert };
+}
+
+// The tiny key on an editor tab's chip that shows and hides its marks. Shown
+// for a file with a mark of its own (an edit, a new file, a rename; a deleted
+// file has no text to mark) or with changes in the buffer the badges have not
+// caught up with yet, on a computer that can answer both the index read and
+// the apply route; lit in the accent while the marks are on.
+function wsMarksKeyState(tab, mark, git, hunks) {
+  const editor = !!tab && tab.kind === "editor";
+  const marked = !!mark && !mark.dir && WS_RANK[mark.kind] !== undefined
+                 && mark.kind !== "del";
+  const show = editor && !!git && (marked || hunks > 0);
+  const on = show && !!tab.marksOn;
+  return { show, pressed: on, title: on ? "Hide the changes" : "Show the changes" };
+}
+
+// The CodeMirror half of the marks, made once on first use: the editor bundle
+// loads lazily (ensureCM, 29-editor.js), and these classes extend its own.
+// `set` replaces a view's marks; between two counts the field moves them with
+// the edits, so they stay on their lines while the next count is pending.
+let wsMarksKitMemo = null;
+function wsMarksKit() {
+  if (wsMarksKitMemo) return wsMarksKitMemo;
+  const CM = window.CM6;
+  const set = CM.StateEffect.define();
+  const none = () => ({ deco: CM.Decoration.none, bars: new CM.RangeSetBuilder().finish() });
+  const field = CM.StateField.define({
+    create: none,
+    update(v, tr) {
+      for (const e of tr.effects) if (e.is(set)) return e.value;
+      return tr.docChanged ? { deco: v.deco.map(tr.changes), bars: v.bars.map(tr.changes) } : v;
+    },
+    provide: (f) => CM.EditorView.decorations.from(f, (v) => v.deco),
+  });
+  // The gutter's bar: an added line, a modified one, or where lines went.
+  class Bar extends CM.GutterMarker {
+    constructor(kind) { super(); this.kind = kind; }
+    eq(o) { return o.kind === this.kind; }
+    toDOM() { return el("span", { class: "cm-ws-bar " + this.kind }); }
+  }
+  const bars = { add: new Bar("add"), mod: new Bar("mod"), del: new Bar("del") };
+  // Removed lines, as a block where they were: read, not edited. `acts` makes
+  // the hunk's tick and cross, or is null on a read-only view.
+  class Gone extends CM.WidgetType {
+    constructor(lines, acts) { super(); this.lines = lines; this.acts = acts; }
+    eq(o) {
+      return o.acts === this.acts && o.lines.length === this.lines.length
+             && o.lines.every((l, i) => l === this.lines[i]);
+    }
+    toDOM() {
+      const box = el("div", { class: "cm-ws-del" });
+      for (const l of this.lines) box.appendChild(el("div", { class: "cm-ws-del-line" }, l || " "));
+      if (this.acts) box.appendChild(this.acts());
+      return box;
+    }
+    ignoreEvent() { return true; }
+  }
+  // The tick and cross alone, for a hunk that only adds: on its first line.
+  class Acts extends CM.WidgetType {
+    constructor(acts) { super(); this.acts = acts; }
+    eq(o) { return o.acts === this.acts; }
+    toDOM() { return this.acts(); }
+    ignoreEvent() { return true; }
+  }
+  // A view's marks for `hunks` of `base` against its text: the added lines'
+  // tint, the removed lines' block, the bars, and `acts` on each hunk's first
+  // line, which is the removed block when there is one.
+  function build(doc, hunks, base, acts) {
+    const ranges = [];
+    const gb = new CM.RangeSetBuilder();
+    for (const h of hunks) {
+      if (h.al) {
+        // Above the line that now follows the removed ones; past the last line
+        // of a file with no newline after it, under that line.
+        const above = h.b < doc.lines;
+        ranges.push(CM.Decoration.widget({
+          widget: new Gone(base.lines.slice(h.a, h.a + h.al), acts),
+          block: true, side: above ? -1 : 1,
+        }).range(above ? doc.line(h.b + 1).from : doc.length));
+      }
+      const kind = h.al && h.bl ? "mod" : h.bl ? "add" : "del";
+      for (let i = h.b; i < h.b + h.bl; i++) {
+        const from = doc.line(i + 1).from;
+        const head = i === h.b && !h.al && !!acts;
+        ranges.push(CM.Decoration.line({ class: "cm-ws-add" + (head ? " cm-ws-head" : "") })
+                      .range(from));
+        if (head) ranges.push(CM.Decoration.widget({ widget: new Acts(acts), side: 1 }).range(from));
+        gb.add(from, from, bars[kind]);
+      }
+      if (!h.bl) {
+        const from = doc.line(Math.min(h.b + 1, doc.lines)).from;
+        gb.add(from, from, bars.del);
+      }
+    }
+    return { deco: CM.Decoration.set(ranges, true), bars: gb.finish() };
+  }
+  // A view's extension: the field, its gutter, and `onDoc` told of each edit.
+  const ext = (onDoc) => [
+    field,
+    CM.gutter({ class: "cm-ws-gutter", markers: (view) => view.state.field(field).bars }),
+    CM.EditorView.updateListener.of((u) => { if (u.docChanged) onDoc(); }),
+  ];
+  wsMarksKitMemo = { set, build, ext };
+  return wsMarksKitMemo;
+}
 
 function makeWorkspace(ctx) {
   const root = ctx.root;
@@ -206,8 +427,13 @@ function makeWorkspace(ctx) {
   const groupsEl = el("div", { class: "ws-groups" });
   // Focusable as a whole, so a click on a tree row or the listing puts the
   // keyboard inside the pane and its Escape reaches the pane's handler.
+  // Where the listing waits while the workspace is on: the same element, kept
+  // in the document out of view, so the bar's crumbs, path field, view menu
+  // and actions, and the listing's own listeners, keep working on it.
+  const hold = el("div", { class: "ws-hold" });
+  hold.hidden = true;
   const wsEl = el("div", { class: "ws", tabindex: "-1" },
-    el("aside", { class: "ws-tree" }, treeHead, treeBody), seam, groupsEl);
+    el("aside", { class: "ws-tree" }, treeHead, treeBody), seam, groupsEl, hold);
   root.appendChild(wsEl);
 
   let on = false;
@@ -353,7 +579,8 @@ function makeWorkspace(ctx) {
 
   // The folder the listing is on, found in the tree: every folder from the
   // tree's root down to it opened (and listed, where it never was), then it
-  // is the selected row. A folder outside the tree's root is a new root.
+  // is the selected row unless a file's tab is in front, whose row that is. A
+  // folder outside the tree's root is a new root.
   async function reveal(path) {
     if (!treeRoot || !insideDir(path, treeRoot.path)) reRoot(path);
     const parts = path.slice(treeRoot.path.length).split("/").filter(Boolean);
@@ -365,7 +592,7 @@ function makeWorkspace(ctx) {
       if (!node || node.type !== "dir") return;
       if (!(await expand(node))) return;
     }
-    if (on && activeTab() === folderTab) select(path);
+    if (on && !frontTab()) select(path);
   }
 
   function insideDir(path, dir) {
@@ -378,21 +605,22 @@ function makeWorkspace(ctx) {
     const node = nodes.get(row.dataset.path);
     if (!node) return;
     if (node.type === "dir") {
-      // The chevron only opens or closes the branch. The name also lists the
-      // folder, which is the folder tab's job, so that tab comes to the front.
+      // The chevron only opens or closes the branch. The name also takes the
+      // listing there, out of view, so the bar's crumbs say where it is.
       if (ev.target.closest(".ws-twisty")) {
         if (node.expanded) setExpanded(node, false);
         else expand(node);
         return;
       }
-      activate(folderTab);
+      select(node.path);
       ctx.navigate(node.path);
       expand(node);
       return;
     }
-    // The file's letter opens its changes; the rest of the row its text.
-    if (node.type === "file" && ev.target.closest(".ws-badge.ws-changes-link")) {
-      openChanges(node.path);
+    // The file's letter opens it with its changes marked, whatever the
+    // tabs' default; the rest of the row opens it as the default says.
+    if (node.type === "file" && ev.target.closest(".ws-badge.ws-marks-link")) {
+      open(node.path, undefined, { marks: true });
       return;
     }
     if (node.type === "file") open(node.path);
@@ -473,52 +701,58 @@ function makeWorkspace(ctx) {
 
   function makeGroup() {
     const rowEl = el("div", { class: "ws-tab-row", role: "tablist" });
-    const bodyEl = el("div", { class: "ws-body" });
-    // The Changes key, after the strip at the band's right end, acting on
-    // whichever tab is in front of this group (wsModeKeyState).
-    const modeKey = el("button", { type: "button", class: "ws-mode-key",
-                                   "aria-pressed": "false" },
-      svgIcon("i-m-branch"), el("span", {}, "Changes"));
-    modeKey.hidden = true;
+    // What a group with no tabs says, under a band that stays, so the band's
+    // height and its drop slots do not move when the first file opens.
+    const bodyEl = el("div", { class: "ws-body" },
+      el("div", { class: "ws-empty" }, "Select a file in the tree to open it"));
     const g = { el: el("div", { class: "ws-group", "data-group": String(groups.length) },
-                    el("div", { class: "ws-tabs" }, rowEl, modeKey), bodyEl),
-                rowEl, bodyEl, modeKey, tabs: [], active: null };
-    modeKey.addEventListener("click", () => {
-      const t = g.active;
-      if (t) setMode(t, t.mode === "changes" ? "edit" : "changes");
-    });
+                    el("div", { class: "ws-tabs" }, rowEl), bodyEl),
+                rowEl, bodyEl, tabs: [], active: null };
     groupsEl.appendChild(g.el);
     groups.push(g);
+    syncEmpty(g);
     return g;
   }
+
+  function syncEmpty(g) { g.el.classList.toggle("ws-none", !g.tabs.length); }
 
   // The chip is made once and repainted in place, the browser strip's way
   // (renderBrowserTabs, 42-browser.js): the name, a dot while the file has
   // unsaved edits (the cross takes its place under the pointer), and the cross.
+  // An editor's chip also carries the key that shows and hides its file's
+  // change marks, after the name (wsMarksKeyState says when it is there).
   function makeChip(tab) {
     const name = el("button", { type: "button", class: "tab-name", role: "tab",
                                 title: tab.path || "" },
-      tab.pinned ? el("span", { class: "ws-tab-ic" }, svgIcon("i-m-folder")) : null,
       el("span", { class: "tab-word" }, tab.title));
     name.addEventListener("click", () => activate(tab));
-    const chip = el("div", { class: "tab-chip" + (tab.pinned ? " ws-pinned" : "") }, name);
-    if (!tab.pinned) {
-      chip.appendChild(el("span", { class: "ws-dirty", "aria-hidden": "true" }));
-      chip.appendChild(el("button", {
-        type: "button", class: "tab-del", "aria-label": "Close " + tab.title,
-        onclick: (e) => { e.stopPropagation(); close(tab); },
-      }, svgIcon("i-m-x")));
-      // The middle button closes a tab, as in every browser and editor; its
-      // press is kept from starting the browser's autoscroll.
-      chip.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });
-      chip.addEventListener("auxclick", (e) => {
-        if (e.button !== 1) return;
-        e.preventDefault();
-        close(tab);
+    const chip = el("div", { class: "tab-chip" }, name);
+    if (tab.kind === "editor") {
+      const key = el("button", { type: "button", class: "ws-marks-key",
+                                 "aria-pressed": "false" }, svgIcon("i-m-diff"));
+      key.hidden = true;
+      key.addEventListener("click", (e) => {
+        e.stopPropagation();
+        activate(tab);
+        setMarks(tab, !tab.marksOn, true);
       });
+      chip.appendChild(key);
     }
+    chip.appendChild(el("span", { class: "ws-dirty", "aria-hidden": "true" }));
+    chip.appendChild(el("button", {
+      type: "button", class: "tab-del", "aria-label": "Close " + tab.title,
+      onclick: (e) => { e.stopPropagation(); close(tab); },
+    }, svgIcon("i-m-x")));
+    // The middle button closes a tab, as in every browser and editor; its
+    // press is kept from starting the browser's autoscroll.
+    chip.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });
+    chip.addEventListener("auxclick", (e) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      close(tab);
+    });
     tab.chip = chip;
-    if (!tab.pinned) wireTabDrag(tab);
+    wireTabDrag(tab);
   }
 
   function paintChip(tab) {
@@ -528,15 +762,25 @@ function makeWorkspace(ctx) {
     tab.chip.classList.toggle("dirty", !!tab.dirty);
     tab.chip.firstElementChild.setAttribute("aria-selected",
                                              tab.group.active === tab ? "true" : "false");
+    const key = tab.chip.querySelector(".ws-marks-key");
+    if (key) {
+      const k = wsMarksKeyState(tab, markOf(tab.path, false), marksWanted(tab.path),
+                                tab.marks ? tab.marks.hunks.length : 0);
+      key.hidden = !k.show;
+      key.title = k.title;
+      key.setAttribute("aria-label", k.title);
+      key.setAttribute("aria-pressed", k.pressed ? "true" : "false");
+      tab.chip.classList.toggle("ws-keyed", k.show);
+    }
   }
 
   function addTab(g, props) {
-    // `mode` is "edit" or "changes" (setMode); `changes` the view of the
-    // latter, made the first time it is asked for.
+    // `marksOn` is whether an editor shows its change marks, `marks` what
+    // they are drawn from (the inline change marks below).
     const tab = Object.assign({ id: ++tabSeq, path: "", kind: "editor", title: "",
-                                dirty: false, pinned: false, chip: null, body: null,
+                                dirty: false, chip: null, body: null,
                                 rec: null, mesh: null, closed: false, group: g,
-                                mode: "edit", changes: null }, props);
+                                marksOn: false, marks: null }, props);
     tab.body = el("div", { class: "ws-pane ws-" + tab.kind });
     makeChip(tab);
     g.tabs.push(tab);
@@ -544,10 +788,15 @@ function makeWorkspace(ctx) {
     g.bodyEl.appendChild(tab.body);
     if (tab.path) byPath.set(tab.path, tab);
     paintChip(tab);
+    syncEmpty(g);
     return tab;
   }
 
-  function activeTab() { return groups[0].active; }
+  // The tab in front of the group a file would open into.
+  function frontTab() {
+    const g = focusGroup || groups[0];
+    return g ? g.active : null;
+  }
 
   function activate(tab) {
     const g = tab.group;
@@ -561,8 +810,9 @@ function makeWorkspace(ctx) {
     if (was && was !== tab) pauseMedia(was);
     if (tab.rec) tab.rec.view.requestMeasure();
     if (tab.mesh) tab.mesh.resize();
-    select(tab.pinned ? ctx.path() : tab.path);
-    syncModeKeys();
+    select(tab.path);
+    // The index can have moved while the tab was behind another.
+    if (tab.marksOn && tab.marks) loadBase(tab);
     // A strip wider than the group can leave the tab being switched to off its
     // end; scrolled to only then.
     requestAnimationFrame(() => {
@@ -578,17 +828,20 @@ function makeWorkspace(ctx) {
     if (v) v.pause();
   }
 
-  const folderTab = addTab(makeGroup(), { kind: "folder", pinned: true,
-                                          title: wsFolderLabel(ctx.path(), ctx.home()) });
-  activate(folderTab);
+  makeGroup();
 
   // A file in a tab: the one already open if it is, otherwise a new tab at the
   // end of the strip, filled once what it shows has been read. `kind` is a
   // caller's say over the tap rules (the action sheet's Edit on a page), and
-  // `opts.create` a file the first save will make.
+  // `opts.create` a file the first save will make, and `opts.marks` an editor
+  // that shows its change marks whatever the tabs' default (a badge's click).
   async function open(path, kind, opts) {
     const have = byPath.get(path);
-    if (have) { activate(have); return have; }
+    if (have) {
+      activate(have);
+      if (opts && opts.marks && have.kind === "editor" && !have.marksOn) setMarks(have, true);
+      return have;
+    }
     kind = kind || wsKindOf(path);
     const ref = ctx.refFor(path);
     // A page renders in a tab of the browser's (openRendered): it is served
@@ -604,7 +857,10 @@ function makeWorkspace(ctx) {
       return null;
     }
     if (kind === "pdf" && demoApiOn()) { toast("Not in the demo"); return null; }
-    const tab = addTab(focusGroup || groups[0], { path, kind, title: baseName(path) });
+    const tab = addTab(focusGroup || groups[0], {
+      path, kind, title: baseName(path),
+      marksOn: kind === "editor" && (opts && opts.marks ? true : cfg.wsInlineDiff),
+    });
     activate(tab);
     const ok = await fillTab(tab, opts || {}).catch((e) => { dbg("ws tab failed:", e); return false; });
     if (!ok && !tab.closed) drop(tab);
@@ -624,13 +880,19 @@ function makeWorkspace(ctx) {
       }
       try { await ensureCM(); } catch (e) { toast("Couldn't load the editor"); return false; }
       if (tab.closed) return true;
+      // The marks live in a compartment of their own, so the chip's key adds
+      // and removes them without touching the theme, Wrap or Vim.
+      tab.marks = { comp: new window.CM6.Compartment(), ext: null, acts: null,
+                    base: null, buf: null, hunks: [], timer: 0, seq: 0, sig: null };
       tab.rec = edMakeView({
         host: tab.body, path, content, readOnly,
-        onDirty: (rec, dirty) => { tab.dirty = dirty; paintChip(tab); syncModeKeys(); },
+        onDirty: (rec, dirty) => { tab.dirty = dirty; paintChip(tab); },
         onSave: () => save(tab),
         onQuit: (rec, bang) => close(tab, bang),
+        extensions: [tab.marks.comp.of(tab.marksOn ? marksExt(tab) : [])],
       });
       tab.rec.hash = hash;
+      if (tab.marksOn) loadBase(tab);
       if (cfg.editorVimOn) { edDefineVimEx(); edLoadVimrc(); }
       if (lossy) toast("Not valid UTF-8 — opened read-only");
       return true;
@@ -702,7 +964,7 @@ function makeWorkspace(ctx) {
   // A tab's own close. A file with unsaved edits asks first, in the app's own
   // dialog; `force` is vim's :q!, which has already said discard.
   async function close(tab, force) {
-    if (tab.pinned || tab.closed) return;
+    if (tab.closed) return;
     if (tab.dirty && !force) {
       const ok = await appConfirm("The edits since the last save will be lost.",
         { title: "Discard your unsaved changes to " + tab.title + "?",
@@ -718,6 +980,7 @@ function makeWorkspace(ctx) {
   function drop(tab) {
     if (tab.closed) return;
     tab.closed = true;
+    if (tab.marks) clearTimeout(tab.marks.timer);
     if (tab.rec) { edDropView(tab.rec); tab.rec = null; }
     if (tab.mesh) { tab.mesh.destroy(); tab.mesh = null; }
     const v = tab.body.querySelector("video");
@@ -733,6 +996,7 @@ function makeWorkspace(ctx) {
       const next = g.tabs[at] || g.tabs[at - 1];
       if (next) activate(next);
     }
+    syncEmpty(g);
     if (!g.tabs.length) unsplit();
   }
 
@@ -753,7 +1017,6 @@ function makeWorkspace(ctx) {
   }
 
   function splitDown(tab) {
-    if (tab.pinned) return;
     if (groups.length < 2) {
       const g = makeGroup();
       g.el.before(groupSeam);
@@ -763,11 +1026,14 @@ function makeWorkspace(ctx) {
     moveTab(tab, groups[1], null);
   }
 
-  // The second group goes once nothing is left in it; the first never does.
+  // Of two groups, the one nothing is left in goes, the second or the first,
+  // and the other is the files again; a lone group stays, empty or not.
   function unsplit() {
-    const g = groups[1];
-    if (!g || g.tabs.length) return;
-    groups.splice(1, 1);
+    if (groups.length < 2) return;
+    const i = groups.findIndex((x) => !x.tabs.length);
+    if (i < 0) return;
+    const g = groups[i];
+    groups.splice(i, 1);
     g.el.remove();
     groupSeam.remove();
     groupsEl.classList.remove("ws-two");
@@ -795,6 +1061,8 @@ function makeWorkspace(ctx) {
     }
     activate(tab);
     focusGroup = g;
+    syncEmpty(from);
+    syncEmpty(g);
     if (moved.emptied) unsplit();
     relayout();
   }
@@ -856,7 +1124,7 @@ function makeWorkspace(ctx) {
     chip.addEventListener("pointerdown", (e) => {
       if (tabDrag || !e.isPrimary) return;
       if (e.pointerType === "mouse" && e.button !== 0) return;
-      if (e.target.closest(".tab-del")) return;
+      if (e.target.closest(".tab-del, .ws-marks-key")) return;
       const touch = e.pointerType !== "mouse";
       tabDrag = { tab, id: e.pointerId, touch, x: e.clientX, y: e.clientY,
                   lastX: e.clientX, lastY: e.clientY,
@@ -927,10 +1195,6 @@ function makeWorkspace(ctx) {
     if (!t) return null;
     // Dropped on the body of its own group, a tab stays where it is.
     if (t.kind === "append" && groups[t.group] === tabDrag.tab.group) return null;
-    if (t.kind === "insert") {
-      const first = groups[t.group].tabs[0];
-      if (first && first.pinned) t.index = Math.max(1, t.index);
-    }
     return t;
   }
 
@@ -943,7 +1207,8 @@ function makeWorkspace(ctx) {
       const band = g.rowEl.parentNode;
       const tabs = g.tabs;
       const x = t.index < tabs.length ? tabs[t.index].chip.getBoundingClientRect().left
-                                      : tabs[tabs.length - 1].chip.getBoundingClientRect().right;
+              : tabs.length ? tabs[tabs.length - 1].chip.getBoundingClientRect().right
+              : g.rowEl.getBoundingClientRect().left + 2;
       insBar.style.left = Math.round(x - band.getBoundingClientRect().left - 1) + "px";
       if (insBar.parentNode !== band) band.appendChild(insBar);
       return;
@@ -1008,7 +1273,7 @@ function makeWorkspace(ctx) {
 
   function fileTabs() {
     const out = [];
-    for (const g of groups) for (const t of g.tabs) if (!t.pinned) out.push(t);
+    for (const g of groups) for (const t of g.tabs) out.push(t);
     return out;
   }
 
@@ -1037,8 +1302,8 @@ function makeWorkspace(ctx) {
   // up to a minute. A write made here asks at once.
 
   let marks = new Map();
-  // The repository the marks are about, as status named it, and its rows by
-  // repo-relative path: what a tab showing changes asks the diff routes with.
+  // The repository the badges are about, as status named it, and its rows by
+  // repo-relative path: what an editor's change marks are read and staged by.
   let gitRoot = "";
   let gitFiles = new Map();
   let pollTimer = null, pollBusy = false, pollAgain = false;
@@ -1109,16 +1374,13 @@ function makeWorkspace(ctx) {
     const m = markOf(node.path, isDir);
     node.badgeEl.className = "ws-badge" + (m ? " " + m.kind + (isDir ? " dot" : "") : "");
     node.badgeEl.textContent = m && !isDir ? m.text : "";
-    badgeTitle(node.badgeEl, node.path, m, isDir);
-  }
-
-  // A file's letter is also the way to its changes (openChanges), and says so
-  // under the pointer.
-  function badgeTitle(b, path, m, isDir) {
-    const live = !!m && !isDir && changesFor(path);
-    b.classList.toggle("ws-changes-link", live);
-    if (live) b.title = "Show the changes";
-    else b.removeAttribute("title");
+    // A file's letter is also the way to it with its changes marked, and says
+    // so under the pointer.
+    const live = !!m && !isDir && m.kind !== "del" && wsKindOf(node.path) === "editor"
+                 && marksWanted(node.path);
+    node.badgeEl.classList.toggle("ws-marks-link", live);
+    if (live) node.badgeEl.title = "Open with its changes marked";
+    else node.badgeEl.removeAttribute("title");
   }
 
   // The listing's rows and tiles, by the name fileRow and fileTile stamp on
@@ -1137,200 +1399,185 @@ function makeWorkspace(ctx) {
       }
       b.className = "git-badge " + m.kind + (isDir ? " dot" : "");
       b.textContent = isDir ? "" : m.text;
-      badgeTitle(b, joinPath(dir, row.dataset.name), m, isDir);
     }
   }
 
   function paintAll() {
     for (const n of nodes.values()) paintNode(n);
     paintListing();
-    syncModeKeys();
-    // A tab showing changes is a view of the repo the poll has just read
-    // again; its own answer is compared before anything is redrawn.
-    for (const g of groups) {
-      if (g.active && g.active.mode === "changes") loadChanges(g.active);
+    // An editor's marks compare with the index, which the poll has just seen
+    // through status: a file whose row changed (staged from the terminal,
+    // committed, new) reads its base again.
+    for (const t of fileTabs()) {
+      if (t.marksOn && t.marks && t.rec && t.marks.sig !== marksSig(t.path)) loadBase(t);
+      else if (t.kind === "editor") paintChip(t);
     }
   }
 
-  // ---- a tab's changes -------------------------------------------------------
-  // The editor and the reader can swap their text for the file's git changes:
-  // the diff pane's blocks, drawn by its renderer with its tick, cross and
-  // unstage (37-git-diff.js), the working tree's half under Changes and the
-  // index's under Staged. The Changes key at the end of the band toggles it
-  // for the tab in front, and a file's badge in the tree or the listing opens
-  // the file straight into it. Asked of the diff routes by the repository the
-  // badges came from and the file's path inside it, so no session is involved.
-
-  // Whether the file at `path` can show its changes here: a text file (a page
-  // opens as its source for this) inside the repository the marks are about,
-  // on a computer that answers the diff routes.
-  function changesFor(path) {
-    const kind = wsKindOf(path);
-    return (kind === "editor" || kind === "reader" || kind === "html")
-           && !!relPath(path) && hasCapStrict("git");
-  }
+  // ---- inline change marks -------------------------------------------------
+  // An editor tab's own (wsLineDiff and the rest above): tab.marksOn says
+  // whether it shows them, tab.marks holds their compartment, the base they
+  // compare with (the index's copy, empty for a file git has never seen) and
+  // the hunks last counted, recounted 150 ms after the typing stops.
 
   // The path git knows `path` by, or "" for one outside the repository.
   function relPath(path) {
     return gitRoot && path.startsWith(gitRoot + "/") ? path.slice(gitRoot.length + 1) : "";
   }
 
-  function syncModeKeys() {
-    for (const g of groups) {
-      const t = g.active;
-      const text = !!t && (t.kind === "editor" || t.kind === "reader");
-      const s = wsModeKeyState(t, text ? markOf(t.path, false) : null,
-                               text && !!relPath(t.path) && hasCapStrict("git"));
-      const key = g.modeKey;
-      key.hidden = !s.show;
-      key.disabled = s.disabled;
-      key.title = s.title;
-      key.setAttribute("aria-pressed", s.pressed ? "true" : "false");
+  // Whether `path` can have marks here: inside the repository the badges are
+  // about, not a ref's read-only copy, on a computer that reads the index and
+  // takes a staged hunk.
+  function marksWanted(path) {
+    return !!relPath(path) && !ctx.refFor(path)
+           && hasCapStrict("git") && hasCapStrict("git_index");
+  }
+
+  // What says a base read is out of date: the repository and the file's row
+  // in the last status answer.
+  function marksSig(path) {
+    const rel = relPath(path);
+    return gitRoot + "\n" + JSON.stringify((rel && gitFiles.get(rel)) || null);
+  }
+
+  function marksExt(tab) {
+    const m = tab.marks;
+    if (!m.ext) m.ext = wsMarksKit().ext(() => {
+      clearTimeout(m.timer);
+      m.timer = setTimeout(() => drawMarks(tab), 150);
+    });
+    return m.ext;
+  }
+
+  // The chip's key, or a badge's click: marks on or off for this tab, and with
+  // `remember` the default for the next changed file opened.
+  function setMarks(tab, on, remember) {
+    if (remember) cfg.wsInlineDiff = on;
+    tab.marksOn = on;
+    const m = tab.marks;
+    if (m && tab.rec && !tab.closed) {
+      clearTimeout(m.timer);
+      m.hunks = [];
+      tab.rec.view.dispatch({ effects: m.comp.reconfigure(on ? marksExt(tab) : []) });
+      if (on) loadBase(tab);
     }
+    paintChip(tab);
   }
 
-  // The tab's text or its changes. Changes are refused while the editor holds
-  // edits the disk has not seen; back to the text, the editor is told its box
-  // is back so it measures again.
-  function setMode(tab, mode) {
-    if (tab.closed || tab.mode === mode) { syncModeKeys(); return; }
-    if (mode === "changes" && tab.dirty) { toast("Save to see changes"); return; }
-    tab.mode = mode;
-    tab.body.classList.toggle("ws-show-changes", mode === "changes");
-    if (mode === "changes") {
-      if (!tab.changes) makeChanges(tab);
-      tab.changes.key = "";
-      loadChanges(tab);
-    } else if (tab.rec) {
-      tab.rec.view.requestMeasure();
-    }
-    syncModeKeys();
-  }
-
-  // The view: the blocks in a scroller, and the diff pane's toast over its
-  // foot for Undo and for git's refusals.
-  function makeChanges(tab) {
-    const body = el("div", { class: "ws-diff-body" });
-    const toastEl = el("div", { class: "ws-diff-toast", role: "status" });
-    tab.changes = { body, toastEl, key: "", seq: 0 };
-    tab.body.appendChild(el("div", { class: "ws-changes" }, body, toastEl));
-  }
-
-  // A badge's click: the file's tab, made if it is not open, in front and
-  // showing its changes.
-  async function openChanges(path) {
-    const tab = byPath.get(path)
-                || await open(path, wsKindOf(path) === "html" ? "editor" : undefined);
-    if (!tab || tab.closed) return;
-    activate(tab);
-    if (tab.kind === "editor" || tab.kind === "reader") setMode(tab, "changes");
-  }
-
-  // Both halves of the file's diff, drawn when either differs from what is on
-  // screen. The number guards against an older answer landing last.
-  async function loadChanges(tab) {
-    const c = tab.changes;
-    if (!c || tab.closed || tab.mode !== "changes") return;
-    const root = gitRoot, rel = relPath(tab.path);
-    if (!rel || !hasCapStrict("git")) {
-      if (c.key !== "none") {
-        c.key = "none";
-        c.body.textContent = "";
-        c.body.appendChild(diffNote("No changes in " + baseName(tab.path)));
-      }
-      return;
-    }
-    const seq = ++c.seq;
-    const ask = (scope) => diffFetchJSON("api/git/diff?root=" + encodeURIComponent(root)
-      + "&path=" + encodeURIComponent(rel) + "&scope=" + scope);
-    let un, st;
-    try {
-      [un, st] = await Promise.all([ask("unstaged"), ask("staged")]);
-    } catch (e) {
-      dbg("ws changes failed:", e);
-      return;
-    }
-    if (seq !== c.seq || tab.closed || tab.mode !== "changes" || !un || !st) return;
-    const key = root + "\n" + un.body + "\n" + st.body;
-    if (key === c.key) return;
-    c.key = key;
-    drawChanges(tab, root, rel, un.data, st.data);
-  }
-
-  // The working tree's half, then the index's, each under the diff pane's
-  // eyebrow with the file's own actions beside it, and a half with nothing in
-  // it left out. With neither, the pane's empty state, and the key stays up to
-  // go back to the text.
-  function drawChanges(tab, root, rel, un, st) {
-    const c = tab.changes;
-    const keep = c.body.scrollTop;
-    c.body.textContent = "";
-    // Status lists every changed tracked file by name; one it does not list is
-    // inside a folder git has never seen, which is untracked as a whole.
-    const f = gitFiles.get(rel) || { path: rel, status: "??" };
-    const h = {
-      apply: (payload) => applyChange(tab, root, payload),
-      toast: (text, label, run) => diffToastIn(c.toastEl, text, label, run),
-    };
-    let any = false;
-    for (const [scope, label, data] of [["unstaged", "Changes", un], ["staged", "Staged", st]]) {
-      if (!data.diff && !data.binary && !data.error) continue;
-      any = true;
-      const lines = el("div", { class: "ws-diff-lines" });
-      diffRender(lines, data, scope, rel, h);
-      c.body.appendChild(el("div", { class: "diff-section" },
-        el("div", { class: "diff-eyebrow" }, el("span", {}, label),
-           diffFileActs(scope, f, h)),
-        lines));
-    }
-    if (!any) c.body.appendChild(diffNote("No changes in " + baseName(tab.path)));
-    c.body.scrollTop = keep;
-  }
-
-  // One action from the view. Whatever git said, the view, the badges and,
-  // where the working tree was written, the text behind the view are now
-  // behind the repo: the view asks again, the poll runs at once, and an editor
-  // with nothing unsaved is read from the disk again, as a reader is redrawn,
-  // so the key back shows the file as it now is.
-  async function applyChange(tab, root, payload) {
-    const c = tab.changes;
-    try {
-      return await diffApplyTo(root, payload, (text) => diffToastIn(c.toastEl, text));
-    } finally {
-      c.key = "";
-      kickStatus();
-      loadChanges(tab);
-      if (WS_DISK_ACTIONS.has(payload.action) && !tab.closed) {
-        if (tab.rec && !tab.dirty) edViewReload(tab.rec);
-        else if (tab.kind === "reader") refillReader(tab);
+  // The index's copy of the file. Not in the index: a file git has never seen
+  // (badged new) is all added; anything else not there (ignored, or a read
+  // that failed) has no marks rather than a wrong whole-file green.
+  async function loadBase(tab) {
+    const m = tab.marks;
+    if (!m || tab.closed || !tab.marksOn) return;
+    const seq = ++m.seq;
+    m.sig = marksSig(tab.path);
+    let base = null;
+    if (marksWanted(tab.path)) {
+      try {
+        const r = await fetch(apiURL("api/fs/read?path=" + encodeURIComponent(tab.path)
+          + "&ref=%3A&root=" + encodeURIComponent(gitRoot)),
+          { cache: "no-store", headers: authHeaders() });
+        if (r.status === 401) { rejectToken(); return; }
+        if (r.ok) {
+          const data = await r.json();
+          base = Object.assign(wsSplitLines(data.content), { tracked: true });
+        } else if (r.status === 404) {
+          const mk = markOf(tab.path, false);
+          if (mk && mk.kind === "new") base = { lines: [], eol: true, tracked: false };
+        }
+      } catch (e) {
+        dbg("ws marks base failed:", e);
       }
     }
+    if (seq !== m.seq || tab.closed || !tab.marksOn) return;
+    m.base = base;
+    drawMarks(tab);
   }
 
-  async function refillReader(tab) {
-    const old = tab.body.querySelector(":scope > .ws-scroll");
-    if (old) old.remove();
-    await fillTab(tab, {}).catch((e) => dbg("ws reader refill failed:", e));
+  // Count the hunks between the base and the buffer and draw them.
+  function drawMarks(tab) {
+    const m = tab.marks;
+    if (!m || !tab.rec || tab.closed) return;
+    clearTimeout(m.timer);
+    m.timer = 0;
+    if (!tab.marksOn) return;
+    const view = tab.rec.view;
+    let hunks = [];
+    if (m.base) {
+      const buf = wsSplitLines(view.state.doc.toString());
+      if (Math.max(buf.lines.length, m.base.lines.length) > WS_DIFF_MAX_LINES) {
+        toast("Too long to mark its changes");
+        setMarks(tab, false);
+        return;
+      }
+      hunks = wsLineDiff(wsLineKeys(m.base), wsLineKeys(buf));
+      m.buf = buf;
+    }
+    m.hunks = hunks;
+    if (!tab.rec.readOnly && !m.acts) m.acts = () => hunkActs(tab);
+    view.dispatch({ effects: wsMarksKit().set.of(
+      wsMarksKit().build(view.state.doc, hunks, m.base, tab.rec.readOnly ? null : m.acts)) });
+    paintChip(tab);
   }
 
-  // A badge in the listing opens the changes rather than the row's own open;
-  // on capture, so the row's click never sees it. Any other press on the row
-  // is the row's.
-  ctx.q("files-list").addEventListener("click", (ev) => {
-    if (!on) return;
-    const b = ev.target.closest(".git-badge.ws-changes-link");
-    const row = b && b.closest("[data-name]");
-    if (!row) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    openChanges(joinPath(ctx.path(), row.dataset.name));
-  }, true);
+  // A hunk's tick and cross, the diff pane's (diffActs, 37-git-diff.js). Which
+  // hunk they act on is read from where they sit when pressed, so a box kept
+  // across a recount still acts on its own lines.
+  function hunkActs(tab) {
+    const box = diffActs([
+      ["Stage this change", "i-check", "ok", () => hunkAct(tab, box, "stage")],
+      ["Revert this change", "i-x", "danger", () => hunkAct(tab, box, "revert")],
+    ]);
+    box.classList.add("cm-ws-acts");
+    // The press stays off the editor, which would otherwise move its caret.
+    box.addEventListener("mousedown", (e) => e.preventDefault());
+    return box;
+  }
+
+  // The hunk whose first line `line` (1-based) is: its removed block's line,
+  // or its first added line.
+  function hunkAt(doc, hunks, line) {
+    return hunks.find((h) => (h.al ? Math.min(h.b + 1, doc.lines) : h.b + 1) === line) || null;
+  }
+
+  async function hunkAct(tab, node, what) {
+    const m = tab.marks, view = tab.rec && tab.rec.view;
+    if (!m || !view || !m.base) return;
+    let pos;
+    try { pos = view.posAtDOM(node); } catch (e) { return; }
+    // A recount still pending first, so the hunks are the text's.
+    if (m.timer) drawMarks(tab);
+    const h = hunkAt(view.state.doc, m.hunks, view.state.doc.lineAt(pos).number);
+    if (!h) return;
+    if (what === "revert") {
+      // The buffer, not the disk: a clean editor writes at once, as the diff
+      // pane's revert writes the file; with unsaved edits it stays unsaved.
+      const clean = !tab.dirty;
+      view.dispatch({ changes: wsRevertEdit(m.base, m.buf, h) });
+      if (clean) await save(tab);
+      return;
+    }
+    const rel = relPath(tab.path);
+    if (m.base.tracked) {
+      await diffApplyTo(gitRoot, { path: rel, action: "stage_hunk",
+                                   patch: wsHunkPatch(rel, m.base, m.buf, h) }, toast);
+    } else if (tab.dirty) {
+      // A new file is staged whole, from the disk.
+      toast("Save the file to stage it");
+      return;
+    } else {
+      await diffApplyTo(gitRoot, { path: rel, action: "stage_file" }, toast);
+    }
+    kickStatus();
+    loadBase(tab);
+  }
 
   // ---- on and off ------------------------------------------------------------
 
-  // On: the listing moves into the folder tab — the same element, so its
-  // listeners, its drop zone and its thumbnails' observer come with it — and
-  // the tree catches up with the folder on screen. Off puts the listing back
+  // On: the listing moves out of view into the holder — the same element, so
+  // its listeners and the bar above it keep working — and the tree catches up
+  // with the folder the listing is on. Off puts the listing back
   // where the markup had it and leaves every tab, saved or not, mounted in the
   // hidden workspace: a collapse discards nothing.
   function setOn(v) {
@@ -1339,7 +1586,7 @@ function makeWorkspace(ctx) {
     root.classList.toggle("ws-on", v);
     if (v) {
       if (!treeW) applyTreeW(cfg.wsTreeW || WS_TREE_W);
-      folderTab.body.appendChild(wrap);
+      hold.appendChild(wrap);
       reveal(ctx.path());
       relayout();
       kickStatus();
@@ -1382,12 +1629,9 @@ function makeWorkspace(ctx) {
     wsLive.delete(api);
   }
 
-  // A listing landed in the pane: the folder tab takes its name, the tree
-  // shows where it is, and its rows get their badges.
+  // A listing landed in the pane: the tree shows where it is, and the rows
+  // get their badges.
   function onListing(data) {
-    folderTab.title = root.querySelector(".files-title-name").textContent
-                      || wsFolderLabel(data.path, ctx.home());
-    paintChip(folderTab);
     if (!on) return;
     if (treeRoot && insideDir(data.path, treeRoot.path)) {
       const node = nodes.get(data.path);
