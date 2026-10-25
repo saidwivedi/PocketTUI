@@ -40,6 +40,11 @@ const FILES_PDF_RE = /\.pdf$/i;
 // editor — Edit there is one tap away.
 const FILES_MD_RE = /\.(?:md|markdown)$/i;
 
+// A human-code brief opens as the brief (49-human-code.js) rather than as the
+// JSON it is stored as. Asked of the whole path: brief.json is a common name,
+// and only the one in a human_code/ folder is the skill's.
+const HC_BRIEF_RE = /(?:^|\/)human_code\/brief\.json$/;
+
 // What kind of thing a name says it is, and so which icon the listing draws
 // for it. One table, read by rows and tiles alike — a .py is the same file in
 // either layout. Everything unlisted is the plain page i-file, which is what
@@ -371,6 +376,12 @@ const filesPanes = {};
 // on them, and whose Escape puts them away.
 let filesViewOwner = null;
 
+// The same for the human-code brief (49-human-code.js), kept apart from the
+// three above because the brief opens code beside itself: a tap on one of its
+// lines puts the editor in the other row of the column with the brief still
+// showing in this one, so the two have an owner each.
+let hcOwner = null;
+
 // Which listing the action sheet and the + sheet are about. Both are the app's
 // own sheets rather than a pane's — they cover the window — so they are wired
 // once and act on the listing that opened them.
@@ -495,11 +506,11 @@ function dockFileView(el, pane) {
   const owner = pane || filesActive();
   if (owner && owner.isDocked()) {
     el.classList.add("docked");
-    filesSetViewOwner(owner);
+    filesSetViewOwner(owner, el);
     return true;
   }
   el.classList.remove("docked");
-  filesSetViewOwner(null);
+  filesSetViewOwner(null, el);
   // Full screen the view covers the explorer rather than sitting in it, and
   // an active screen under another one would be two screens at once. Only the
   // markup's own pane is ever the whole window. The listing scrolls the page,
@@ -512,9 +523,11 @@ function dockFileView(el, pane) {
 }
 
 // Which row the three of them are in, said in one place: the id, and the layout
-// that reads it.
-function filesSetViewOwner(pane) {
-  filesViewOwner = pane ? pane.id : null;
+// that reads it. The brief keeps its own (hcOwner above), so a view names
+// itself when it is the brief.
+function filesSetViewOwner(pane, el) {
+  if (el && el.id === "screen-humancode") hcOwner = pane ? pane.id : null;
+  else filesViewOwner = pane ? pane.id : null;
   sideLayout();
 }
 
@@ -523,7 +536,7 @@ function filesSetViewOwner(pane) {
 function undockFileView(el) {
   if (el.classList.contains("docked")) {
     el.classList.remove("docked");
-    filesSetViewOwner(null);
+    filesSetViewOwner(null, el);
     return true;
   }
   filesPanes.files.setActive(true);
@@ -534,22 +547,42 @@ function undockFileView(el) {
   return false;
 }
 
-// Which of the three the pane is showing over its listing, or null for none.
-function dockedFileView() {
-  for (const id of ["screen-editor", "screen-reader", "viewer"]) {
-    if ($(id).classList.contains("docked")) return $(id);
+// Which of the four a pane is showing over its listing, or null for none; with
+// an id, only a view seated over that listing. The editor comes first: it can
+// be up over the brief in the brief's own row, and it is the top one there.
+function dockedFileView(owner) {
+  for (const id of ["screen-editor", "screen-reader", "viewer", "screen-humancode"]) {
+    const el = $(id);
+    if (!el.classList.contains("docked")) continue;
+    if (!owner || fileViewOwnerOf(el) === owner) return el;
   }
   return null;
 }
 
-// Put that view away. False is the editor asking about unsaved work and being
-// told to stay: the press that got here is spent on the question, and whatever
-// was going to close the pane has to stand down with it.
-function closeDockedFileView() {
-  const el = dockedFileView();
-  if (!el) return true;
+function fileViewOwnerOf(el) {
+  return el.id === "screen-humancode" ? hcOwner : filesViewOwner;
+}
+
+// Put the docked views away, every one or those over one listing. False is the
+// editor asking about unsaved work and being told to stay: the press that got
+// here is spent on the question, and whatever was going to close the pane has
+// to stand down with it. In the list's order, so an editor opened over the
+// brief closes first and the brief it brings back closes after it.
+function closeDockedFileView(owner) {
+  for (const id of ["screen-editor", "screen-reader", "viewer", "screen-humancode"]) {
+    const el = $(id);
+    if (!el.classList.contains("docked")) continue;
+    if (owner && fileViewOwnerOf(el) !== owner) continue;
+    if (!closeFileView(el)) return false;
+  }
+  return true;
+}
+
+// One of them, by its screen, with the same answer.
+function closeFileView(el) {
   if (el.id === "screen-editor") return editorCloseDocked();
   if (el.id === "screen-reader") closeReader();
+  else if (el.id === "screen-humancode") closeHumanCode();
   else hideImage();
   return true;
 }
@@ -849,7 +882,7 @@ function closeDockedFiles() {
   // about unsaved work that its own back gives it. Only a file of this pane's:
   // one seated over the other listing is that pane's to ask about, and a row
   // evicted from under a listing that owns nothing asks nothing.
-  if (filesViewOwner === id && !closeDockedFileView()) return;
+  if (!closeDockedFileView(id)) return;
   if (ws) { ws.destroy(); ws = null; }
   closeFilesMenus();
   closePathEdit();
@@ -906,9 +939,10 @@ for (const btn of root.querySelectorAll(".dock-close")) {
 // over this listing and belongs to whichever row it is in, and the other
 // explorer's row must not take them with it.
 function filesEls() {
-  return filesViewOwner === id
-    ? [root, $("screen-editor"), $("screen-reader"), $("viewer")]
-    : [root];
+  const out = [root];
+  if (filesViewOwner === id) out.push($("screen-editor"), $("screen-reader"), $("viewer"));
+  if (hcOwner === id) out.push($("screen-humancode"));
+  return out;
 }
 sideRegister(id, {
   type: "files",
@@ -1134,6 +1168,7 @@ function filesFollowsCwd() {
       && (filesPath === filesSyncedCwd || (!!filesHeldAt && filesPath === filesHeldAt))
       && !$("screen-editor").classList.contains("active")
       && !$("screen-reader").classList.contains("active")
+      && !$("screen-humancode").classList.contains("active")
       && !q("files-path-wrap").classList.contains("editing");
 }
 
@@ -2153,14 +2188,26 @@ function openEntry(e, dir=filesPath) {
   }
   if (FILES_MD_RE.test(e.name)) { openReader(full, self()); return; }
   if (FILES_HTML_RE.test(e.name) && !filesRef) { openRendered(full); return; }
+  // At a ref it is the JSON, read-only, the html rule's reason: the brief reads
+  // the files it points into off the disk and at its own commit, not at this one.
+  if (HC_BRIEF_RE.test(full) && !filesRef) { openHumanCode(full, self()); return; }
   openEditor(full, { pane: self() });
 }
 
 // Whether this pane may take the three views over. A stay is the editor's, and
 // it stops whatever was about to open a file here.
 function filesTakeView() {
-  if (!filesViewOwner || filesViewOwner === id) return true;
-  return closeDockedFileView();
+  // The three go when they are over the other listing. The brief goes when it
+  // is over this one, since whatever is opened here is opened in its row; over
+  // the other listing it has a row of its own and stays in it.
+  for (const name of ["screen-editor", "screen-reader", "viewer", "screen-humancode"]) {
+    const el = $(name);
+    if (!el.classList.contains("docked")) continue;
+    const owner = fileViewOwnerOf(el);
+    if (name === "screen-humancode" ? owner !== id : !owner || owner === id) continue;
+    if (!closeFileView(el)) return false;
+  }
+  return true;
 }
 
 // A page renders in a tab of the browser's, not in ours: it is served
@@ -2704,17 +2751,18 @@ document.addEventListener("keydown", (e) => {
   // Scoped to a press aimed inside it for the reason below. The viewer answers
   // its own Escape first (09-image-viewer.js) and stops the key there, so this
   // reaches it only where that handler stood aside.
-  const view = dockedFileView();
-  if (view) {
-    // One of the three, and it belongs to one listing: only that listing's copy
+  if (dockedFileView()) {
+    // One of the four, and it belongs to one listing: only that listing's copy
     // of this handler may put it away, or two of them would answer one press.
-    if (filesViewOwner !== id) return;
-    if (!view.contains(e.target)) return;
+    const view = dockedFileView(id);
+    if (!view || !view.contains(e.target)) return;
     // Not out of the buffer: inside CodeMirror the key is the document's own —
     // vim's way out of insert mode, and the only way out there is.
     if (view.id === "screen-editor" && $("editor-host").contains(e.target)) return;
+    // Nor out of the brief's search box, whose own Escape clears it.
+    if (view.id === "screen-humancode" && e.target.closest("input")) return;
     e.preventDefault();
-    closeDockedFileView();
+    closeFileView(view);
     return;
   }
   // In the workspace Escape shrinks the pane back beside the terminal, one
@@ -2766,6 +2814,7 @@ window.addEventListener("popstate", () => {
   if (!dockedFileView()) {
     if ($("screen-editor").classList.contains("active")) { editorPopped(); return; }
     if ($("screen-reader").classList.contains("active")) { closeReader(); return; }
+    if ($("screen-humancode").classList.contains("active")) { closeHumanCode(); return; }
   }
   // The docked pane pushed nothing, so no pop is ever its own: this one is the
   // terminal's, and closeTerminal() above has already spent it.
@@ -2857,6 +2906,7 @@ const api = {
   openAtCwd: filesOpenAtCwd,
   followSession: followSession,
   followCwd: followPaneCwd,
+  paneCwd: fetchPaneCwd,
   afterEnter: scheduleCwdAfterEnter,
   afterTitle: scheduleCwdAfterTitle,
   closeDocked: closeDockedFiles,
@@ -3187,10 +3237,10 @@ $("files-upload-dir-input").addEventListener("change", (ev) => {
 // The pane's two controls in the bar of each file view. One editor, one reader
 // and one viewer for the two rows, so these are wired once and act on the
 // listing the file in them was opened from.
-for (const name of ["screen-editor", "screen-reader", "viewer"]) {
+for (const name of ["screen-editor", "screen-reader", "viewer", "screen-humancode"]) {
   for (const btn of $(name).querySelectorAll(".dock-expand")) {
     btn.addEventListener("click", () => {
-      const pane = filesPanes[filesViewOwner];
+      const pane = filesPanes[fileViewOwnerOf($(name))];
       if (!pane) return;
       pane.toggleExpanded();
       refit(0);
@@ -3201,7 +3251,7 @@ for (const name of ["screen-editor", "screen-reader", "viewer"]) {
   // way out of the pane. The same close as the back arrow and Escape, so an
   // unsaved buffer gets its question either way.
   for (const btn of $(name).querySelectorAll(".dock-close")) {
-    btn.addEventListener("click", () => closeDockedFileView());
+    btn.addEventListener("click", () => closeFileView($(name)));
   }
 }
 
@@ -3220,3 +3270,4 @@ for (const type of ["dragover", "drop"]) {
 // seated in a pane they push no entry and there is nothing for a swipe to unwind.
 attachEdgeSwipe($("screen-editor"), () => history.back());
 attachEdgeSwipe($("screen-reader"), () => history.back());
+attachEdgeSwipe($("screen-humancode"), () => history.back());

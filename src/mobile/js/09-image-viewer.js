@@ -412,6 +412,7 @@ function dropAllFileViews() { fileViews.clear(); }
 function fileViewKind() {
   if ($("screen-editor").classList.contains("active")) return "editor";
   if ($("screen-reader").classList.contains("active")) return "reader";
+  if ($("screen-humancode").classList.contains("active")) return "humancode";
   // Only the overlay seated in the pane: full screen it is a look at a file
   // over whatever screen was there, and a phone switching sessions never has
   // one up at all.
@@ -443,6 +444,12 @@ function stashFileView(session, kind) {
   if (kind === "editor") view.editor = edStash();
   else if (kind === "reader") view.reader = readerStash();
   else if (kind === "viewer") view.viewer = viewerStash();
+  // The brief whatever the kind: it is the kind when it is the top view, and it
+  // can also be up in one row with the editor it opened in the other
+  // (49-human-code.js). Under an editor in its own row it is not on screen, and
+  // it goes rather than being kept.
+  const brief = hcStash();
+  if (brief) view.humancode = brief;
   // The pane goes down with the session it belongs to, both halves of it: the
   // slot is given back here (diffSetOpen, and filesTeardown's own sideDrop) and
   // the record above is the whole of what puts it up again. Which of the two
@@ -514,6 +521,14 @@ function restoreFileView(session) {
   // Every row that was put away is back by now, stacked in the order the
   // restores above happen to run in rather than the order it was left in.
   if (view.side) sideOrder(view.side);
+  // The brief first, since it can be up beside any of the others; on an entry
+  // of its own when it was the whole window, and then it was alone.
+  if (view.humancode) {
+    if (!view.files || !view.files.docked) {
+      history.pushState({ humancode: true }, "", location.href);
+    }
+    hcRestore(view.humancode);
+  }
   if (view.viewer) { viewerRestore(view.viewer); return; }
   if (!view.editor && !view.reader) return;
   // A docked view pushed no entry of its own, so it gets none back — the pane
@@ -570,7 +585,8 @@ function openTerminal(name, resumed) {
       // is the one thing the map must never hold.
       if (name === currentSession) return;
       pendingSwitch = { name: name, from: currentSession };
-      history.go(-(filesEntryCount() + 1));
+      // One more where the editor is over the brief, each on an entry of its own.
+      history.go(-(filesEntryCount() + 1 + hcCoveredEntries()));
       return;
     }
     // A full-screen view opened from the session list belongs to no session —
@@ -583,6 +599,8 @@ function openTerminal(name, resumed) {
         if (edDirty && !confirm("Discard your unsaved changes?")) return;
         closeEditor();
       }
+      // After the editor, which brings back a brief it was opened over.
+      if ($("screen-humancode").classList.contains("active")) closeHumanCode();
     }
     // The docked explorer is the terminal's own pane rather than a screen over
     // it, and the pane is the leaving session's: the folder and the claim on
@@ -1081,6 +1099,7 @@ window.addEventListener("popstate", (e) => {
   if (!dockedFileView()) {
     if ($("screen-editor").classList.contains("active")) return;
     if ($("screen-reader").classList.contains("active")) return;
+    if ($("screen-humancode").classList.contains("active")) return;
   }
   if ($("screen-term").classList.contains("active")) closeTerminal();
 });

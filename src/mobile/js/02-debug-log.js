@@ -891,6 +891,14 @@ const cfg = {
   // triad: on until its key is first turned off, then the last way it was set.
   get meshGrid() { return localStorage.getItem("pockettui_mesh_grid") !== "0"; },
   set meshGrid(v) { localStorage.setItem("pockettui_mesh_grid", v ? "1" : "0"); },
+  // The line a human-code brief's Refresh types at the prompt (49-human-code.js),
+  // set from the brief's own menu. Unset is that file's default, so clearing the
+  // field goes back to it.
+  get hcRefreshCmd() { return localStorage.getItem("pockettui_hc_refresh_cmd") || ""; },
+  set hcRefreshCmd(v) {
+    if (v) localStorage.setItem("pockettui_hc_refresh_cmd", v);
+    else localStorage.removeItem("pockettui_hc_refresh_cmd");
+  },
   // The same for the browser pane, kept apart from the explorer's: a page read
   // full width and a folder read full width are separate habits.
   get browserExpanded() { return localStorage.getItem("pockettui_browser_expanded") === "1"; },
