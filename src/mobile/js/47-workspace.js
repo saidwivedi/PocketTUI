@@ -139,10 +139,12 @@ function wsTabKey(path, ref) {
   return ref ? path + "@" + ref : path;
 }
 
-// The folder a tree row is, when it is a folder holding a brief (a .humancode
-// file, whatever the folder is called): the brief's path, which the row opens
-// instead of the folder. With more than one, the first by name.
+// The folder a tree row is, when it is a human_code/ folder holding a brief (a
+// .humancode file): the brief's path, which the row opens instead of the
+// folder. With more than one, the first by name. A brief in any other folder
+// leaves the folder as it is; its own file row opens it.
 function wsBriefIn(path, entries) {
+  if (!/(?:^|\/)human_code$/.test(path)) return "";
   const names = (entries || []).filter((e) => e.type === "file" && HC_BRIEF_RE.test(e.name))
     .map((e) => e.name).sort();
   return names.length ? joinPath(path, names[0]) : "";
@@ -607,13 +609,11 @@ function makeWorkspace(ctx) {
     return node;
   }
 
-  // A folder holding a brief is named "Human code" with a page for its icon,
-  // and its name opens the brief as a tab. The chevron still opens the folder,
-  // and its right-click menu is the folder's, as any row's is. Any folder is
-  // found out once its listing lands (fill); a human_code/ folder, where the
-  // skill writes its brief, is looked into as soon as its row is drawn, out of
-  // the explorer's cache when it can be. Every folder is not: on a slow mount
-  // that would be a listing per row.
+  // A human_code/ folder is looked into as soon as its row is drawn, out of
+  // the explorer's cache when it can be: holding a brief, the row is named
+  // "Human code" with a page for its icon, and its name opens the brief as a
+  // tab. The chevron still opens the folder, and its right-click menu is the
+  // folder's, as any row's is.
   async function findBrief(node) {
     let data = ctx.cachedListing(node.path);
     if (!data) {
@@ -675,7 +675,7 @@ function makeWorkspace(ctx) {
     }
     node.children = kids.map((k) => k.path);
     node.loaded = true;
-    if (node.el) markBrief(node, data.entries);
+    if (node.el && node.name === "human_code") markBrief(node, data.entries);
     for (const kid of kids) {
       node.kidsEl.appendChild(kid.el);
       if (kid.kidsEl) node.kidsEl.appendChild(kid.kidsEl);
