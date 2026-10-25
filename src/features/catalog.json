@@ -1403,6 +1403,24 @@
   "show": true
  },
  {
+  "id": "files.human-code",
+  "group": "Files and code",
+  "title": "Human-code briefs, read in place",
+  "outcome": "A human_code/brief.json written by the human-code skill opens as the brief itself: tap a line to open the code it stands for at those lines, see which parts the code has changed under since the brief was written, press and hold a line to ask about it, and type the refresh command when the brief is behind.",
+  "where": "Tap human_code/brief.json in the file browser; Pinned or Now in its bar picks the code as it was at the brief's commit or as it is now",
+  "surface": "both",
+  "gates": [],
+  "needs": "git_hunks",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/49-human-code.js",
+   "app.py:5288-5330"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
   "id": "git.pane",
   "group": "Files and code",
   "title": "Review your code changes",

@@ -3888,6 +3888,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   :is(#screen-browser, #screen-browser-2).docked .dock-only,
   #screen-editor.docked .dock-only,
   #screen-reader.docked .dock-only,
+  #screen-humancode.docked .dock-only,
   #viewer.docked .dock-only { display: inline-flex; }
   :is(#screen-files, #screen-files-2).ws-on .dock-term { display: inline-flex; }
   /* On while the panel is up, in the mode-key idiom the workspace's Changes
@@ -3973,6 +3974,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-term.ws-term:not(.ws-term-hidden).active ~ :is(#screen-files, #screen-files-2).docked.active,
   #screen-term.ws-term:not(.ws-term-hidden).active ~ #screen-editor.docked.active,
   #screen-term.ws-term:not(.ws-term-hidden).active ~ #screen-reader.docked.active,
+  #screen-term.ws-term:not(.ws-term-hidden).active ~ #screen-humancode.docked.active,
   #screen-term.ws-term:not(.ws-term-hidden).active ~ #viewer.docked.show {
     bottom: calc(var(--ws-term-seam) + var(--side-gutter));
     padding-bottom: 0;
@@ -3985,7 +3987,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* A full-screen view over the terminal has to cover the pane's seam too,
      and that is fixed at z-index 60. Only here: on a phone these screens have
      nothing beside them to out-stack. */
-  #screen-editor, #screen-reader { z-index: 65; }
+  #screen-editor, #screen-reader, #screen-humancode { z-index: 65; }
 
   /* A file opened from the docked pane opens in the pane: the same slot, the
      same width, expanding with it, and the listing left active underneath —
@@ -3996,6 +3998,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
      below the seam at 60, which is still there to drag. */
   #screen-term.active ~ #screen-editor.docked.active,
   #screen-term.active ~ #screen-reader.docked.active,
+  #screen-term.active ~ #screen-humancode.docked.active,
   #screen-term.active ~ #viewer.docked.show {
     top: 0; right: 0; bottom: 0;
     left: auto;
@@ -4004,6 +4007,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   #screen-term.side-full.active ~ #screen-editor.docked.active,
   #screen-term.side-full.active ~ #screen-reader.docked.active,
+  #screen-term.side-full.active ~ #screen-humancode.docked.active,
   #screen-term.side-full.active ~ #viewer.docked.show {
     left: calc(var(--sidebar-w) + var(--rail-gutter));
     width: auto;
@@ -4069,9 +4073,11 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* The docked editor's and reader's bars, compacted the rail's way: 28px keys
      with an 18px glyph and a 7px corner. */
   #screen-editor.docked .icon-btn,
-  #screen-reader.docked .icon-btn { padding: 5px; border-radius: 7px; }
+  #screen-reader.docked .icon-btn,
+  #screen-humancode.docked .icon-btn { padding: 5px; border-radius: 7px; }
   #screen-editor.docked .icon-btn svg,
-  #screen-reader.docked .icon-btn svg { width: 18px; height: 18px; }
+  #screen-reader.docked .icon-btn svg,
+  #screen-humancode.docked .icon-btn svg { width: 18px; height: 18px; }
   /* The two dropdown scrims belong to the pane, not to the window: the
      terminal beside it is live, and a layout menu in here must not dim it.
      The pane is position:fixed, so absolute already means "this pane". */
@@ -4091,6 +4097,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-term.active ~ :is(#screen-browser, #screen-browser-2).docked.active.side-top,
   #screen-term.active ~ #screen-editor.docked.active.side-top,
   #screen-term.active ~ #screen-reader.docked.active.side-top,
+  #screen-term.active ~ #screen-humancode.docked.active.side-top,
   #screen-term.active ~ #viewer.docked.show.side-top {
     bottom: calc(100% - var(--side-split) + var(--side-gutter) / 2);
   }
@@ -4098,6 +4105,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-term.active ~ :is(#screen-browser, #screen-browser-2).docked.active.side-bot,
   #screen-term.active ~ #screen-editor.docked.active.side-bot,
   #screen-term.active ~ #screen-reader.docked.active.side-bot,
+  #screen-term.active ~ #screen-humancode.docked.active.side-bot,
   #screen-term.active ~ #viewer.docked.show.side-bot {
     top: calc(var(--side-split) + var(--side-gutter) / 2);
   }
@@ -4108,6 +4116,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-term.active ~ :is(#screen-browser, #screen-browser-2).docked.active.side-hidden,
   #screen-term.active ~ #screen-editor.docked.active.side-hidden,
   #screen-term.active ~ #screen-reader.docked.active.side-hidden,
+  #screen-term.active ~ #screen-humancode.docked.active.side-hidden,
   #screen-term.active ~ #viewer.docked.show.side-hidden { display: none; }
 
   /* The key that trades the rows, in every bar a row can wear one in. Two rows
@@ -5556,6 +5565,107 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .md-body .md-math-block .katex-display { margin: 0; }
 
 /* ============================================================
+   HUMAN CODE
+   ============================================================ */
+/* The reader's fixed column, with the brief's viewer (vendor/human-code.js,
+   49-human-code.js) filling what is under the bar. The viewer lays itself out
+   inside the box it is given, its drawers and sheets included, so the box is
+   pinned to every edge rather than left to a percentage height. */
+#screen-humancode {
+  position: fixed; inset: 0;
+  flex-direction: column;
+  background: var(--paper);
+  padding-top: var(--safe-top);
+}
+#screen-humancode.active { display: flex; }
+#hc-host {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-bottom: var(--safe-bot);
+}
+#hc-host > .hc { position: absolute; inset: 0; height: auto; }
+/* The viewer's colours and faces are its own --hc-* tokens, prefixed because
+   the app already has a --warn and a --mono of its own; here every one of them
+   is one of the app's, so the brief wears the theme and the palette the rest of
+   the app does. The component hues take their saturation and lightness from
+   the theme, which is the one pair the app has no token for. */
+#screen-humancode .hc {
+  --hc-sans: var(--sans);
+  --hc-mono: var(--mono);
+  --hc-bg: var(--paper);
+  --hc-bg-2: var(--paper-rec);
+  --hc-fg: var(--ink);
+  --hc-fg-2: var(--secondary);
+  --hc-fg-3: var(--tertiary);
+  --hc-line: var(--hair);
+  --hc-line-2: var(--hair-strong);
+  --hc-accent: var(--umber);
+  --hc-accent-bg: var(--umber-soft);
+  --hc-warn: var(--warn);
+  --hc-tk-kw: var(--diff-blue);
+  --hc-tk-num: var(--umber);
+  --hc-tk-str: var(--good);
+  --hc-tk-fn: var(--ink-2);
+  --hc-tk-comment: var(--tertiary);
+  --hc-hs: color-mix(in srgb, var(--umber) 10%, var(--paper-rec));
+  --hc-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
+  --hc-backdrop: rgba(20, 16, 10, 0.35);
+  --hc-comp-s: 42%;
+  --hc-comp-l: 46%;
+  color-scheme: light;
+}
+:root[data-theme="dark"] #screen-humancode .hc {
+  --hc-comp-s: 50%;
+  --hc-comp-l: 68%;
+  color-scheme: dark;
+}
+/* Pinned and Now: the Appearance tab's segmented row at the bar's size. */
+.hc-at {
+  flex: 0 0 auto;
+  display: flex;
+  border: 1px solid var(--hair-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.hc-at button {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 4px 9px;
+  border: none;
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+.hc-at button + button { border-left: 1px solid var(--hair-strong); }
+.hc-at button[aria-checked="true"] { background: var(--umber-soft); color: var(--ink); }
+/* The bar's one menu, on .dock-split-menu's panel. */
+#hc-more-wrap { position: relative; flex: 0 0 auto; display: flex; align-items: center; }
+#hc-more-menu {
+  display: none;
+  position: absolute;
+  top: 100%; right: 0;
+  margin-top: 6px;
+  min-width: 190px;
+  overflow: hidden;
+  background: var(--card);
+  border: 1px solid var(--hair-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
+  z-index: 60;
+}
+#hc-more-wrap.open #hc-more-menu { display: block; }
+#hc-note {
+  flex: 0 0 auto;
+  padding: 6px 14px;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--warn);
+  border-bottom: 1px solid var(--hair);
+}
+
+/* ============================================================
    WIDE LAYOUT — the session list as a persistent left rail
    ============================================================ */
 /* Never on phones: the hint and the resize handle below only exist for the
@@ -5607,7 +5717,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* Main-pane screens start past the rail and its gutter: the fixed screens
      move their left edge, the explorer — a page-scrolling screen — shifts
      by margin instead. */
-  #screen-term, #screen-editor, #screen-reader {
+  #screen-term, #screen-editor, #screen-reader, #screen-humancode {
     left: calc(var(--sidebar-w) + var(--rail-gutter));
   }
   :is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2) {
@@ -5778,7 +5888,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
   :is(#screen-files, #screen-files-2).active ~ #wide-empty,
   :is(#screen-browser, #screen-browser-2).active ~ #wide-empty,
   #screen-editor.active ~ #wide-empty,
-  #screen-reader.active ~ #wide-empty { display: none; }
+  #screen-reader.active ~ #wide-empty,
+  #screen-humancode.active ~ #wide-empty { display: none; }
 
   /* Bottom sheets are phone furniture; at this width every sheet presents
      the way the confirm already does — floating dead center, all corners

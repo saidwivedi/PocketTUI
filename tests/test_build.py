@@ -1556,30 +1556,33 @@ def _explorer_popstate(doc):
 
 def test_the_cross_over_a_docked_file_closes_the_file_not_the_pane(doc, tmp_path):
     """Founder, 2026-09-25: closing a PDF opened in the docked explorer closed
-    the whole pane. The editor's, the reader's and the viewer's cross put the
-    file away (the back arrow's and Escape's close) and leave the listing it
-    came from; only the listing's own cross closes the pane."""
-    loop = _js_chunk(doc, 'for (const name of ["screen-editor", "screen-reader", "viewer"]) {')
+    the whole pane. The editor's, the reader's, the viewer's and the human-code
+    brief's cross put that file away (the back arrow's and Escape's close) and
+    leave the listing it came from; only the listing's own cross closes the
+    pane. Each cross closes its own view, since the brief can be up in one row
+    with an editor in the other."""
+    views = ["screen-editor", "screen-reader", "viewer", "screen-humancode"]
+    loop = _js_chunk(doc, "for (const name of %s) {" % json.dumps(views))
     out = _node_json(tmp_path, "cross.mjs", f"""
 const calls = [];
 const btns = {{}};
 function mk(cls) {{ const b = {{ cls, on: {{}},
   addEventListener(ev, fn) {{ this.on[ev] = fn; }} }}; return b; }}
 function $(name) {{
-  btns[name] = {{ ".dock-expand": [mk("expand")], ".dock-close": [mk("close")] }};
-  return {{ querySelectorAll: (sel) => btns[name][sel] || [] }};
+  btns[name] = btns[name] || {{ ".dock-expand": [mk("expand")], ".dock-close": [mk("close")] }};
+  return {{ name, querySelectorAll: (sel) => btns[name][sel] || [] }};
 }}
 let filesViewOwner = "files#2";
 const filesPanes = {{}};
 function refit() {{}}
-function closeDockedFileView() {{ calls.push("file"); return true; }}
+function closeFileView(el) {{ calls.push("file " + el.name); return true; }}
 function closeDockedFiles(id) {{ calls.push("pane " + id); }}
 {loop}
-for (const name of ["screen-editor", "screen-reader", "viewer"]) btns[name][".dock-close"][0].on.click();
+for (const name of {json.dumps(views)}) btns[name][".dock-close"][0].on.click();
 console.log(JSON.stringify(calls));
 """)
-    assert out == ["file", "file", "file"]
-    for view in ("screen-editor", "screen-reader", "viewer"):
+    assert out == ["file " + v for v in views]
+    for view in views:
         at = doc.index(f'id="{view}"')
         bar = doc[at:doc.index('dock-close"', at) + 200]
         assert 'aria-label="Close this file"' in bar
@@ -1924,6 +1927,7 @@ const els = {{
   "viewer": {{ classList: cls({json.dumps(["show"] if shown else [])}) }},
   "screen-editor": {{ classList: cls([]) }},
   "screen-reader": {{ classList: cls([]) }},
+  "screen-humancode": {{ classList: cls([]) }},
 }};
 function $(id) {{ return els[id]; }}
 function q(id) {{ return {{ classList: cls([]) }}; }}
@@ -4471,3 +4475,274 @@ def test_the_docked_explorer_says_file_viewer(doc):
     assert ":is(#screen-files, #screen-files-2) .dock-term { display: none; }" in css
     assert ":is(#screen-files, #screen-files-2).ws-on .dock-term { display: inline-flex; }" in css
     assert 'id="btn-files-term-panel"' in doc and 'querySelectorAll(".dock-term")' in doc
+
+
+# ---- the human-code brief (49-human-code.js, vendor/human-code.js) ----------
+# The viewer is the human-code skill's assets/viewer.js, copied in with a pin
+# header. Updating it is a cp and a new hash here; nothing in this file reads the
+# skill's own copy, so the suite runs on a machine without it.
+HUMAN_CODE_SHA256 = "1baf9a4b6dd593712d630fb42ca788b8e9e9640e8c7e1e4f66a323b960ee815f"
+HUMAN_CODE_HEADER = ("/*! human-code viewer 1 — copied from the human-code skill's "
+                     "assets/viewer.js; to update: cp, then put the new sha256 in "
+                     "tests/test_build.py */\n")
+
+
+def test_the_human_code_viewer_is_pinned():
+    import hashlib
+    data = (REPO / "vendor" / "human-code.js").read_bytes()
+    assert data.decode("utf-8").startswith(HUMAN_CODE_HEADER)
+    assert hashlib.sha256(data).hexdigest() == HUMAN_CODE_SHA256
+
+
+def test_the_human_code_viewer_loads_on_first_use(doc):
+    """A fragment of its own, after the explorer and editor it calls into and
+    before boot; the viewer is a vendor file fetched on the first brief opened,
+    never a tag in the shell."""
+    at = build_mobile.JS_FRAGMENTS.index
+    assert at("28-file-explorer.js") < at("29-editor.js") < at("49-human-code.js") < at("27-boot.js")
+    assert at("48-mesh-viewer.js") < at("49-human-code.js")
+    load = _js_chunk(doc, "function ensureHumanCode(")
+    assert 's.src = "vendor/human-code.js?v=" + buildVersion();' in load
+    assert doc.count('"vendor/human-code.js?v="') == 1
+    assert 'src="vendor/human-code.js' not in doc
+    assert "HumanCode." not in doc[:doc.index("\nfunction ensureHumanCode(")]
+
+
+def test_the_human_code_fragment_does_nothing_at_load(doc):
+    """Every statement at the fragment's top level is a declaration: the keys
+    are wired on the first open (hcWire), so the load order cannot reach a
+    later fragment's binding."""
+    src = (SRC / "js" / "49-human-code.js").read_text(encoding="utf-8")
+    for line in src.splitlines():
+        if not line or line[0] in " /}":
+            continue
+        assert re.match(r"(?:async )?function |const |let ", line), line
+
+
+def test_a_brief_is_recognised_by_its_folder(doc, tmp_path):
+    rx = _js_chunk(doc, "const HC_BRIEF_RE")
+    out = _node_json(tmp_path, "hcre.mjs", rx + """
+console.log(JSON.stringify(["/x/human_code/brief.json", "human_code/brief.json",
+  "/x/brief.json", "/x/human_code/brief.json.bak", "/x/my_human_code/brief.json",
+  "/x/human_code/sub/brief.json"].map((p) => HC_BRIEF_RE.test(p))));
+""")
+    assert out == [True, True, False, False, False, False]
+
+
+def test_a_brief_opens_after_the_html_rule_and_before_the_editor(doc):
+    """At a ref it falls through to the editor as JSON, the html rule's way."""
+    body = _js_chunk(doc, "function openEntry(")
+    html = body.index("if (FILES_HTML_RE.test(e.name) && !filesRef)")
+    brief = body.index("if (HC_BRIEF_RE.test(full) && !filesRef) { openHumanCode(full, self()); return; }")
+    editor = body.index("openEditor(full, { pane: self() });")
+    assert html < brief < editor
+
+
+def test_every_reader_hook_has_a_human_code_twin(doc):
+    """The brief is hosted the way the reader is: every stylesheet selector
+    naming #screen-reader has the same selector for #screen-humancode, and every
+    line of the explorer and the rail stash that names the reader's screen has
+    the brief's within three lines of it. The screen carries the reader's dock
+    keys."""
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    sels = set(re.findall(r"[^,{}\n]*#screen-reader\b[^,{}\n]*", css))
+    assert len(sels) >= 12
+    missing = sorted(s.strip() for s in sels
+                     if s.replace("#screen-reader", "#screen-humancode") not in css)
+    assert not missing, missing
+    for frag in ("09-image-viewer.js", "28-file-explorer.js"):
+        lines = (SRC / "js" / frag).read_text(encoding="utf-8").splitlines()
+        hooks = [i for i, l in enumerate(lines) if '"screen-reader"' in l]
+        assert hooks, frag
+        for i in hooks:
+            near = "\n".join(lines[max(0, i - 3):i + 4])
+            assert '"screen-humancode"' in near, (frag, i + 1, lines[i])
+    bar = doc[doc.index('id="screen-humancode"'):doc.index('id="hc-host"')]
+    for key in ('class="dock-split-wrap dock-only"', 'class="icon-btn dock-swap"',
+                'class="icon-btn dock-only dock-expand"', 'class="icon-btn dock-only dock-close"',
+                'id="btn-hc-back"', 'id="hc-at"', 'data-at="pinned"', 'data-at="now"',
+                'id="hc-more-refresh"'):
+        assert key in bar, key
+    # The two lists the brief joins, and the edge swipe.
+    assert 'for (const id of ["screen-editor", "screen-reader", "viewer", "screen-humancode"]) {' in _js_chunk(doc, "function dockedFileView(")
+    assert 'if (hcOwner === id) out.push($("screen-humancode"));' in doc
+    assert 'attachEdgeSwipe($("screen-humancode"), () => history.back());' in doc
+    assert 'if ($("screen-humancode").classList.contains("active")) return "humancode";' in _js_chunk(doc, "function fileViewKind(")
+    assert "#screen-humancode .hc {" in css and "--hc-warn: var(--warn);" in css
+    assert ':root[data-theme="dark"] #screen-humancode .hc {' in css
+
+
+def _human_code_vm():
+    return f"""
+import fs from "node:fs";
+import vm from "node:vm";
+const ctx = {{}};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync({json.dumps(str(REPO / "vendor" / "human-code.js"))}, "utf8"), ctx);
+const HC = ctx.HumanCode;
+"""
+
+
+# The skill's own stale cases (its tests/test_viewer.py), against the vendored
+# copy: a copy that has drifted from the skill's rule fails here.
+_HC_BRIEF = {
+    "commit": "cb139d1",
+    "components": [{"id": "a", "units": [
+        {"id": "u", "src": {"file": "f.py", "start": 10, "end": 30}, "lines": [
+            {"text": "x = load()", "src": {"file": "f.py", "start": 12, "end": 14}},
+            {"text": "y = blur(x)", "src": {"file": "f.py", "start": 20, "end": 22}},
+            {"text": "# no flip", "kind": "gap"},
+        ]},
+        {"id": "w", "src": {"file": "g.py", "start": 1, "end": 5}, "lines": [
+            {"text": "z = 1", "src": {"file": "g.py", "start": 2, "end": 2}},
+        ]},
+    ]}],
+}
+_HC_STALE_CASES = [
+    ({"f.py": {"hunks": [[13, 13, 13, 13]]}}, ["a/u"], {"a/u": [0]}, [], {}),
+    ({"f.py": {"hunks": [[40, 45, 40, 41]]}}, [], {}, [], {}),
+    ({"f.py": {"hunks": [[17, 18, 17, 17]]}}, ["a/u"], {}, [], {}),
+    ({"f.py": {"hunks": [[21, 20, 21, 23]]}}, ["a/u"], {"a/u": [1]}, [], {}),
+    ({"f.py": {"hunks": [[20, 19, 20, 21]]}}, ["a/u"], {}, [], {}),
+    ({"f.py": {"hunks": [[23, 22, 23, 24]]}}, ["a/u"], {}, [], {}),
+    ({"f.py": {"hunks": [[10, 9, 10, 12]]}}, [], {}, [], {}),
+    ({"g.py": {"gone": True}}, ["a/w"], {"a/w": [0]}, ["a/w"], {}),
+    ({"f.py": {"to": "src/f.py", "hunks": [[21, 21, 21, 21]]}}, ["a/u"], {"a/u": [1]}, [],
+     {"f.py": "src/f.py"}),
+    ({"f.py": {"to": "src/f.py"}, "src/f.py": {"hunks": [[12, 12, 12, 12]]}}, ["a/u"],
+     {"a/u": [0]}, [], {"f.py": "src/f.py"}),
+    ({"f.py": {"to": "src/f.py", "hunks": []}}, [], {}, [], {"f.py": "src/f.py"}),
+]
+
+
+def test_the_vendored_viewer_marks_what_the_skill_marks(tmp_path):
+    out = _node_json(tmp_path, "hcvm.mjs", _human_code_vm() + f"""
+const brief = {json.dumps(_HC_BRIEF)};
+const cases = {json.dumps([c[0] for c in _HC_STALE_CASES])};
+const res = cases.map((files) => {{
+  const r = HC.stale(brief, files);
+  const lines = {{}};
+  for (const [k, v] of r.lines) lines[k] = [...v].sort();
+  return [[...r.units].sort(), lines, [...r.gone].sort(), Object.fromEntries(r.moved)];
+}});
+const h = [[5, 5, 5, 7], [8, 7, 10, 11], [12, 14, 16, 15]];
+console.log(JSON.stringify({{ res, remap: [1, 4, 5, 6, 7, 8, 9, 12, 13, 15, 20].map((l) => HC.remap(h, l)),
+  version: [HC.VERSION, HC.SCHEMA, typeof HC.mount] }}));
+""")
+    assert out["res"] == [[u, l, g, m] for _, u, l, g, m in _HC_STALE_CASES]
+    assert out["remap"] == [1, 4, 5, 8, 9, 12, 13, 16, 16, 16, 21]
+    assert out["version"] == ["1", 1, "function"]
+
+
+def test_the_brief_screen_answers(doc, tmp_path):
+    """The pure halves of the screen: the pill's words, the refresh line and
+    when it goes to the repo first, the question a line starts, where
+    Pinned/Now starts, and the range a pointer opens at."""
+    chunks = "\n".join(_js_chunk(doc, h) for h in (
+        "const HC_REFRESH_DEFAULT", "function hcPillText(", "function hcRefreshCommand(",
+        "function hcAskText(", "function hcDefaultAt(", "function hcRange(",
+        "function hcRootOf(", "function hcFiles("))
+    out = _node_json(tmp_path, "hcpure.mjs", _human_code_vm() + chunks + f"""
+const pill = [
+  hcPillText(null, "cb139d1"),
+  hcPillText({{ error: "not a repo" }}, "cb139d1"),
+  hcPillText({{ base_found: true, behind: 0, head: "cb139d1" }}, "cb139d1"),
+  hcPillText({{ base_found: true, behind: 1, head: "aaaaaaa" }}, "cb139d1"),
+  hcPillText({{ base_found: true, behind: 12, head: "aaaaaaa" }}, "cb139d1"),
+  hcPillText({{ base_found: false, files: {{}} }}, "cb139d1e2f3a4b5c"),
+];
+const refresh = [
+  hcRefreshCommand("/r/lisa", "/r/lisa", {{}}),
+  hcRefreshCommand("/r/lisa/model", "/r/lisa/", {{}}),
+  hcRefreshCommand("/r/lisa2", "/r/lisa", {{}}),
+  hcRefreshCommand("", "/r/lisa", {{ hcRefreshCmd: "codex /human-code" }}),
+  hcRefreshCommand("/home", "/r/my repo's", {{}}),
+];
+const ask = [
+  hcAskText("  y = blur(x) ", {{ file: "f.py", start: 20, end: 22 }}),
+  hcAskText("z = 1", {{ file: "g.py", start: 2, end: 2 }}),
+  hcAskText("def train()", null),
+];
+const clean = {{ head: "cb139d1", base_found: true, behind: 0,
+  files: {{ "f.py": {{ hunks: [] }}, "g.py": {{ hunks: [] }} }} }};
+const at = [
+  hcDefaultAt("cb139d1", clean),
+  hcDefaultAt("cb139d1e2f3a4b5c6d7e8f90a1b2c3d4e5f60718", clean),
+  hcDefaultAt("cb139d1", {{ ...clean, head: "aaaaaaa" }}),
+  hcDefaultAt("cb139d1", {{ ...clean, files: {{ "f.py": {{ hunks: [[3, 3, 3, 3]] }} }} }}),
+  hcDefaultAt("cb139d1", {{ ...clean, files: {{ "f.py": {{ hunks: [], to: "src/f.py" }} }} }}),
+  hcDefaultAt("cb139d1", {{ ...clean, truncated: true }}),
+  hcDefaultAt("cb139d1", {{ ...clean, base_found: false }}),
+  hcDefaultAt("cb139d1", null),
+];
+const data = {{ files: {{
+  "f.py": {{ hunks: [[5, 5, 5, 7], [8, 7, 10, 11]] }},
+  "g.py": {{ gone: true, hunks: [[1, 9, 0, -1]] }},
+  "h.py": {{ to: "src/h.py", hunks: [] }} }} }};
+const range = [
+  hcRange({{ file: "f.py", start: 12, end: 14 }}, "pinned", data, HC.remap),
+  hcRange({{ file: "f.py", start: 12, end: 14 }}, "now", data, HC.remap),
+  hcRange({{ file: "f.py", start: 5, end: 5 }}, "now", data, HC.remap),
+  hcRange({{ file: "g.py", start: 2, end: 3 }}, "now", data, HC.remap),
+  hcRange({{ file: "h.py", start: 2, end: 3 }}, "now", data, HC.remap),
+  hcRange({{ file: "f.py", start: 12, end: 14 }}, "now", null, HC.remap),
+];
+const brief = {json.dumps(_HC_BRIEF)};
+console.log(JSON.stringify({{ pill, refresh, ask, at, range,
+  root: [hcRootOf("/r/lisa/human_code/brief.json"), hcRootOf("/human_code/brief.json")],
+  files: hcFiles(brief) }}));
+""")
+    assert out["pill"] == [None, None, None, "1 commit behind · Refresh",
+                           "12 commits behind · Refresh",
+                           "cb139d1 is not in this repo · Refresh"]
+    assert out["refresh"] == [
+        'claude "/human-code"',
+        'claude "/human-code"',
+        'cd /r/lisa && claude "/human-code"',
+        "cd /r/lisa && codex /human-code",
+        """cd '/r/my repo'\\''s' && claude "/human-code\"""",
+    ]
+    assert out["ask"] == ["`y = blur(x)` (f.py:20-22): ", "`z = 1` (g.py:2): ", "`def train()`: "]
+    assert out["at"] == ["now", "now", "pinned", "pinned", "pinned", "pinned", "pinned", "pinned"]
+    assert out["range"] == [
+        {"file": "f.py", "line": 12, "lineEnd": 14},
+        {"file": "f.py", "line": 16, "lineEnd": 18},
+        {"file": "f.py", "line": 5, "lineEnd": 5},
+        None,
+        {"file": "src/h.py", "line": 2, "lineEnd": 3},
+        {"file": "f.py", "line": 12, "lineEnd": 14},
+    ]
+    assert out["root"] == ["/r/lisa", "/"]
+    assert out["files"] == ["f.py", "g.py"]
+
+
+@pytest.mark.parametrize("at", ["pinned", "now"])
+def test_a_tap_on_a_brief_line_opens_the_editor_there(doc, tmp_path, at):
+    """Pinned opens the file at the brief's commit, read-only, at the line's own
+    range; Now opens the file on the disk with the range carried through the
+    hunks the route answered. A file deleted since opens pinned, with a toast."""
+    chunk = _js_chunk(doc, "function hcOpenSource(") + _js_chunk(doc, "function hcRange(")
+    out = _node_json(tmp_path, "hctap.mjs", _human_code_vm() + chunk + f"""
+const HumanCode = HC;
+const calls = [];
+let hcAt = {json.dumps(at)};
+const hcBrief = {{ commit: "cb139d1" }};
+const hcRoot = "/r/lisa";
+const hcStale = {{ files: {{ "f.py": {{ hunks: [[5, 5, 5, 7]] }}, "g.py": {{ gone: true }} }} }};
+function joinPath(d, n) {{ return d + "/" + n; }}
+function baseName(p) {{ return p.split("/").pop(); }}
+function toast(t) {{ calls.push("toast " + t); }}
+function hcOpenEditor(path, opts) {{ calls.push([path, opts]); }}
+hcOpenSource({{ file: "f.py", start: 12, end: 14 }});
+hcOpenSource({{ file: "g.py", start: 2, end: 2 }});
+hcOpenSource(null);
+console.log(JSON.stringify(calls));
+""")
+    pinned = {"ref": "cb139d1", "root": "/r/lisa"}
+    gone = ["toast g.py has been deleted since cb139d1",
+            ["/r/lisa/g.py", {"line": 2, "lineEnd": 2, **pinned}]]
+    if at == "pinned":
+        assert out == [["/r/lisa/f.py", {"line": 12, "lineEnd": 14, **pinned}],
+                       ["/r/lisa/g.py", {"line": 2, "lineEnd": 2, **pinned}]]
+    else:
+        assert out == [["/r/lisa/f.py", {"line": 14, "lineEnd": 16}]] + gone

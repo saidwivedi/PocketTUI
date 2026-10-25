@@ -1150,6 +1150,52 @@
 </div>
 
 <!-- ============================================================
+     HUMAN CODE
+     ============================================================ -->
+<!-- Where a human_code/brief.json lands instead of the editor
+     (49-human-code.js): the brief drawn by the human-code skill's own viewer,
+     vendored, under the reader's bar. Pinned and Now say which bytes a tap on
+     one of its lines opens: the code as it was at the brief's commit, read-only,
+     or the file as it is on the disk with the range carried through the changes
+     since. Refresh command… is the line the brief's refresh pill types. -->
+<div class="screen" id="screen-humancode">
+  <div class="topbar editor-bar">
+    <button class="icon-btn" id="btn-hc-back" aria-label="Close the brief"><svg><use href="#i-back"/></svg></button>
+    <div class="editor-name"><span id="hc-name"></span></div>
+    <div class="hc-at" id="hc-at" role="radiogroup" aria-label="Which code a line opens">
+      <button type="button" role="radio" data-at="pinned" aria-checked="true">Pinned</button>
+      <button type="button" role="radio" data-at="now" aria-checked="false">Now</button>
+    </div>
+    <div id="hc-more-wrap">
+      <button class="icon-btn" type="button" id="btn-hc-more" aria-haspopup="menu"
+              aria-expanded="false" aria-label="More"><svg><use href="#i-m-more"/></svg></button>
+      <div id="hc-more-menu" role="menu">
+        <button type="button" class="view-row" role="menuitem" id="hc-more-refresh">Refresh command…</button>
+      </div>
+    </div>
+    <!-- The reader's pane keys, for the same reason. -->
+    <div class="dock-split-wrap dock-only">
+      <button type="button" class="icon-btn dock-split"
+              aria-haspopup="menu" aria-expanded="false"
+              aria-label="Open another pane in this column"><svg><use href="#i-split"/></svg></button>
+      <div class="dock-split-menu" role="menu"></div>
+    </div>
+    <button class="icon-btn dock-swap" type="button"
+            aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
+    <button class="icon-btn dock-only dock-expand" type="button"
+            aria-label="Expand the file pane"><svg><use href="#i-expand"/></svg></button>
+    <button class="icon-btn dock-only dock-close" type="button"
+            aria-label="Close this file"><svg><use href="#i-close"/></svg></button>
+  </div>
+  <!-- One line when the changes since the brief's commit were too many to read
+       in one answer: no marks then, rather than marks that miss half of them. -->
+  <div id="hc-note" hidden></div>
+  <!-- The viewer's host. It sizes itself to this box, so the box has a height:
+       the rest of the column under the bar. -->
+  <div id="hc-host"></div>
+</div>
+
+<!-- ============================================================
      WIDE-LAYOUT EMPTY PANE
      ============================================================ -->
 <!-- Wide layouts only (the WIDE LAYOUT media query in styles.css): with the
