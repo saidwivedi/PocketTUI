@@ -1,12 +1,13 @@
-/*! human-code viewer 1 — copied from the human-code skill's assets/viewer.js; to update: cp, then put the new sha256 in tests/test_build.py */
-/* human-code viewer: renders a human_code/brief.json (the skill's references/schema.md is the format).
+/*! human-code viewer 2 — copied from the human-code skill's assets/viewer.js; to update: cp, then put the new sha256 in tests/test_build.py */
+/* human-code viewer: renders a human_code/<repo>.humancode brief (the skill's references/schema.md is the format).
  *
  * Plain script, no modules: inlined into index.html by build.py, loaded by a host app as a file,
  * and run under node's vm for tests (only the pure helpers run there; nothing touches the DOM
  * until mount()).
  *
  *   HumanCode.mount(host, brief, opts) -> view
- *     opts.sources  { read(file, {ref}) -> Promise<{text, at: "pinned"|"now"} | null> }
+ *     opts.sources  { read(file, {ref, start, end}) -> Promise<{text, at: "pinned"|"now", first?} | null> }
+ *                   first: line number of text's first line when text is an excerpt (absent = 1, whole file)
  *     opts.open     (src, ctx) -> void    absent: the built-in source aside (sheet on narrow hosts)
  *     opts.ask      (text, src, ctx) -> void   absent: no long-press / context-menu gesture
  *     opts.refresh  () -> void            absent: no refresh pill
@@ -23,7 +24,7 @@
 (function (root) {
   'use strict';
   const HC = {};
-  HC.VERSION = '1';
+  HC.VERSION = '2';
   HC.SCHEMA = 1;
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -267,10 +268,19 @@
     return line + d;
   }
 
-  // Sources embedded in the page (level one): a file is there or it is not.
+  // Sources embedded in the page (level one): a file is a whole-file string or a list of {first, text}
+  // excerpts; a range is answered by the excerpt that holds its first line (a long unit range is
+  // embedded only as far as the panel shows it), else null.
   function embedded(map) {
     map = map || {};
-    return { read: (file) => Promise.resolve(Object.prototype.hasOwnProperty.call(map, file) ? { text: map[file], at: 'pinned' } : null) };
+    return { read: (file, o) => {
+      const v = Object.prototype.hasOwnProperty.call(map, file) ? map[file] : null;
+      if (typeof v === 'string') return Promise.resolve({ text: v, at: 'pinned' });
+      if (!Array.isArray(v)) return Promise.resolve(null);
+      const s = (o && o.start) || 1;
+      const seg = v.find((g) => g.first <= s && s <= g.first + g.text.split('\n').length - 1);
+      return Promise.resolve(seg ? { text: seg.text, at: 'pinned', first: seg.first } : null);
+    } };
   }
 
   // ---- styles
@@ -510,6 +520,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc pre.sv .more button { font: 12px var(--hc-sans); color: var(--hc-fg-2); border-radius: 6px; padding: 4px 10px; }
 .hc pre.sv .more button:hover { background: var(--hc-bg-2); color: var(--hc-fg); }
 .hc .srcnote { color: var(--hc-fg-3); font: 13px var(--hc-sans); padding: 24px 16px; }
+.hc pre.sv .excerpt { color: var(--hc-fg-3); font: 12px var(--hc-sans); padding: 6px 12px 2px; position: sticky; left: 0; width: var(--hc-bw, 100%); box-sizing: border-box; }
 @container hc (min-width: 900px) {
   .hc .hc-src { width: 44%; max-width: 760px; flex: none; border-left: 1px solid var(--hc-line); }
   .hc.navoff nav { position: absolute; top: 0; left: 0; bottom: 0; z-index: 20; transform: translateX(-100%); transition: transform .15s; box-shadow: var(--hc-shadow); }
@@ -1106,27 +1117,30 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
     // ---- source view (built in; a host with opts.open never shows it)
     let cur = null;
     let savedScroll = 0;
+    // Per file, the texts read so far: [{first, lines, part}]; a whole file (first absent) answers any range.
     const fileLines = {};
+    const chunkFor = (file, s) => (fileLines[file] || []).find((c) => !c.part || (c.first <= s && s < c.first + c.lines.length));
     function srcHtml() {
       const { file, before, after, whole, all, match } = cur;
-      const lines = fileLines[file];
-      if (!lines) return '<div class="srcnote">' + esc(file) + (cur.failed ? ' could not be read.' : ' is not embedded in this page.') + '</div>';
-      const N = lines.length;
+      const ch = chunkFor(file, cur.start);
+      if (!ch) return '<div class="srcnote">' + esc(file) + (cur.failed ? ' could not be read.' : ' is not embedded in this page.') + '</div>';
+      const lines = ch.lines, F = ch.first, N = F + lines.length - 1;
       // a provider reading another version of the file may hand back fewer lines than the pinned range
-      const start = Math.min(cur.start, N), end = Math.min(cur.end, N);
-      const a = whole ? 1 : Math.max(1, start - before);
+      const start = Math.max(F, Math.min(cur.start, N)), end = Math.max(F, Math.min(cur.end, N));
+      const a = whole ? F : Math.max(F, start - before);
       const b = whole ? N : Math.min(N, end + after);
-      const hitN = end - start + 1;
+      // an excerpt may end inside a long range: the cap is decided on the whole range, "show all" only when it is all here
+      const hitN = (ch.part ? cur.end : end) - start + 1;
       const cap = !whole && !all && hitN > 80;
       const capEnd = cap ? start + 39 : end;
       const marks = {};
       if (match) {
-        const joined = lines.slice(start - 1, end).join('\n');
+        const joined = lines.slice(start - F, end - F + 1).join('\n');
         const k = joined.indexOf(match);
         if (k >= 0) {
           let off = 0;
           for (let i = start; i <= end; i++) {
-            const len = lines[i - 1].length;
+            const len = lines[i - F].length;
             const a0 = Math.max(k, off), b0 = Math.min(k + match.length, off + len);
             if (b0 > a0) marks[i] = [[a0 - off, b0 - off]];
             off += len + 1;
@@ -1135,14 +1149,16 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       }
       const mode = modeOf(file);
       const st = { tq: null };
-      if (mode === 'py') for (let i = 1; i < a; i++) tokens(lines[i - 1], mode, st);
+      if (mode === 'py') for (let i = F; i < a; i++) tokens(lines[i - F], mode, st);
       let h = '<pre class="sv">';
-      if (a > 1) h += '<div class="more"><button data-more="before">… ' + (a - 1) + ' lines above</button></div>';
+      const cut = cap && ch.part && cur.end > N;
+      if (ch.part) h += '<div class="excerpt">' + (cut ? 'First 40 of ' + hitN + ' lines are in the page' : 'Lines ' + F + '–' + N + ' of this file are in the page') + '</div>';
+      if (a > F) h += '<div class="more"><button data-more="before">… ' + (a - F) + ' lines above</button></div>';
       const lastShown = cap ? capEnd : b;
       for (let i = a; i <= lastShown; i++) {
-        h += '<div class="l' + (i >= start && i <= end ? ' hit' : '') + '"><span class="n">' + i + '</span><span class="c">' + paintTokens(tokens(lines[i - 1], mode, st), marks[i]) + '</span></div>';
+        h += '<div class="l' + (i >= start && i <= end ? ' hit' : '') + '"><span class="n">' + i + '</span><span class="c">' + paintTokens(tokens(lines[i - F], mode, st), marks[i]) + '</span></div>';
       }
-      if (cap) h += '<div class="more"><button data-more="all">Showing 40 of ' + hitN + ' selected lines · show all</button></div>';
+      if (cap && !cut) h += '<div class="more"><button data-more="all">Showing 40 of ' + hitN + ' selected lines · show all</button></div>';
       else if (b < N) h += '<div class="more"><button data-more="after">… ' + (N - b) + ' lines below</button></div>';
       return h + '</pre>';
     }
@@ -1150,7 +1166,8 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       srcBody.innerHTML = srcHtml();
       srcBody.style.setProperty('--hc-bw', srcBody.clientWidth + 'px');
       wholeBtn.innerHTML = cur.whole ? ICON.range : ICON.file;
-      wholeBtn.title = cur.whole ? 'Show the range' : 'Whole file';
+      const ch = chunkFor(cur.file, cur.start);
+      wholeBtn.title = cur.whole ? 'Show the range' : ch && ch.part ? 'All embedded lines' : 'Whole file';
       if (scroll) {
         const hit = srcBody.querySelector('.hit');
         srcBody.scrollTop = hit && cur.whole ? Math.max(0, hit.offsetTop - srcBody.clientHeight / 3) : 0;
@@ -1159,11 +1176,17 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
     // Paint now when the file is already read, else when the provider answers (if this is still the open source).
     function loadAndPaint() {
       const want = cur;
-      if (fileLines[want.file]) { paintSource(true); return; }
+      if (chunkFor(want.file, want.start)) { paintSource(true); return; }
       srcBody.innerHTML = '';
       Promise.resolve()
-        .then(() => sources.read(want.file, { ref: D.commit || '' }))
-        .then((r) => { if (r && typeof r.text === 'string') fileLines[want.file] = r.text.split('\n'); }, () => { want.failed = true; })
+        .then(() => sources.read(want.file, { ref: D.commit || '', start: want.start, end: want.end }))
+        .then((r) => {
+          if (!r || typeof r.text !== 'string') return;
+          const part = typeof r.first === 'number';
+          const c = { first: part ? r.first : 1, lines: r.text.split('\n'), part };
+          // a whole file replaces whatever was read before; an excerpt joins the others
+          fileLines[want.file] = part ? (fileLines[want.file] || []).filter((x) => x.part).concat(c) : [c];
+        }, () => { want.failed = true; })
         .then(() => { if (cur === want) paintSource(true); });
     }
     function openSource(el) {
