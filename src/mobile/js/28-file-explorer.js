@@ -803,9 +803,12 @@ function closeExplorer() {
 // one row of the column may be expanded at a time (sideSetFull).
 function syncFilesExpand() {
   const on = filesDocked && filesExpanded;
+  // Off before the pane narrows: a brief's tab takes its place as it goes
+  // (briefKeep, 47-workspace.js), and at the narrower width the browser has
+  // already moved its scroll to keep the same lines in view.
+  if (!on && ws) ws.setOn(false);
   sideSetFull(id, on);
   if (on) workspace().setOn(true);
-  else if (ws) ws.setOn(false);
   // Every bar this pane can wear one in: the listing's own, and the editor's,
   // the reader's and the viewer's while a file of its own is open in one.
   for (const box of filesEls()) {
