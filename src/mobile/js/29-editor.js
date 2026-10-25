@@ -16,6 +16,9 @@ let edView = null;        // edRec.view
 let edPath = "";
 let edDirty = false;
 let edReadOnly = false;   // a lossy (non-UTF-8) read must never be written back
+// What the editor hands the screen back to when it closes, {show()}, or null for
+// the listing it was opened from (openEditor's opts.returnTo).
+let edReturn = null;
 
 let cmLoading = null;
 function ensureCM() {
@@ -230,6 +233,11 @@ function edThemeExt() {
                      border: "none", borderRight: "1px solid " + chrome["--hair"] },
     ".cm-lineNumbers .cm-gutterElement": { padding: "0 10px 0 12px" },
     ".cm-activeLineGutter": { backgroundColor: lineTint, color: text },
+    // The lines a caller asked to be shown (edRangeExt): the accent, quieter
+    // than the selection's so a selection inside the range still reads as one.
+    // After the active line, which sits on the same element, so that the
+    // range's first line, where the caret lands, is tinted like the rest.
+    ".cm-hc-range": { backgroundColor: rgbaHex(accent, dark ? 0.14 : 0.10) },
     "&.cm-focused .cm-matchingBracket": {
       backgroundColor: rgbaHex(accent, 0.18), outline: "1px solid " + rgbaHex(accent, 0.5),
     },
@@ -436,12 +444,33 @@ function edDefineVimEx() {
 // opts.noHistory says the entry this screen unwinds on is already on the stack
 // — the markdown reader's Edit hands over the one it pushed, so the two views
 // of a file cost one back between them.
+//
+// opts.ref and opts.root read the file as it stands at a commit of the repo at
+// root rather than the way the explorer's branch would (fsReadTextAt,
+// 28-file-explorer.js), read-only like any file read at a ref. A commit the repo
+// no longer has — rebased away, or never fetched into this clone — is not a
+// reason to open nothing: the file is read off the disk instead, editable, and
+// one toast names the commit that was asked for.
+//
+// opts.line and opts.lineEnd, 1-based and inclusive, are a place in the file to
+// be shown: the caret goes to the start of `line`, which is scrolled to the
+// middle of the view, and the lines through lineEnd are tinted (edRangeExt).
+// The tint is the buffer's own, so the next file opened has none.
+//
+// opts.returnTo, {show()}, is the screen the editor was opened over, put back
+// when the editor closes in place of the listing (closeEditor).
 async function openEditor(path, opts) {
   usageCount("editor");
   const create = !!(opts && opts.create);
+  const ref = (opts && opts.ref) || "";
   let content = "", hash = "", lossy = false, atRef = false;
   if (!create) {
-    const data = await fsReadText(path);
+    let data = ref ? await fsReadTextAt(path, ref, opts.root || "")
+                   : await fsReadText(path);
+    if (data && data.error) {
+      toast(edShortRef(ref) + " is not in this repo, so this is the file as it is now");
+      data = await fsReadTextAt(path, "", "");
+    }
     if (!data) return;
     content = data.content; hash = data.hash; lossy = !!data.lossy;
     // Read at a git ref rather than off the disk: there is a file here to read
@@ -458,8 +487,10 @@ async function openEditor(path, opts) {
   // disabling it would.
   $("btn-editor-save").style.display = edReadOnly ? "none" : "";
   $("btn-editor-download").style.display = canDownload(path) ? "" : "none";
-  edBuild(content, path);
+  const range = opts && opts.line ? { line: opts.line, lineEnd: opts.lineEnd } : null;
+  edBuild(content, path, range);
   edRec.hash = hash;
+  edReturn = (opts && opts.returnTo) || null;
   edSetDirty(false);
   edSyncWrapButton();
   edSyncVimButton();
@@ -474,7 +505,58 @@ async function openEditor(path, opts) {
   if (!docked && !(opts && opts.noHistory)) {
     history.pushState({ editor: true }, "", location.href);
   }
+  // Once the screen is showing: a view that is not displayed has no heights to
+  // measure, and a scroll asked of it would land nowhere.
+  if (range) edShowLine(range.line);
   if (lossy) toast("Not valid UTF-8 — opened read-only");
+}
+
+// A commit as a toast can name it: a full hash is shortened the way git's own
+// output does, anything else (a branch, a short hash) is already short.
+function edShortRef(ref) {
+  return /^[0-9a-f]{12,}$/i.test(ref) ? ref.slice(0, 7) : ref;
+}
+
+// A line number from outside the editor, held to the lines the file has: the
+// file may have shrunk since the number was taken.
+function edClampLine(doc, n) {
+  return Math.min(Math.max(1, Math.floor(Number(n)) || 1), doc.lines);
+}
+
+// The tint over a range of lines, in a compartment of its own so that it is a
+// thing the buffer either carries or does not: every open builds a new state,
+// and one opened without a range gets the compartment empty. A StateField
+// rather than a plugin because the range belongs to the document, not to what
+// is on screen, and an edit above it maps it down with the text it covers.
+let edRangeComp = null;
+function edRangeExt(range) {
+  const CM = window.CM6;
+  if (!edRangeComp) edRangeComp = new CM.Compartment();
+  if (!range) return edRangeComp.of([]);
+  const mark = CM.Decoration.line({ class: "cm-hc-range" });
+  const field = CM.StateField.define({
+    create(state) {
+      const doc = state.doc;
+      const a = edClampLine(doc, range.line);
+      const b = Math.max(a, edClampLine(doc, range.lineEnd || range.line));
+      const marks = [];
+      for (let n = a; n <= b; n++) marks.push(mark.range(doc.line(n).from));
+      return CM.Decoration.set(marks);
+    },
+    update: (marks, tr) => marks.map(tr.changes),
+    provide: (f) => CM.EditorView.decorations.from(f),
+  });
+  return edRangeComp.of(field);
+}
+
+// The caret to the start of a line, and the line to the middle of the view.
+function edShowLine(n) {
+  const view = edView;
+  const pos = view.state.doc.line(edClampLine(view.state.doc, n)).from;
+  view.dispatch({
+    selection: { anchor: pos },
+    effects: window.CM6.EditorView.scrollIntoView(pos, { y: "center" }),
+  });
 }
 
 // One CodeMirror view in `host`. With `content` the state is built here; with
@@ -564,8 +646,8 @@ function edScreenView(opts) {
   edView = edRec.view;
 }
 
-function edBuild(content, path) {
-  edScreenView({ path, content, readOnly: edReadOnly });
+function edBuild(content, path, range) {
+  edScreenView({ path, content, readOnly: edReadOnly, extensions: edRangeExt(range) });
 }
 
 // ---- putting the buffer away (see fileViews in 09-image-viewer.js) ---------
@@ -590,6 +672,11 @@ function edStash() {
   edRec = null;
   edView = null;
   edPath = "";
+  // The screen it was opened over goes too. That screen is put away by the same
+  // switch, and what comes back on the return is the editor alone, as any
+  // restored editor does: closing it lands on the listing, and the brief or
+  // whatever it was is opened again from there.
+  edReturn = null;
   edSetDirty(false);
   $("screen-editor").classList.remove("active");
   // The shape goes with the screen rather than into the record: the restore
@@ -697,8 +784,16 @@ function editorPopped() {
 }
 
 function closeEditor() {
-  $("screen-editor").classList.remove("active");
-  undockFileView($("screen-editor"));
+  const el = $("screen-editor");
+  el.classList.remove("active");
+  // Opened over another screen (opts.returnTo), it is that screen that comes
+  // back rather than the listing: full screen the listing stays as it was,
+  // under that screen, and docked only the pane's own hold on the editor is let
+  // go, which brings no listing up anyway.
+  const back = edReturn;
+  edReturn = null;
+  if (!back || el.classList.contains("docked")) undockFileView(el);
+  if (back) back.show();
   if (edRec) { edDropView(edRec); edRec = null; }
   edView = null;
   edSetDirty(false);
