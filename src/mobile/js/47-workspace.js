@@ -111,8 +111,8 @@ function wsTreeOrder(entries) {
 
 // What a tab of `path` shows, by the explorer's own rules for a tap (openEntry,
 // 28-file-explorer.js). A mesh is the 3D viewer's, where that viewer is in the
-// bundle; anything else that is not a picture, a PDF, Markdown or a page is
-// text for the editor.
+// bundle; a human_code/brief.json is the brief (49-human-code.js); anything
+// else that is not a picture, a PDF, Markdown or a page is text for the editor.
 function wsKindOf(path) {
   if (typeof MESH_EXT_RE !== "undefined" && MESH_EXT_RE.test(path)
       && typeof meshMount === "function") return "mesh";
@@ -120,7 +120,31 @@ function wsKindOf(path) {
   if (FILES_PDF_RE.test(path)) return "pdf";
   if (FILES_MD_RE.test(path)) return "reader";
   if (FILES_HTML_RE.test(path)) return "html";
+  if (HC_BRIEF_RE.test(path)) return "humancode";
   return "editor";
+}
+
+// Which group a tap on a line of a brief opens its file in: the group the last
+// tap used while it is still there and is not the brief's own, else the first
+// other group in reading order, else null, for a group made beside the brief.
+function wsBriefGroup(groups, own, last) {
+  if (last && last !== own && groups.includes(last)) return last;
+  return groups.find((g) => g !== own) || null;
+}
+
+// The key a tab is found by: its path, or for a file read at a commit (a
+// brief's Pinned), the path at that commit, which is a tab of its own beside
+// the file on the disk.
+function wsTabKey(path, ref) {
+  return ref ? path + "@" + ref : path;
+}
+
+// The folder a tree row is, when it is a human_code/ folder holding a brief:
+// the brief's path, which the row opens instead of the folder.
+function wsBriefIn(path, entries) {
+  if (!/(?:^|\/)human_code$/.test(path)) return "";
+  const has = (entries || []).some((e) => e.name === "brief.json" && e.type === "file");
+  return has ? joinPath(path, "brief.json") : "";
 }
 
 // Where a dragged tab would land, worked out from plain numbers so it reads
@@ -368,7 +392,8 @@ function wsRevertEdit(base, buf, h) {
 // caught up with yet, on a computer that can answer both the index read and
 // the apply route; lit in the accent while the marks are on.
 function wsMarksKeyState(tab, mark, git, hunks) {
-  const editor = !!tab && tab.kind === "editor";
+  // A file read at a commit has no changes of its own to mark.
+  const editor = !!tab && tab.kind === "editor" && !tab.ref;
   const marked = !!mark && !mark.dir && WS_RANK[mark.kind] !== undefined
                  && mark.kind !== "del";
   const show = editor && !!git && (marked || hunks > 0);
@@ -574,10 +599,31 @@ function makeWorkspace(ctx) {
       // A listing row dragged onto a folder of the tree moves into it, as it
       // does onto a folder row of the listing.
       ctx.wireMoveTarget(node.el, path);
+      if (name === "human_code") findBrief(node);
     }
     nodes.set(path, node);
     paintNode(node);
     return node;
+  }
+
+  // A human_code/ folder is looked into as soon as its row is drawn, out of
+  // the explorer's cache when it can be: holding a brief, the row is named
+  // "Human code" with a page for its icon, and its name opens the brief as a
+  // tab. The chevron still opens the folder, and its right-click menu is the
+  // folder's, as any row's is.
+  async function findBrief(node) {
+    let data = ctx.cachedListing(node.path);
+    if (!data) {
+      try { data = await ctx.fsList(node.path); } catch (e) { return; }
+    }
+    if (data && nodes.get(node.path) === node) markBrief(node, data.entries);
+  }
+
+  function markBrief(node, entries) {
+    node.brief = wsBriefIn(node.path, entries);
+    node.el.classList.toggle("ws-brief", !!node.brief);
+    node.el.querySelector(".ws-name").textContent = node.brief ? "Human code" : node.name;
+    node.el.querySelector(".file-ic").replaceChildren(svgIcon(node.brief ? "i-text" : "i-folder"));
   }
 
   // A node and everything under it leave the map, so a folder deleted and made
@@ -626,6 +672,7 @@ function makeWorkspace(ctx) {
     }
     node.children = kids.map((k) => k.path);
     node.loaded = true;
+    if (node.el && node.name === "human_code") markBrief(node, data.entries);
     for (const kid of kids) {
       node.kidsEl.appendChild(kid.el);
       if (kid.kidsEl) node.kidsEl.appendChild(kid.kidsEl);
@@ -723,6 +770,8 @@ function makeWorkspace(ctx) {
         else { if (keepShut === node.path) keepShut = null; expand(node); }
         return;
       }
+      // A brief's folder opens the brief by its name (findBrief).
+      if (node.brief) { open(node.brief); return; }
       // A closed folder is opened by the listing's answer (onListing fills
       // the node and reveal opens it), not by a list of its own: asking here
       // as well read every folder twice, and a folder that fails failed twice.
@@ -910,17 +959,20 @@ function makeWorkspace(ctx) {
 
   function addTab(g, props) {
     // `marksOn` is whether an editor shows its change marks, `marks` what
-    // they are drawn from (the inline change marks below).
+    // they are drawn from (the inline change marks below). `ref` is the
+    // commit an editor's file was read at (a brief's Pinned), `hc` a brief's
+    // viewer and what it knows (fillBrief).
     const tab = Object.assign({ id: ++tabSeq, path: "", kind: "editor", title: "",
                                 dirty: false, chip: null, body: null,
                                 rec: null, mesh: null, closed: false, group: g,
-                                marksOn: false, marks: null }, props);
+                                marksOn: false, marks: null, ref: "", hc: null }, props);
+    tab.key = wsTabKey(tab.path, tab.ref);
     tab.body = el("div", { class: "ws-pane ws-" + tab.kind });
     makeChip(tab);
     g.tabs.push(tab);
     g.rowEl.appendChild(tab.chip);
     g.bodyEl.appendChild(tab.body);
-    if (tab.path) byPath.set(tab.path, tab);
+    if (tab.path) byPath.set(tab.key, tab);
     paintChip(tab);
     syncEmpty(g);
     return tab;
@@ -935,6 +987,9 @@ function makeWorkspace(ctx) {
   function activate(tab) {
     const g = tab.group;
     const was = g.active;
+    // A brief's place is taken while it still shows, since a hidden box has
+    // no scroll to read.
+    if (was && was !== tab) briefKeep(was);
     g.active = tab;
     for (const t of g.tabs) {
       t.body.classList.toggle("on", t === tab);
@@ -943,6 +998,7 @@ function makeWorkspace(ctx) {
     // A film left playing in a tab nobody is looking at is sound from nowhere.
     if (was && was !== tab) pauseMedia(was);
     if (tab.rec) tab.rec.view.requestMeasure();
+    if (tab.hc) briefBack(tab);
     if (tab.mesh) tab.mesh.resize();
     select(tab.path);
     // The index can have moved while the tab was behind another.
@@ -969,23 +1025,29 @@ function makeWorkspace(ctx) {
   // that shows its change marks whatever the tabs' default (a badge's click).
   // `opts.group` and `opts.index` put a new tab in that group at that slot of
   // its band (a tree row's drop), rather than at the end of the last group
-  // pressed in.
+  // pressed in. A tap on a brief's line also gives openEditor's `line`,
+  // `lineEnd`, `ref` and `root` (29-editor.js): the file at that commit,
+  // read-only, in a tab of its own, and the lines to show and tint, which a
+  // tab already open is scrolled to as well.
   async function open(path, kind, opts) {
-    const have = byPath.get(path);
+    const have = byPath.get(wsTabKey(path, opts && opts.ref));
     if (have) {
       activate(have);
       if (opts && opts.marks && have.kind === "editor" && !have.marksOn) setMarks(have, true);
+      if (opts && opts.line && have.rec) showRange(have, opts);
       return have;
     }
     kind = kind || wsKindOf(path);
     const ref = ctx.refFor(path);
     // A page renders in a tab of the browser's (openRendered): it is served
     // sandboxed into an origin of its own, which a frame in this document would
-    // undo. At a ref there is no page on the disk, so it opens as its source.
+    // undo. At a ref there is no page on the disk, so it opens as its source;
+    // a brief at a ref is its JSON too, the explorer's rule (openEntry).
     if (kind === "html") {
       if (!ref) { ctx.openRendered(path); return null; }
       kind = "editor";
     }
+    if (kind === "humancode" && ref) kind = "editor";
     if (ref && (kind === "media" || kind === "pdf" || kind === "mesh")) {
       toast("Can't preview " + (kind === "pdf" ? "PDFs" : kind === "mesh" ? "3D files"
                                                           : "images") + " from " + ref);
@@ -993,15 +1055,119 @@ function makeWorkspace(ctx) {
     }
     if (kind === "pdf" && demoApiOn()) { toast("Not in the demo"); return null; }
     const into = (opts && opts.group) || focusGroup || groups[0];
+    const atRef = (opts && opts.ref) || "";
     const tab = addTab(into, {
-      path, kind, title: baseName(path),
-      marksOn: kind === "editor" && (opts && opts.marks ? true : cfg.wsInlineDiff),
+      path, kind, ref: atRef,
+      // A brief is named as its folder's row is (markBrief).
+      title: atRef ? baseName(path) + " @ " + edShortRef(atRef)
+           : kind === "humancode" ? "Human code" : baseName(path),
+      marksOn: kind === "editor" && !atRef && (opts && opts.marks ? true : cfg.wsInlineDiff),
     });
     if (opts && opts.index != null) moveTab(tab, into, opts.index);
     activate(tab);
     const ok = await fillTab(tab, opts || {}).catch((e) => { dbg("ws tab failed:", e); return false; });
     if (!ok && !tab.closed) drop(tab);
+    // Not a brief after all, or one this app cannot draw: the file as it is.
+    if (!ok && tab.fallback) return open(path, tab.fallback, opts);
     return ok ? tab : null;
+  }
+
+  // The lines a brief's tap points at, in a tab already open: the tint moved
+  // to them, and the caret and the view after it.
+  function showRange(tab, r) {
+    const view = tab.rec.view;
+    view.dispatch({ effects: edRangeComp.reconfigure(edRangeField(r)) });
+    edShowLine(r.line, view);
+  }
+
+  // ---- a human-code brief in a tab --------------------------------------------
+  // The brief screen's viewer and its side of the app (49-human-code.js), in a
+  // tab: one tab per brief, its units reached through the viewer's own nav.
+  // A tap on a line opens the file in the group beside the brief (briefOpen),
+  // the Pinned/Now pair sits in the viewer's own head, by its search, since a
+  // tab has no bar of its own, and what changed since the brief's commit is
+  // asked on open and every HC_POLL_MS while the tab is in front.
+
+  async function fillBrief(tab) {
+    const data = await ctx.readText(tab.path);
+    if (!data || tab.closed) return !!data;
+    let brief = null;
+    try { brief = JSON.parse(data.content); } catch (e) {}
+    if (!hcIsBrief(brief)) { tab.fallback = "editor"; return false; }
+    try { await ensureHumanCode(); } catch (e) {
+      toast("Couldn't load the brief viewer");
+      tab.fallback = "editor";
+      return false;
+    }
+    if (tab.closed) return true;
+    if (hcTooNew(brief)) {
+      toast("This brief needs a newer PocketTUI");
+      tab.fallback = "editor";
+      return false;
+    }
+    const b = hcRecord(tab.path, brief);
+    const note = el("div", { class: "ws-hc-note" });
+    note.hidden = true;
+    const host = el("div", { class: "ws-hc-host" });
+    tab.body.append(note, host);
+    const view = hcMountIn(host, b, (src) => briefOpen(tab, src), () => false);
+    const head = host.querySelector(".hc header");
+    head.insertBefore(hcAtPair(b), head.querySelector(".hc-search"));
+    tab.hc = { b, view, note, timer: setInterval(() => briefPoll(tab), HC_POLL_MS),
+               state: null, edGroup: null };
+    hcPaintInto(b, view, note);
+    briefPoll(tab);
+    return true;
+  }
+
+  function briefShown(tab) {
+    return on && attached && !tab.closed && tab.group.active === tab;
+  }
+
+  async function briefPoll(tab) {
+    const hc = tab.hc;
+    if (!hc || !briefShown(tab)) return;
+    if (await hcAskHunks(hc.b) && tab.hc === hc) hcPaintInto(hc.b, hc.view, hc.note);
+  }
+
+  // Where the viewer was, taken while it still shows (a hidden box has no
+  // scroll to read) and put back when it shows again: behind another tab,
+  // moved to another group, collapsed, or away with its session.
+  function briefKeep(tab) {
+    if (tab.hc && on && tab.body.classList.contains("on")) tab.hc.state = tab.hc.view.state();
+  }
+
+  function briefBack(tab) {
+    const hc = tab.hc;
+    if (hc && hc.state) { hc.view.restore(hc.state); hc.state = null; }
+    if (hc) briefPoll(tab);
+  }
+
+  // A tap on a line of a brief: the file in the group beside the brief's, the
+  // one the last tap used while it lasts (wsBriefGroup), else a group made
+  // beside it as a drop's split makes one, taken away again if the file does
+  // not become a tab there. A file already open elsewhere is brought forward
+  // where it is; one open in the brief's own group moves over rather than
+  // covering the brief.
+  async function briefOpen(tab, src) {
+    const t = tab.hc && hcTarget(tab.hc.b, src);
+    if (!t) return;
+    const have = byPath.get(wsTabKey(t.path, t.opts.ref));
+    if (have && have.group !== tab.group) {
+      focusGroup = have.group;
+      tab.hc.edGroup = have.group;
+      open(t.path, "editor", t.opts);
+      return;
+    }
+    let g = wsBriefGroup(groups, tab.group, tab.hc.edGroup);
+    const made = !g;
+    if (made) g = makeSplit("side", tab.group);
+    if (!g) return;
+    tab.hc.edGroup = g;
+    if (have) moveTab(have, g, null);
+    focusGroup = g;
+    await open(t.path, "editor", Object.assign({ group: g }, t.opts));
+    if (made && !g.tabs.length && groups.includes(g)) unsplit();
   }
 
   async function fillTab(tab, opts) {
@@ -1009,7 +1175,22 @@ function makeWorkspace(ctx) {
     if (tab.kind === "editor") {
       let content = "", hash = "", readOnly = false, lossy = false;
       if (!opts.create) {
-        const data = await ctx.readText(path);
+        let data = tab.ref ? await fsReadTextAt(path, tab.ref, opts.root || "")
+                           : await ctx.readText(path);
+        // The commit has gone from the repo since the brief was read: the
+        // file on the disk instead, which is a tab of its own already if it
+        // is open.
+        if (data && data.error) {
+          toast(edShortRef(tab.ref) + " is not in this repo, so this is the file as it is now");
+          if (byPath.has(path)) { activate(byPath.get(path)); return false; }
+          byPath.delete(tab.key);
+          tab.ref = "";
+          tab.key = path;
+          tab.title = baseName(path);
+          byPath.set(path, tab);
+          paintChip(tab);
+          data = await ctx.readText(path);
+        }
         if (!data) return false;
         content = data.content; hash = data.hash;
         lossy = !!data.lossy;
@@ -1026,14 +1207,17 @@ function makeWorkspace(ctx) {
         onDirty: (rec, dirty) => { tab.dirty = dirty; paintChip(tab); },
         onSave: () => save(tab),
         onQuit: (rec, bang) => close(tab, bang),
-        extensions: [tab.marks.comp.of(tab.marksOn ? marksExt(tab) : [])],
+        extensions: [tab.marks.comp.of(tab.marksOn ? marksExt(tab) : []),
+                     edRangeExt(opts.line ? { line: opts.line, lineEnd: opts.lineEnd } : null)],
       });
       tab.rec.hash = hash;
+      if (opts.line && tab.body.classList.contains("on")) edShowLine(opts.line, tab.rec.view);
       if (tab.marksOn) loadBase(tab);
       if (cfg.editorVimOn) { edDefineVimEx(); edLoadVimrc(); }
       if (lossy) toast("Not valid UTF-8 — opened read-only");
       return true;
     }
+    if (tab.kind === "humancode") return fillBrief(tab);
     if (tab.kind === "reader") {
       const data = await ctx.readText(path);
       if (!data || tab.closed) return !!data;
@@ -1123,12 +1307,18 @@ function makeWorkspace(ctx) {
     if (tab.marks) clearTimeout(tab.marks.timer);
     if (tab.rec) { edDropView(tab.rec); tab.rec = null; }
     if (tab.mesh) { tab.mesh.destroy(); tab.mesh = null; }
+    if (tab.hc) {
+      clearInterval(tab.hc.timer);
+      tab.hc.b.dead = true;
+      tab.hc.view.destroy();
+      tab.hc = null;
+    }
     const v = tab.body.querySelector("video");
     if (v) { v.pause(); v.removeAttribute("src"); }
     const g = tab.group;
     const at = g.tabs.indexOf(tab);
     g.tabs.splice(at, 1);
-    if (byPath.get(tab.path) === tab) byPath.delete(tab.path);
+    if (byPath.get(tab.key) === tab) byPath.delete(tab.key);
     tab.chip.remove();
     tab.body.remove();
     if (g.active === tab) {
@@ -1312,6 +1502,7 @@ function makeWorkspace(ctx) {
     const next = g.tabs[moved.index + 1];
     g.rowEl.insertBefore(tab.chip, next ? next.chip : null);
     if (from !== g) {
+      briefKeep(tab);
       g.bodyEl.appendChild(tab.body);
       if (from.active === tab) {
         from.active = null;
@@ -1841,6 +2032,7 @@ function makeWorkspace(ctx) {
   // hidden workspace: a collapse discards nothing.
   function setOn(v) {
     if (v === on) return;
+    if (!v) for (const g of groups) if (g.active) briefKeep(g.active);
     on = v;
     root.classList.toggle("ws-on", v);
     if (v) {
@@ -1849,6 +2041,7 @@ function makeWorkspace(ctx) {
       reveal(ctx.path());
       relayout();
       kickStatus();
+      for (const g of groups) if (g.active && g.active.hc) briefBack(g.active);
     } else {
       wsEl.before(wrap);
       for (const t of fileTabs()) pauseMedia(t);

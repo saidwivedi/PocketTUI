@@ -19,6 +19,11 @@
 // an owner of its own (hcOwner, 28-file-explorer.js): the editor a tap opens
 // goes into the other row of the column, beside the brief rather than over it.
 //
+// The expanded explorer's workspace shows a brief as a tab (47-workspace.js),
+// with the files a tap opens in the group beside it. Both hosts hold what they
+// know about their brief in one record (hcRecord) and hand it to the same
+// functions: the reads, the taps, the questions, the refresh and the poll.
+//
 // Nothing here runs while the bundle loads: the screen's own keys are wired on
 // the first open (hcWire), and everything else is reached from a press.
 
@@ -26,21 +31,9 @@ const HC_POLL_MS = 15000;
 const HC_REFRESH_DEFAULT = 'claude "/human-code"';
 
 let hcView = null;       // the mounted viewer, or null
-let hcPath = "";         // the brief.json on screen
-let hcBrief = null;      // what it parsed to
-let hcRoot = "";         // the repository its paths are relative to
-// Which bytes a tap opens: "pinned" is the file at the brief's commit,
-// read-only; "now" the file on the disk, with the range carried through what
-// changed since. Settled once, by the first answer about the repo or by a press
-// of the toggle, and only a press moves it after that.
-let hcAt = "pinned";
-let hcAtSettled = false;
-let hcStale = null;      // the last /api/git/hunks answer
+let hcCur = null;        // the screen's brief (hcRecord), or null
 let hcTimer = 0;
-let hcNextAt = 0;        // not asked again before this, however the tick falls
-let hcBusy = false;
 let hcGen = 0;           // every open and close; an answer for an older one is dropped
-let hcMissingSaid = false;
 let hcEdRow = null;      // {id, made}: the row the editor a tap opened went into
 let hcLoading = null;
 let hcWired = false;
@@ -143,12 +136,90 @@ function hcRange(src, at, data, remap) {
   return { file: f.to || src.file, line: line, lineEnd: Math.max(line, remap(hunks, src.end)) };
 }
 
+// ---- one brief, wherever it is shown ----------------------------------------
+
+// What a brief parses to when it is one this app can draw.
+function hcIsBrief(brief) {
+  return !!brief && typeof brief === "object" && Array.isArray(brief.components);
+}
+
+// A brief written by a newer skill than the viewer here knows (ensureHumanCode
+// first).
+function hcTooNew(brief) {
+  return (Number(brief.schema) || 0) > HumanCode.SCHEMA;
+}
+
+// One brief being shown, by the screen or by a workspace tab. `at` is which
+// bytes a tap opens: "pinned" is the file at the brief's commit, read-only;
+// "now" the file on the disk, with the range carried through what changed
+// since. Settled once, by the first answer about the repo or by a press of the
+// toggle, and only a press moves it after that. `stale` is the last
+// /api/git/hunks answer, `nextAt` the time before which it is not asked again
+// however the tick falls, and `dead` is set when the host lets the brief go, so
+// an answer still on its way lands nowhere. `onAt` is the host's, called when
+// `at` moves.
+function hcRecord(path, brief) {
+  return { path: path, brief: brief, root: hcRootOf(path), at: "pinned", settled: false,
+           stale: null, nextAt: 0, busy: false, missingSaid: false, dead: false, onAt: null };
+}
+
+// The viewer in `host`, by either host: the record's reads, its taps through
+// the host's `open`, and the app's question and refresh. A brief `beside` the
+// terminal (docked) puts a question's caret in the box at once.
+function hcMountIn(host, b, open, beside) {
+  return HumanCode.mount(host, b.brief, hcViewOpts(b, open, beside));
+}
+
+function hcViewOpts(b, open, beside) {
+  return {
+    sources: { read: (file) => hcReadSource(b, file) },
+    open: open,
+    ask: (text, src) => hcAsk(text, src, beside()),
+    refresh: () => hcRefresh(b.root),
+    theme: "host",
+    route: "state",
+  };
+}
+
+// The Pinned/Now pair says what the record says.
+function hcSyncAt(box, b) {
+  const commit = String((b && b.brief.commit) || "").slice(0, 7);
+  for (const btn of box.querySelectorAll("[data-at]")) {
+    btn.setAttribute("aria-checked", b && btn.dataset.at === b.at ? "true" : "false");
+    btn.title = btn.dataset.at === "pinned"
+      ? "Open code as it was at " + commit + ", read-only"
+      : "Open code as it is now";
+  }
+}
+
+// A press on the pair, which settles it for good.
+function hcPickAt(b, e) {
+  const btn = e.target.closest("[data-at]");
+  if (!btn || !b) return;
+  b.at = btn.dataset.at;
+  b.settled = true;
+  if (b.onAt) b.onAt();
+}
+
+// The pair for a host with no bar of its own (a workspace tab): the screen's
+// #hc-at, made here and following `b`.
+function hcAtPair(b) {
+  const pair = el("div", { class: "hc-at", role: "radiogroup",
+                           "aria-label": "Which code a line opens" },
+    el("button", { type: "button", role: "radio", "data-at": "pinned" }, "Pinned"),
+    el("button", { type: "button", role: "radio", "data-at": "now" }, "Now"));
+  pair.addEventListener("click", (e) => hcPickAt(b, e));
+  b.onAt = () => hcSyncAt(pair, b);
+  b.onAt();
+  return pair;
+}
+
 // ---- the screen -------------------------------------------------------------
 
 // `pane` is the listing the brief was tapped in; `back` is a rail switch's
 // record (hcStash) when this is the brief coming back with its session.
 async function openHumanCode(path, pane, back) {
-  if (hcPath) closeHumanCode();
+  if (hcCur) closeHumanCode();
   const gen = ++hcGen;
   const data = await fsReadText(path);
   if (!data || gen !== hcGen) return;
@@ -156,7 +227,7 @@ async function openHumanCode(path, pane, back) {
   try { brief = JSON.parse(data.content); } catch (e) {}
   // Not a brief after all, or one this app cannot draw: the file as it is, in
   // the editor, which is where any other .json opens.
-  if (!brief || typeof brief !== "object" || !Array.isArray(brief.components)) {
+  if (!hcIsBrief(brief)) {
     openEditor(path, { pane: pane });
     return;
   }
@@ -166,22 +237,18 @@ async function openHumanCode(path, pane, back) {
     return;
   }
   if (gen !== hcGen) return;
-  if ((Number(brief.schema) || 0) > HumanCode.SCHEMA) {
+  if (hcTooNew(brief)) {
     toast("This brief needs a newer PocketTUI");
     openEditor(path, { pane: pane });
     return;
   }
   hcWire();
-  hcPath = path;
-  hcBrief = brief;
-  hcRoot = hcRootOf(path);
-  hcAt = back && back.at ? back.at : "pinned";
-  hcAtSettled = !!(back && back.at);
-  hcStale = null;
-  hcNextAt = 0;
-  hcMissingSaid = false;
+  hcCur = hcRecord(path, brief);
+  hcCur.at = back && back.at ? back.at : "pinned";
+  hcCur.settled = !!(back && back.at);
+  hcCur.onAt = hcSyncToggle;
   hcEdRow = null;
-  $("hc-name").textContent = baseName(hcRoot);
+  $("hc-name").textContent = baseName(hcCur.root);
   $("hc-name").title = path;
   $("hc-note").hidden = true;
   const el = $("screen-humancode");
@@ -202,14 +269,8 @@ async function openHumanCode(path, pane, back) {
 
 function hcMount(state) {
   if (hcView) hcView.destroy();
-  hcView = HumanCode.mount($("hc-host"), hcBrief, {
-    sources: { read: hcReadSource },
-    open: hcOpenSource,
-    ask: hcAsk,
-    refresh: hcRefresh,
-    theme: "host",
-    route: "state",
-  });
+  hcView = hcMountIn($("hc-host"), hcCur, hcOpenSource,
+    () => $("screen-humancode").classList.contains("docked"));
   if (state) hcView.restore(state);
   hcPaint();
 }
@@ -228,10 +289,8 @@ function closeHumanCode() {
 // What a close and a stash both let go of.
 function hcDrop() {
   if (hcView) { hcView.destroy(); hcView = null; }
-  hcPath = "";
-  hcBrief = null;
-  hcRoot = "";
-  hcStale = null;
+  if (hcCur) hcCur.dead = true;
+  hcCur = null;
   hcEdRow = null;
 }
 
@@ -240,38 +299,44 @@ function hcDrop() {
 // The viewer's own source view is never shown here (open is given), but the
 // provider is what it reads through if it ever is: at the brief's commit while
 // the toggle says Pinned, off the disk at Now.
-async function hcReadSource(file) {
-  const gen = hcGen;
-  const ref = hcAt === "pinned" ? String(hcBrief.commit || "") : "";
-  const data = await fsReadTextAt(joinPath(hcRoot, file), ref, hcRoot);
-  if (gen !== hcGen) return null;
-  if (data && data.error === "bad_ref") { hcCommitMissing(); return hcReadSource(file); }
+async function hcReadSource(b, file) {
+  const ref = b.at === "pinned" ? String(b.brief.commit || "") : "";
+  const data = await fsReadTextAt(joinPath(b.root, file), ref, b.root);
+  if (b.dead) return null;
+  if (data && data.error === "bad_ref") { hcCommitMissing(b); return hcReadSource(b, file); }
   return data ? { text: data.content, at: ref ? "pinned" : "now" } : null;
 }
 
 // The brief's commit is not in this clone (a rebase, a gc, a fresh clone):
 // there is nothing to read at it, so the toggle goes to Now, once, and says so.
-function hcCommitMissing() {
-  hcAt = "now";
-  hcAtSettled = true;
-  hcSyncToggle();
-  if (hcMissingSaid) return;
-  hcMissingSaid = true;
-  toast(String(hcBrief.commit || "").slice(0, 7) + " is not in this repo, so code opens as it is now", 3500);
+function hcCommitMissing(b) {
+  b.at = "now";
+  b.settled = true;
+  if (b.onAt) b.onAt();
+  if (b.missingSaid) return;
+  b.missingSaid = true;
+  toast(String(b.brief.commit || "").slice(0, 7) + " is not in this repo, so code opens as it is now", 3500);
 }
 
-function hcOpenSource(src) {
-  if (!src || !src.file || !hcBrief) return;
-  let at = hcAt === "pinned" && hcBrief.commit ? "pinned" : "now";
-  let r = hcRange(src, at, hcStale, HumanCode.remap);
+// The file and the editor's options a pointer opens at, by either host, or
+// null for a pointer to nothing.
+function hcTarget(b, src) {
+  if (!src || !src.file || !b) return null;
+  let at = b.at === "pinned" && b.brief.commit ? "pinned" : "now";
+  let r = hcRange(src, at, b.stale, HumanCode.remap);
   if (!r) {
-    toast(baseName(src.file) + " has been deleted since " + String(hcBrief.commit).slice(0, 7));
+    toast(baseName(src.file) + " has been deleted since " + String(b.brief.commit).slice(0, 7));
     at = "pinned";
     r = hcRange(src, at, null, HumanCode.remap);
   }
   const opts = { line: r.line, lineEnd: r.lineEnd };
-  if (at === "pinned") { opts.ref = String(hcBrief.commit); opts.root = hcRoot; }
-  hcOpenEditor(joinPath(hcRoot, r.file), opts);
+  if (at === "pinned") { opts.ref = String(b.brief.commit); opts.root = b.root; }
+  return { path: joinPath(b.root, r.file), opts: opts };
+}
+
+function hcOpenSource(src) {
+  const t = hcTarget(hcCur, src);
+  if (t) hcOpenEditor(t.path, t.opts);
 }
 
 // Where the editor goes. Seated in a pane, into the other row of the column:
@@ -335,7 +400,7 @@ function hcDropRow(id) {
 // The brief again, after the editor that covered it closes. Its scroll went
 // while it was not displayed, so the place it was left at is put back.
 function hcShowAgain(state) {
-  if (!hcPath) return;
+  if (!hcCur) return;
   $("screen-humancode").classList.add("active");
   sideLayout();
   if (hcView && state) hcView.restore(state);
@@ -347,7 +412,7 @@ function hcShowAgain(state) {
 // (codeMicFinish, 19-voice-capture.js; the phone recogniser starts from the
 // box's text too), so the line put in first is followed by the words spoken.
 // With a keyboard it is typed at the terminal's prompt, never with Enter.
-function hcAsk(text, src) {
+function hcAsk(text, src, beside) {
   const line = hcAskText(text, src);
   if (!touchOnly()) { stageCommand(line); return; }
   const ta = $("compose-text");
@@ -356,8 +421,9 @@ function hcAsk(text, src) {
   composeGrow();
   composeArm();
   // Beside the terminal the box is on screen and takes the caret; full screen
-  // it is under the brief, waiting for the way back.
-  if ($("screen-humancode").classList.contains("docked")) {
+  // (or a workspace tab, over the terminal) it is under the brief, waiting for
+  // the way back.
+  if (beside) {
     ta.focus();
     ta.setSelectionRange(ta.value.length, ta.value.length);
   } else {
@@ -367,8 +433,7 @@ function hcAsk(text, src) {
 
 // Where the terminal's shell is, asked the way the explorer's folder key asks
 // (fetchPaneCwd, through the markup's own pane).
-async function hcRefresh() {
-  const root = hcRoot;
+async function hcRefresh(root) {
   const cwd = await filesPanes.files.paneCwd();
   if (cwd === null || !root) return;
   stageCommand(hcRefreshCommand(cwd, root, cfg));
@@ -380,63 +445,65 @@ async function hcRefresh() {
 // the repo took to answer last time (the diff pane's pacing, diffPace in
 // 37-git-diff.js): a repo on a network mount is not asked again before it has
 // had four times its last answer to rest. A server without the route gets no
-// marks and no pill, and nothing is asked.
-async function hcPoll() {
-  if (!hcPath || hcBusy || document.hidden || Date.now() < hcNextAt) return;
-  if (!$("screen-humancode").classList.contains("active")) return;
-  if (!hasCapStrict("git_hunks") || demoApiOn() || !hcBrief.commit) return;
-  const gen = hcGen;
-  hcBusy = true;
+// marks and no pill, and nothing is asked. Says whether an answer came, for
+// the host to paint (hcPaintInto); whether its brief is on screen is the
+// host's to check before asking.
+async function hcAskHunks(b) {
+  if (!b || b.dead || b.busy || document.hidden || Date.now() < b.nextAt) return false;
+  if (!hasCapStrict("git_hunks") || demoApiOn() || !b.brief.commit) return false;
+  b.busy = true;
   let data = null;
   try {
     const r = await fetch(apiURL("api/git/hunks"), {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ root: hcRoot, base: String(hcBrief.commit), files: hcFiles(hcBrief) }),
+      body: JSON.stringify({ root: b.root, base: String(b.brief.commit), files: hcFiles(b.brief) }),
     });
     if (r.status === 401) rejectToken();
     else if (r.ok) data = await r.json().catch(() => null);
   } catch (e) {
   } finally {
-    hcBusy = false;
+    b.busy = false;
   }
-  if (gen !== hcGen || !data) return;
-  hcNextAt = Date.now() + Math.max(HC_POLL_MS, Math.round((Number(data.elapsed_ms) || 0) * DIFF_POLL_FACTOR));
-  hcStale = data.error ? null : data;
-  if (hcStale && hcStale.base_found === false) hcCommitMissing();
-  else if (hcStale && !hcAtSettled) {
-    hcAt = hcDefaultAt(hcBrief.commit, hcStale);
-    hcAtSettled = true;
-    hcSyncToggle();
+  if (b.dead || !data) return false;
+  b.nextAt = Date.now() + Math.max(HC_POLL_MS, Math.round((Number(data.elapsed_ms) || 0) * DIFF_POLL_FACTOR));
+  b.stale = data.error ? null : data;
+  if (b.stale && b.stale.base_found === false) hcCommitMissing(b);
+  else if (b.stale && !b.settled) {
+    b.at = hcDefaultAt(b.brief.commit, b.stale);
+    b.settled = true;
+    if (b.onAt) b.onAt();
   }
-  hcPaint();
+  return true;
 }
 
-// The marks and the pill from the last answer. A diff cut short reads every
-// file past the cut as unchanged, so it marks nothing and says why instead.
-function hcPaint() {
-  if (!hcView) return;
-  const d = hcStale;
+async function hcPoll() {
+  if (!hcCur || !$("screen-humancode").classList.contains("active")) return;
+  if (await hcAskHunks(hcCur)) hcPaint();
+}
+
+// The marks and the pill from the last answer, on `view`, and the host's
+// `note` line. A diff cut short reads every file past the cut as unchanged,
+// so it marks nothing and says why instead.
+function hcPaintInto(b, view, note) {
+  const d = b.stale;
   const marks = !!d && !d.truncated && d.base_found !== false;
-  hcView.setStale(marks ? Object.assign({}, d, { base: String(hcBrief.commit || "").slice(0, 7) }) : null);
-  hcView.setPill(hcPillText(d, hcBrief.commit));
-  const note = $("hc-note");
+  view.setStale(marks ? Object.assign({}, d, { base: String(b.brief.commit || "").slice(0, 7) }) : null);
+  view.setPill(hcPillText(d, b.brief.commit));
   note.hidden = !(d && d.truncated);
   note.textContent = d && d.truncated
-    ? "Too much has changed since " + String(hcBrief.commit).slice(0, 7) + " to mark it here"
+    ? "Too much has changed since " + String(b.brief.commit).slice(0, 7) + " to mark it here"
     : "";
+}
+
+function hcPaint() {
+  if (hcView && hcCur) hcPaintInto(hcCur, hcView, $("hc-note"));
 }
 
 // ---- the bar ----------------------------------------------------------------
 
 function hcSyncToggle() {
-  const commit = String((hcBrief && hcBrief.commit) || "").slice(0, 7);
-  for (const b of $("hc-at").querySelectorAll("[data-at]")) {
-    b.setAttribute("aria-checked", b.dataset.at === hcAt ? "true" : "false");
-    b.title = b.dataset.at === "pinned"
-      ? "Open code as it was at " + commit + ", read-only"
-      : "Open code as it is now";
-  }
+  hcSyncAt($("hc-at"), hcCur);
 }
 
 function hcShowMore(on) {
@@ -453,13 +520,7 @@ function hcWire() {
     if ($("screen-humancode").classList.contains("docked")) closeHumanCode();
     else history.back();
   });
-  $("hc-at").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-at]");
-    if (!b) return;
-    hcAt = b.dataset.at;
-    hcAtSettled = true;
-    hcSyncToggle();
-  });
+  $("hc-at").addEventListener("click", (e) => hcPickAt(hcCur, e));
   $("btn-hc-more").addEventListener("click", () => {
     hcShowMore(!$("hc-more-wrap").classList.contains("open"));
   });
@@ -493,11 +554,11 @@ function hcStash() {
   clearInterval(hcTimer);
   hcTimer = 0;
   hcShowMore(false);
-  if (!hcPath) return null;
+  if (!hcCur) return null;
   const el = $("screen-humancode");
   const s = el.classList.contains("active")
-    ? { path: hcPath, state: hcView ? hcView.state() : null, owner: hcOwner,
-        at: hcAtSettled ? hcAt : null }
+    ? { path: hcCur.path, state: hcView ? hcView.state() : null, owner: hcOwner,
+        at: hcCur.settled ? hcCur.at : null }
     : null;
   hcDrop();
   // The shape goes with the screen rather than into the record, as the
@@ -515,6 +576,6 @@ function hcRestore(s) {
 // the view on top: one when the full-screen editor is over the full-screen brief.
 function hcCoveredEntries() {
   const el = $("screen-humancode"), ed = $("screen-editor");
-  return hcPath && !el.classList.contains("active") && !el.classList.contains("docked")
+  return hcCur && !el.classList.contains("active") && !el.classList.contains("docked")
     && ed.classList.contains("active") && !ed.classList.contains("docked") ? 1 : 0;
 }
