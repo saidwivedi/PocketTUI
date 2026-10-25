@@ -1436,6 +1436,11 @@ def server_capabilities() -> dict:
         # it, the base the workspace editor's inline change marks compare with
         "git_index": True,
         "git_status": True,     # /api/git/status — the explorer's change badges
+        # POST /api/git/hunks — which lines of a list of files changed since
+        # one commit, the stale marks on a human-code brief. Strictly checked
+        # by the shell: an older server 404s the POST, and a brief with no
+        # marks reads as one nothing has moved under.
+        "git_hunks": True,
         "search": True,         # /api/search — the wide layout's find bar
         "ping": True,           # the attach socket's liveness probe: this
                                 # server answers it instead of typing it
@@ -5176,6 +5181,217 @@ def api_git_diff(root: str = "", path: str = "", scope: str = "unstaged") -> Res
     if "\nBinary files " in text or text.startswith("Binary files "):
         return no_store(JSONResponse({"diff": "", "binary": True}))
     return no_store(JSONResponse({"diff": text, "truncated": truncated}))
+
+
+# A brief names a few dozen files; past this it is a client sending a tree,
+# and the rest are dropped rather than diffed.
+GIT_HUNKS_FILES_MAX = 500
+
+GIT_HUNK_RE = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+# git's C-style escapes in a quoted path, the single-letter ones.
+GIT_QUOTE_ESCAPES = {ord("n"): 10, ord("t"): 9, ord("a"): 7, ord("b"): 8,
+                     ord("f"): 12, ord("r"): 13, ord("v"): 11}
+
+
+def git_diff_name(raw: bytes) -> str:
+    """One path as a diff header prints it, quotes and a/ or b/ taken off.
+
+    git wraps a name holding a tab, a newline, a quote or (with quotePath, the
+    default) a byte past ASCII in C-style quotes with octal escapes, so the
+    escapes are read back as bytes and the result decoded once, like every
+    other path in this file.
+    """
+    s = raw.rstrip(b"\r")
+    if len(s) >= 2 and s.startswith(b'"') and s.endswith(b'"'):
+        s, out, i = s[1:-1], bytearray(), 0
+        while i < len(s):
+            if s[i] == 92 and i + 1 < len(s):
+                octal = s[i + 1:i + 4]
+                if len(octal) == 3 and all(48 <= x <= 55 for x in octal):
+                    out.append(int(octal, 8))
+                    i += 4
+                else:
+                    out.append(GIT_QUOTE_ESCAPES.get(s[i + 1], s[i + 1]))
+                    i += 2
+            else:
+                out.append(s[i])
+                i += 1
+        s = bytes(out)
+    if s[:2] in (b"a/", b"b/"):
+        s = s[2:]
+    return s.decode("utf-8", "replace")
+
+
+def git_hunks_parse(text: bytes | str) -> dict[str, list[list[int]]]:
+    """`diff -U0` output -> {old name: [[os, oe, ns, ne], ...]}, in file order.
+
+    Each span is first and last line, inclusive, on its side. An empty side is
+    git's "-a,0": nothing removed, lines inserted after line a. It comes back
+    as [a+1, a] — a span that ends before it starts, sitting where the lines
+    went in — so "does this hunk touch lines s..e" stays one comparison and an
+    insertion between two units is not read as touching either. Same rule on
+    the new side for a pure deletion.
+
+    Keyed by the name the file had on the old side, because that is the name
+    the caller asked about: a rename's `rename from`, a deletion's `--- a/`,
+    and for a file that did not exist there, the only name it has. A file with
+    no hunk at all (a pure rename, a mode change, a binary) is still a key,
+    with an empty list. Pure, so it is tested without a repo.
+    """
+    raw = text.encode("utf-8") if isinstance(text, str) else text
+    files: dict[str, list[list[int]]] = {}
+    name, named, header, hunks = "", False, False, None
+    for line in raw.split(b"\n"):
+        if line.startswith(b"diff --git "):
+            rest = line[len(b"diff --git "):]
+            # "a/P b/P" whenever the header is the only name a block gives (a
+            # mode change, a binary), so halving it is enough; a quoted pair
+            # is cut at its closing quote.
+            if rest.startswith(b'"'):
+                end = rest.find(b'" ', 1)
+                first = rest[:end + 1] if end > 0 else rest
+            else:
+                first = rest[:(len(rest) - 1) // 2]
+            name, named, header = git_diff_name(first), False, True
+            hunks = files.setdefault(name, [])
+            continue
+        if hunks is None:
+            continue
+        # Header lines only before the first @@: under -U0 a removed line
+        # that read "-- x" is "--- x" in the body, and is not a file name.
+        if header and not named:
+            new = ""
+            if line.startswith(b"rename from "):
+                new = git_diff_name(line[len(b"rename from "):])
+            elif line.startswith(b"--- ") and line[4:].rstrip(b"\r") != b"/dev/null":
+                new = git_diff_name(line[4:])
+            elif line.startswith(b"+++ "):
+                new = git_diff_name(line[4:])
+            if new:
+                named = True
+                if new != name:
+                    if not files[name]:
+                        del files[name]
+                    name, hunks = new, files.setdefault(new, [])
+                continue
+        m = GIT_HUNK_RE.match(line)
+        if m:
+            header = False
+            a, b = int(m.group(1)), int(m.group(2) or 1)
+            c, d = int(m.group(3)), int(m.group(4) or 1)
+            hunks.append([a + 1 if b == 0 else a, a + b - 1 if b else a,
+                          c + 1 if d == 0 else c, c + d - 1 if d else c])
+    return files
+
+
+@app.post("/api/git/hunks")
+def api_git_hunks(body: dict = Body(...)) -> Response:
+    """Where a list of files changed since one commit, as line spans.
+
+    For a document pinned to a commit that points into files by line — a
+    human-code brief — and has to say which of its pointers the code has moved
+    under since. One call for every file it names, against the working tree,
+    so an edit not yet committed counts too.
+
+    `-M` both ways: the name-status pass says which requested file was renamed
+    (`to`) or deleted (`gone`), and the hunk pass is asked for the old and the
+    new names together, because git only pairs a rename up when both sides are
+    inside the pathspec — asked for the old name alone it reports a deletion.
+    Hunks stay under the requested old name, in old-side line numbers, which
+    is what the brief's ranges are. A file renamed and rewritten past git's
+    similarity threshold is a deletion and an unrelated new file, and that is
+    the honest answer.
+
+    `base_found: false` is a commit this repo does not have (a rebase, a gc, a
+    fresh clone): no hunks then, since nothing could be measured. `behind` is
+    the commits since it on this branch, `dirty` whether any of these files
+    has uncommitted changes. A diff past GIT_DIFF_MAX is cut at its last whole
+    line and says `truncated`; files past the cut read as unchanged, so the
+    flag is what the caller must look at. Not a repo is a 200 with a reason,
+    as /api/git/changes answers it; a root, a path or a base that could only
+    come from a confused client is the same 400 the diff route gives.
+    """
+    began = time.monotonic()
+    root, base, rels = body.get("root"), body.get("base"), body.get("files")
+    if not isinstance(root, str) or not isinstance(base, str) \
+            or not isinstance(rels, list) \
+            or not all(isinstance(r, str) for r in rels):
+        return fs_error("bad_request", 400)
+    # Leading dash for git_ref_at's reason: git would read it as a flag.
+    if not base or base.startswith("-"):
+        return fs_error("bad_ref", 400)
+    rels = list(dict.fromkeys(rels))[:GIT_HUNKS_FILES_MAX]
+    for rel in rels:
+        bad = git_target(root, rel)[1]
+        if bad:
+            return fs_error(bad, 400)
+
+    def answer(out: dict) -> Response:
+        out["elapsed_ms"] = int((time.monotonic() - began) * 1000)
+        return no_store(JSONResponse(out))
+
+    if not git_ref_root(root):
+        return answer({"error": "Not a git repository"})
+
+    rc, out, _ = git(root, "rev-parse", "--short", "HEAD")
+    reply: dict = {"head": out.decode("utf-8", "replace").strip() if rc == 0 else "",
+                   "behind": 0, "base_found": False, "dirty": False,
+                   "truncated": False, "files": {}}
+    # Exit 1 is --quiet's "differences found"; anything else (no HEAD yet)
+    # is not a change the user made.
+    if rels:
+        reply["dirty"] = git(root, "--literal-pathspecs", "diff", "--quiet",
+                             "HEAD", "--", *rels)[0] == 1
+
+    rc, out, _ = git(root, "rev-parse", "--verify", "--quiet", base + "^{commit}")
+    sha = out.decode("ascii", "replace").strip()
+    if rc != 0 or not sha:
+        return answer(reply)
+    reply["base_found"] = True
+    rc, out, _ = git(root, "rev-list", "--count", sha + "..HEAD")
+    if rc == 0 and out.strip().isdigit():
+        reply["behind"] = int(out.strip())
+    if not rels:
+        return answer(reply)
+
+    # Whole repo on purpose: a rename's new name is not known until git says
+    # it, so this pass cannot be limited to the names asked about.
+    rc, out, err = git(root, "diff", "--name-status", "-M", "-z",
+                       "--no-color", "--no-ext-diff", sha)
+    if rc != 0:
+        return answer({**reply, "error": err or "git diff failed"})
+    wanted, moved, gone = set(rels), {}, set()
+    parts = out.decode("utf-8", "replace").split("\0")
+    i = 0
+    while i + 1 < len(parts) and parts[i]:
+        status, path = parts[i], parts[i + 1]
+        if status[:1] in ("R", "C"):
+            if status[0] == "R" and path in wanted and i + 2 < len(parts):
+                moved[path] = parts[i + 2]
+            i += 3
+            continue
+        if status[:1] == "D" and path in wanted:
+            gone.add(path)
+        i += 2
+
+    names = rels + [n for n in moved.values() if n not in wanted]
+    rc, out, err = git(root, "--literal-pathspecs", "diff", "-U0", "-M",
+                       "--no-color", "--no-ext-diff", sha, "--", *names)
+    if rc != 0:
+        return answer({**reply, "error": err or "git diff failed"})
+    if len(out) > GIT_DIFF_MAX:
+        reply["truncated"] = True
+        out = out[:out.rfind(b"\n", 0, GIT_DIFF_MAX) + 1]
+    hunks = git_hunks_parse(out)
+    for rel in rels:
+        entry: dict = {"hunks": hunks.get(rel, [])}
+        if rel in moved:
+            entry["to"] = moved[rel]
+        if rel in gone:
+            entry["gone"] = True
+        reply["files"][rel] = entry
+    return answer(reply)
 
 
 # A one-hunk patch is a file header and one hunk; anything the size of a source
