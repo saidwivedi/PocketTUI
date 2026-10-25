@@ -1297,34 +1297,12 @@ async function resolveFsPath(path) {
   return { kind: "dir", path: data.path, data: data };
 }
 
-// /api/fs/read, with the answers both readers of a file — the editor and the
-// markdown reader — give: an expired token asks for the pairing code again, a
-// file that is not text or is too big offers the download instead, and
-// anything else is one toast. Returns the payload, or null once it has already
-// said its piece. Shared rather than repeated so the two screens cannot drift
-// into telling the same story two ways.
+// The branch being read is this pane's, so this is where a path is put to it:
+// fsReadTextAt below does the reading, and a ref that has gone missing from
+// under the listing is one more file that could not be read.
 async function fsReadText(path) {
-  let r, data;
-  try {
-    const qs = ["path=" + encodeURIComponent(path), ...refParams(refFor(path))];
-    r = await fetch(apiURL("api/fs/read?" + qs.join("&")),
-                    { cache: "no-store", headers: authHeaders() });
-    data = await r.json().catch(() => null);
-  } catch (e) { toast("Couldn't read the file"); return null; }
-  if (r.status === 401) { rejectToken(); return null; }
-  if (!r.ok) {
-    const err = data && data.error;
-    if (err === "binary_file" || err === "too_large") {
-      const why = err === "binary_file" ? "isn't a text file"
-                                        : "is too big to open here";
-      if (confirm(baseName(path) + " " + why + ". Download it instead?")) {
-        downloadFile(path, baseName(path));
-      }
-    } else {
-      toast("Couldn't read the file");
-    }
-    return null;
-  }
+  const data = await fsReadTextAt(path, refFor(path), filesRefRoot);
+  if (data && data.error) { toast("Couldn't read the file"); return null; }
   return data;
 }
 
@@ -3074,6 +3052,45 @@ function filesResetForProfile() {
 // press that opened the file is what set the focus these read.
 
 function fsReadText(path) { return filesActive().readText(path); }
+
+// /api/fs/read, with the answers both readers of a file — the editor and the
+// markdown reader — give: an expired token asks for the pairing code again, a
+// file that is not text or is too big offers the download instead, and
+// anything else is one toast. Returns the payload, or null once it has already
+// said its piece. Shared rather than repeated so the two screens cannot drift
+// into telling the same story two ways.
+//
+// At a ref the commit itself can be missing — a brief pinned to a commit a
+// rebase or a fresh clone no longer has — and that one answer is handed back
+// as {error: "bad_ref"} without a word, since only the caller knows what to
+// read instead (openEditor falls back to the working tree and says so). `ref`
+// "" is the disk, and `root` is then not sent.
+async function fsReadTextAt(path, ref, root) {
+  let r, data;
+  try {
+    const qs = ["path=" + encodeURIComponent(path)];
+    if (ref) qs.push("ref=" + encodeURIComponent(ref), "root=" + encodeURIComponent(root || ""));
+    r = await fetch(apiURL("api/fs/read?" + qs.join("&")),
+                    { cache: "no-store", headers: authHeaders() });
+    data = await r.json().catch(() => null);
+  } catch (e) { toast("Couldn't read the file"); return null; }
+  if (r.status === 401) { rejectToken(); return null; }
+  if (!r.ok) {
+    const err = data && data.error;
+    if (ref && err === "bad_ref") return { error: err };
+    if (err === "binary_file" || err === "too_large") {
+      const why = err === "binary_file" ? "isn't a text file"
+                                        : "is too big to open here";
+      if (confirm(baseName(path) + " " + why + ". Download it instead?")) {
+        downloadFile(path, baseName(path));
+      }
+    } else {
+      toast("Couldn't read the file");
+    }
+    return null;
+  }
+  return data;
+}
 function canDownload(path) { return filesActive().canDownload(path); }
 function loadDir(path) { return filesActive().load(path); }
 

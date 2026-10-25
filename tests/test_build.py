@@ -1604,12 +1604,27 @@ class EditorView {
 }
 EditorView.updateListener = { of: (f) => ({ listener: f }) };
 EditorView.editable = { of: (v) => ({ editable: v }) };
+EditorView.scrollIntoView = (pos, o) => ({ scrollTo: pos, y: o && o.y });
+EditorView.decorations = { from: (f) => ({ decorationsFrom: f }) };
+const StateField = { define: (spec) => ({ field: spec }) };
+const Decoration = {
+  line: (spec) => ({ range: (from) => ({ from, cls: spec.class }) }),
+  set: (ranges) => ({ ranges }),
+};
+// Lines are 1-based and `from` is the offset of a line's first character.
+function stubDoc(text) {
+  const rows = String(text || "").split("\\n");
+  const starts = rows.map((_, i) => rows.slice(0, i).join("\\n").length + (i ? 1 : 0));
+  return { lines: rows.length, length: String(text || "").length,
+           line: (n) => ({ number: n, from: starts[n - 1] }),
+           toString: () => String(text || "") };
+}
 const EditorState = {
-  create: (c) => ({ doc: c.doc, extensions: c.extensions }),
+  create: (c) => ({ doc: stubDoc(c.doc), extensions: c.extensions }),
   readOnly: { of: (v) => ({ readOnly: v }) },
 };
 const mark = () => "m";
-const window = { CM6: { Compartment, EditorView, EditorState,
+const window = { CM6: { Compartment, EditorView, EditorState, StateField, Decoration,
   keymap: { of: mark }, defaultKeymap: [], historyKeymap: [], indentWithTab: "tab",
   lineNumbers: mark, highlightActiveLineGutter: mark, highlightSpecialChars: mark,
   history: mark, drawSelection: mark, dropCursor: mark, indentOnInput: mark,
@@ -1657,6 +1672,184 @@ console.log(JSON.stringify({ both, dirt, destroyed: !!a.view.destroyed, after,
     assert out["restore"] == [["1 theme", "2 wrap /a.py", "3 vim"]]
     assert out["live"] == 2 and out["sameComps"] and out["backDirty"]
     assert out["bRo"]
+
+
+# The editor's way in for a caller that knows where to look (the human-code
+# brief, 2026-10-25): openEditor's line/lineEnd, ref/root and returnTo options.
+_EDITOR_OPEN_HARNESS = """
+let edRec = null, edView = null, edPath = "", edDirty = false, edReadOnly = false;
+let edReturn = null;
+const calls = [];
+const els = {};
+function $(id) {
+  return els[id] || (els[id] = { id, textContent: "", style: {},
+    classList: { set: new Set(), add(c) { this.set.add(c); }, remove(...c) { c.forEach((x) => this.set.delete(x)); },
+                 contains(c) { return this.set.has(c); }, toggle() {} } });
+}
+const history = { pushState: () => calls.push("push") };
+const location = { href: "x" };
+const cfg = {};
+function usageCount() {}
+function baseName(p) { return p.split("/").pop(); }
+function canDownload() { return true; }
+async function ensureCM() {}
+function toast(t) { calls.push("toast " + t); }
+function edSetDirty() {}
+function edSyncWrapButton() {}
+function edSyncVimButton() {}
+function dockFileView() { return false; }
+const TEXT = "one\\ntwo\\nthree\\nfour\\nfive";
+"""
+
+
+def _editor_open_chunks(doc):
+    return "\n".join(_js_chunk(doc, h) for h in (
+        "const edLive", "function edMakeView(", "function edDropView(",
+        "function edScreenView(", "function edBuild(", "async function openEditor(",
+        "function edShortRef(", "function edClampLine(", "let edRangeComp",
+        "function edShowLine("))
+
+
+def test_an_editor_opened_at_a_line_scrolls_there_and_tints_the_range(doc, tmp_path):
+    """line/lineEnd put the caret at the start of `line`, centred, and a line
+    decoration StateField in its own compartment tints line..lineEnd; a number
+    past the end is held to the last line, and the next open, asked for no
+    line, carries the compartment empty."""
+    out = _node_json(tmp_path, "edline.mjs", _CM6_STUB + _EDITOR_OPEN_HARNESS
+                     + _editor_open_chunks(doc) + """
+async function fsReadText(path) { return { content: TEXT, hash: "h" }; }
+const field = (rec) => {
+  const c = rec.view.state.extensions.at(-1);
+  return { comp: c.comp, field: c.x && c.x.field };
+};
+await openEditor("/r/a.py", { line: 3, lineEnd: 4 });
+const first = field(edRec);
+const marks = first.field.create(edRec.view.state).ranges;
+const tr = dispatched.at(-1).tr;
+await openEditor("/r/a.py", { line: 9 });
+const clamped = { tr: dispatched.at(-1).tr,
+  marks: field(edRec).field.create(edRec.view.state).ranges };
+const n = dispatched.length;
+await openEditor("/r/b.py", {});
+const plain = field(edRec);
+const provide = first.field.provide("F");
+console.log(JSON.stringify({ marks, tr, clamped, plain, comp: first.comp,
+  provide, moreDispatches: dispatched.length - n }));
+""")
+    # "one\ntwo\n" is 8 characters: line 3 starts at 8, line 4 at 14, line 5 at 19.
+    assert out["marks"] == [{"from": 8, "cls": "cm-hc-range"},
+                            {"from": 14, "cls": "cm-hc-range"}]
+    assert out["tr"] == {"selection": {"anchor": 8},
+                         "effects": {"scrollTo": 8, "y": "center"}}
+    assert out["clamped"]["tr"]["selection"] == {"anchor": 19}
+    assert out["clamped"]["marks"] == [{"from": 19, "cls": "cm-hc-range"}]
+    assert out["provide"] == {"decorationsFrom": "F"}
+    # Same compartment, nothing in it, and no scroll for a plain open.
+    assert out["plain"] == {"comp": out["comp"]}
+    assert out["moreDispatches"] == 0
+    theme = _js_chunk(doc, "function edThemeExt(")
+    assert '".cm-hc-range": { backgroundColor: rgbaHex(accent,' in theme
+    assert theme.index('".cm-hc-range"') > theme.index('".cm-activeLine"')
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_an_editor_opened_at_a_commit_falls_back_to_the_disk_when_it_is_gone(
+        doc, tmp_path, missing):
+    """ref/root read through fsReadTextAt, read-only. A commit the repo no
+    longer has (400 bad_ref) reads the working tree instead, editable, with one
+    toast naming the commit."""
+    out = _node_json(tmp_path, "edref.mjs", _CM6_STUB + _EDITOR_OPEN_HARNESS
+                     + _editor_open_chunks(doc) + f"""
+const missing = {json.dumps(missing)};
+async function fsReadText(path) {{ calls.push("read " + path); return null; }}
+async function fsReadTextAt(path, ref, root) {{
+  calls.push(["at", path, ref, root].join(" "));
+  if (ref && missing) return {{ error: "bad_ref" }};
+  return {{ content: TEXT, hash: ref ? "" : "h", readonly: !!ref }};
+}}
+await openEditor("/r/a.py", {{ ref: "cb139d1e2f3a4b5c6d7e8f90a1b2c3d4e5f60718", root: "/r" }});
+console.log(JSON.stringify({{ calls, readOnly: edReadOnly, hash: edRec.hash }}));
+""")
+    sha = "cb139d1e2f3a4b5c6d7e8f90a1b2c3d4e5f60718"
+    if missing:
+        assert out["calls"] == [
+            f"at /r/a.py {sha} /r",
+            "toast cb139d1 is not in this repo, so this is the file as it is now",
+            "at /r/a.py  ", "push"]
+        assert out["readOnly"] is False and out["hash"] == "h"
+    else:
+        assert out["calls"] == [f"at /r/a.py {sha} /r", "push"]
+        assert out["readOnly"] is True
+
+
+def test_fs_read_text_at_hands_a_missing_commit_back_without_a_word(doc, tmp_path):
+    """fsReadTextAt sends ref and root only with a ref and reports a bad_ref as
+    {error} with no toast; fsReadText, the pane's branch read, keeps its one
+    toast and null for the same answer."""
+    out = _node_json(tmp_path, "readat.mjs", f"""
+const urls = [], calls = [];
+let reply = [400, {{ error: "bad_ref" }}];
+async function fetch(url) {{
+  urls.push(url);
+  return {{ status: reply[0], ok: reply[0] === 200, json: async () => reply[1] }};
+}}
+function apiURL(p) {{ return p; }}
+function authHeaders() {{ return {{}}; }}
+function rejectToken() {{}}
+function toast(t) {{ calls.push("toast " + t); }}
+function baseName(p) {{ return p.split("/").pop(); }}
+let filesRef = "main", filesRefRoot = "/r";
+function refFor(path) {{ return path.startsWith("/r/") ? filesRef : ""; }}
+{_js_chunk(doc, "async function fsReadTextAt(")}
+{_js_chunk(doc, "async function fsReadText(")}
+const atMissing = await fsReadTextAt("/r/a.py", "abc", "/r");
+const quiet = calls.length;
+const viaPane = await fsReadText("/r/a.py");
+reply = [200, {{ content: "x" }}];
+const disk = await fsReadTextAt("/r/a.py", "", "");
+console.log(JSON.stringify({{ atMissing, quiet, viaPane, disk, urls, calls }}));
+""")
+    assert out["atMissing"] == {"error": "bad_ref"} and out["quiet"] == 0
+    assert out["viaPane"] is None and out["calls"] == ["toast Couldn't read the file"]
+    assert out["disk"] == {"content": "x"}
+    assert out["urls"] == ["api/fs/read?path=%2Fr%2Fa.py&ref=abc&root=%2Fr",
+                           "api/fs/read?path=%2Fr%2Fa.py&ref=main&root=%2Fr",
+                           "api/fs/read?path=%2Fr%2Fa.py"]
+
+
+@pytest.mark.parametrize("docked", [False, True])
+def test_an_editor_opened_over_another_screen_hands_back_to_it(doc, tmp_path, docked):
+    """returnTo.show() runs on close in place of the listing coming back: full
+    screen undockFileView (whose job there is re-activating the listing) is not
+    called; docked it still lets the pane's hold go. It is spent by the close,
+    and a stash drops it."""
+    out = _node_json(tmp_path, "edret.mjs", f"""
+const calls = [];
+let edRec = {{ rec: 1 }}, edView = {{}}, edPath = "/r/a.py", edDirty = false;
+let edReturn = {{ show: () => calls.push("show") }};
+const cls = new Set(["active"{', "docked"' if docked else ''}]);
+const el = {{ classList: {{ remove: (c) => cls.delete(c), contains: (c) => cls.has(c),
+                          add: (c) => cls.add(c) }} }};
+function $(id) {{ return el; }}
+function undockFileView(e) {{ calls.push("undock"); cls.delete("docked"); }}
+function edDropView() {{ calls.push("drop"); }}
+function edSetDirty() {{}}
+function filesActivePath() {{ return ""; }}
+function loadDir() {{}}
+{_js_chunk(doc, "function closeEditor(")}
+closeEditor();
+const first = calls.splice(0);
+closeEditor();
+const second = calls.splice(0);
+console.log(JSON.stringify({{ first, second, ret: edReturn }}));
+""")
+    if docked:
+        assert out["first"] == ["undock", "show", "drop"]
+    else:
+        assert out["first"] == ["show", "drop"]
+    assert out["second"] == ["undock"] and out["ret"] is None
+    stash = _js_chunk(doc, "function edStash(")
+    assert "edReturn = null;" in stash
 
 
 @pytest.mark.parametrize("overwrite", [True, False])
