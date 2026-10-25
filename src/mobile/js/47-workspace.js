@@ -111,7 +111,7 @@ function wsTreeOrder(entries) {
 
 // What a tab of `path` shows, by the explorer's own rules for a tap (openEntry,
 // 28-file-explorer.js). A mesh is the 3D viewer's, where that viewer is in the
-// bundle; a human_code/brief.json is the brief (49-human-code.js); anything
+// bundle; a .humancode file is the brief (49-human-code.js); anything
 // else that is not a picture, a PDF, Markdown or a page is text for the editor.
 function wsKindOf(path) {
   if (typeof MESH_EXT_RE !== "undefined" && MESH_EXT_RE.test(path)
@@ -139,12 +139,13 @@ function wsTabKey(path, ref) {
   return ref ? path + "@" + ref : path;
 }
 
-// The folder a tree row is, when it is a human_code/ folder holding a brief:
-// the brief's path, which the row opens instead of the folder.
+// The folder a tree row is, when it is a folder holding a brief (a .humancode
+// file, whatever the folder is called): the brief's path, which the row opens
+// instead of the folder. With more than one, the first by name.
 function wsBriefIn(path, entries) {
-  if (!/(?:^|\/)human_code$/.test(path)) return "";
-  const has = (entries || []).some((e) => e.name === "brief.json" && e.type === "file");
-  return has ? joinPath(path, "brief.json") : "";
+  const names = (entries || []).filter((e) => e.type === "file" && HC_BRIEF_RE.test(e.name))
+    .map((e) => e.name).sort();
+  return names.length ? joinPath(path, names[0]) : "";
 }
 
 // Where a dragged tab would land, worked out from plain numbers so it reads
@@ -606,11 +607,13 @@ function makeWorkspace(ctx) {
     return node;
   }
 
-  // A human_code/ folder is looked into as soon as its row is drawn, out of
-  // the explorer's cache when it can be: holding a brief, the row is named
-  // "Human code" with a page for its icon, and its name opens the brief as a
-  // tab. The chevron still opens the folder, and its right-click menu is the
-  // folder's, as any row's is.
+  // A folder holding a brief is named "Human code" with a page for its icon,
+  // and its name opens the brief as a tab. The chevron still opens the folder,
+  // and its right-click menu is the folder's, as any row's is. Any folder is
+  // found out once its listing lands (fill); a human_code/ folder, where the
+  // skill writes its brief, is looked into as soon as its row is drawn, out of
+  // the explorer's cache when it can be. Every folder is not: on a slow mount
+  // that would be a listing per row.
   async function findBrief(node) {
     let data = ctx.cachedListing(node.path);
     if (!data) {
@@ -672,7 +675,7 @@ function makeWorkspace(ctx) {
     }
     node.children = kids.map((k) => k.path);
     node.loaded = true;
-    if (node.el && node.name === "human_code") markBrief(node, data.entries);
+    if (node.el) markBrief(node, data.entries);
     for (const kid of kids) {
       node.kidsEl.appendChild(kid.el);
       if (kid.kidsEl) node.kidsEl.appendChild(kid.kidsEl);

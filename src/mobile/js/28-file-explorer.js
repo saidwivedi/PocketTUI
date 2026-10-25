@@ -41,9 +41,9 @@ const FILES_PDF_RE = /\.pdf$/i;
 const FILES_MD_RE = /\.(?:md|markdown)$/i;
 
 // A human-code brief opens as the brief (49-human-code.js) rather than as the
-// JSON it is stored as. Asked of the whole path: brief.json is a common name,
-// and only the one in a human_code/ folder is the skill's.
-const HC_BRIEF_RE = /(?:^|\/)human_code\/brief\.json$/;
+// JSON it is stored as. Known by its extension, in whatever folder it sits,
+// the way a notebook is known by .ipynb.
+const HC_BRIEF_RE = /\.humancode$/i;
 
 // What kind of thing a name says it is, and so which icon the listing draws
 // for it. One table, read by rows and tiles alike — a .py is the same file in
@@ -55,7 +55,7 @@ const FILE_KIND_EXT = {
   audio:   "mp3 wav m4a ogg flac",
   code:    "py js ts jsx tsx mjs cjs sh bash zsh c h cpp hpp rs go java kt swift"
            + " rb php lua sql html css scss json yaml yml toml xml ipynb",
-  text:    "md txt rst log csv tsv",
+  text:    "md txt rst log csv tsv humancode",
   pdf:     "pdf",
   archive: "zip tar gz tgz bz2 xz 7z rar",
   mesh:    "ply obj stl glb gltf pcd xyz pts off npy npz",
@@ -2910,6 +2910,10 @@ const api = {
   followSession: followSession,
   followCwd: followPaneCwd,
   paneCwd: fetchPaneCwd,
+  // The top level of the repo this pane last found itself in (filesRepo),
+  // when `path` is inside it, else "": a brief's root without asking git again.
+  repoRootOf: (path) => (filesRepo && filesRepo.root && insideRoot(path, filesRepo.root)
+                         ? filesRepo.root : ""),
   afterEnter: scheduleCwdAfterEnter,
   afterTitle: scheduleCwdAfterTitle,
   closeDocked: closeDockedFiles,
