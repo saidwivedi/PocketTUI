@@ -5046,20 +5046,21 @@ console.log(JSON.stringify({ mid, end: { destroyed, intervals, dead: rec.b.dead,
 
 
 def test_a_human_code_folder_in_the_tree_is_named_for_its_brief(doc, tmp_path):
-    """A folder holding a .humancode file, whatever it is called, reads "Human
-    code" with a page for its icon, and its name opens the brief as a tab (the
-    first by name when there are several); the chevron still opens the folder,
-    the folder keeps its path, and its menu is the folder's. A folder with no
-    brief in it, an old brief.json among them, is left as it is. A human_code/
-    folder is looked into as soon as its row is drawn; any folder is marked
-    when its listing lands."""
+    """A human_code/ folder holding a .humancode file reads "Human code" with a
+    page for its icon, and its name opens the brief as a tab (the first by name
+    when there are several); the chevron still opens the folder, the folder
+    keeps its path, and its menu is the folder's. Any other folder holding one
+    keeps its name and its expand (the file row opens the brief), and a
+    human_code/ folder with no brief in it, an old brief.json among them, is
+    left as it is."""
     out = _node_json(tmp_path, "wsbriefin.mjs", """
 function joinPath(d, n) { return d === "/" ? "/" + n : d + "/" + n; }
 """ + _js_chunk(doc, "const HC_BRIEF_RE") + _js_chunk(doc, "function wsBriefIn(") + """
 const B = [{ name: "lisa.humancode", type: "file" }, { name: "index.html", type: "file" }];
 console.log(JSON.stringify([
-  wsBriefIn("/r/human_code", B), wsBriefIn("/human_code", B), wsBriefIn("/r/docs", B),
-  wsBriefIn("/r", [{ name: "z.humancode", type: "file" }, { name: "A.HUMANCODE", type: "file" }]),
+  wsBriefIn("/r/human_code", B), wsBriefIn("/human_code", B),
+  wsBriefIn("/r/human_code", [{ name: "z.humancode", type: "file" }, { name: "A.HUMANCODE", type: "file" }]),
+  wsBriefIn("/r/docs", B), wsBriefIn("/r/my_human_code", B), wsBriefIn("/r/human_code/sub", B),
   wsBriefIn("/r/human_code", [{ name: "index.html", type: "file" }]),
   wsBriefIn("/r/human_code", [{ name: "brief.json", type: "file" }]),
   wsBriefIn("/r/human_code", [{ name: "lisa.humancode", type: "dir" }]),
@@ -5067,7 +5068,7 @@ console.log(JSON.stringify([
 ]));
 """)
     assert out == ["/r/human_code/lisa.humancode", "/human_code/lisa.humancode",
-                   "/r/docs/lisa.humancode", "/r/A.HUMANCODE", "", "", "", ""]
+                   "/r/human_code/A.HUMANCODE", "", "", "", "", "", "", ""]
     assert 'if (name === "human_code") findBrief(node);' in _ws_inner(doc, "makeNode")
     mark = _ws_inner(doc, "markBrief")
     assert 'node.brief ? "Human code" : node.name' in mark
@@ -5075,7 +5076,8 @@ console.log(JSON.stringify([
     assert "data-path" not in mark and "node.path =" not in mark
     find = _ws_inner(doc, "findBrief")
     assert find.index("ctx.cachedListing(node.path)") < find.index("ctx.fsList(node.path)")
-    assert "if (node.el) markBrief(node, data.entries);" in _ws_inner(doc, "fill")
+    assert ('if (node.el && node.name === "human_code") markBrief(node, data.entries);'
+            in _ws_inner(doc, "fill"))
     ws = _js_chunk(doc, "function makeWorkspace(")
     tree = ws[ws.index('treeBody.addEventListener("click"'):]
     tree = tree[:tree.index("\n  });\n")]
