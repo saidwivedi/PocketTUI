@@ -4481,6 +4481,19 @@ html.term-open #dbg-panel { opacity: 0.85; }
     object-fit: contain;
   }
   .ws-frame { flex: 1; min-height: 0; width: 100%; border: 0; }
+  /* A brief's tab (fillBrief): the viewer pinned to every edge of what is
+     under its note, as #hc-host holds it, since it lays itself out from its
+     box. */
+  .ws-pane .ws-hc-host { position: relative; flex: 1; min-height: 0; }
+  .ws-pane .ws-hc-host > .hc { position: absolute; inset: 0; height: auto; }
+  .ws-pane .ws-hc-note {
+    flex: 0 0 auto;
+    padding: 6px 14px;
+    font-family: var(--sans);
+    font-size: 12.5px;
+    color: var(--warn);
+    border-bottom: 1px solid var(--hair);
+  }
 
   /* A group with no tabs: what to do, in the middle of where a file would be. */
   .ws-empty {
@@ -5589,7 +5602,11 @@ html.term-open #dbg-panel { opacity: 0.85; }
    the app already has a --warn and a --mono of its own; here every one of them
    is one of the app's, so the brief wears the theme and the palette the rest of
    the app does. The component hues take their saturation and lightness from
-   the theme, which is the one pair the app has no token for. */
+   the theme, which is the one pair the app has no token for. A brief in a
+   workspace tab (47-workspace.js) wears the same, by a selector of four
+   classes, which outweighs the viewer's own dark defaults (:root[data-theme]
+   .hc, three). */
+.ws-body .ws-pane .ws-hc-host > .hc,
 #screen-humancode .hc {
   --hc-sans: var(--sans);
   --hc-mono: var(--mono);
@@ -5615,6 +5632,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   --hc-comp-l: 46%;
   color-scheme: light;
 }
+:root[data-theme="dark"] .ws-body .ws-pane .ws-hc-host > .hc,
 :root[data-theme="dark"] #screen-humancode .hc {
   --hc-comp-s: 50%;
   --hc-comp-l: 68%;
@@ -5628,7 +5646,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   border-radius: 8px;
   overflow: hidden;
 }
-.hc-at button {
+/* The pair in a workspace tab sits in the viewer's own head (fillBrief), under
+   the viewer's button reset, which the second selector outweighs. */
+.hc-at button,
+.hc .hc-at button {
   font-family: var(--sans);
   font-size: 12.5px;
   font-weight: 500;
@@ -5638,8 +5659,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   color: var(--secondary);
   cursor: pointer;
 }
-.hc-at button + button { border-left: 1px solid var(--hair-strong); }
-.hc-at button[aria-checked="true"] { background: var(--umber-soft); color: var(--ink); }
+.hc-at button + button,
+.hc .hc-at button + button { border-left: 1px solid var(--hair-strong); }
+.hc-at button[aria-checked="true"],
+.hc .hc-at button[aria-checked="true"] { background: var(--umber-soft); color: var(--ink); }
 /* The bar's one menu, on .dock-split-menu's panel. */
 #hc-more-wrap { position: relative; flex: 0 0 auto; display: flex; align-items: center; }
 #hc-more-menu {

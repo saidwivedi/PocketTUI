@@ -1710,7 +1710,7 @@ def _editor_open_chunks(doc):
         "const edLive", "function edMakeView(", "function edDropView(",
         "function edScreenView(", "function edBuild(", "async function openEditor(",
         "function edShortRef(", "function edClampLine(", "let edRangeComp",
-        "function edShowLine("))
+        "function edRangeField(", "function edShowLine("))
 
 
 def test_an_editor_opened_at_a_line_scrolls_there_and_tints_the_range(doc, tmp_path):
@@ -4095,7 +4095,7 @@ console.log(JSON.stringify(seen));
 """)
     assert out == [True, False, "0", True, "1"]
     ws = _js_chunk(doc, "function makeWorkspace(")
-    assert ('marksOn: kind === "editor" && (opts && opts.marks ? true : cfg.wsInlineDiff),'
+    assert ('marksOn: kind === "editor" && !atRef && (opts && opts.marks ? true : cfg.wsInlineDiff),'
             in ws)
     key = ws[ws.index('key.addEventListener("click"'):]
     assert "setMarks(tab, !tab.marksOn, true);" in key[:300]
@@ -4720,15 +4720,17 @@ console.log(JSON.stringify({{ pill, refresh, ask, at, range,
 def test_a_tap_on_a_brief_line_opens_the_editor_there(doc, tmp_path, at):
     """Pinned opens the file at the brief's commit, read-only, at the line's own
     range; Now opens the file on the disk with the range carried through the
-    hunks the route answered. A file deleted since opens pinned, with a toast."""
-    chunk = _js_chunk(doc, "function hcOpenSource(") + _js_chunk(doc, "function hcRange(")
+    hunks the route answered. A file deleted since opens pinned, with a toast.
+    The screen's tap goes through hcTarget, which the workspace's tab shares."""
+    chunk = "\n".join(_js_chunk(doc, h) for h in (
+        "function hcOpenSource(", "function hcTarget(", "function hcRange(",
+        "function hcRecord(", "function hcRootOf("))
     out = _node_json(tmp_path, "hctap.mjs", _human_code_vm() + chunk + f"""
 const HumanCode = HC;
 const calls = [];
-let hcAt = {json.dumps(at)};
-const hcBrief = {{ commit: "cb139d1" }};
-const hcRoot = "/r/lisa";
-const hcStale = {{ files: {{ "f.py": {{ hunks: [[5, 5, 5, 7]] }}, "g.py": {{ gone: true }} }} }};
+const hcCur = hcRecord("/r/lisa/human_code/brief.json", {{ commit: "cb139d1", components: [] }});
+hcCur.at = {json.dumps(at)};
+hcCur.stale = {{ files: {{ "f.py": {{ hunks: [[5, 5, 5, 7]] }}, "g.py": {{ gone: true }} }} }};
 function joinPath(d, n) {{ return d + "/" + n; }}
 function baseName(p) {{ return p.split("/").pop(); }}
 function toast(t) {{ calls.push("toast " + t); }}
@@ -4746,3 +4748,279 @@ console.log(JSON.stringify(calls));
                        ["/r/lisa/g.py", {"line": 2, "lineEnd": 2, **pinned}]]
     else:
         assert out == [["/r/lisa/f.py", {"line": 14, "lineEnd": 16}]] + gone
+
+
+# ---- a brief as a tab of the explorer workspace (47-workspace.js) ----------
+
+def _ws_inner(doc, name):
+    """One function nested in makeWorkspace, by its two-space indent."""
+    make = _js_chunk(doc, "function makeWorkspace(")
+    for head in ("\n  async function " + name + "(", "\n  function " + name + "("):
+        if head in make:
+            at = make.index(head) + 1
+            return make[at:make.index("\n  }\n", at) + 4]
+    raise AssertionError(name)
+
+
+def test_the_workspace_opens_a_brief_as_a_tab_of_its_own(doc, tmp_path):
+    """wsKindOf says "humancode" for a human_code/brief.json and nothing else;
+    at a ref it is the JSON in the editor, the explorer's rule; the tab is
+    filled by fillBrief; a file read at a commit is a tab of its own and
+    carries no change-marks key."""
+    chunks = "\n".join(_js_chunk(doc, h) for h in (
+        "const FILES_MEDIA_RE", "const FILES_PDF_RE", "const FILES_MD_RE",
+        "const FILES_HTML_RE", "const HC_BRIEF_RE", "function wsKindOf(",
+        "function wsTabKey(", "const WS_RANK", "function wsMarksKeyState("))
+    out = _node_json(tmp_path, "wskind.mjs", chunks + """
+console.log(JSON.stringify({
+  kinds: ["/r/human_code/brief.json", "/r/brief.json", "/r/human_code/brief.json.bak",
+          "/r/human_code/index.html", "/r/human_code/units/a.json", "/r/a.py"].map(wsKindOf),
+  keys: [wsTabKey("/r/a.py", ""), wsTabKey("/r/a.py", undefined), wsTabKey("/r/a.py", "cb139d1")],
+  refKey: wsMarksKeyState({ kind: "editor", marksOn: true, ref: "cb139d1" },
+                          { text: "M", kind: "mod", dir: false }, true, 2).show,
+}));
+""")
+    assert out["kinds"] == ["humancode", "editor", "editor", "html", "editor", "editor"]
+    assert out["keys"] == ["/r/a.py", "/r/a.py", "/r/a.py@cb139d1"]
+    assert out["refKey"] is False
+    op = _ws_inner(doc, "open")
+    assert 'if (kind === "humancode" && ref) kind = "editor";' in op
+    assert "const have = byPath.get(wsTabKey(path, opts && opts.ref));" in op
+    assert "if (!ok && tab.fallback) return open(path, tab.fallback, opts);" in op
+    assert 'if (tab.kind === "humancode") return fillBrief(tab);' in _ws_inner(doc, "fillTab")
+
+
+def test_a_brief_tab_is_the_screen_s_viewer_with_the_screen_s_hooks(doc):
+    """One copy of the brief's side of the app: 49-human-code.js defines the
+    record, the mount options, the reads, the taps, the poll and the paint
+    once, the screen calls them with its record, and the workspace's tab calls
+    the same ones with its own and asks no route itself."""
+    hc = (SRC / "js" / "49-human-code.js").read_text(encoding="utf-8")
+    ws = (SRC / "js" / "47-workspace.js").read_text(encoding="utf-8")
+    shared = ("hcIsBrief", "hcTooNew", "hcRecord", "hcMountIn", "hcViewOpts", "hcReadSource",
+              "hcCommitMissing", "hcTarget", "hcAskHunks", "hcPaintInto", "hcSyncAt",
+              "hcPickAt", "hcAtPair", "hcAsk", "hcRefresh")
+    for name in shared:
+        defs = len(re.findall(r"^(?:async )?function " + name + r"\(", doc, re.M))
+        assert defs == 1, name
+        assert re.search(r"^(?:async )?function " + name + r"\(", hc, re.M), name
+    assert not re.search(r"^\s*(?:async )?function hc\w*\(", ws, re.M)
+    for call in ("hcIsBrief(brief)", "hcTooNew(brief)", "hcRecord(tab.path, brief)",
+                 "hcMountIn(host, b, (src) => briefOpen(tab, src), () => false)",
+                 "hcTarget(tab.hc.b, src)", "hcAskHunks(hc.b)", "hcPaintInto(hc.b, hc.view, hc.note)",
+                 "hcAtPair(b)", 'host.querySelector(".hc header")',
+                 "setInterval(() => briefPoll(tab), HC_POLL_MS)"):
+        assert call in ws, call
+    assert "api/git/hunks" not in ws and "HumanCode." not in ws
+    for call in ("hcIsBrief(brief)", "hcTooNew(brief)", "hcRecord(path, brief)",
+                 'hcMountIn($("hc-host"), hcCur, hcOpenSource,',
+                 "hcTarget(hcCur, src)", "hcAskHunks(hcCur)", 'hcPaintInto(hcCur, hcView, $("hc-note"))',
+                 'hcSyncAt($("hc-at"), hcCur)', "hcPickAt(hcCur, e)"):
+        assert call in hc, call
+    opts = _js_chunk(doc, "function hcViewOpts(")
+    for key in ('theme: "host"', 'route: "state"', "refresh: () => hcRefresh(b.root)",
+                "ask: (text, src) => hcAsk(text, src, beside())"):
+        assert key in opts, key
+    assert "footer" not in opts
+    # The poll is the screen's: strict capability, paced by the answer.
+    poll = _js_chunk(doc, "async function hcAskHunks(")
+    assert 'hasCapStrict("git_hunks")' in poll and "data.elapsed_ms" in poll
+    assert ("return on && attached && !tab.closed && tab.group.active === tab;"
+            in _ws_inner(doc, "briefShown"))
+    # Its place is taken while it shows: before another tab covers it, before
+    # a move, and before the pane narrows on a collapse (the browser's scroll
+    # anchoring has moved it by then).
+    act = _ws_inner(doc, "activate")
+    assert act.index("if (was && was !== tab) briefKeep(was);") < act.index("g.active = tab;")
+    expand = _js_chunk(doc, "function syncFilesExpand(")
+    assert expand.index("if (!on && ws) ws.setOn(false);") < expand.index("sideSetFull(id, on);")
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    assert ".ws-body .ws-pane .ws-hc-host > .hc,\n#screen-humancode .hc {" in css
+    assert ':root[data-theme="dark"] .ws-body .ws-pane .ws-hc-host > .hc,' in css
+    assert ".ws-pane .ws-hc-host > .hc { position: absolute; inset: 0; height: auto; }" in css
+
+
+def test_a_tap_in_a_brief_tab_opens_beside_it(doc, tmp_path):
+    """The file goes to the other group (the one the last tap used while it
+    lasts); with only the brief's group, a group is made beside it first and
+    taken away when the file does not become a tab there; a file already open
+    elsewhere is brought forward there; one open in the brief's own group is
+    moved over rather than covering the brief. Pinned's ref and the range ride
+    through to the editor tab, which tints and scrolls through the editor's
+    own range helpers."""
+    brief_open = _ws_inner(doc, "briefOpen")
+    out = _node_json(tmp_path, "wsbrief.mjs", _js_chunk(doc, "function wsBriefGroup(")
+                     + _js_chunk(doc, "function wsTabKey(") + """
+const log = [];
+let groups, byPath, focusGroup = null, splitMakes, opened;
+const mkG = (name) => ({ name, tabs: [] });
+function makeSplit(dir, at) {
+  log.push("split " + dir + " " + at.name);
+  if (!splitMakes) return null;
+  const g = mkG("new"); groups.push(g); return g;
+}
+function moveTab(t, g) {
+  log.push("move " + t.path + " " + g.name);
+  t.group.tabs.splice(t.group.tabs.indexOf(t), 1);
+  t.group = g; g.tabs.push(t);
+}
+async function open(path, kind, opts) {
+  log.push(["open", path, kind, Object.assign({}, opts, opts.group ? { group: opts.group.name } : {})]);
+  if (opened && opts.group) opts.group.tabs.push({ path });
+}
+function unsplit() { log.push("unsplit"); groups = groups.filter((g) => g.tabs.length); }
+function hcTarget(b, src) {
+  return src ? { path: "/r/" + src.file, opts: src.pinned
+    ? { line: 3, lineEnd: 4, ref: "cb139d1", root: "/r" } : { line: 5, lineEnd: 6 } } : null;
+}
+""" + brief_open + """
+const res = {};
+async function run(name, setup, src) {
+  log.length = 0;
+  const own = mkG("own"); const tab = { group: own, hc: { b: {}, edGroup: null } };
+  own.tabs.push(tab);
+  groups = [own]; byPath = new Map(); splitMakes = true; opened = true; focusGroup = null;
+  setup(tab, own);
+  await briefOpen(tab, src);
+  res[name] = { log: log.slice(), edGroup: tab.hc.edGroup && tab.hc.edGroup.name,
+                focus: focusGroup && focusGroup.name, groups: groups.map((g) => g.name) };
+}
+const have = (g, key) => { const t = { path: "/r/a.py", group: g }; g.tabs.push(t); byPath.set(key, t); };
+await run("other", () => { groups.push(mkG("b")); }, { file: "a.py" });
+await run("last", (t) => { const c = mkG("c"); groups.push(mkG("b"), c); t.hc.edGroup = c; }, { file: "a.py" });
+await run("lastGone", (t) => { groups.push(mkG("b")); t.hc.edGroup = mkG("gone"); }, { file: "a.py" });
+await run("split", () => {}, { file: "a.py", pinned: true });
+await run("splitNoTab", () => { opened = false; }, { file: "a.py" });
+await run("noRoom", () => { splitMakes = false; }, { file: "a.py" });
+await run("openElsewhere", () => { const c = mkG("c"); groups.push(mkG("b"), c); have(c, "/r/a.py"); },
+          { file: "a.py" });
+await run("openHere", (t, own) => { groups.push(mkG("b")); have(own, "/r/a.py"); }, { file: "a.py" });
+await run("pinnedIsItsOwnTab", () => { const c = mkG("c"); groups.push(mkG("b"), c); have(c, "/r/a.py"); },
+          { file: "a.py", pinned: true });
+await run("nothing", () => {}, null);
+console.log(JSON.stringify(res));
+""")
+    now = {"line": 5, "lineEnd": 6}
+    pinned = {"line": 3, "lineEnd": 4, "ref": "cb139d1", "root": "/r"}
+    assert out["other"]["log"] == [["open", "/r/a.py", "editor", {"group": "b", **now}]]
+    assert out["other"]["edGroup"] == "b" and out["other"]["focus"] == "b"
+    assert out["last"]["log"] == [["open", "/r/a.py", "editor", {"group": "c", **now}]]
+    assert out["lastGone"]["log"][0][3]["group"] == "b"
+    assert out["split"]["log"] == ["split side own",
+                                   ["open", "/r/a.py", "editor", {"group": "new", **pinned}]]
+    assert out["split"]["groups"] == ["own", "new"]
+    assert out["splitNoTab"]["log"][-1] == "unsplit" and out["splitNoTab"]["groups"] == ["own"]
+    assert out["noRoom"]["log"] == ["split side own"]
+    assert out["openElsewhere"]["log"] == [["open", "/r/a.py", "editor", now]]
+    assert out["openElsewhere"]["focus"] == "c" and out["openElsewhere"]["edGroup"] == "c"
+    assert out["openHere"]["log"] == ["move /r/a.py b",
+                                      ["open", "/r/a.py", "editor", {"group": "b", **now}]]
+    assert out["pinnedIsItsOwnTab"]["log"] == [
+        ["open", "/r/a.py", "editor", {"group": "b", **pinned}]]
+    assert out["nothing"]["log"] == []
+    fill = _ws_inner(doc, "fillTab")
+    assert 'tab.ref ? await fsReadTextAt(path, tab.ref, opts.root || "")' in fill
+    assert "edRangeExt(opts.line ? { line: opts.line, lineEnd: opts.lineEnd } : null)]," in fill
+    assert "edShowLine(opts.line, tab.rec.view);" in fill
+    show = _ws_inner(doc, "showRange")
+    assert "edRangeComp.reconfigure(edRangeField(r))" in show and "edShowLine(r.line, view);" in show
+    assert "if (opts && opts.line && have.rec) showRange(have, opts);" in _ws_inner(doc, "open")
+
+
+@pytest.mark.parametrize("discard", [True, False])
+def test_a_brief_tab_survives_closing_a_dirty_editor_s_group_beside_it(doc, tmp_path, discard):
+    """The brief in one group, a file with unsaved edits in the group beside
+    it. Closing that file asks first; a yes drops the file and its group goes
+    (unsplit), and the brief stays mounted and in front of its own group; a no
+    changes nothing. Closing the brief afterwards stops its poll, lets its
+    record go and destroys its viewer, once."""
+    harness = _js_chunk(doc, "function wsDropGroup(") + """
+const log = [];
+const fake = (name) => ({ name, remove() { log.push("rm " + name); },
+  classList: { remove() {}, add() {}, toggle() {} } });
+const groupsEl = fake("groupsEl"), colSeam = fake("colSeam");
+let focusGroup = null;
+const byPath = new Map();
+const mkCol = (n) => ({ el: fake("colEl" + n), seam: fake("seam" + n), groups: [] });
+const cols = [mkCol(0), mkCol(1)];
+const mkGroup = (c, name) => {
+  const g = { name, el: fake("gEl " + name), tabs: [], active: null, col: c };
+  c.groups.push(g); return g;
+};
+const gB = mkGroup(cols[0], "brief"), gE = mkGroup(cols[1], "edit");
+const groups = [gB, gE];
+function syncGrid() { groups.length = 0; for (const c of cols) for (const g of c.groups) groups.push(g); }
+function relayout() {}
+function syncEmpty() {}
+function activate(t) { t.group.active = t; }
+function edDropView() { log.push("edDropView"); }
+let destroyed = 0;
+const intervals = [];
+function clearInterval(t) { intervals.push(t); }
+const mkTab = (g, path, extra) => {
+  const t = Object.assign({ path, key: path, title: path, closed: false, group: g,
+    chip: fake("chip " + path), body: Object.assign(fake("body " + path), { querySelector: () => null }),
+    rec: null, mesh: null, marks: null, hc: null, dirty: false }, extra);
+  g.tabs.push(t); g.active = t; byPath.set(t.key, t); return t;
+};
+const rec = { b: { dead: false }, view: { destroy() { destroyed++; } }, timer: 42 };
+const brief = mkTab(gB, "/r/human_code/brief.json", { kind: "humancode", hc: rec });
+const ed = mkTab(gE, "/r/a.py", { kind: "editor", dirty: true, rec: {} });
+async function appConfirm(text, o) { log.push("ask " + o.title); return ANSWER; }
+""".replace("ANSWER", "true" if discard else "false") + "\n".join(
+        _ws_inner(doc, n) for n in ("close", "drop", "unsplit")) + """
+await close(ed);
+const mid = { groups: groups.map((g) => g.name), briefClosed: brief.closed, destroyed,
+              briefActive: gB.active === brief, briefHc: !!brief.hc, edClosed: ed.closed,
+              log: log.slice() };
+await close(brief);
+console.log(JSON.stringify({ mid, end: { destroyed, intervals, dead: rec.b.dead, hc: brief.hc,
+  byPath: [...byPath.keys()], groups: groups.map((g) => g.name) } }));
+"""
+    out = _node_json(tmp_path, "wssurvive.mjs", harness)
+    mid = out["mid"]
+    assert mid["log"][0] == "ask Discard your unsaved changes to /r/a.py?"
+    assert mid["briefClosed"] is False and mid["destroyed"] == 0
+    assert mid["briefActive"] and mid["briefHc"]
+    if discard:
+        assert mid["edClosed"] is True and mid["groups"] == ["brief"]
+        assert "edDropView" in mid["log"] and "rm gEl edit" in mid["log"]
+    else:
+        assert mid["edClosed"] is False and mid["groups"] == ["brief", "edit"]
+    end = out["end"]
+    assert end["destroyed"] == 1 and end["intervals"] == [42] and end["dead"] is True
+    assert end["hc"] is None and "/r/human_code/brief.json" not in end["byPath"]
+
+
+def test_a_human_code_folder_in_the_tree_is_named_for_its_brief(doc, tmp_path):
+    """A human_code/ folder holding a brief.json reads "Human code" with a page
+    for its icon, and its name opens the brief as a tab; the chevron still
+    opens the folder, the folder keeps its path, and its menu is the folder's.
+    Any other folder, or one with no brief in it, is left as it is."""
+    out = _node_json(tmp_path, "wsbriefin.mjs", """
+function joinPath(d, n) { return d === "/" ? "/" + n : d + "/" + n; }
+""" + _js_chunk(doc, "function wsBriefIn(") + """
+const B = [{ name: "brief.json", type: "file" }, { name: "index.html", type: "file" }];
+console.log(JSON.stringify([
+  wsBriefIn("/r/human_code", B), wsBriefIn("/human_code", B),
+  wsBriefIn("/r/human_code", [{ name: "index.html", type: "file" }]),
+  wsBriefIn("/r/human_code", [{ name: "brief.json", type: "dir" }]),
+  wsBriefIn("/r/my_human_code", B), wsBriefIn("/r/human_code/sub", B), wsBriefIn("/r/human_code", null),
+]));
+""")
+    assert out == ["/r/human_code/brief.json", "/human_code/brief.json", "", "", "", "", ""]
+    assert 'if (name === "human_code") findBrief(node);' in _ws_inner(doc, "makeNode")
+    mark = _ws_inner(doc, "markBrief")
+    assert 'node.brief ? "Human code" : node.name' in mark
+    assert 'svgIcon(node.brief ? "i-text" : "i-folder")' in mark
+    assert "data-path" not in mark and "node.path =" not in mark
+    find = _ws_inner(doc, "findBrief")
+    assert find.index("ctx.cachedListing(node.path)") < find.index("ctx.fsList(node.path)")
+    assert ('if (node.el && node.name === "human_code") markBrief(node, data.entries);'
+            in _ws_inner(doc, "fill"))
+    ws = _js_chunk(doc, "function makeWorkspace(")
+    tree = ws[ws.index('treeBody.addEventListener("click"'):]
+    tree = tree[:tree.index("\n  });\n")]
+    assert (tree.index('ev.target.closest(".ws-twisty")')
+            < tree.index("if (node.brief) { open(node.brief); return; }")
+            < tree.index("ctx.navigate(node.path);"))

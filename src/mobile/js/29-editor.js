@@ -528,13 +528,19 @@ function edClampLine(doc, n) {
 // and one opened without a range gets the compartment empty. A StateField
 // rather than a plugin because the range belongs to the document, not to what
 // is on screen, and an edit above it maps it down with the text it covers.
+// The workspace's editor tabs carry the same compartment (47-workspace.js),
+// and a tab already open takes a new range through it (edRangeField).
 let edRangeComp = null;
 function edRangeExt(range) {
   const CM = window.CM6;
   if (!edRangeComp) edRangeComp = new CM.Compartment();
-  if (!range) return edRangeComp.of([]);
+  return edRangeComp.of(range ? edRangeField(range) : []);
+}
+
+function edRangeField(range) {
+  const CM = window.CM6;
   const mark = CM.Decoration.line({ class: "cm-hc-range" });
-  const field = CM.StateField.define({
+  return CM.StateField.define({
     create(state) {
       const doc = state.doc;
       const a = edClampLine(doc, range.line);
@@ -546,12 +552,12 @@ function edRangeExt(range) {
     update: (marks, tr) => marks.map(tr.changes),
     provide: (f) => CM.EditorView.decorations.from(f),
   });
-  return edRangeComp.of(field);
 }
 
-// The caret to the start of a line, and the line to the middle of the view.
-function edShowLine(n) {
-  const view = edView;
+// The caret to the start of a line, and the line to the middle of the view:
+// the editor screen's, or `view`, a workspace tab's.
+function edShowLine(n, view) {
+  view = view || edView;
   const pos = view.state.doc.line(edClampLine(view.state.doc, n)).from;
   view.dispatch({
     selection: { anchor: pos },
