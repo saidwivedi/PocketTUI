@@ -29,6 +29,10 @@ CAPS_WITHOUT_RECORD = {
     # PDF page-one thumbnails are part of the grid previews record
     # (files.thumbnails, needs thumbs); the flag only says which tool draws them.
     "pdf_thumbs",
+    # The stale marks on a human-code brief: a record would describe the
+    # brief's screen, which lands after the route. Drop this entry when that
+    # record is added.
+    "git_hunks",
 }
 
 
