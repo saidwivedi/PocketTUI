@@ -1642,6 +1642,164 @@ def test_apply_refuses_an_unknown_action_and_a_patch_with_no_hunk(client, in_rep
 
 
 # ---------------------------------------------------------------------------
+# hunks since a commit
+# ---------------------------------------------------------------------------
+# /api/git/hunks, which says where a human-code brief's pinned files moved.
+# Against a real repo for the diff pane's reason, plus the parser on its own.
+
+
+def test_hunks_parse_reads_spans_and_an_insertion_as_empty_old_side():
+    text = (
+        "diff --git a/m.py b/m.py\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/m.py\n"
+        "+++ b/m.py\n"
+        "@@ -3,2 +3 @@ def f():\n"
+        "--- a removed line that looks like a header\n"
+        "-x = 2\n"
+        "+x = 3\n"
+        "@@ -10,0 +10,2 @@\n"
+        "+new one\n"
+        "+new two\n"
+        "diff --git a/old.txt b/new.txt\n"
+        "similarity index 90%\n"
+        "rename from old.txt\n"
+        "rename to new.txt\n"
+        "--- a/old.txt\n"
+        "+++ b/new.txt\n"
+        "@@ -5 +5,0 @@\n"
+        "-gone\n"
+        "diff --git a/born.txt b/born.txt\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/born.txt\n"
+        "@@ -0,0 +1 @@\n"
+        "+hi\n"
+        "diff --git \"a/t\\303\\251st x.txt\" \"b/t\\303\\251st x.txt\"\n"
+        "old mode 100644\n"
+        "new mode 100755\n"
+    )
+    assert A.git_hunks_parse(text) == {
+        "m.py": [[3, 4, 3, 3], [11, 10, 10, 11]],
+        "old.txt": [[5, 5, 6, 5]],
+        "born.txt": [[1, 0, 1, 1]],
+        "tést x.txt": [],
+    }
+
+
+def commit_all(root, msg="c"):
+    run_git(root, "add", "-A")
+    run_git(root, "-c", "user.email=t@example.com", "-c", "user.name=T",
+            "commit", "-qm", msg)
+
+
+@pytest.fixture
+def pinned(tmp_path):
+    """A repo with one commit to pin a brief to, its sha beside it."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "a.py").write_text("".join(f"line {n}\n" for n in range(1, 11)))
+    (root / "b.py").write_text("".join(f"bee {n}\n" for n in range(1, 21)))
+    (root / "c.py").write_text("sea\n")
+    run_git(root, "init", "-q", ".")
+    commit_all(root, "base")
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True,
+                         capture_output=True, text=True).stdout.strip()
+    return root, sha
+
+
+def hunks(client, root, base, files):
+    return client.post("/api/git/hunks",
+                       json={"root": str(root), "base": base, "files": files})
+
+
+@needs_git
+def test_hunks_of_a_modified_line_and_a_pure_insertion(client, pinned):
+    root, sha = pinned
+    a = (root / "a.py").read_text().replace("line 4\n", "LINE 4\n")
+    (root / "a.py").write_text(a)
+    lines = (root / "b.py").read_text().splitlines(keepends=True)
+    lines[6:6] = ["added 1\n", "added 2\n"]
+    (root / "b.py").write_text("".join(lines))
+    r = hunks(client, root, sha, ["a.py", "b.py", "c.py"])
+    assert r.status_code == 200
+    d = r.json()
+    assert d["base_found"] is True and d["truncated"] is False
+    assert d["files"]["a.py"] == {"hunks": [[4, 4, 4, 4]]}
+    # Inserted after old line 6: an old span that is empty at 7.
+    assert d["files"]["b.py"] == {"hunks": [[7, 6, 7, 8]]}
+    assert d["files"]["c.py"] == {"hunks": []}
+
+
+@needs_git
+def test_hunks_follow_a_rename_and_report_a_deletion(client, pinned):
+    root, sha = pinned
+    run_git(root, "mv", "b.py", "renamed.py")
+    text = (root / "renamed.py").read_text().replace("bee 12\n", "BEE 12\n")
+    (root / "renamed.py").write_text(text)
+    run_git(root, "rm", "-q", "c.py")
+    commit_all(root, "move")
+    d = hunks(client, root, sha, ["b.py", "c.py"]).json()
+    assert d["files"]["b.py"] == {"hunks": [[12, 12, 12, 12]], "to": "renamed.py"}
+    assert d["files"]["c.py"]["gone"] is True
+    assert "to" not in d["files"]["c.py"]
+
+
+@needs_git
+def test_hunks_count_commits_behind_and_an_uncommitted_edit(client, pinned):
+    root, sha = pinned
+    d = hunks(client, root, sha, ["a.py"]).json()
+    assert (d["behind"], d["dirty"]) == (0, False)
+    assert d["head"] and sha.startswith(d["head"])
+    (root / "c.py").write_text("sea change\n")
+    commit_all(root, "scratch")
+    d = hunks(client, root, sha, ["a.py"]).json()
+    assert (d["behind"], d["dirty"]) == (1, False)
+    (root / "a.py").write_text("rewritten\n")
+    d = hunks(client, root, sha, ["a.py"]).json()
+    assert d["dirty"] is True
+    assert d["files"]["a.py"]["hunks"] == [[1, 10, 1, 1]]
+
+
+@needs_git
+def test_hunks_of_a_base_the_repo_does_not_have(client, pinned):
+    root, _ = pinned
+    (root / "a.py").write_text("changed\n")
+    d = hunks(client, root, "cb139d1" + "0" * 33, ["a.py"]).json()
+    assert d["base_found"] is False
+    assert d["files"] == {} and d["behind"] == 0
+
+
+@needs_git
+def test_hunks_refuse_a_path_out_of_the_root_and_a_dashed_base(client, pinned):
+    root, sha = pinned
+    assert hunks(client, root, sha, ["../escape.py"]).status_code == 400
+    assert hunks(client, root, "--all", ["a.py"]).status_code == 400
+    assert hunks(client, root, sha, "a.py").status_code == 400
+
+
+@needs_git
+def test_hunks_outside_a_repo_is_an_answer_not_an_error(client, tmp_path):
+    r = hunks(client, tmp_path, "HEAD", ["a.py"])
+    assert r.status_code == 200
+    assert r.json()["error"]
+
+
+@needs_git
+def test_hunks_past_the_diff_cap_say_truncated(client, pinned, monkeypatch):
+    root, sha = pinned
+    (root / "a.py").write_text("".join(f"other {n}\n" for n in range(1, 11)))
+    monkeypatch.setattr(A, "GIT_DIFF_MAX", 60)
+    d = hunks(client, root, sha, ["a.py", "b.py"]).json()
+    assert d["truncated"] is True
+    assert d["files"]["a.py"]["hunks"] == []
+
+
+def test_the_capabilities_map_offers_git_hunks(client):
+    assert client.get("/api/version").json()["capabilities"]["git_hunks"] is True
+
+
+# ---------------------------------------------------------------------------
 # browsing at a git ref
 # ---------------------------------------------------------------------------
 # The explorer reading a branch it has not checked out, which is /api/git/branches
