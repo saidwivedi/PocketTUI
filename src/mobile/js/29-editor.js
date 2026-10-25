@@ -45,7 +45,9 @@ function edLanguage(name) {
     case "jsx": return CM.javascript({ jsx: true });
     case "ts": return CM.javascript({ typescript: true });
     case "tsx": return CM.javascript({ typescript: true, jsx: true });
-    case "json": return CM.json();
+    // A human-code brief is JSON under its own extension (49-human-code.js),
+    // opened raw at a ref or when the viewer cannot draw it.
+    case "json": case "humancode": return CM.json();
     case "md": case "markdown": return CM.markdown();
     case "sh": case "bash": case "zsh": return CM.StreamLanguage.define(CM.shell);
     case "yaml": case "yml": return CM.yaml();

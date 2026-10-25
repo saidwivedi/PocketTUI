@@ -4519,14 +4519,31 @@ def test_the_human_code_fragment_does_nothing_at_load(doc):
         assert re.match(r"(?:async )?function |const |let ", line), line
 
 
-def test_a_brief_is_recognised_by_its_folder(doc, tmp_path):
+def test_a_brief_is_recognised_by_its_extension(doc, tmp_path):
+    """A .humancode file in any folder, any case; the old fixed path is not."""
     rx = _js_chunk(doc, "const HC_BRIEF_RE")
     out = _node_json(tmp_path, "hcre.mjs", rx + """
-console.log(JSON.stringify(["/x/human_code/brief.json", "human_code/brief.json",
-  "/x/brief.json", "/x/human_code/brief.json.bak", "/x/my_human_code/brief.json",
-  "/x/human_code/sub/brief.json"].map((p) => HC_BRIEF_RE.test(p))));
+console.log(JSON.stringify(["/x/human_code/LISA.humancode", "/x/LISA.humancode",
+  "/x/LISA.HUMANCODE", "LISA.humancode", "/x/human_code/brief.json",
+  "/x/LISA.humancode.bak", "/x/LISA.humancode/a.py", "/x/humancode"].map((p) => HC_BRIEF_RE.test(p))));
 """)
-    assert out == [True, True, False, False, False, False]
+    assert out == [True, True, True, True, False, False, False, False]
+
+
+def test_a_brief_reads_as_text_in_the_listing_and_as_json_in_the_editor(doc, tmp_path):
+    """The file row's icon is the page the tree's brief folder uses (i-text),
+    and the editor opening a brief raw (at a ref, or a brief it cannot draw)
+    highlights it as JSON."""
+    kinds = doc[doc.index("\nconst FILE_KIND_EXT") + 1:doc.index("\nfunction kindIcon(")]
+    out = _node_json(tmp_path, "hckind.mjs", kinds + "\n".join(_js_chunk(doc, h) for h in (
+        "function kindIcon(", "function edLanguage(")) + """
+globalThis.window = { CM6: { json: () => "json" } };
+console.log(JSON.stringify({
+  icon: ["LISA.humancode", "LISA.HumanCode"].map((n) => kindIcon(fileKind(n))),
+  lang: ["LISA.humancode", "LISA.HUMANCODE", "a.json"].map(edLanguage),
+}));
+""")
+    assert out == {"icon": ["i-text", "i-text"], "lang": ["json", "json", "json"]}
 
 
 def test_a_brief_opens_after_the_html_rule_and_before_the_editor(doc):
@@ -4689,7 +4706,9 @@ const range = [
 ];
 const brief = {json.dumps(_HC_BRIEF)};
 console.log(JSON.stringify({{ pill, refresh, ask, at, range,
-  root: [hcRootOf("/r/lisa/human_code/brief.json"), hcRootOf("/human_code/brief.json")],
+  root: [hcRootOf("/r/lisa/human_code/lisa.humancode"), hcRootOf("/human_code/lisa.humancode"),
+         hcRootOf("/r/lisa/lisa.humancode"), hcRootOf("/r/lisa/docs/lisa.humancode"),
+         hcRootOf("/lisa.humancode"), hcRootOf("/r/my_human_code/lisa.humancode")],
   files: hcFiles(brief) }}));
 """)
     assert out["pill"] == [None, None, None, "1 commit behind · Refresh",
@@ -4712,8 +4731,42 @@ console.log(JSON.stringify({{ pill, refresh, ask, at, range,
         {"file": "src/h.py", "line": 2, "lineEnd": 3},
         {"file": "f.py", "line": 12, "lineEnd": 14},
     ]
-    assert out["root"] == ["/r/lisa", "/"]
+    assert out["root"] == ["/r/lisa", "/", "/r/lisa", "/r/lisa/docs", "/", "/r/my_human_code"]
     assert out["files"] == ["f.py", "g.py"]
+
+
+def test_a_brief_s_root_is_the_repo_it_sits_in(doc, tmp_path):
+    """The root is the git top level the brief is in, wherever in the repo it
+    sits: a pane's own answer first, else /api/git/branches about the brief's
+    folder, else hcRootOf's guess. Asked once per record, and the poll waits
+    for it before asking about hunks."""
+    chunks = "\n".join(_js_chunk(doc, h) for h in (
+        "function hcRootOf(", "function hcRecord(", "function hcRooted(", "async function hcFindRoot("))
+    out = _node_json(tmp_path, "hcroot.mjs", chunks + """
+const asked = [];
+let known = "", answer = null;
+const filesPanes = { files: { repoRootOf: (p) => known } };
+function demoApiOn() { return false; }
+function hasCap(c) { return c === "git_ref"; }
+function apiURL(u) { return u; }
+function authHeaders() { return {}; }
+function rejectToken() {}
+async function fetch(u) { asked.push(u); return { status: 200, ok: true, json: async () => answer }; }
+const run = async (path) => { const b = hcRecord(path, {}); await hcRooted(b); await hcRooted(b); return b.root; };
+known = "/r/lisa";
+const fromPane = await run("/r/lisa/docs/lisa.humancode");
+known = ""; answer = { root: "/r/lisa", current: "main", branches: [] };
+const fromRoute = await run("/r/lisa/docs/lisa.humancode");
+answer = { root: null, current: null, branches: [] };
+const outside = await run("/r/x/human_code/x.humancode");
+console.log(JSON.stringify({ fromPane, fromRoute, outside, asked }));
+""")
+    assert out == {"fromPane": "/r/lisa", "fromRoute": "/r/lisa", "outside": "/r/x",
+                   "asked": ["api/git/branches?path=%2Fr%2Flisa%2Fdocs",
+                             "api/git/branches?path=%2Fr%2Fx%2Fhuman_code"]}
+    ask = _js_chunk(doc, "async function hcAskHunks(")
+    assert ask.index("await hcRooted(b);") < ask.index('fetch(apiURL("api/git/hunks")')
+    assert 'hcRooted(rec).then(' in _js_chunk(doc, "async function openHumanCode(")
 
 
 @pytest.mark.parametrize("at", ["pinned", "now"])
@@ -4728,7 +4781,7 @@ def test_a_tap_on_a_brief_line_opens_the_editor_there(doc, tmp_path, at):
     out = _node_json(tmp_path, "hctap.mjs", _human_code_vm() + chunk + f"""
 const HumanCode = HC;
 const calls = [];
-const hcCur = hcRecord("/r/lisa/human_code/brief.json", {{ commit: "cb139d1", components: [] }});
+const hcCur = hcRecord("/r/lisa/human_code/lisa.humancode", {{ commit: "cb139d1", components: [] }});
 hcCur.at = {json.dumps(at)};
 hcCur.stale = {{ files: {{ "f.py": {{ hunks: [[5, 5, 5, 7]] }}, "g.py": {{ gone: true }} }} }};
 function joinPath(d, n) {{ return d + "/" + n; }}
@@ -4763,7 +4816,7 @@ def _ws_inner(doc, name):
 
 
 def test_the_workspace_opens_a_brief_as_a_tab_of_its_own(doc, tmp_path):
-    """wsKindOf says "humancode" for a human_code/brief.json and nothing else;
+    """wsKindOf says "humancode" for a .humancode file and nothing else;
     at a ref it is the JSON in the editor, the explorer's rule; the tab is
     filled by fillBrief; a file read at a commit is a tab of its own and
     carries no change-marks key."""
@@ -4773,14 +4826,14 @@ def test_the_workspace_opens_a_brief_as_a_tab_of_its_own(doc, tmp_path):
         "function wsTabKey(", "const WS_RANK", "function wsMarksKeyState("))
     out = _node_json(tmp_path, "wskind.mjs", chunks + """
 console.log(JSON.stringify({
-  kinds: ["/r/human_code/brief.json", "/r/brief.json", "/r/human_code/brief.json.bak",
+  kinds: ["/r/human_code/r.humancode", "/r/r.HumanCode", "/r/human_code/brief.json",
           "/r/human_code/index.html", "/r/human_code/units/a.json", "/r/a.py"].map(wsKindOf),
   keys: [wsTabKey("/r/a.py", ""), wsTabKey("/r/a.py", undefined), wsTabKey("/r/a.py", "cb139d1")],
   refKey: wsMarksKeyState({ kind: "editor", marksOn: true, ref: "cb139d1" },
                           { text: "M", kind: "mod", dir: false }, true, 2).show,
 }));
 """)
-    assert out["kinds"] == ["humancode", "editor", "editor", "html", "editor", "editor"]
+    assert out["kinds"] == ["humancode", "humancode", "editor", "html", "editor", "editor"]
     assert out["keys"] == ["/r/a.py", "/r/a.py", "/r/a.py@cb139d1"]
     assert out["refKey"] is False
     op = _ws_inner(doc, "open")
@@ -4964,7 +5017,7 @@ const mkTab = (g, path, extra) => {
   g.tabs.push(t); g.active = t; byPath.set(t.key, t); return t;
 };
 const rec = { b: { dead: false }, view: { destroy() { destroyed++; } }, timer: 42 };
-const brief = mkTab(gB, "/r/human_code/brief.json", { kind: "humancode", hc: rec });
+const brief = mkTab(gB, "/r/human_code/r.humancode", { kind: "humancode", hc: rec });
 const ed = mkTab(gE, "/r/a.py", { kind: "editor", dirty: true, rec: {} });
 async function appConfirm(text, o) { log.push("ask " + o.title); return ANSWER; }
 """.replace("ANSWER", "true" if discard else "false") + "\n".join(
@@ -4989,26 +5042,32 @@ console.log(JSON.stringify({ mid, end: { destroyed, intervals, dead: rec.b.dead,
         assert mid["edClosed"] is False and mid["groups"] == ["brief", "edit"]
     end = out["end"]
     assert end["destroyed"] == 1 and end["intervals"] == [42] and end["dead"] is True
-    assert end["hc"] is None and "/r/human_code/brief.json" not in end["byPath"]
+    assert end["hc"] is None and "/r/human_code/r.humancode" not in end["byPath"]
 
 
 def test_a_human_code_folder_in_the_tree_is_named_for_its_brief(doc, tmp_path):
-    """A human_code/ folder holding a brief.json reads "Human code" with a page
-    for its icon, and its name opens the brief as a tab; the chevron still
-    opens the folder, the folder keeps its path, and its menu is the folder's.
-    Any other folder, or one with no brief in it, is left as it is."""
+    """A folder holding a .humancode file, whatever it is called, reads "Human
+    code" with a page for its icon, and its name opens the brief as a tab (the
+    first by name when there are several); the chevron still opens the folder,
+    the folder keeps its path, and its menu is the folder's. A folder with no
+    brief in it, an old brief.json among them, is left as it is. A human_code/
+    folder is looked into as soon as its row is drawn; any folder is marked
+    when its listing lands."""
     out = _node_json(tmp_path, "wsbriefin.mjs", """
 function joinPath(d, n) { return d === "/" ? "/" + n : d + "/" + n; }
-""" + _js_chunk(doc, "function wsBriefIn(") + """
-const B = [{ name: "brief.json", type: "file" }, { name: "index.html", type: "file" }];
+""" + _js_chunk(doc, "const HC_BRIEF_RE") + _js_chunk(doc, "function wsBriefIn(") + """
+const B = [{ name: "lisa.humancode", type: "file" }, { name: "index.html", type: "file" }];
 console.log(JSON.stringify([
-  wsBriefIn("/r/human_code", B), wsBriefIn("/human_code", B),
+  wsBriefIn("/r/human_code", B), wsBriefIn("/human_code", B), wsBriefIn("/r/docs", B),
+  wsBriefIn("/r", [{ name: "z.humancode", type: "file" }, { name: "A.HUMANCODE", type: "file" }]),
   wsBriefIn("/r/human_code", [{ name: "index.html", type: "file" }]),
-  wsBriefIn("/r/human_code", [{ name: "brief.json", type: "dir" }]),
-  wsBriefIn("/r/my_human_code", B), wsBriefIn("/r/human_code/sub", B), wsBriefIn("/r/human_code", null),
+  wsBriefIn("/r/human_code", [{ name: "brief.json", type: "file" }]),
+  wsBriefIn("/r/human_code", [{ name: "lisa.humancode", type: "dir" }]),
+  wsBriefIn("/r/human_code", null),
 ]));
 """)
-    assert out == ["/r/human_code/brief.json", "/human_code/brief.json", "", "", "", "", ""]
+    assert out == ["/r/human_code/lisa.humancode", "/human_code/lisa.humancode",
+                   "/r/docs/lisa.humancode", "/r/A.HUMANCODE", "", "", "", ""]
     assert 'if (name === "human_code") findBrief(node);' in _ws_inner(doc, "makeNode")
     mark = _ws_inner(doc, "markBrief")
     assert 'node.brief ? "Human code" : node.name' in mark
@@ -5016,8 +5075,7 @@ console.log(JSON.stringify([
     assert "data-path" not in mark and "node.path =" not in mark
     find = _ws_inner(doc, "findBrief")
     assert find.index("ctx.cachedListing(node.path)") < find.index("ctx.fsList(node.path)")
-    assert ('if (node.el && node.name === "human_code") markBrief(node, data.entries);'
-            in _ws_inner(doc, "fill"))
+    assert "if (node.el) markBrief(node, data.entries);" in _ws_inner(doc, "fill")
     ws = _js_chunk(doc, "function makeWorkspace(")
     tree = ws[ws.index('treeBody.addEventListener("click"'):]
     tree = tree[:tree.index("\n  });\n")]

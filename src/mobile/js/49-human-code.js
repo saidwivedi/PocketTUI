@@ -1,5 +1,5 @@
 // ============================================================
-// Human code — a human_code/brief.json read as the brief it is
+// Human code — a .humancode file read as the brief it is
 // ============================================================
 // The human-code skill writes a repository down as short pseudocode units, one
 // per decision the code makes, each line pointing at the lines of source it
@@ -56,9 +56,15 @@ function ensureHumanCode() {
 
 // ---- the answers, as pure functions ----------------------------------------
 
-// The repository a brief describes is the folder its human_code/ sits in.
+// The repository a brief describes is the git top level its file sits in,
+// wherever in the repo that is (hcFindRoot): the brief names its files from
+// the top, and the file itself does not say where the top is. Until that is
+// answered, and for good outside a repo or on a server that cannot say, it is
+// this guess: the folder above the brief's human_code/, where the skill
+// writes it, or the brief's own folder when it is not in one.
 function hcRootOf(path) {
-  return path.replace(/\/human_code\/brief\.json$/, "") || "/";
+  const dir = path.replace(/\/[^/]*$/, "");
+  return (/(?:^|\/)human_code$/.test(dir) ? dir.replace(/\/?human_code$/, "") : dir) || "/";
 }
 
 // Every file the brief points into, which is what the route is asked about.
@@ -160,7 +166,34 @@ function hcTooNew(brief) {
 // `at` moves.
 function hcRecord(path, brief) {
   return { path: path, brief: brief, root: hcRootOf(path), at: "pinned", settled: false,
-           stale: null, nextAt: 0, busy: false, missingSaid: false, dead: false, onAt: null };
+           stale: null, nextAt: 0, busy: false, missingSaid: false, dead: false, onAt: null,
+           rooting: null };
+}
+
+// The record's root from the repo the brief is in, asked once per record and
+// shared by whoever needs it first (the poll, the screen's name). A pane's own
+// answer about the repo it is showing (repoRootOf) is used when it holds the
+// brief; anything else is /api/git/branches about the brief's folder, which
+// answers with the top level, or nothing outside a repo.
+function hcRooted(b) {
+  if (!b.rooting) b.rooting = hcFindRoot(b);
+  return b.rooting;
+}
+
+async function hcFindRoot(b) {
+  for (const pane of Object.values(filesPanes)) {
+    const known = pane.repoRootOf(b.path);
+    if (known) { b.root = known; return; }
+  }
+  if (demoApiOn() || !hasCap("git_ref")) return;
+  const dir = b.path.replace(/\/[^/]*$/, "") || "/";
+  try {
+    const r = await fetch(apiURL("api/git/branches?path=" + encodeURIComponent(dir)),
+                          { cache: "no-store", headers: authHeaders() });
+    if (r.status === 401) { rejectToken(); return; }
+    const d = r.ok ? await r.json().catch(() => null) : null;
+    if (d && typeof d.root === "string" && d.root) b.root = d.root;
+  } catch (e) {}
 }
 
 // The viewer in `host`, by either host: the record's reads, its taps through
@@ -250,6 +283,8 @@ async function openHumanCode(path, pane, back) {
   hcEdRow = null;
   $("hc-name").textContent = baseName(hcCur.root);
   $("hc-name").title = path;
+  const rec = hcCur;
+  hcRooted(rec).then(() => { if (hcCur === rec) $("hc-name").textContent = baseName(rec.root); });
   $("hc-note").hidden = true;
   const el = $("screen-humancode");
   // In the pane if that is where it was tapped, over the whole window
@@ -454,6 +489,8 @@ async function hcAskHunks(b) {
   b.busy = true;
   let data = null;
   try {
+    await hcRooted(b);
+    if (b.dead) return false;
     const r = await fetch(apiURL("api/git/hunks"), {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
