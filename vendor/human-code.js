@@ -1,4 +1,4 @@
-/*! human-code viewer 2 — copied from the human-code skill's assets/viewer.js; to update: cp, then put the new sha256 in tests/test_build.py */
+/*! human-code viewer 6 — copied from the human-code skill's assets/viewer.js; to update: cp, then put the new sha256 in tests/test_build.py */
 /* human-code viewer: renders a human_code/<repo>.humancode brief (the skill's references/schema.md is the format).
  *
  * Plain script, no modules: inlined into index.html by build.py, loaded by a host app as a file,
@@ -16,7 +16,8 @@
  *     opts.footer   string                one quiet line under the overview
  *   view.setStale(data | null), view.setPill(text | null), view.go("#cid/uid"),
  *   view.state() / view.restore(state), view.destroy()
- *   HumanCode.embedded(map), .stale(brief, files), .remap(hunks, line), .tokens, .dagModel, .lede
+ *   HumanCode.embedded(map), .stale(brief, files), .remap(hunks, line), .tokens, .dagModel, .lede,
+ *   .surpriseOrder(list), .ledgerLabel(component), .noteParts(note)
  *
  * Everything the module draws lives under one .hc element and is styled by one shared <style
  * id="hc-style">, with every colour and font a --hc-* token so a host can map them to its own.
@@ -24,7 +25,7 @@
 (function (root) {
   'use strict';
   const HC = {};
-  HC.VERSION = '2';
+  HC.VERSION = '6';
   HC.SCHEMA = 1;
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -32,12 +33,20 @@
   // ---- tokeniser (pseudocode and Python)
   const KW = 'def return if elif else for in not and or while is None True False with as raise try except lambda yield pass';
   const PYKW = KW + ' class import from global nonlocal assert del break continue finally async await';
+  // HC words (hc-language lexer RESERVED + 0.3's record/method/set). HCPOS are also ordinary Python names
+  // in the skill's own briefs (out, each, kind, set, list ...): keywords only at statement start or right
+  // after another HC keyword, and never as a call, an assignment target or before , [ . ; the rest are
+  // keywords anywhere. none/true/false are HC constants, coloured as keywords (no constant class here).
+  const HCKW = 'when otherwise method unit repeat collect into throughout unknown none true false break continue';
+  const HCPOS = 'out each kind set list module forward source use op feature no note hc record';
+  const HCPOSSET = new Set(HCPOS.split(' '));
   const NUM = String.raw`-?\d+(?:,\d{3})*(?:\.\d+)?(?:e-?\d+)?(?:\s?(?:frames?|steps?|fps|deg|rad|GB|MB|mm|cm|ms|px|%|m|s|k|M)(?![\w%])|(?!(?!x ?\d)[A-Za-z_]))`;
   const OPS = String.raw`(?<=\d ?)x(?= ?\d)|->|\+=|-=|<=|>=|==|!=|[=:<>/*+()\[\]{}]`;
   const RX = {
     pseudo: new RegExp([
       String.raw`(?<s>(?<!\w)'[^'\n]*'(?!\w)|"[^"\n]*")`,
       String.raw`(?<k>\b(?:${KW.replace(/ /g, '|')})\b)`,
+      String.raw`(?<h>(?<!\.)\b(?:${(HCKW + ' ' + HCPOS).replace(/ /g, '|')})\b(?!\.))`,
       String.raw`(?<f>[A-Za-z_][\w.]*(?=\())`,
       String.raw`(?<n>(?<![\w.](?<!\dx))${NUM})`,
       String.raw`(?<o>${OPS})`,
@@ -79,7 +88,7 @@
       }
     }
     const rx = RX[mode];
-    let afterDef = false;
+    let afterDef = false, prevH = -1;
     rx.lastIndex = pos;
     let m;
     while ((m = rx.exec(line))) {
@@ -95,9 +104,16 @@
         pos = rx.lastIndex = end; afterDef = false; continue;
       }
       if (g.s) cls = 's'; else if (g.c) cls = 'c'; else if (g.d) cls = 'd';
-      else if (g.k) cls = 'k'; else if (g.f) cls = 'f'; else if (g.n) cls = 'n'; else if (g.o) cls = 'o';
+      else if (g.k) cls = 'k';
+      else if (g.h) {
+        const rest = line.slice(m.index + g.h.length), call = rest[0] === '(';
+        const pos0 = !line.slice(0, m.index).trim() || (prevH >= 0 && !line.slice(prevH, m.index).trim());
+        cls = !HCPOSSET.has(g.h) || (pos0 && !call && !/^(?:\s*=(?!=)|[,[])/.test(rest)) ? 'k' : (call ? 'f' : '');
+      }
+      else if (g.f) cls = 'f'; else if (g.n) cls = 'n'; else if (g.o) cls = 'o';
       else if (g.i) cls = afterDef ? 'f' : '';
-      afterDef = !!(g.k && (g.k === 'def' || g.k === 'class'));
+      afterDef = !!(g.k && (g.k === 'def' || g.k === 'class')) || (cls === 'k' && (m[0] === 'method' || m[0] === 'unit' || m[0] === 'record'));
+      prevH = g.h && cls === 'k' ? m.index + m[0].length : -1;
       out.push([m[0], cls]);
       pos = m.index + m[0].length;
     }
@@ -124,6 +140,13 @@
     });
     return h;
   }
+  // a brief line's text -> the html of its .tx body. The leading spaces stay in the text, so a copy keeps
+  // the indent, inside a span that never wraps; the hanging indent is the .tx padding (--hc-ind).
+  function lineBody(raw, kind) {
+    const t = raw.trimStart(), ind = raw.slice(0, raw.length - t.length);
+    const body = (kind === 'gap' || kind === 'comment') ? esc(t) : paintTokens(tokens(t, 'pseudo'));
+    return (ind ? '<span class="ws">' + esc(ind) + '</span>' : '') + body;
+  }
   const modeOf = (f) => {
     const e = (String(f).split('.').pop() || '').toLowerCase();
     if (e === 'py' || e === 'pyi') return 'py';
@@ -140,6 +163,31 @@
     let t = sents[0] || '';
     for (let i = 1; i < sents.length && i < 2 && (t + ' ' + sents[i]).length <= 240; i++) t += ' ' + sents[i];
     return { text: t, more: t.length < what.length, full: true };
+  }
+
+  // ---- a line's note: its first sentence, the rest, and the config annotation ("config x, default ..."
+  // at the start or after "; "); first + rest + sep + cfg is the note unchanged
+  function noteParts(note) {
+    const s = String(note == null ? '' : note);
+    const i = s.startsWith('config ') ? 0 : s.indexOf('; config ');
+    const body = i < 0 ? s : s.slice(0, i);
+    const k = body.search(/[.!?]\s+(?=[A-Z0-9("'`])/);
+    return { first: k < 0 ? body : body.slice(0, k + 1), rest: k < 0 ? '' : body.slice(k + 1), sep: i > 0 ? '; ' : '', cfg: i < 0 ? '' : s.slice(i ? i + 2 : 0) };
+  }
+
+  // ---- worth knowing: results first, then habits (class absent = result); order inside each group is the brief's
+  const isHabit = (s) => !!s && s.class === 'habit';
+  function surpriseOrder(list) {
+    const L = list || [];
+    return L.filter((s) => !isHabit(s)).concat(L.filter(isHabit));
+  }
+
+  // ---- ledger: the units of a component the brief does not describe
+  const filesOf = (c) => new Set([...(c.units || []), ...(c.ledger || [])].map((u) => u && u.src && u.src.file).filter(Boolean));
+  function ledgerLabel(c) {
+    const n = ((c && c.ledger) || []).length;
+    if (!n) return '';
+    return (filesOf(c).size > 1 ? 'Also here: ' : 'Also in this file: ') + n + ' unit' + (n === 1 ? '' : 's');
   }
 
   // ---- pipeline layout: stages -> layers, rows and phase bands
@@ -346,6 +394,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc nav .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--hc-comp); flex: none; }
 .hc nav .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hc nav .ct { color: var(--hc-fg-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.hc nav .lc { color: var(--hc-fg-3); opacity: .65; font-size: 11px; font-variant-numeric: tabular-nums; margin-left: -6px; }
 .hc nav .nc.active .nm { font-weight: 600; }
 .hc nav .nus { margin: 2px 0 8px; }
 .hc nav .nu { padding: 5px 8px 5px 26px; font-size: 13px; color: var(--hc-fg-2); min-height: 28px; border-radius: 0 6px 6px 0; }
@@ -420,6 +469,9 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc .sr .sdot::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--hc-comp); }
 .hc .sr .sdot::after { content: ''; position: absolute; inset: -12px -8px -12px -16px; }
 .hc .hc-alls { margin-top: 12px; }
+.hc .sr.habit .sm { color: var(--hc-fg-3); font-weight: 600; }
+.hc .wkdiv { display: flex; align-items: center; gap: 8px; padding: 14px 0 6px; border-bottom: 1px solid var(--hc-line); font-size: 11.5px; line-height: 16px; color: var(--hc-fg-3); }
+.hc .wkdiv::after { content: ''; flex: 1; height: 1px; background: var(--hc-line); }
 .hc .cards { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 @container hc (min-width: 760px) and (max-width: 1199px) { .hc .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; } }
 .hc .card { display: block; color: var(--hc-fg); padding: 10px 12px 10px 14px; border-radius: 8px; box-shadow: inset 3px 0 0 var(--hc-comp); background: var(--hc-bg); border: 1px solid var(--hc-line); border-left: 0; }
@@ -428,6 +480,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc .card .cn b { font-size: 14px; font-weight: 500; flex: 1; min-width: 0; }
 .hc .card .cs { font-size: 12px; color: var(--hc-fg-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .hc .card .cs .w { color: var(--hc-warn); font-weight: 600; }
+.hc .card .cs .pl { color: var(--hc-fg-3); }
 .hc .card .cp { font-size: 13px; color: var(--hc-fg-2); line-height: 1.45; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .hc .side > section + section { margin-top: 40px; }
 
@@ -438,30 +491,41 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc .purpose { font-size: 16px; line-height: 1.55; color: var(--hc-fg-2); max-width: 62ch; margin: 12px 0 0; }
 .hc .unit { margin-top: 40px; }
 .hc .chead + .unit { margin-top: 32px; }
-.hc .uhead { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 12px; row-gap: 2px; margin-bottom: 10px; max-width: 92ch; }
+.hc .uhead { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 12px; row-gap: 2px; margin-bottom: 10px; max-width: 100ch; }
 .hc .uhead h3 { flex: 1 1 auto; min-width: 0; font-size: 17px; line-height: 1.3; font-weight: 600; margin: 0; }
 .hc .chip { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--hc-accent); border: 1px solid var(--hc-accent); border-radius: 4px; padding: 0 5px; line-height: 16px; }
 .hc .ucount { font-size: 13px; color: var(--hc-warn); font-weight: 600; white-space: nowrap; }
 .hc .uacts { display: flex; align-items: baseline; gap: 12px; margin-left: auto; min-width: 0; max-width: 100%; }
 .hc .range { font: 12px var(--hc-mono); color: var(--hc-fg-3); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
 .hc .range:hover { color: var(--hc-accent); }
-.hc .shownotes { display: none; font-size: 12.5px; }
+.hc .shownotes { font-size: 12.5px; }
+.hc details.fold.ledger { margin-top: 40px; max-width: 100ch; }
+.hc main.wide details.fold.ledger { max-width: min(100ch, calc(100% - 256px)); }
+.hc .ledger ul { list-style: none; margin: 0 0 8px; padding: 0; }
+.hc .ledger .lgrow { display: flex; align-items: baseline; gap: 16px; padding: 5px 8px; margin: 0 -8px; border-radius: 6px; color: var(--hc-fg-2); font-size: 13.5px; line-height: 1.4; }
+.hc .ledger .lgrow:hover { background: var(--hc-accent-bg); color: var(--hc-fg); }
+.hc .ledger .lgrow.open { background: var(--hc-accent-bg); box-shadow: inset 2px 0 0 var(--hc-accent); color: var(--hc-fg); }
+.hc .ledger .lgn { flex: 1 1 auto; min-width: 0; }
+.hc .ledger .lgw { flex: 0 1 auto; max-width: 55%; font: 12px var(--hc-mono); color: var(--hc-fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+.hc .ledger .lgrow:hover .lgw { color: var(--hc-accent); }
 
-.hc .code { position: relative; background: var(--hc-bg-2); border: 1px solid var(--hc-line); border-radius: 8px; padding: 8px 0; font: 13px/1.6 var(--hc-mono); max-width: 92ch; overflow: visible; tab-size: 4; }
-.hc main.wide .code { margin-right: 256px; max-width: min(92ch, calc(100% - 256px)); }
-.hc main.wide .uhead { max-width: min(92ch, calc(100% - 256px)); }
-.hc main.wide .code::after { content: ''; position: absolute; top: 8px; bottom: 8px; left: calc(100% + 8px); width: 1px; background: var(--hc-line); }
-.hc .ln { position: relative; display: grid; grid-template-columns: 40px 14px minmax(0, 1fr); padding: 2px 12px 2px 0; }
+.hc .code { position: relative; background: var(--hc-bg-2); border: 1px solid var(--hc-line); border-radius: 8px; padding: 12px 0; font: 13px/1.75 var(--hc-mono); max-width: 100ch; overflow: visible; tab-size: 4; }
+.hc main.wide .code { margin-right: 256px; max-width: min(100ch, calc(100% - 256px)); }
+.hc main.wide .uhead { max-width: min(100ch, calc(100% - 256px)); }
+.hc main.wide .code:has(.shownote)::after { content: ''; position: absolute; top: 12px; bottom: 12px; left: calc(100% + 8px); width: 1px; background: var(--hc-line); }
+.hc .ln { position: relative; display: grid; grid-template-columns: 40px 14px minmax(0, 1fr); padding: 4px 12px 4px 0; }
+.hc .ln.blank { height: 0.875em; padding: 0; }
 .hc .ln .gut { color: var(--hc-fg-3); font-size: 11.5px; text-align: right; padding-right: 10px; user-select: none; -webkit-user-select: none; font-variant-numeric: tabular-nums; }
 .hc .ln .mk { color: var(--hc-warn); font-weight: 700; text-align: center; user-select: none; -webkit-user-select: none; }
-.hc .ln .tx { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: calc(var(--hc-ind, 0ch) + 2ch); text-indent: -2ch; min-width: 0; }
+.hc .ln .tx { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: calc(var(--hc-ind, 0ch) + 4ch); text-indent: calc(-1 * (var(--hc-ind, 0ch) + 4ch)); min-width: 0; }
+.hc .ln .tx .ws { white-space: pre; }
 .hc .ln.surprise { box-shadow: inset 2px 0 0 var(--hc-warn); }
 .hc .ln.flow .tx { color: var(--hc-fg-2); }
 .hc .ln.gap .tx, .hc .ln.comment .tx { color: var(--hc-tk-comment); }
 .hc .ln.src { cursor: pointer; }
 .hc .ln.src:hover { background: var(--hc-accent-bg); }
 .hc .ln.open { background: var(--hc-accent-bg); box-shadow: inset 2px 0 0 var(--hc-accent); }
-.hc .ln .where { display: none; position: absolute; right: 0; top: 2px; font: 11px/20.8px var(--hc-mono); color: var(--hc-fg-3); background: linear-gradient(to right, transparent, var(--hc-hs) 16px); padding: 0 12px 0 24px; pointer-events: none; }
+.hc .ln .where { display: none; position: absolute; right: 0; top: 4px; font: 11px/22.75px var(--hc-mono); color: var(--hc-fg-3); background: linear-gradient(to right, transparent, var(--hc-hs) 16px); padding: 0 12px 0 24px; pointer-events: none; user-select: none; -webkit-user-select: none; }
 @media (hover: hover) { @container hc (min-width: 900px) { .hc .ln.src:hover .where { display: block; } } }
 .hc .k-k { color: var(--hc-tk-kw); font-weight: 500; }
 .hc .k-n { color: var(--hc-tk-num); }
@@ -471,16 +535,23 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc .k-c { color: var(--hc-tk-comment); }
 .hc .k-d { color: var(--hc-tk-fn); }
 .hc .ln.gap .tx span, .hc .ln.comment .tx span { color: inherit; font-weight: inherit; }
-.hc .note { font: 12.5px/1.4 var(--hc-sans); color: var(--hc-fg-2); text-indent: 0; white-space: normal; }
-.hc main.wide .note { position: absolute; left: calc(100% + 16px); width: 240px; top: 3px; }
+.hc .note { user-select: none; -webkit-user-select: none; font: 12.5px/1.4 var(--hc-sans); color: var(--hc-fg-2); text-indent: 0; white-space: normal; overflow-wrap: anywhere; }
+.hc main.wide .note { display: none; position: absolute; left: calc(100% + 16px); width: 240px; top: 6px; }
+.hc main.wide .ln.shownote .note { display: block; }
+.hc main.wide .note .n2, .hc main.wide .note .nsep { display: none; }
+.hc main.wide .note .ncfg { display: block; color: var(--hc-fg-3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hc main.wide .note:not(.cfgonly) .ncfg { margin-top: 2px; }
+.hc main.wide .ln.inl .note { position: static; grid-column: 3; width: auto; margin: 2px 0 4px; padding: 0 0 0 10px; border-left: 2px solid var(--hc-line-2); color: var(--hc-fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.hc main.wide .ln.inl .note .n2 { display: inline; }
+.hc main.wide .ln.inl .note:not(.cfgonly) .ncfg { display: none; }
+.hc main.wide .ln.inl .note .ncfg { display: inline; font-size: inherit; color: inherit; }
+.hc main.wide .ln.inl .note.nfull { white-space: normal; }
 .hc main:not(.wide) .note { display: none; grid-column: 3; margin: 4px 0 6px; padding: 2px 0 2px 10px; border-left: 2px solid var(--hc-line-2); }
 .hc main:not(.wide) .ln.shownote .note { display: block; }
-.hc .nchip { display: none; position: relative; font: 10.5px/14px var(--hc-sans); color: var(--hc-fg-3); border: 1px solid var(--hc-line-2); border-radius: 4px; padding: 0 4px; margin-left: 8px; text-indent: 0; vertical-align: 1px; white-space: nowrap; }
-.hc .nchip::before { content: ''; position: absolute; inset: -15px -8px; }
-.hc .nchip:hover { color: var(--hc-fg); }
-.hc main:not(.wide) .nchip { display: inline-block; }
-.hc main:not(.wide) .shownotes { display: inline; }
-.hc .ln.shownote .nchip { color: var(--hc-fg); border-color: var(--hc-fg-3); }
+.hc .nchip { display: inline-block; position: relative; user-select: none; -webkit-user-select: none; width: 6px; height: 6px; padding: 0; margin-left: 10px; border-radius: 50%; background: var(--hc-line-2); text-indent: 0; vertical-align: 2px; }
+.hc .nchip::before { content: ''; position: absolute; inset: -12px -10px; }
+.hc .nchip:hover, .hc .ln.src:hover .nchip { background: var(--hc-fg-3); }
+.hc .ln.shownote .nchip { background: var(--hc-accent); }
 
 /* stale marks (only with view.setStale) */
 .hc nav .nc.stale .dot { box-shadow: 0 0 0 2px var(--hc-bg), 0 0 0 3.5px var(--hc-warn); }
@@ -534,6 +605,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
   .hc nav.open { transform: none; }
   .hc nav a { min-height: 44px; }
   .hc nav .nu { min-height: 40px; }
+  .hc .ledger .lgrow { min-height: 40px; align-items: center; }
   .hc .hc-src { position: absolute; left: 0; right: 0; bottom: 0; height: 72%; z-index: 30; border-top: 1px solid var(--hc-line); border-radius: 12px 12px 0 0; box-shadow: var(--hc-shadow); }
   .hc .hc-src .handle { display: block; width: 36px; height: 4px; border-radius: 2px; background: var(--hc-line-2); margin: 8px auto 0; flex: none; }
   .hc .hc-src .shead { height: 44px; }
@@ -554,6 +626,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
   .hc .code { font-size: 12.5px; margin-left: -4px; margin-right: -4px; }
   .hc .ln { grid-template-columns: 30px 12px minmax(0, 1fr); padding-right: 10px; }
   .hc .ln .gut { padding-right: 6px; }
+  .hc .ln .tx { padding-left: calc(var(--hc-ind, 0ch) + 2ch); text-indent: calc(-1 * (var(--hc-ind, 0ch) + 2ch)); }
   .hc .uacts { flex-basis: 100%; margin-left: 0; justify-content: space-between; }
   .hc .node { flex: 0 1 calc(50% - 8px); max-width: none; min-width: 0; }
   .hc .dag .row { gap: 12px 16px; }
@@ -644,6 +717,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 
     // ---- navigation
     let curComp = null;
+    const notesOn = new Set();  // unit keys whose Show notes is on, kept while the view lives
     let pill = null;
     let staleView = null;
     function renderNav(cid, uid) {
@@ -651,7 +725,8 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       h += '<a class="ov' + (!cid ? ' active' : '') + '" href="#overview">Overview</a><div class="label">Components</div>';
       comps.forEach((c) => {
         const on = c.id === cid;
-        h += '<a class="nc ' + kOf(c) + (on ? ' active' : '') + '" data-c="' + esc(c.id) + '" href="#' + esc(c.id) + '"><span class="dot"></span><span class="nm">' + esc(c.name) + '</span><span class="ct">' + (c.units || []).length + '</span></a>';
+        h += '<a class="nc ' + kOf(c) + (on ? ' active' : '') + '" data-c="' + esc(c.id) + '" href="#' + esc(c.id) + '"><span class="dot"></span><span class="nm">' + esc(c.name) + '</span><span class="ct">' + (c.units || []).length + '</span>' +
+          ((c.ledger || []).length ? '<span class="lc" title="' + c.ledger.length + ' more not described">+' + c.ledger.length + '</span>' : '') + '</a>';
         if (on) {
           h += '<div class="nus">';
           (c.units || []).forEach((u) => { h += '<a class="nu' + (u.id === uid ? ' active' : '') + '" data-u="' + esc(u.id) + '" href="#' + esc(c.id) + '/' + esc(u.id) + '"><span>' + esc(u.name) + '</span></a>'; });
@@ -659,6 +734,8 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
         }
       });
       nav.innerHTML = h;
+      // the ledger count only where the name still fits beside it
+      nav.querySelectorAll('.nc .lc').forEach((x) => { const nm = x.parentNode.querySelector('.nm'); if (nm.scrollWidth > nm.clientWidth) x.remove(); });
       paintPill();
       paintStale();
     }
@@ -793,7 +870,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
     function surpriseRow(s, i) {
       const src = s.src || null;
       const hit = s.unit && unitById[s.unit];
-      let h = '<div class="sr"' + (hit ? ' data-unit="' + esc(s.unit) + '"' : '') + '><span class="sm">!</span><div>';
+      let h = '<div class="sr' + (isHabit(s) ? ' habit' : '') + '"' + (hit ? ' data-unit="' + esc(s.unit) + '"' : '') + '><span class="sm">!</span><div>';
       if (s.title) {
         h += '<button class="st" data-tog="' + i + '">' + esc(s.title) + '</button><div class="sbody" hidden>' + esc(s.text) + '</div>';
       } else {
@@ -803,6 +880,16 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       h += '</div>';
       h += hit ? '<a class="sdot ' + kOf(hit.c) + '" href="#' + esc(s.unit) + '" title="' + esc(hit.c.name + ' › ' + hit.u.name) + '" aria-label="' + esc(hit.u.name) + '"></a>' : '<span></span>';
       return h + '</div>';
+    }
+
+    // rows for the first n surprises in worth-knowing order, a "Habits" divider before the first habit
+    function wkRows(n) {
+      let h = '';
+      surpriseOrder(O.surprises).slice(0, n).forEach((s, i, all) => {
+        if (isHabit(s) && (i === 0 || !isHabit(all[i - 1]))) h += '<div class="wkdiv" role="separator"><span>Habits</span></div>';
+        h += surpriseRow(s, i);
+      });
+      return h;
     }
 
     function renderOverview() {
@@ -826,14 +913,15 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       h += '</div><div class="side">';
       if (sp.length) {
         h += '<section><div class="label">Worth knowing</div><div class="wk">';
-        sp.forEach((s, i) => { if (i < 6) h += surpriseRow(s, i); });
+        h += wkRows(6);
         h += '</div>' + (sp.length > 6 ? '<button class="txtbtn hc-alls">All ' + sp.length + '</button>' : '') + '</section>';
       }
       h += '<section><div class="label">Components</div><div class="cards">';
       comps.forEach((c) => {
         const nu = (c.units || []).length, ns = (c.units || []).reduce((a, u) => a + nSurprise(u), 0);
+        const nl = (c.ledger || []).length;
         h += '<a class="card ' + kOf(c) + '" href="#' + esc(c.id) + '"><div class="cn"><b>' + esc(c.name) + '</b><span class="cs">' + nu + ' unit' + (nu === 1 ? '' : 's') +
-          (ns ? ' · <span class="w">' + ns + ' !</span>' : '') + '</span></div>' + (c.purpose ? '<div class="cp" title="' + esc(c.purpose) + '">' + esc(c.purpose) + '</div>' : '') + '</a>';
+          (nl ? ' · <span class="pl">' + nl + ' plumbing</span>' : '') + (ns ? ' · <span class="w">' + ns + ' !</span>' : '') + '</span></div>' + (c.purpose ? '<div class="cp" title="' + esc(c.purpose) + '">' + esc(c.purpose) + '</div>' : '') + '</a>';
       });
       h += '</div></section></div></div>';
       if (D.scope) h += '<details class="fold"><summary>Scope</summary><p class="scopetext">' + esc(D.scope) + '</p></details>';
@@ -845,32 +933,49 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
     }
 
     // ---- component page
-    function lineHtml(l, n, i) {
+    function lineHtml(l, n, i, on) {
       const kind = l.kind || 'decision';
+      if (kind === 'blank') return '<div class="ln blank" aria-hidden="true"></div>';
       const raw = String(l.text || '');
       const ind = raw.length - raw.trimStart().length;
-      const t = raw.trimStart();
-      const body = (kind === 'gap' || kind === 'comment') ? esc(t) : paintTokens(tokens(t, 'pseudo'));
+      const body = lineBody(raw, kind);
       const src = l.src && l.src.file ? l.src : null;
-      return '<div class="ln ' + esc(kind) + (src ? ' src' : '') + '"' + (i != null ? ' data-i="' + i + '"' : '') + (src ? ' tabindex="0"' + srcAttr(src, raw) : '') + (ind ? ' style="--hc-ind:' + ind + 'ch"' : '') + '>' +
+      return '<div class="ln ' + esc(kind) + (src ? ' src' : '') + (on && l.note ? ' shownote' : '') + '"' + (i != null ? ' data-i="' + i + '"' : '') + (src ? ' tabindex="0"' + srcAttr(src, raw) : '') + (ind ? ' style="--hc-ind:' + ind + 'ch"' : '') + '>' +
         '<span class="gut">' + n + '</span><span class="mk">' + (kind === 'surprise' ? '!' : '') + '</span>' +
-        '<span class="tx">' + body + (l.note ? '<button class="nchip" aria-label="Show note">note</button>' : '') + '</span>' +
+        '<span class="tx">' + body + (l.note ? '<button class="nchip" aria-label="Note" title="Note"></button>' : '') + '</span>' +
         (src ? '<span class="where">' + esc(base(src.file) + ':' + src.start) + '</span>' : '') +
-        (l.note ? '<span class="note">' + esc(l.note) + '</span>' : '') + '</div>';
+        (l.note ? noteHtml(l.note) : '') + '</div>';
+    }
+    function noteHtml(note) {
+      const p = noteParts(note);
+      return '<span class="note' + (p.first ? '' : ' cfgonly') + '" title="' + esc(note) + '"><span class="n1">' + esc(p.first) + '</span><span class="n2">' + esc(p.rest) + '</span>' +
+        '<span class="nsep">' + p.sep + '</span><span class="ncfg">' + esc(p.cfg) + '</span></span>';
     }
     function unitHtml(c, u) {
       const ns = nSurprise(u);
       const hasNotes = (u.lines || []).some((l) => l.note);
+      const on = hasNotes && notesOn.has(c.id + '/' + u.id);
       let h = '<section class="unit" data-key="' + esc(c.id + '/' + u.id) + '" data-u="' + esc(u.id) + '"><div class="uhead"><h3>' + esc(u.name) + '</h3>';
       if (u.status) h += '<span class="chip">' + esc(u.status) + '</span>';
       if (ns) h += '<span class="ucount">! ' + ns + '</span>';
-      h += '<span class="uacts">' + (hasNotes ? '<button class="txtbtn shownotes">Show notes</button>' : '');
+      h += '<span class="uacts">' + (hasNotes ? '<button class="txtbtn shownotes">' + (on ? 'Hide' : 'Show') + ' notes</button>' : '');
       if (u.src && u.src.file) h += '<a class="range" href="#"' + srcAttr(u.src, u.signature || u.name) + '><bdi>' + esc(u.src.file + ':' + u.src.start + '-' + u.src.end) + '</bdi></a>';
       h += '</span></div><div class="code">';
       let n = 1;
       if (u.signature) h += lineHtml({ text: u.signature, kind: 'flow', src: u.src }, n++, null);
-      (u.lines || []).forEach((l, i) => { h += lineHtml(l, n++, i); });
+      // a blank line is a spacer: no number, so the numbers count only the lines shown
+      (u.lines || []).forEach((l, i) => { h += lineHtml(l, n, i, on); if (l.kind !== 'blank') n++; });
       return h + '</div></section>';
+    }
+    function ledgerHtml(c) {
+      const L = (c.ledger || []).filter((x) => x && x.src && x.src.file);
+      if (!L.length) return '';
+      let h = '<details class="fold ledger"><summary>' + esc(ledgerLabel(c)) + '</summary><ul>';
+      L.forEach((x) => {
+        const at = ':' + x.src.start + (x.src.end !== x.src.start ? '-' + x.src.end : '');
+        h += '<li><a class="lgrow" href="#"' + srcAttr(x.src, x.name) + ' data-ledger="' + esc(x.id || '') + '" title="' + esc(x.src.file + at) + '"><span class="lgn">' + esc(x.name || x.id || '') + '</span><span class="lgw"><bdi>' + esc(base(x.src.file) + at) + '</bdi></span></a></li>';
+      });
+      return h + '</ul></details>';
     }
     function renderComponent(c, uid) {
       curComp = c.id;
@@ -879,6 +984,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       if (c.purpose) h += '<p class="purpose">' + esc(c.purpose) + '</p>';
       h += '</div>';
       (c.units || []).forEach((u) => { h += unitHtml(c, u); });
+      h += ledgerHtml(c);
       main.innerHTML = h;
       paintStale();
       layoutNotes();
@@ -893,32 +999,70 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       setActiveUnit(uid || ((c.units || [])[0] || {}).id);
     }
 
-    // margin notes: wide main gets the margin; walk notes in order and push down on overlap
     // Keep the reader's place across reflows: the open line, else the first line in view.
     function anchorOf() {
       const top = main.getBoundingClientRect().top;
-      let el = main.querySelector('.ln.open');
+      let el = main.querySelector('.ln.open, .lgrow.open');
       if (!el) el = [...main.querySelectorAll('.ln, .unit, h2')].find((x) => x.getBoundingClientRect().bottom > top) || null;
       return el ? { el, top: el.getBoundingClientRect().top } : null;
     }
     function keepAnchor(a) {
       if (a && R.contains(a.el)) main.scrollTop += a.el.getBoundingClientRect().top - a.top;
     }
+    // The drawn units follow notesOn (a route to the component already drawn does not redraw it).
+    function setUnitNotes() {
+      main.querySelectorAll('.unit').forEach((u) => {
+        const on = notesOn.has(u.dataset.key), sn = u.querySelector('.shownotes');
+        u.querySelectorAll('.ln').forEach((l) => { if (l.querySelector('.note')) l.classList.toggle('shownote', on); });
+        if (sn) sn.textContent = on ? 'Hide notes' : 'Show notes';
+      });
+      layoutNotes();
+    }
     function layoutNotes() {
       const a = anchorOf();
       layoutNotesNow();
       keepAnchor(a);
     }
+    // Margin notes on a wide main: each note starts at its line's top and moves down only past the note
+    // above it. One that would sit more than 1.5 line heights below its line, or run past its code block,
+    // goes inline under its line instead (one row, full text in the title, a click opens it), which moves
+    // the lines below it down by one inline row. Writes, then every read, then writes: two layouts.
     function layoutNotesNow() {
       const wide = main.clientWidth - 64 >= 840;
       main.classList.toggle('wide', wide);
-      const notes = [...main.querySelectorAll('.note')];
-      notes.forEach((n) => { n.style.top = ''; });
-      if (!wide) return;
-      let prev = -Infinity;
-      notes.forEach((n) => {
-        const r = n.getBoundingClientRect();
-        if (r.top < prev + 6) { n.style.top = (3 + prev + 6 - r.top) + 'px'; prev = prev + 6 + r.height; } else prev = r.bottom;
+      const all = [...main.querySelectorAll('.ln > .note')];
+      all.forEach((n) => {
+        n.style.top = '';
+        if (!wide || !n.parentNode.classList.contains('shownote')) n.classList.remove('nfull');
+        if (!n.classList.contains('nfull')) n.parentNode.classList.remove('inl');
+      });
+      const notes = all.filter((n) => n.parentNode.classList.contains('shownote'));
+      if (!wide || !notes.length) return;
+      const code0 = notes[0].parentNode.parentNode;
+      const probe = doc.createElement('div');
+      probe.style.cssText = 'position:absolute;left:0;right:0;top:0;visibility:hidden';
+      probe.innerHTML = '<div class="ln"><span class="tx">x</span></div><div class="ln inl"><span class="tx">x</span>' + noteHtml('x') + '</div>';
+      code0.appendChild(probe);
+      // reads
+      const [p0, p1] = probe.children;
+      const inlH = p1.getBoundingClientRect().height - p0.getBoundingClientRect().height;
+      const lh = parseFloat(win.getComputedStyle(p0.firstChild).lineHeight) || 20.8;
+      const bottoms = new Map();
+      const items = notes.map((n) => {
+        const ln = n.parentNode, code = ln.parentNode;
+        if (!bottoms.has(code)) bottoms.set(code, code.getBoundingClientRect().bottom);
+        return { n, ln, code, top: ln.getBoundingClientRect().top, h: n.getBoundingClientRect().height, inl: ln.classList.contains('inl') };
+      });
+      // writes
+      probe.remove();
+      let code = null, shift = 0, prev = -Infinity;
+      items.forEach((it) => {
+        if (it.code !== code) { code = it.code; shift = 0; prev = -Infinity; }
+        if (it.inl) return;  // an opened inline note stays inline; its row is already in the tops read
+        const line = it.top + shift, top = Math.max(line + 6, prev + 6);
+        if (top - line > 1.5 * lh || top + it.h > bottoms.get(code) + shift) { it.ln.classList.add('inl'); shift += inlH; return; }
+        if (top > line + 6) it.n.style.top = (top - line) + 'px';
+        prev = top + it.h;
       });
     }
     let mainW = 0, noteTimer = 0;
@@ -929,6 +1073,9 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       clearTimeout(noteTimer); noteTimer = setTimeout(layoutNotes, 60);
     });
     mainRO.observe(main);
+    const themeMO = new win.MutationObserver(() => { if (curComp) { clearTimeout(noteTimer); noteTimer = setTimeout(layoutNotes, 60); } });
+    themeMO.observe(doc.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class', 'style'] });
+    if (doc.fonts && doc.fonts.ready) doc.fonts.ready.then(() => { if (!dead && curComp) layoutNotes(); });
 
     listen(main, 'scroll', () => {
       if (!curComp) return;
@@ -955,6 +1102,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
           n++; h += '<a class="res" href="' + href + '">' + crumb + '<div class="rt">' + mk((u.signature || u.name).trim()) + '</div></a>';
         }
         (u.lines || []).forEach((l) => {
+          if (l.kind === 'blank') return;
           const inText = String(l.text).toLowerCase().includes(needle), inNote = String(l.note || '').toLowerCase().includes(needle);
           if (!inText && !inNote) return;
           n++;
@@ -1032,7 +1180,9 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       const unit = key ? { cid: key.slice(0, slash), uid: key.slice(slash + 1) } : null;
       const ln = el.closest('.ln');
       const line = ln && ln.dataset.i != null ? +ln.dataset.i : null;
-      return { src, ctx: { trace: el.dataset.trace || '', unit, line } };
+      const ctx = { trace: el.dataset.trace || '', unit, line };
+      if (el.dataset.ledger != null) ctx.ledger = true;  // an undescribed unit: show it, read-only
+      return { src, ctx };
     }
     let askedAt = 0;
     function pointAt(el) {
@@ -1043,13 +1193,15 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
     // ---- clicks in main
     listen(main, 'click', (e) => {
       const chip = e.target.closest('.nchip');
-      if (chip) { e.stopPropagation(); chip.closest('.ln').classList.toggle('shownote'); return; }
+      if (chip) { e.stopPropagation(); chip.closest('.ln').classList.toggle('shownote'); layoutNotes(); return; }
       const sn = e.target.closest('.shownotes');
       if (sn) {
-        const lns = sn.closest('.unit').querySelectorAll('.ln');
+        const unit = sn.closest('.unit'), lns = unit.querySelectorAll('.ln');
         const on = sn.textContent === 'Show notes';
         lns.forEach((l) => { if (l.querySelector('.note')) l.classList.toggle('shownote', on); });
         sn.textContent = on ? 'Hide notes' : 'Show notes';
+        if (on) notesOn.add(unit.dataset.key); else notesOn.delete(unit.dataset.key);
+        layoutNotes();
         return;
       }
       if (e.target.classList.contains('hc-more')) {
@@ -1062,10 +1214,12 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
         return;
       }
       if (e.target.classList.contains('hc-alls')) {
-        main.querySelector('.wk').innerHTML = (O.surprises || []).map(surpriseRow).join('');
+        main.querySelector('.wk').innerHTML = wkRows(Infinity);
         e.target.remove();
         return;
       }
+      const inl = e.target.closest('main.wide .ln.inl > .note');
+      if (inl) { inl.classList.toggle('nfull'); layoutNotes(); return; }
       const tog = e.target.closest('[data-tog]');
       if (tog) { const x = tog.nextElementSibling; x.hidden = !x.hidden; return; }
       const t = e.target.closest('[data-file]');
@@ -1192,8 +1346,8 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
     function openSource(el) {
       const a = cur ? null : anchorOf();
       if (!cur) savedScroll = main.scrollTop;
-      R.querySelectorAll('.ln.open').forEach((x) => x.classList.remove('open'));
-      const ln = el.closest('.ln');
+      R.querySelectorAll('.ln.open, .lgrow.open').forEach((x) => x.classList.remove('open'));
+      const ln = el.closest('.ln, .lgrow');
       if (ln) ln.classList.add('open');
       const lnTop = ln ? ln.getBoundingClientRect().top : 0;
       cur = { file: el.dataset.file, start: +el.dataset.start, end: +el.dataset.end, match: el.dataset.match, before: 4, after: 4, whole: false, all: false };
@@ -1223,7 +1377,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       R.classList.remove('navoff');
       closeNav();
       if (wasPhone) main.scrollTop = savedScroll; else keepAnchor(a);
-      R.querySelectorAll('.ln.open').forEach((x) => x.classList.remove('open'));
+      R.querySelectorAll('.ln.open, .lgrow.open').forEach((x) => x.classList.remove('open'));
       cur = null;
     }
     listen(srcBody, 'click', (e) => {
@@ -1291,10 +1445,12 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
         paintPill();
       },
       go(h) { if (!dead) go(h); },
-      state() { return { route: currentRoute(), scroll: main.scrollTop }; },
+      state() { return { route: currentRoute(), scroll: main.scrollTop, notes: [...notesOn] }; },
       restore(s) {
         if (dead || !s) return;
+        if (Array.isArray(s.notes)) { notesOn.clear(); s.notes.forEach((k) => notesOn.add(String(k))); }
         if (useHash) { if (win.location.hash !== s.route) win.history.replaceState(win.history.state, '', s.route); onHash(); } else go(s.route);
+        if (Array.isArray(s.notes)) setUnitNotes();
         main.scrollTop = s.scroll || 0;
       },
       destroy() {
@@ -1304,6 +1460,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
         cleanups.forEach((f) => f());
         if (dagRO) dagRO.disconnect();
         mainRO.disconnect();
+        themeMO.disconnect();
         bodyRO.disconnect();
         clearTimeout(dagTimer); clearTimeout(noteTimer);
         host.innerHTML = '';
@@ -1318,5 +1475,9 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
   HC.tokens = tokens;
   HC.dagModel = dagModel;
   HC.lede = lede;
+  HC.surpriseOrder = surpriseOrder;
+  HC.ledgerLabel = ledgerLabel;
+  HC.noteParts = noteParts;
+  HC.lineBody = lineBody;
   root.HumanCode = HC;
 })(typeof window !== 'undefined' ? window : globalThis);

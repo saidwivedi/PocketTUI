@@ -4481,8 +4481,8 @@ def test_the_docked_explorer_says_file_viewer(doc):
 # The viewer is the human-code skill's assets/viewer.js, copied in with a pin
 # header. Updating it is a cp and a new hash here; nothing in this file reads the
 # skill's own copy, so the suite runs on a machine without it.
-HUMAN_CODE_SHA256 = "3b03ac6a6af02ee17b6377a8d179c6f845dfe8e68414c965ab06fa3c9461d2b0"
-HUMAN_CODE_HEADER = ("/*! human-code viewer 2 — copied from the human-code skill's "
+HUMAN_CODE_SHA256 = "732a4b4bc511026e193564215f3f096b4b42677c2c2dd6674088270ecf366931"
+HUMAN_CODE_HEADER = ("/*! human-code viewer 6 — copied from the human-code skill's "
                      "assets/viewer.js; to update: cp, then put the new sha256 in "
                      "tests/test_build.py */\n")
 
@@ -4587,6 +4587,9 @@ def test_every_reader_hook_has_a_human_code_twin(doc):
     assert 'if ($("screen-humancode").classList.contains("active")) return "humancode";' in _js_chunk(doc, "function fileViewKind(")
     assert "#screen-humancode .hc {" in css and "--hc-warn: var(--warn);" in css
     assert ':root[data-theme="dark"] #screen-humancode .hc {' in css
+    # The viewer's leading-space span shares its class with the workspace's
+    # hidden .ws holder; both hosts show it again or every indent is lost.
+    assert ".ws-hc-host .hc .ln .tx .ws,\n#screen-humancode .hc .ln .tx .ws { display: inline; }" in css
 
 
 def _human_code_vm():
@@ -4648,7 +4651,7 @@ console.log(JSON.stringify({{ res, remap: [1, 4, 5, 6, 7, 8, 9, 12, 13, 15, 20].
 """)
     assert out["res"] == [[u, l, g, m] for _, u, l, g, m in _HC_STALE_CASES]
     assert out["remap"] == [1, 4, 5, 8, 9, 12, 13, 16, 16, 16, 21]
-    assert out["version"] == ["2", 1, "function"]
+    assert out["version"] == ["6", 1, "function"]
 
 
 def test_the_brief_screen_answers(doc, tmp_path):

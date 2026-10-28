@@ -5638,6 +5638,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   --hc-comp-l: 68%;
   color-scheme: dark;
 }
+/* The viewer keeps a line's leading spaces in a span of class ws, which the
+   workspace's own .ws { display: none } would hide, flattening every indent. */
+.ws-hc-host .hc .ln .tx .ws,
+#screen-humancode .hc .ln .tx .ws { display: inline; }
 /* Pinned and Now: the Appearance tab's segmented row at the bar's size. */
 .hc-at {
   flex: 0 0 auto;
