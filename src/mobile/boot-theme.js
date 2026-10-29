@@ -117,7 +117,10 @@ function chromeTokensFor(theme) {
   // Read as text on the recess (the human-code brief's code block), so 4.5
   // there rather than on bare paper.
   var rec = mixHex(bg, fg, dark ? 0.02 : 0.04);
-  var teal = ensureContrast(pickInk(theme.cyan, theme.brightCyan, bg, 4.5), rec, 4.5);
+  // Orange is halfway between the red and yellow slots.
+  var orange = ensureContrast(pickInk(mixHex(theme.red, theme.yellow, 0.5),
+                                      mixHex(theme.brightRed, theme.brightYellow, 0.5),
+                                      bg, 4.5), rec, 4.5);
   // The diff rows are the colour laid over the background at a sixth, and the
   // ink is checked against that tint rather than against bare paper, since the
   // tint is the surface it is actually read on.
@@ -150,7 +153,7 @@ function chromeTokensFor(theme) {
     "--diff-hunk-bg": hunkBg,
     "--diff-hunk-ink": ensureContrast(blue, hunkBg, 3),
     "--diff-blue": ensureContrast(blue, hunkBg, 3),
-    "--teal": teal,
+    "--orange": orange,
     // The two 14px marks in the diff pane, which need saturation rather than
     // readability as a paragraph: the bright slot first, the normal one behind.
     "--diff-yes": pickInk(theme.brightGreen, theme.green, bg, 3),

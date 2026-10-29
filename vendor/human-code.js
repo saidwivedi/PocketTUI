@@ -354,7 +354,7 @@
   const DARK = `
     --hc-bg: #0f1115; --hc-bg-2: #161a21; --hc-fg: #e6e9ee; --hc-fg-2: #a3abb6; --hc-fg-3: #8d97a2;
     --hc-line: #262c35; --hc-line-2: #3a424d; --hc-accent: #6ea0ff; --hc-accent-bg: rgba(110,160,255,.14);
-    --hc-warn: #e0b25c; --hc-tk-kw: #c3a6ff; --hc-tk-str: #86d59a; --hc-tk-fn: #79c0d6; --hc-tk-comment: #8d97a2; --hc-hs: color-mix(in srgb, #6ea0ff 14%, #161a21);
+    --hc-warn: #e0b25c; --hc-tk-kw: #c3a6ff; --hc-tk-str: #86d59a; --hc-tk-fn: #ffa657; --hc-tk-comment: #8d97a2; --hc-hs: color-mix(in srgb, #6ea0ff 14%, #161a21);
     --hc-shadow: 0 8px 24px rgba(0,0,0,.5); --hc-backdrop: rgba(0,0,0,.5); --hc-comp-s: 50%; --hc-comp-l: 68%; color-scheme: dark;`;
   // Component colours: eleven hues, saturation and lightness from the theme tokens.
   const HUES = [214, 168, 292, 12, 136, 246, 192, 330, 84, 268, 24];
@@ -364,7 +364,7 @@
   --hc-mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
   --hc-bg: #ffffff; --hc-bg-2: #f6f7f9; --hc-fg: #1b1f24; --hc-fg-2: #57606a; --hc-fg-3: #5f6871;
   --hc-line: #e3e6ea; --hc-line-2: #c9cfd6; --hc-accent: #2461d5; --hc-accent-bg: rgba(47,111,237,.10);
-  --hc-warn: #8e5c0e; --hc-tk-kw: #7c4dbd; --hc-tk-num: var(--hc-accent); --hc-tk-str: #187733; --hc-tk-fn: #0b7285;
+  --hc-warn: #8e5c0e; --hc-tk-kw: #7c4dbd; --hc-tk-num: var(--hc-accent); --hc-tk-str: #187733; --hc-tk-fn: #c44600;
   --hc-tk-comment: #5f6871; --hc-hs: color-mix(in srgb, #2f6fed 10%, #f6f7f9); --hc-shadow: 0 8px 24px rgba(0,0,0,.12); --hc-backdrop: rgba(0,0,0,.35);
   --hc-comp-s: 42%; --hc-comp-l: 46%;
   color-scheme: light;

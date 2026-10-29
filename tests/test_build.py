@@ -4481,7 +4481,7 @@ def test_the_docked_explorer_says_file_viewer(doc):
 # The viewer is the human-code skill's assets/viewer.js, copied in with a pin
 # header. Updating it is a cp and a new hash here; nothing in this file reads the
 # skill's own copy, so the suite runs on a machine without it.
-HUMAN_CODE_SHA256 = "28d98a4d1aba162ce1cf78218cb42906d4164a27ff1565bf28902d43f52522fe"
+HUMAN_CODE_SHA256 = "5a91183e2424cbd121a710fa0be6745a3d69f4f931bae4373a856e7ea4ca4760"
 HUMAN_CODE_HEADER = ("/*! human-code viewer 12 — copied from the human-code skill's "
                      "assets/viewer.js; to update: cp, then put the new sha256 in "
                      "tests/test_build.py */\n")

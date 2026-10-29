@@ -41,8 +41,9 @@
   --diff-hunk-bg: #E7ECF1;
   --diff-hunk-ink: #4f6478;
   --diff-blue: #4f6478;
-  /* Function names in the human-code brief: a hue no other code token uses. */
-  --teal: #1a6f74;
+  /* Function names in the human-code brief: a saturated orange, apart from
+     the muted umber (numbers) and warn by saturation. */
+  --orange: #b84a00;
   /* The diff pane's accept and reject. Saturated rather than the inks above:
      these are two 14px marks on a tinted line, and the ink that reads well as
      a page of text disappears at that size. */
@@ -97,7 +98,7 @@
   --diff-hunk-bg: #1a2027;
   --diff-hunk-ink: #94aec5;
   --diff-blue: #94aec5;
-  --teal: #6fb5b0;
+  --orange: #ffa657;
   --diff-yes: #3fb950;
   --diff-no: #f85149;
 
@@ -5626,7 +5627,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   --hc-tk-kw: var(--diff-blue);
   --hc-tk-num: var(--umber);
   --hc-tk-str: var(--good);
-  --hc-tk-fn: var(--teal);
+  --hc-tk-fn: var(--orange);
   --hc-tk-comment: var(--tertiary);
   --hc-hs: color-mix(in srgb, var(--umber) 10%, var(--paper-rec));
   --hc-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
