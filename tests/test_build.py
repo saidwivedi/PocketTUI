@@ -4481,8 +4481,8 @@ def test_the_docked_explorer_says_file_viewer(doc):
 # The viewer is the human-code skill's assets/viewer.js, copied in with a pin
 # header. Updating it is a cp and a new hash here; nothing in this file reads the
 # skill's own copy, so the suite runs on a machine without it.
-HUMAN_CODE_SHA256 = "5a91183e2424cbd121a710fa0be6745a3d69f4f931bae4373a856e7ea4ca4760"
-HUMAN_CODE_HEADER = ("/*! human-code viewer 12 — copied from the human-code skill's "
+HUMAN_CODE_SHA256 = "3a9e92549670a79af30517c7b85d5067994ba5bbbdab023c12cda1783ae3a545"
+HUMAN_CODE_HEADER = ("/*! human-code viewer 14 — copied from the human-code skill's "
                      "assets/viewer.js; to update: cp, then put the new sha256 in "
                      "tests/test_build.py */\n")
 
@@ -4651,7 +4651,7 @@ console.log(JSON.stringify({{ res, remap: [1, 4, 5, 6, 7, 8, 9, 12, 13, 15, 20].
 """)
     assert out["res"] == [[u, l, g, m] for _, u, l, g, m in _HC_STALE_CASES]
     assert out["remap"] == [1, 4, 5, 8, 9, 12, 13, 16, 16, 16, 21]
-    assert out["version"] == ["12", 1, "function"]
+    assert out["version"] == ["14", 1, "function"]
 
 
 def test_the_brief_screen_answers(doc, tmp_path):

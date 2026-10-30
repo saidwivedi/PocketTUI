@@ -1,4 +1,4 @@
-/*! human-code viewer 12 — copied from the human-code skill's assets/viewer.js; to update: cp, then put the new sha256 in tests/test_build.py */
+/*! human-code viewer 14 — copied from the human-code skill's assets/viewer.js; to update: cp, then put the new sha256 in tests/test_build.py */
 /* human-code viewer: renders a human_code/<repo>.humancode brief (the skill's references/schema.md is the format).
  *
  * Plain script, no modules: inlined into index.html by build.py, loaded by a host app as a file,
@@ -17,7 +17,7 @@
  *   view.setStale(data | null), view.setPill(text | null), view.go("#cid/uid"),
  *   view.state() / view.restore(state), view.destroy()
  *   HumanCode.embedded(map), .stale(brief, files), .remap(hunks, line), .tokens, .dagModel, .lede,
- *   .surpriseOrder(list), .ledgerLabel(component), .noteParts(note)
+ *   .surpriseOrder(list), .ledgerLabel(component), .noteParts(note), .knownNames(brief)
  *
  * Everything the module draws lives under one .hc element and is styled by one shared <style
  * id="hc-style">, with every colour and font a --hc-* token so a host can map them to its own.
@@ -25,7 +25,7 @@
 (function (root) {
   'use strict';
   const HC = {};
-  HC.VERSION = '12';
+  HC.VERSION = '14';
   HC.SCHEMA = 1;
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -68,8 +68,37 @@
       String.raw`(?<n>(?<![\w.-])-?\d+(?:\.\d+)?(?:e-?\d+)?(?![\w.]))`,
     ].join('|'), 'g'),
   };
-  // Returns [[text, cls], ...]; st carries the Python triple-quote state across lines.
-  function tokens(line, mode, st) {
+  // The names a brief knows the codebase defines: every unit and ledger id, every name a unit's signature
+  // defines (def/class/method/unit/record NAME, else its first NAME( ), and for an id built from a
+  // qualname (Class.method -> Class_method) the class and the method apart.
+  function knownNames(brief) {
+    const set = new Set();
+    const add = (s) => { if (s) set.add(s.slice(s.lastIndexOf('.') + 1)); };
+    const addId = (id) => {
+      if (typeof id !== 'string' || !id) return;
+      add(id);
+      const m = /^([A-Z][A-Za-z0-9]*)_(\w+)$/.exec(id);
+      if (m) { add(m[1]); add(m[2]); }
+    };
+    ((brief && brief.components) || []).forEach((c) => {
+      (c.units || []).forEach((u) => {
+        if (!u) return;
+        addId(u.id);
+        const sig = String(u.signature || '');
+        const rx = /\b(?:def|class|method|unit|record)\s+([A-Za-z_][\w.]*)/g;
+        let m, any = false;
+        while ((m = rx.exec(sig))) { add(m[1]); any = true; }
+        if (!any) { m = /([A-Za-z_][\w.]*)\s*\(/.exec(sig); if (m) add(m[1]); }
+      });
+      (c.ledger || []).forEach((x) => { if (x) addId(x.id); });
+    });
+    return set;
+  }
+  // a called name is a function of this codebase only when the brief knows it; no set = every call
+  const isKnown = (name, known) => !known || known.has(name.slice(name.lastIndexOf('.') + 1));
+  // Returns [[text, cls], ...]; st carries the Python triple-quote state across lines; known is
+  // knownNames(brief), and a call to a name outside it stays plain text.
+  function tokens(line, mode, st, known) {
     const out = [];
     let pos = 0;
     if (mode === 'plain') return [[line, '']];
@@ -108,9 +137,9 @@
       else if (g.h) {
         const rest = line.slice(m.index + g.h.length), call = rest[0] === '(';
         const pos0 = !line.slice(0, m.index).trim() || (prevH >= 0 && !line.slice(prevH, m.index).trim());
-        cls = !HCPOSSET.has(g.h) || (pos0 && !call && !/^(?:\s*=(?!=)|[,[])/.test(rest)) ? 'k' : (call ? 'f' : '');
+        cls = !HCPOSSET.has(g.h) || (pos0 && !call && !/^(?:\s*=(?!=)|[,[])/.test(rest)) ? 'k' : (call && (afterDef || isKnown(g.h, known)) ? 'f' : '');
       }
-      else if (g.f) cls = 'f'; else if (g.n) cls = 'n'; else if (g.o) cls = 'o';
+      else if (g.f) cls = afterDef || isKnown(g.f, known) ? 'f' : ''; else if (g.n) cls = 'n'; else if (g.o) cls = 'o';
       else if (g.i) cls = afterDef ? 'f' : '';
       afterDef = !!(g.k && (g.k === 'def' || g.k === 'class')) || (cls === 'k' && (m[0] === 'method' || m[0] === 'unit' || m[0] === 'record'));
       prevH = g.h && cls === 'k' ? m.index + m[0].length : -1;
@@ -142,9 +171,9 @@
   }
   // a brief line's text -> the html of its .tx body. The leading spaces stay in the text, so a copy keeps
   // the indent, inside a span that never wraps; the hanging indent is the .tx padding (--hc-ind).
-  function lineBody(raw, kind) {
+  function lineBody(raw, kind, known) {
     const t = raw.trimStart(), ind = raw.slice(0, raw.length - t.length);
-    const body = (kind === 'gap' || kind === 'comment') ? esc(t) : paintTokens(tokens(t, 'pseudo'));
+    const body = (kind === 'gap' || kind === 'comment') ? esc(t) : paintTokens(tokens(t, 'pseudo', null, known));
     return (ind ? '<span class="ws">' + esc(ind) + '</span>' : '') + body;
   }
   const modeOf = (f) => {
@@ -361,7 +390,7 @@
   const CSS = `
 .hc {
   --hc-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --hc-mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  --hc-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
   --hc-bg: #ffffff; --hc-bg-2: #f6f7f9; --hc-fg: #1b1f24; --hc-fg-2: #57606a; --hc-fg-3: #5f6871;
   --hc-line: #e3e6ea; --hc-line-2: #c9cfd6; --hc-accent: #2461d5; --hc-accent-bg: rgba(47,111,237,.10);
   --hc-warn: #8e5c0e; --hc-tk-kw: #7c4dbd; --hc-tk-num: var(--hc-accent); --hc-tk-str: #187733; --hc-tk-fn: #c44600;
@@ -532,7 +561,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc main.wide .code { margin-right: 256px; max-width: min(100ch, calc(100% - 256px)); }
 .hc main.wide .uhead { max-width: min(100ch, calc(100% - 256px)); }
 .hc main.wide .code:has(.shownote)::after { content: ''; position: absolute; top: 12px; bottom: 12px; left: calc(100% + 8px); width: 1px; background: var(--hc-line); }
-.hc .ln { position: relative; display: grid; grid-template-columns: 40px 14px minmax(0, 1fr); padding: 4px 12px 4px 0; }
+.hc .ln { position: relative; display: grid; grid-template-columns: 46px 14px minmax(0, 1fr); padding: 4px 12px 4px 0; }
 .hc .ln.blank { height: 0.875em; padding: 0; }
 .hc .ln .gut { color: var(--hc-fg-3); font-size: 11.5px; text-align: right; padding-right: 10px; user-select: none; -webkit-user-select: none; font-variant-numeric: tabular-nums; }
 .hc .ln .mk { color: var(--hc-warn); font-weight: 700; text-align: center; user-select: none; -webkit-user-select: none; }
@@ -586,12 +615,13 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc .chip.hc-stalechip { color: var(--hc-warn); border-color: var(--hc-warn); text-transform: none; letter-spacing: 0; font-weight: 500; }
 .hc .ln.stale .gut { color: var(--hc-warn); box-shadow: inset -2px 0 0 var(--hc-warn); }
 
-/* binding fold: a run of binding lines shows as one muted row until tapped */
+/* binding fold: a run of binding lines has no row; a + in its host line's gutter shows it in place */
 .hc .bfold:not(.open) > .bbody { display: none; }
-.hc .ln.bsum { cursor: pointer; color: var(--hc-fg-3); }
-.hc .ln.bsum:hover { background: var(--hc-accent-bg); }
-.hc .ln.bsum .tx { color: var(--hc-fg-3); }
-.hc .ln.bsum .blab { font: 12px var(--hc-sans); }
+.hc .ln .gut .bmk { color: var(--hc-fg-3); margin-right: 3px; cursor: pointer; border-radius: 3px; }
+.hc .ln .gut .bmk:hover { color: var(--hc-fg); }
+.hc .ln .gut .bmk:focus-visible { outline: 2px solid var(--hc-accent); outline-offset: 1px; }
+.hc .ln .gut .bmk.stale { color: var(--hc-warn); }
+.hc .bbody .ln .tx, .hc .bbody .ln .tx span { color: var(--hc-fg-3); }
 @media (pointer: coarse) { .hc.hc-askable .ln { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; } }
 
 /* search */
@@ -658,7 +688,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
   .hc.searching .hc-search { display: block; position: absolute; left: 8px; right: 8px; top: 52px; width: auto; height: 40px; font-size: 16px; box-shadow: var(--hc-shadow); background: var(--hc-bg); }
   .hc main { padding: 20px 16px 96px; }
   .hc .code { font-size: 12.5px; margin-left: -4px; margin-right: -4px; }
-  .hc .ln { grid-template-columns: 30px 12px minmax(0, 1fr); padding-right: 10px; }
+  .hc .ln { grid-template-columns: 36px 12px minmax(0, 1fr); padding-right: 10px; }
   .hc .ln .gut { padding-right: 6px; }
   .hc .ln .tx { padding-left: calc(var(--hc-ind, 0ch) + 2ch); text-indent: calc(-1 * (var(--hc-ind, 0ch) + 2ch)); }
   .hc .uacts { flex-basis: 100%; margin-left: 0; justify-content: space-between; }
@@ -702,6 +732,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
     const O = D.overview || {};
     const kOf = (c) => 'k' + (comps.indexOf(c) % HUES.length);
     const unitById = {};
+    const known = knownNames(D);
     comps.forEach((c) => { (c.units || []).forEach((u) => { unitById[c.id + '/' + u.id] = { c, u }; }); });
     const base = (f) => String(f).split('/').pop();
     const nSurprise = (u) => (u.lines || []).filter((l) => l.kind === 'surprise').length;
@@ -968,18 +999,19 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 
     // ---- component page
     // pad: the body's extra indent under the unit's signature, part of the shown text but not of the trace
-    function lineHtml(l, n, i, on, pad) {
+    // mk: a binding fold's marker, put in the gutter before the number
+    function lineHtml(l, n, i, on, pad, mk) {
       const kind = l.kind || 'decision';
       if (kind === 'blank') return '<div class="ln blank" aria-hidden="true"></div>';
       const raw = (pad || '') + String(l.text || '');
       const ind = raw.length - raw.trimStart().length;
-      const body = lineBody(raw, kind);
+      const body = lineBody(raw, kind, known);
       const src = l.src && l.src.file ? l.src : null;
       const py = l.rewritten && l.python ? String(l.python) : '', hasNote = !!(l.note || py);
       const nsrc = l.rewritten && src ? src.end - src.start + 1 : 0;
       const rw = l.rewritten ? '<span class="rw" title="simplified from ' + nsrc + ' source line' + (nsrc === 1 ? '' : 's') + '" aria-label="simplified from ' + nsrc + ' source line' + (nsrc === 1 ? '' : 's') + '">~</span>' : '';
       return '<div class="ln ' + esc(kind) + (src ? ' src' : '') + (l.rewritten ? ' rewritten' : '') + (on && hasNote ? ' shownote' : '') + '"' + (i != null ? ' data-i="' + i + '"' : '') + (src ? ' tabindex="0"' + srcAttr(src, String(l.text || '')) : '') + (ind ? ' style="--hc-ind:' + ind + 'ch"' : '') + '>' +
-        '<span class="gut">' + rw + n + '</span><span class="mk">' + (kind === 'surprise' ? '!' : '') + '</span>' +
+        '<span class="gut">' + (mk || '') + rw + n + '</span><span class="mk">' + (kind === 'surprise' ? '!' : '') + '</span>' +
         '<span class="tx">' + body + (hasNote ? '<button class="nchip" aria-label="Note" title="Note"></button>' : '') + '</span>' +
         (src ? '<span class="where">' + esc(base(src.file) + ':' + src.start) + '</span>' : '') +
         (hasNote ? noteHtml(l.note, py) : '') + '</div>';
@@ -1006,21 +1038,38 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       if (u.signature) h += lineHtml({ text: u.signature, kind: 'flow', src: u.src }, n++, null);
       const pad = u.signature ? '    ' : '';
       // a blank line is a spacer: no number, so the numbers count only the lines shown
-      const runs = new Map(bindingRuns(u.lines).map((r) => [r[0], r[1]]));
-      let end = -1;
-      (u.lines || []).forEach((l, i) => {
-        if (runs.has(i)) {
-          end = runs.get(i);
-          const names = [];
-          for (let j = i; j <= end; j++) boundNames(u.lines[j].text).forEach((x) => { if (!names.includes(x)) names.push(x); });
-          const k = end - i + 1, raw = pad + String(l.text || ''), ind = raw.length - raw.trimStart().length;
-          h += '<div class="bfold"><div class="ln bsum" tabindex="0" role="button" aria-expanded="false"' + (ind ? ' style="--hc-ind:' + ind + 'ch"' : '') + '>' +
-            '<span class="gut">+</span><span class="mk"></span><span class="tx">' + ' '.repeat(ind) + '<span class="blab">' + k + ' binding' + (k === 1 ? '' : 's') + '</span>' +
-            (names.length ? ': <span class="bnames">' + esc(names.join(', ')) + '</span>' : '') + '</span></div><div class="bbody">';
-        }
-        h += lineHtml(l, n, i, on, pad);
+      // Binding runs get no row: each folds into a .bbody beside its host, the first later line that is
+      // neither a binding nor blank (else the last such line before the run), whose gutter carries the marker.
+      // One .bfold wraps the bodies and the host; the blanks between them stay shown.
+      const L = u.lines || [];
+      const solid = (l) => l && l.kind !== 'blank' && l.role !== 'binding';
+      const runs = bindingRuns(L), hosts = new Map(), before = {}, after = {};
+      const hostOf = (j) => { if (!hosts.has(j)) hosts.set(j, { lo: j, hi: j, k: 0, names: [], pre: false, post: false }); return hosts.get(j); };
+      const take = (H, a, b) => {
+        for (let j = a; j <= b; j++) if (L[j].role === 'binding' && L[j].kind !== 'blank') { H.k++; boundNames(L[j].text).forEach((x) => { if (!H.names.includes(x)) H.names.push(x); }); }
+        (before[a] = before[a] || []).push('<div class="bbody">');
+        (after[b] = after[b] || []).push('</div>');
+      };
+      for (let r = 0; r < runs.length;) {
+        const a = runs[r][0];
+        let host = runs[r][1] + 1, b = a;
+        while (host < L.length && !solid(L[host])) host++;
+        while (r < runs.length && runs[r][0] < host) b = runs[r++][1];
+        if (host < L.length) { const H = hostOf(host); H.lo = Math.min(H.lo, a); H.pre = true; take(H, a, b); continue; }
+        let p = a - 1;
+        while (p >= 0 && !solid(L[p])) p--;
+        if (p < 0) continue;  // a unit of bindings only: no host, its lines stay shown
+        const H = hostOf(p); H.hi = b; H.post = true; take(H, a, b);
+      }
+      hosts.forEach((H) => { (before[H.lo] = before[H.lo] || []).unshift('<div class="bfold">'); (after[H.hi] = after[H.hi] || []).push('</div>'); });
+      L.forEach((l, i) => {
+        if (before[i]) h += before[i].join('');
+        const H = hosts.get(i);
+        const mk = H ? '<span class="bmk" role="button" tabindex="0" aria-expanded="false" title="' +
+          esc(H.k + ' binding' + (H.k === 1 ? '' : 's') + (H.post && !H.pre ? ' after' : '') + (H.names.length ? ': ' + H.names.join(', ') : '')) + '">+</span>' : '';
+        h += lineHtml(l, n, i, on, pad, mk);
         if (l.kind !== 'blank') n++;
-        if (i === end) h += '</div></div>';
+        if (after[i]) h += after[i].join('');
       });
       return h + '</div></section>';
     }
@@ -1049,9 +1098,9 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
     }
     function setFold(f, open) {
       f.classList.toggle('open', open);
-      const s = f.querySelector('.bsum');
+      const s = f.querySelector('.bmk');
       s.setAttribute('aria-expanded', open ? 'true' : 'false');
-      s.querySelector('.gut').textContent = open ? '\u2212' : '+';
+      s.textContent = open ? '\u2212' : '+';
     }
     // a search hit on a folded line: open its run and bring the line into view
     let pendingLine = null;
@@ -1061,7 +1110,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       const sec = p && unitEl(p.key);
       const ln = sec && sec.querySelector('.ln[data-i="' + p.i + '"]');
       if (!ln) return;
-      const f = ln.closest('.bfold');
+      const b = ln.closest('.bbody'), f = b && b.parentNode;
       if (f && !f.classList.contains('open')) { setFold(f, true); layoutNotes(); }
       main.scrollTop += ln.getBoundingClientRect().top - main.getBoundingClientRect().top - main.clientHeight / 3;
       if (ln.tabIndex >= 0) ln.focus({ preventScroll: true });
@@ -1112,7 +1161,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
         if (!wide || !n.parentNode.classList.contains('shownote')) n.classList.remove('nfull');
         if (!n.classList.contains('nfull')) n.parentNode.classList.remove('inl');
       });
-      const notes = all.filter((n) => n.parentNode.classList.contains('shownote') && !n.closest('.bfold:not(.open)'));
+      const notes = all.filter((n) => n.parentNode.classList.contains('shownote') && !n.closest('.bfold:not(.open) > .bbody'));
       if (!wide || !notes.length) return;
       const code0 = notes[0].closest('.code');
       const probe = doc.createElement('div');
@@ -1271,8 +1320,8 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 
     // ---- clicks in main
     listen(main, 'click', (e) => {
-      const bs = e.target.closest('.bsum');
-      if (bs) { const f = bs.parentNode; setFold(f, !f.classList.contains('open')); layoutNotes(); return; }
+      const bm = e.target.closest('.bmk');
+      if (bm) { e.preventDefault(); e.stopPropagation(); const f = bm.closest('.bfold'); setFold(f, !f.classList.contains('open')); layoutNotes(); return; }
       const hit = e.target.closest('a.res[data-line]');
       if (hit) {
         e.preventDefault();
@@ -1317,7 +1366,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       pointAt(t);
     });
     listen(main, 'keydown', (e) => {
-      if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('bsum')) { e.preventDefault(); const f = e.target.parentNode; setFold(f, !f.classList.contains('open')); layoutNotes(); return; }
+      if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('bmk')) { e.preventDefault(); e.stopPropagation(); const f = e.target.closest('.bfold'); setFold(f, !f.classList.contains('open')); layoutNotes(); return; }
       if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('ln') && e.target.dataset.file) { e.preventDefault(); pointAt(e.target); }
       if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('node') && !e.target.getAttribute('href')) e.preventDefault();
     });
@@ -1340,7 +1389,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       };
       listen(main, 'pointerdown', (e) => {
         if (e.pointerType !== 'touch') return;
-        const ln = e.target.closest('.ln:not(.bsum)');
+        const ln = !e.target.closest('.bmk') && e.target.closest('.ln');
         if (!ln) return;
         sx = e.clientX; sy = e.clientY;
         cancel();
@@ -1350,7 +1399,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       listen(main, 'pointerup', cancel);
       listen(main, 'pointercancel', cancel);
       listen(main, 'contextmenu', (e) => {
-        const ln = e.target.closest('.ln:not(.bsum)');
+        const ln = !e.target.closest('.bmk') && e.target.closest('.ln');
         if (!ln) return;
         e.preventDefault();
         cancel();
@@ -1393,14 +1442,14 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       }
       const mode = modeOf(file);
       const st = { tq: null };
-      if (mode === 'py') for (let i = F; i < a; i++) tokens(lines[i - F], mode, st);
+      if (mode === 'py') for (let i = F; i < a; i++) tokens(lines[i - F], mode, st, known);
       let h = '<pre class="sv">';
       const cut = cap && ch.part && cur.end > N;
       if (ch.part) h += '<div class="excerpt">' + (cut ? 'First 40 of ' + hitN + ' lines are in the page' : 'Lines ' + F + '–' + N + ' of this file are in the page') + '</div>';
       if (a > F) h += '<div class="more"><button data-more="before">… ' + (a - F) + ' lines above</button></div>';
       const lastShown = cap ? capEnd : b;
       for (let i = a; i <= lastShown; i++) {
-        h += '<div class="l' + (i >= start && i <= end ? ' hit' : '') + '"><span class="n">' + i + '</span><span class="c">' + paintTokens(tokens(lines[i - F], mode, st), marks[i]) + '</span></div>';
+        h += '<div class="l' + (i >= start && i <= end ? ' hit' : '') + '"><span class="n">' + i + '</span><span class="c">' + paintTokens(tokens(lines[i - F], mode, st, known), marks[i]) + '</span></div>';
       }
       if (cap && !cut) h += '<div class="more"><button data-more="all">Showing 40 of ' + hitN + ' selected lines · show all</button></div>';
       else if (b < N) h += '<div class="more"><button data-more="after">… ' + (N - b) + ' lines below</button></div>';
@@ -1516,8 +1565,8 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
         if (lines) sec.querySelectorAll('.ln[data-i]').forEach((ln) => {
           if (!lines.has(+ln.dataset.i)) return;
           ln.classList.add('stale');
-          const f = ln.closest('.bfold');
-          if (f) f.querySelector('.bsum').classList.add('stale');
+          const b = ln.closest('.bbody');
+          if (b) b.parentNode.querySelector('.bmk').classList.add('stale');
         });
       });
     }
@@ -1573,6 +1622,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
   HC.surpriseOrder = surpriseOrder;
   HC.ledgerLabel = ledgerLabel;
   HC.noteParts = noteParts;
+  HC.knownNames = knownNames;
   HC.lineBody = lineBody;
   HC.boundNames = boundNames;
   HC.bindingRuns = bindingRuns;
