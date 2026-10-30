@@ -3490,6 +3490,16 @@ def api_file(request: Request, path: str = "") -> Response:
 # The editor is for files a phone can sensibly hold and render; past this it is
 # a job for the shell (or for /api/fs/download).
 MAX_TEXT_BYTES = 2 * 1024 * 1024
+# A .humancode brief is JSON the brief screen parses, not text for the editor,
+# and a whole-repo brief runs past the editor's ceiling (v2d's is 2.3 MB).
+MAX_BRIEF_BYTES = 10 * 1024 * 1024
+
+
+def fs_read_cap(path: str) -> int:
+    """The /api/fs/read size ceiling for this path."""
+    return MAX_BRIEF_BYTES if path.lower().endswith(".humancode") else MAX_TEXT_BYTES
+
+
 # An upload is a file the user picked from the phone, not a stream: capped
 # where a phone's patience runs out rather than where the disk does.
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -3752,7 +3762,7 @@ def api_fs_read_at_ref(path: str, ref: str, root: str) -> Response:
     rc, out, _ = git(root, "cat-file", "-s", git_ref_obj(ref, rel))
     raw = out.decode("utf-8", "replace").strip()
     size = int(raw) if raw.isdigit() else 0
-    if size > MAX_TEXT_BYTES:
+    if size > fs_read_cap(rel):
         return fs_error("too_large", 413, size=size)
     rc, data, _ = git(root, "show", git_ref_obj(ref, rel))
     if rc != 0:
@@ -3968,7 +3978,7 @@ def api_fs_read(path: str = "", ref: str = "", root: str = "") -> Response:
         return fs_error("not_found", 404)
     try:
         st = p.stat()
-        if st.st_size > MAX_TEXT_BYTES:
+        if st.st_size > fs_read_cap(p.name):
             return fs_error("too_large", 413, size=st.st_size)
         data = p.read_bytes()
     except OSError:
