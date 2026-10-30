@@ -222,7 +222,7 @@ function hcViewOpts(b, beside) {
 
 // The pencil in the source panel's head, before its copy key: the pointer the
 // panel was last opened from (a line, a ledger row or a search result, each
-// carrying data-file/start/end) handed to the host's `open`, which takes it to
+// carrying data-file, data-start and data-end) handed to the host's `open`, which takes it to
 // the editor.
 function hcEditKey(host, open) {
   let src = null;
