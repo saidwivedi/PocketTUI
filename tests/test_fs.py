@@ -279,6 +279,22 @@ def test_read_size_cap(client, tree, monkeypatch):
     assert r.json()["error"] == "too_large"
 
 
+def test_read_size_cap_spares_humancode_briefs(client, tree):
+    big = '{"x": "' + "x" * (3 * 1024 * 1024) + '"}'
+    (tree / "x.humancode").write_text(big)
+    (tree / "x.txt").write_text(big)
+    r = client.get("/api/fs/read", params={"path": str(tree / "x.humancode")})
+    assert r.status_code == 200
+    assert r.json()["size"] == len(big)
+    r = client.get("/api/fs/read", params={"path": str(tree / "x.txt")})
+    assert r.status_code == 413
+    assert r.json()["error"] == "too_large"
+    (tree / "huge.humancode").write_text("x" * (11 * 1024 * 1024))
+    r = client.get("/api/fs/read", params={"path": str(tree / "huge.humancode")})
+    assert r.status_code == 413
+    assert r.json()["error"] == "too_large"
+
+
 def test_read_missing_is_404(client, tree):
     assert client.get("/api/fs/read",
                       params={"path": str(tree / "absent")}).status_code == 404
