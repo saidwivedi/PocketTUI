@@ -1,4 +1,4 @@
-/*! human-code viewer 14 — copied from the human-code skill's assets/viewer.js; to update: cp, then put the new sha256 in tests/test_build.py */
+/*! human-code viewer 17 — copied from the human-code skill's assets/viewer.js; to update: cp, then put the new sha256 in tests/test_build.py */
 /* human-code viewer: renders a human_code/<repo>.humancode brief (the skill's references/schema.md is the format).
  *
  * Plain script, no modules: inlined into index.html by build.py, loaded by a host app as a file,
@@ -25,7 +25,7 @@
 (function (root) {
   'use strict';
   const HC = {};
-  HC.VERSION = '14';
+  HC.VERSION = '17';
   HC.SCHEMA = 1;
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -70,7 +70,8 @@
   };
   // The names a brief knows the codebase defines: every unit and ledger id, every name a unit's signature
   // defines (def/class/method/unit/record NAME, else its first NAME( ), and for an id built from a
-  // qualname (Class.method -> Class_method) the class and the method apart.
+  // qualname (Class.method -> Class_method) the class and the method apart, and every name in the brief's
+  // `names` (the pipeline's list of what the codebase defines, with the attributes bound to it).
   function knownNames(brief) {
     const set = new Set();
     const add = (s) => { if (s) set.add(s.slice(s.lastIndexOf('.') + 1)); };
@@ -92,6 +93,8 @@
       });
       (c.ledger || []).forEach((x) => { if (x) addId(x.id); });
     });
+    // the pipeline lists every name the codebase defines (and attributes bound to them)
+    if (brief && Array.isArray(brief.names)) brief.names.forEach((x) => { if (typeof x === 'string') add(x); });
     return set;
   }
   // a called name is a function of this codebase only when the brief knows it; no set = every call
@@ -364,9 +367,9 @@
     return line + d;
   }
 
-  // Sources embedded in the page (level one): a file is a whole-file string or a list of {first, text}
-  // excerpts; a range is answered by the excerpt that holds its first line (a long unit range is
-  // embedded only as far as the panel shows it), else null.
+  // Sources embedded in the page (level one): a file is a whole-file string (what the built page embeds)
+  // or a list of {first, text} excerpts; a range is answered by the excerpt that holds its first line,
+  // else null.
   function embedded(map) {
     map = map || {};
     return { read: (file, o) => {
@@ -539,7 +542,10 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc .purpose { font-size: 16px; line-height: 1.55; color: var(--hc-fg-2); max-width: 62ch; margin: 12px 0 0; }
 .hc .unit { margin-top: 40px; }
 .hc .chead + .unit { margin-top: 32px; }
-.hc .uhead { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 12px; row-gap: 2px; margin-bottom: 10px; max-width: 100ch; }
+/* one column per unit (and per ledger): header and code box share its width, 100ch measured in the code font */
+.hc .ucol { font: 13px/1.75 var(--hc-mono); max-width: 100ch; }
+.hc main.wide .ucol:has(.shownote) { margin-right: 256px; max-width: min(100ch, calc(100% - 256px)); }
+.hc .uhead { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 12px; row-gap: 2px; margin-bottom: 10px; font: 15px/1.5 var(--hc-sans); }
 .hc .uhead h3 { flex: 1 1 auto; min-width: 0; font-size: 17px; line-height: 1.3; font-weight: 600; margin: 0; }
 .hc .chip { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--hc-accent); border: 1px solid var(--hc-accent); border-radius: 4px; padding: 0 5px; line-height: 16px; }
 .hc .ucount { font-size: 13px; color: var(--hc-warn); font-weight: 600; white-space: nowrap; }
@@ -547,8 +553,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc .range { font: 12px var(--hc-mono); color: var(--hc-fg-3); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
 .hc .range:hover { color: var(--hc-accent); }
 .hc .shownotes { font-size: 12.5px; }
-.hc details.fold.ledger { margin-top: 40px; max-width: 100ch; }
-.hc main.wide details.fold.ledger { max-width: min(100ch, calc(100% - 256px)); }
+.hc details.fold.ledger { margin-top: 40px; font: 15px/1.5 var(--hc-sans); }
 .hc .ledger ul { list-style: none; margin: 0 0 8px; padding: 0; }
 .hc .ledger .lgrow { display: flex; align-items: baseline; gap: 16px; padding: 5px 8px; margin: 0 -8px; border-radius: 6px; color: var(--hc-fg-2); font-size: 13.5px; line-height: 1.4; }
 .hc .ledger .lgrow:hover { background: var(--hc-accent-bg); color: var(--hc-fg); }
@@ -557,11 +562,9 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc .ledger .lgw { flex: 0 1 auto; max-width: 55%; font: 12px var(--hc-mono); color: var(--hc-fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
 .hc .ledger .lgrow:hover .lgw { color: var(--hc-accent); }
 
-.hc .code { position: relative; background: var(--hc-bg-2); border: 1px solid var(--hc-line); border-radius: 8px; padding: 12px 0; font: 13px/1.75 var(--hc-mono); max-width: 100ch; overflow: visible; tab-size: 4; }
-.hc main.wide .code { margin-right: 256px; max-width: min(100ch, calc(100% - 256px)); }
-.hc main.wide .uhead { max-width: min(100ch, calc(100% - 256px)); }
+.hc .code { position: relative; background: var(--hc-bg-2); border: 1px solid var(--hc-line); border-radius: 8px; padding: 12px 0; font: 13px/1.75 var(--hc-mono); overflow: visible; tab-size: 4; }
 .hc main.wide .code:has(.shownote)::after { content: ''; position: absolute; top: 12px; bottom: 12px; left: calc(100% + 8px); width: 1px; background: var(--hc-line); }
-.hc .ln { position: relative; display: grid; grid-template-columns: 46px 14px minmax(0, 1fr); padding: 4px 12px 4px 0; }
+.hc .ln { position: relative; display: grid; grid-template-columns: 54px 14px minmax(0, 1fr); padding: 4px 12px 4px 0; }
 .hc .ln.blank { height: 0.875em; padding: 0; }
 .hc .ln .gut { color: var(--hc-fg-3); font-size: 11.5px; text-align: right; padding-right: 10px; user-select: none; -webkit-user-select: none; font-variant-numeric: tabular-nums; }
 .hc .ln .mk { color: var(--hc-warn); font-weight: 700; text-align: center; user-select: none; -webkit-user-select: none; }
@@ -572,6 +575,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc .ln.gap .tx, .hc .ln.comment .tx { color: var(--hc-tk-comment); }
 .hc .ln.src { cursor: pointer; }
 .hc .ln.src:hover { background: var(--hc-accent-bg); }
+.hc .ln.src:has(> .gut.bh:hover) { background: none; }
 .hc .ln.open { background: var(--hc-accent-bg); box-shadow: inset 2px 0 0 var(--hc-accent); }
 .hc .ln .where { display: none; position: absolute; right: 0; top: 4px; font: 11px/22.75px var(--hc-mono); color: var(--hc-fg-3); background: linear-gradient(to right, transparent, var(--hc-hs) 16px); padding: 0 12px 0 24px; pointer-events: none; user-select: none; -webkit-user-select: none; }
 @media (hover: hover) { @container hc (min-width: 900px) { .hc .ln.src:hover .where { display: block; } } }
@@ -615,12 +619,15 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc .chip.hc-stalechip { color: var(--hc-warn); border-color: var(--hc-warn); text-transform: none; letter-spacing: 0; font-weight: 500; }
 .hc .ln.stale .gut { color: var(--hc-warn); box-shadow: inset -2px 0 0 var(--hc-warn); }
 
-/* binding fold: a run of binding lines has no row; a + in its host line's gutter shows it in place */
+/* binding fold: a run of binding lines has no row; a + box at the left of its host line's gutter shows it
+   in place; the host line's whole gutter cell, stretched over the row's padding, is the button */
 .hc .bfold:not(.open) > .bbody { display: none; }
-.hc .ln .gut .bmk { color: var(--hc-fg-3); margin-right: 3px; cursor: pointer; border-radius: 3px; }
-.hc .ln .gut .bmk:hover { color: var(--hc-fg); }
-.hc .ln .gut .bmk:focus-visible { outline: 2px solid var(--hc-accent); outline-offset: 1px; }
-.hc .ln .gut .bmk.stale { color: var(--hc-warn); }
+.hc .ln .gut.bh { position: relative; cursor: pointer; margin: -4px 0; padding-top: 4px; padding-bottom: 4px; }
+.hc .ln .gut .bmk { position: absolute; z-index: 1; left: 3px; top: 7px; box-sizing: border-box; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--hc-line-2); border-radius: 3px; background: var(--hc-bg); color: var(--hc-accent); font: 600 13px/1 var(--hc-mono); cursor: pointer; }
+.hc .ln .gut.bh:hover .bmk { background: var(--hc-accent-bg); border-color: var(--hc-accent); }
+.hc .ln .gut.bh:focus { outline: none; }
+.hc .ln .gut.bh:focus-visible .bmk { outline: 2px solid var(--hc-accent); outline-offset: 1px; }
+.hc .ln .gut .bmk.stale { color: var(--hc-warn); border-color: var(--hc-warn); }
 .hc .bbody .ln .tx, .hc .bbody .ln .tx span { color: var(--hc-fg-3); }
 @media (pointer: coarse) { .hc.hc-askable .ln { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; } }
 
@@ -650,6 +657,8 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 .hc pre.sv .l { display: flex; padding-right: 16px; }
 .hc pre.sv .n { width: 48px; flex: none; text-align: right; padding-right: 12px; color: var(--hc-fg-3); user-select: none; -webkit-user-select: none; font-variant-numeric: tabular-nums; }
 .hc pre.sv .c { white-space: pre; }
+.hc pre.sv .l.mapped { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--hc-accent) 35%, transparent); }
+.hc pre.sv .l.mapped .n { color: color-mix(in srgb, var(--hc-accent) 45%, var(--hc-fg-3)); }
 .hc pre.sv .l.hit { background: var(--hc-accent-bg); box-shadow: inset 3px 0 0 var(--hc-accent); }
 .hc pre.sv .more { display: flex; justify-content: center; padding: 4px 0; position: sticky; left: 0; width: var(--hc-bw, 100%); }
 .hc pre.sv .more button { font: 12px var(--hc-sans); color: var(--hc-fg-2); border-radius: 6px; padding: 4px 10px; }
@@ -688,13 +697,18 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
   .hc.searching .hc-search { display: block; position: absolute; left: 8px; right: 8px; top: 52px; width: auto; height: 40px; font-size: 16px; box-shadow: var(--hc-shadow); background: var(--hc-bg); }
   .hc main { padding: 20px 16px 96px; }
   .hc .code { font-size: 12.5px; margin-left: -4px; margin-right: -4px; }
-  .hc .ln { grid-template-columns: 36px 12px minmax(0, 1fr); padding-right: 10px; }
+  .hc .ln { grid-template-columns: 52px 12px minmax(0, 1fr); padding-right: 10px; }
   .hc .ln .gut { padding-right: 6px; }
   .hc .ln .tx { padding-left: calc(var(--hc-ind, 0ch) + 2ch); text-indent: calc(-1 * (var(--hc-ind, 0ch) + 2ch)); }
   .hc .uacts { flex-basis: 100%; margin-left: 0; justify-content: space-between; }
   .hc .node { flex: 0 1 calc(50% - 8px); max-width: none; min-width: 0; }
   .hc .dag .row { gap: 12px 16px; }
   .hc h2 { font-size: 22px; }
+}
+@media (pointer: coarse) {
+  .hc .ln { grid-template-columns: 60px 14px minmax(0, 1fr); }
+  .hc .ln .gut .bmk { width: 22px; height: 22px; top: 4px; left: 2px; font-size: 15px; }
+  @container hc (max-width: 760px) { .hc .ln { grid-template-columns: 58px 12px minmax(0, 1fr); } }
 }
 `;
   function injectStyle(doc) {
@@ -733,6 +747,14 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
     const kOf = (c) => 'k' + (comps.indexOf(c) % HUES.length);
     const unitById = {};
     const known = knownNames(D);
+    // file -> the source line numbers some brief line points to (line pointers only, not unit ranges)
+    const mapped = {};
+    (D.components || []).forEach((c) => (c.units || []).forEach((u) => (u.lines || []).forEach((l) => {
+      const s = l && l.src;
+      if (!s || !s.file || typeof s.start !== 'number') return;
+      const set = mapped[s.file] || (mapped[s.file] = new Set());
+      for (let i = s.start; i <= Math.max(s.start, s.end || s.start); i++) set.add(i);
+    })));
     comps.forEach((c) => { (c.units || []).forEach((u) => { unitById[c.id + '/' + u.id] = { c, u }; }); });
     const base = (f) => String(f).split('/').pop();
     const nSurprise = (u) => (u.lines || []).filter((l) => l.kind === 'surprise').length;
@@ -1011,7 +1033,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       const nsrc = l.rewritten && src ? src.end - src.start + 1 : 0;
       const rw = l.rewritten ? '<span class="rw" title="simplified from ' + nsrc + ' source line' + (nsrc === 1 ? '' : 's') + '" aria-label="simplified from ' + nsrc + ' source line' + (nsrc === 1 ? '' : 's') + '">~</span>' : '';
       return '<div class="ln ' + esc(kind) + (src ? ' src' : '') + (l.rewritten ? ' rewritten' : '') + (on && hasNote ? ' shownote' : '') + '"' + (i != null ? ' data-i="' + i + '"' : '') + (src ? ' tabindex="0"' + srcAttr(src, String(l.text || '')) : '') + (ind ? ' style="--hc-ind:' + ind + 'ch"' : '') + '>' +
-        '<span class="gut">' + (mk || '') + rw + n + '</span><span class="mk">' + (kind === 'surprise' ? '!' : '') + '</span>' +
+        (mk ? '<span class="gut bh" role="button" tabindex="0" aria-expanded="false" title="' + esc(mk) + '"><span class="bmk" aria-hidden="true">+</span>' : '<span class="gut">') + rw + n + '</span><span class="mk">' + (kind === 'surprise' ? '!' : '') + '</span>' +
         '<span class="tx">' + body + (hasNote ? '<button class="nchip" aria-label="Note" title="Note"></button>' : '') + '</span>' +
         (src ? '<span class="where">' + esc(base(src.file) + ':' + src.start) + '</span>' : '') +
         (hasNote ? noteHtml(l.note, py) : '') + '</div>';
@@ -1027,7 +1049,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       const ns = nSurprise(u);
       const hasNotes = (u.lines || []).some((l) => l.note || (l.rewritten && l.python));
       const on = hasNotes && notesOn.has(c.id + '/' + u.id);
-      let h = '<section class="unit" data-key="' + esc(c.id + '/' + u.id) + '" data-u="' + esc(u.id) + '"><div class="uhead"><h3>' + esc(u.name) + '</h3>';
+      let h = '<section class="unit" data-key="' + esc(c.id + '/' + u.id) + '" data-u="' + esc(u.id) + '"><div class="ucol"><div class="uhead"><h3>' + esc(u.name) + '</h3>';
       if (u.status) h += '<span class="chip">' + esc(u.status) + '</span>';
       if (ns) h += '<span class="ucount">! ' + ns + '</span>';
       h += '<span class="uacts">' + (hasNotes ? '<button class="txtbtn shownotes">' + (on ? 'Hide' : 'Show') + ' notes</button>' : '');
@@ -1065,23 +1087,22 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       L.forEach((l, i) => {
         if (before[i]) h += before[i].join('');
         const H = hosts.get(i);
-        const mk = H ? '<span class="bmk" role="button" tabindex="0" aria-expanded="false" title="' +
-          esc(H.k + ' binding' + (H.k === 1 ? '' : 's') + (H.post && !H.pre ? ' after' : '') + (H.names.length ? ': ' + H.names.join(', ') : '')) + '">+</span>' : '';
+        const mk = H ? H.k + ' binding' + (H.k === 1 ? '' : 's') + (H.post && !H.pre ? ' after' : '') + (H.names.length ? ': ' + H.names.join(', ') : '') : '';
         h += lineHtml(l, n, i, on, pad, mk);
         if (l.kind !== 'blank') n++;
         if (after[i]) h += after[i].join('');
       });
-      return h + '</div></section>';
+      return h + '</div></div></section>';
     }
     function ledgerHtml(c) {
       const L = (c.ledger || []).filter((x) => x && x.src && x.src.file);
       if (!L.length) return '';
-      let h = '<details class="fold ledger"><summary>' + esc(ledgerLabel(c)) + '</summary><ul>';
+      let h = '<div class="ucol"><details class="fold ledger"><summary>' + esc(ledgerLabel(c)) + '</summary><ul>';
       L.forEach((x) => {
         const at = ':' + x.src.start + (x.src.end !== x.src.start ? '-' + x.src.end : '');
         h += '<li><a class="lgrow" href="#"' + srcAttr(x.src, x.name) + ' data-ledger="' + esc(x.id || '') + '" title="' + esc(x.src.file + at) + '"><span class="lgn">' + esc(x.name || x.id || '') + '</span><span class="lgw"><bdi>' + esc(base(x.src.file) + at) + '</bdi></span></a></li>';
       });
-      return h + '</ul></details>';
+      return h + '</ul></details></div>';
     }
     function renderComponent(c, uid) {
       curComp = c.id;
@@ -1099,7 +1120,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
     function setFold(f, open) {
       f.classList.toggle('open', open);
       const s = f.querySelector('.bmk');
-      s.setAttribute('aria-expanded', open ? 'true' : 'false');
+      s.parentNode.setAttribute('aria-expanded', open ? 'true' : 'false');
       s.textContent = open ? '\u2212' : '+';
     }
     // a search hit on a folded line: open its run and bring the line into view
@@ -1320,7 +1341,8 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
 
     // ---- clicks in main
     listen(main, 'click', (e) => {
-      const bm = e.target.closest('.bmk');
+      // the marker, or anywhere in its host line's gutter: toggle the fold, never open the source
+      const bm = e.target.closest('.gut.bh');
       if (bm) { e.preventDefault(); e.stopPropagation(); const f = bm.closest('.bfold'); setFold(f, !f.classList.contains('open')); layoutNotes(); return; }
       const hit = e.target.closest('a.res[data-line]');
       if (hit) {
@@ -1366,7 +1388,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       pointAt(t);
     });
     listen(main, 'keydown', (e) => {
-      if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('bmk')) { e.preventDefault(); e.stopPropagation(); const f = e.target.closest('.bfold'); setFold(f, !f.classList.contains('open')); layoutNotes(); return; }
+      if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('bh')) { e.preventDefault(); e.stopPropagation(); const f = e.target.closest('.bfold'); setFold(f, !f.classList.contains('open')); layoutNotes(); return; }
       if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('ln') && e.target.dataset.file) { e.preventDefault(); pointAt(e.target); }
       if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('node') && !e.target.getAttribute('href')) e.preventDefault();
     });
@@ -1389,7 +1411,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       };
       listen(main, 'pointerdown', (e) => {
         if (e.pointerType !== 'touch') return;
-        const ln = !e.target.closest('.bmk') && e.target.closest('.ln');
+        const ln = !e.target.closest('.gut.bh') && e.target.closest('.ln');
         if (!ln) return;
         sx = e.clientX; sy = e.clientY;
         cancel();
@@ -1399,7 +1421,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       listen(main, 'pointerup', cancel);
       listen(main, 'pointercancel', cancel);
       listen(main, 'contextmenu', (e) => {
-        const ln = !e.target.closest('.bmk') && e.target.closest('.ln');
+        const ln = !e.target.closest('.gut.bh') && e.target.closest('.ln');
         if (!ln) return;
         e.preventDefault();
         cancel();
@@ -1445,11 +1467,15 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       if (mode === 'py') for (let i = F; i < a; i++) tokens(lines[i - F], mode, st, known);
       let h = '<pre class="sv">';
       const cut = cap && ch.part && cur.end > N;
-      if (ch.part) h += '<div class="excerpt">' + (cut ? 'First 40 of ' + hitN + ' lines are in the page' : 'Lines ' + F + '–' + N + ' of this file are in the page') + '</div>';
+      const mp = mapped[file] || new Set();
+      let nm = 0;
+      mp.forEach((i) => { if (i >= F && i <= N) nm++; });
+      if (ch.part) h += '<div class="excerpt">' + (cut ? 'First 40 of ' + hitN + ' lines are in the page' : 'Lines ' + F + '–' + N + ' of this file are in the page') + ' · ' + nm + ' in the brief</div>';
+      else if (whole) h += '<div class="excerpt">' + (ch.at === 'now' ? 'Whole file, working tree' : 'Whole file' + (D.commit ? ' at ' + esc(String(D.commit).slice(0, 7)) : '')) + ' · ' + N + ' lines, ' + nm + ' in the brief</div>';
       if (a > F) h += '<div class="more"><button data-more="before">… ' + (a - F) + ' lines above</button></div>';
       const lastShown = cap ? capEnd : b;
       for (let i = a; i <= lastShown; i++) {
-        h += '<div class="l' + (i >= start && i <= end ? ' hit' : '') + '"><span class="n">' + i + '</span><span class="c">' + paintTokens(tokens(lines[i - F], mode, st, known), marks[i]) + '</span></div>';
+        h += '<div class="l' + (i >= start && i <= end ? ' hit' : mp.has(i) ? ' mapped' : '') + '"><span class="n">' + i + '</span><span class="c">' + paintTokens(tokens(lines[i - F], mode, st, known), marks[i]) + '</span></div>';
       }
       if (cap && !cut) h += '<div class="more"><button data-more="all">Showing 40 of ' + hitN + ' selected lines · show all</button></div>';
       else if (b < N) h += '<div class="more"><button data-more="after">… ' + (N - b) + ' lines below</button></div>';
@@ -1476,7 +1502,8 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
         .then((r) => {
           if (!r || typeof r.text !== 'string') return;
           const part = typeof r.first === 'number';
-          const c = { first: part ? r.first : 1, lines: r.text.split('\n'), part };
+          // a whole file's final newline ends its last line, it does not start one more
+          const c = { first: part ? r.first : 1, lines: (part ? r.text : r.text.replace(/\n$/, '')).split('\n'), part, at: r.at };
           // a whole file replaces whatever was read before; an excerpt joins the others
           fileLines[want.file] = part ? (fileLines[want.file] || []).filter((x) => x.part).concat(c) : [c];
         }, () => { want.failed = true; })
@@ -1489,7 +1516,7 @@ ${HUES.map((h, i) => '.hc .k' + i + ' { --hc-comp: hsl(' + h + ' var(--hc-comp-s
       const ln = el.closest('.ln, .lgrow');
       if (ln) ln.classList.add('open');
       const lnTop = ln ? ln.getBoundingClientRect().top : 0;
-      cur = { file: el.dataset.file, start: +el.dataset.start, end: +el.dataset.end, match: el.dataset.match, before: 4, after: 4, whole: false, all: false };
+      cur = { file: el.dataset.file, start: +el.dataset.start, end: +el.dataset.end, match: el.dataset.match, before: 4, after: 4, whole: true, all: false };
       q('.hc-srcpath').textContent = cur.file;
       q('.hc-srcrange').textContent = ':' + cur.start + (cur.end !== cur.start ? '-' + cur.end : '');
       const tr = q('.hc-trace');

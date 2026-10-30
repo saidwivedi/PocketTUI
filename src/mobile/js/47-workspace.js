@@ -124,8 +124,8 @@ function wsKindOf(path) {
   return "editor";
 }
 
-// Which group a tap on a line of a brief opens its file in: the group the last
-// tap used while it is still there and is not the brief's own, else the first
+// Which group a brief's pencil opens its file in: the group the last
+// press used while it is still there and is not the brief's own, else the first
 // other group in reading order, else null, for a group made beside the brief.
 function wsBriefGroup(groups, own, last) {
   if (last && last !== own && groups.includes(last)) return last;
@@ -1086,7 +1086,8 @@ function makeWorkspace(ctx) {
   // ---- a human-code brief in a tab --------------------------------------------
   // The brief screen's viewer and its side of the app (49-human-code.js), in a
   // tab: one tab per brief, its units reached through the viewer's own nav.
-  // A tap on a line opens the file in the group beside the brief (briefOpen),
+  // A tap on a line shows the file in the viewer's own source panel; the
+  // panel's pencil opens it in the group beside the brief (briefOpen),
   // the Pinned/Now pair sits in the viewer's own head, by its search, since a
   // tab has no bar of its own, and what changed since the brief's commit is
   // asked on open and every HC_POLL_MS while the tab is in front.
@@ -1146,8 +1147,8 @@ function makeWorkspace(ctx) {
     if (hc) briefPoll(tab);
   }
 
-  // A tap on a line of a brief: the file in the group beside the brief's, the
-  // one the last tap used while it lasts (wsBriefGroup), else a group made
+  // The pencil of a brief's source panel: the file in the group beside the
+  // brief's, the one the last press used while it lasts (wsBriefGroup), else a group made
   // beside it as a drop's split makes one, taken away again if the file does
   // not become a tab there. A file already open elsewhere is brought forward
   // where it is; one open in the brief's own group moves over rather than

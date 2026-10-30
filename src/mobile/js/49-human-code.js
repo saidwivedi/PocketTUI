@@ -7,7 +7,9 @@
 // script the skill also inlines into its own index.html; here it is vendored
 // (vendor/human-code.js, loaded on the first brief opened, never at boot) and
 // handed what only the app has: the files themselves, read at the brief's
-// commit or off the disk; the editor, for a tap on a line; the composer or the
+// commit for the viewer's own source panel, which a tap on a line opens beside
+// the brief; the editor, from the panel's pencil, at the commit or off the
+// disk as the Pinned/Now pair says; the composer or the
 // terminal's prompt, for a question about one; and the repo's history since the
 // commit, which says which units the code has moved under and how far behind
 // the brief is.
@@ -16,11 +18,12 @@
 // full screen on a phone with a history entry of its own, seated in the docked
 // pane on a laptop with none, put away and brought back with the session that
 // had it (fileViews, 09-image-viewer.js). One difference, which is why it has
-// an owner of its own (hcOwner, 28-file-explorer.js): the editor a tap opens
-// goes into the other row of the column, beside the brief rather than over it.
+// an owner of its own (hcOwner, 28-file-explorer.js): the editor the pencil
+// opens goes into the other row of the column, beside the brief rather than
+// over it.
 //
 // The expanded explorer's workspace shows a brief as a tab (47-workspace.js),
-// with the files a tap opens in the group beside it. Both hosts hold what they
+// with the files its pencil opens in the group beside it. Both hosts hold what they
 // know about their brief in one record (hcRecord) and hand it to the same
 // functions: the reads, the taps, the questions, the refresh and the poll.
 //
@@ -34,7 +37,7 @@ let hcView = null;       // the mounted viewer, or null
 let hcCur = null;        // the screen's brief (hcRecord), or null
 let hcTimer = 0;
 let hcGen = 0;           // every open and close; an answer for an older one is dropped
-let hcEdRow = null;      // {id, made}: the row the editor a tap opened went into
+let hcEdRow = null;      // {id, made}: the row the editor the pencil opened went into
 let hcLoading = null;
 let hcWired = false;
 
@@ -156,7 +159,7 @@ function hcTooNew(brief) {
 }
 
 // One brief being shown, by the screen or by a workspace tab. `at` is which
-// bytes a tap opens: "pinned" is the file at the brief's commit, read-only;
+// bytes the pencil opens: "pinned" is the file at the brief's commit, read-only;
 // "now" the file on the disk, with the range carried through what changed
 // since. Settled once, by the first answer about the repo or by a press of the
 // toggle, and only a press moves it after that. `stale` is the last
@@ -196,22 +199,47 @@ async function hcFindRoot(b) {
   } catch (e) {}
 }
 
-// The viewer in `host`, by either host: the record's reads, its taps through
-// the host's `open`, and the app's question and refresh. A brief `beside` the
-// terminal (docked) puts a question's caret in the box at once.
+// The viewer in `host`, by either host: the record's reads, which a tap on a
+// line shows in the viewer's own source panel (no `open`, so the panel, as on
+// the skill's page), the panel's pencil through the host's `open`, and the
+// app's question and refresh. A brief `beside` the terminal (docked) puts a
+// question's caret in the box at once.
 function hcMountIn(host, b, open, beside) {
-  return HumanCode.mount(host, b.brief, hcViewOpts(b, open, beside));
+  const view = HumanCode.mount(host, b.brief, hcViewOpts(b, beside));
+  hcEditKey(host, open);
+  return view;
 }
 
-function hcViewOpts(b, open, beside) {
+function hcViewOpts(b, beside) {
   return {
     sources: { read: (file) => hcReadSource(b, file) },
-    open: open,
     ask: (text, src) => hcAsk(text, src, beside()),
     refresh: () => hcRefresh(b.root),
     theme: "host",
     route: "state",
   };
+}
+
+// The pencil in the source panel's head, before its copy key: the pointer the
+// panel was last opened from (a line, a ledger row or a search result, each
+// carrying data-file/start/end) handed to the host's `open`, which takes it to
+// the editor.
+function hcEditKey(host, open) {
+  let src = null;
+  const note = (e) => {
+    const p = e.target.closest("[data-file]");
+    if (!p || p.closest(".hc-src")) return;
+    src = { file: p.dataset.file, start: +p.dataset.start, end: +p.dataset.end };
+  };
+  host.addEventListener("click", note);
+  host.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") note(e); });
+  const icon = svgIcon("i-m-pencil");
+  icon.setAttribute("class", "i");  // the viewer's own icon size (.hc svg.i)
+  const btn = el("button", { type: "button", class: "ib hc-edit", title: "Open in the editor",
+                             "aria-label": "Open in the editor" }, icon);
+  btn.addEventListener("click", () => { if (src) open(src); });
+  const head = host.querySelector(".hc-src .shead");
+  head.insertBefore(btn, head.querySelector(".hc-copy"));
 }
 
 // The Pinned/Now pair says what the record says.
@@ -238,7 +266,7 @@ function hcPickAt(b, e) {
 // #hc-at, made here and following `b`.
 function hcAtPair(b) {
   const pair = el("div", { class: "hc-at", role: "radiogroup",
-                           "aria-label": "Which code a line opens" },
+                           "aria-label": "Which code the editor opens" },
     el("button", { type: "button", role: "radio", "data-at": "pinned" }, "Pinned"),
     el("button", { type: "button", role: "radio", "data-at": "now" }, "Now"));
   pair.addEventListener("click", (e) => hcPickAt(b, e));
@@ -331,11 +359,12 @@ function hcDrop() {
 
 // ---- reading, opening, asking -----------------------------------------------
 
-// The viewer's own source view is never shown here (open is given), but the
-// provider is what it reads through if it ever is: at the brief's commit while
-// the toggle says Pinned, off the disk at Now.
+// What the viewer's source panel shows: the whole file at the brief's commit,
+// whatever the toggle says, since the panel marks the lines by the brief's own
+// numbers; off the disk only when the commit is not in the repo. The toggle is
+// the pencil's (hcTarget), which carries the range through what changed.
 async function hcReadSource(b, file) {
-  const ref = b.at === "pinned" ? String(b.brief.commit || "") : "";
+  const ref = b.commitGone ? "" : String(b.brief.commit || "");
   const data = await fsReadTextAt(joinPath(b.root, file), ref, b.root);
   if (b.dead) return null;
   if (data && data.error === "bad_ref") { hcCommitMissing(b); return hcReadSource(b, file); }
@@ -345,6 +374,7 @@ async function hcReadSource(b, file) {
 // The brief's commit is not in this clone (a rebase, a gc, a fresh clone):
 // there is nothing to read at it, so the toggle goes to Now, once, and says so.
 function hcCommitMissing(b) {
+  b.commitGone = true;
   b.at = "now";
   b.settled = true;
   if (b.onAt) b.onAt();

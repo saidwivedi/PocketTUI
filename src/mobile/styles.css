@@ -41,9 +41,6 @@
   --diff-hunk-bg: #E7ECF1;
   --diff-hunk-ink: #4f6478;
   --diff-blue: #4f6478;
-  /* Function names in the human-code brief: a saturated orange, apart from
-     the muted umber (numbers) and warn by saturation. */
-  --orange: #b84a00;
   /* The diff pane's accept and reject. Saturated rather than the inks above:
      these are two 14px marks on a tinted line, and the ink that reads well as
      a page of text disappears at that size. */
@@ -98,7 +95,6 @@
   --diff-hunk-bg: #1a2027;
   --diff-hunk-ink: #94aec5;
   --diff-blue: #94aec5;
-  --orange: #ffa657;
   --diff-yes: #3fb950;
   --diff-no: #f85149;
 
@@ -5603,13 +5599,15 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 #hc-host > .hc { position: absolute; inset: 0; height: auto; }
 /* The viewer's colours and faces are its own --hc-* tokens, prefixed because
-   the app already has a --warn and a --mono of its own; here every one of them
-   is one of the app's, so the brief wears the theme and the palette the rest of
-   the app does. The component hues take their saturation and lightness from
-   the theme, which is the one pair the app has no token for. A brief in a
-   workspace tab (47-workspace.js) wears the same, by a selector of four
-   classes, which outweighs the viewer's own dark defaults (:root[data-theme]
-   .hc, three). */
+   the app already has a --warn and a --mono of its own. The faces, the page
+   and its rules are the app's, so the brief sits in the theme and the palette
+   the rest of the app does; the code's own colours (keywords, numbers,
+   strings, function names, comments), the accent, the warn tone and the
+   component hues are left to the viewer, which picks its light or dark set
+   from data-theme (always set here, boot-theme.js), so the brief reads the
+   way the skill's own page does. A brief in a workspace tab (47-workspace.js)
+   wears the same, by a selector of four classes, which outweighs the viewer's
+   own dark defaults (:root[data-theme] .hc, three). */
 .ws-body .ws-pane .ws-hc-host > .hc,
 #screen-humancode .hc {
   --hc-sans: var(--sans);
@@ -5621,26 +5619,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
   --hc-fg-3: var(--tertiary);
   --hc-line: var(--hair);
   --hc-line-2: var(--hair-strong);
-  --hc-accent: var(--umber);
-  --hc-accent-bg: var(--umber-soft);
-  --hc-warn: var(--warn);
-  --hc-tk-kw: var(--diff-blue);
-  --hc-tk-num: var(--umber);
-  --hc-tk-str: var(--good);
-  --hc-tk-fn: var(--orange);
-  --hc-tk-comment: var(--tertiary);
-  --hc-hs: color-mix(in srgb, var(--umber) 10%, var(--paper-rec));
+  --hc-hs: color-mix(in srgb, var(--hc-accent) 10%, var(--paper-rec));
   --hc-shadow: 0 8px 24px rgba(20, 16, 10, 0.28);
   --hc-backdrop: rgba(20, 16, 10, 0.35);
-  --hc-comp-s: 42%;
-  --hc-comp-l: 46%;
-  color-scheme: light;
 }
 :root[data-theme="dark"] .ws-body .ws-pane .ws-hc-host > .hc,
 :root[data-theme="dark"] #screen-humancode .hc {
-  --hc-comp-s: 50%;
-  --hc-comp-l: 68%;
-  color-scheme: dark;
+  --hc-hs: color-mix(in srgb, var(--hc-accent) 14%, var(--paper-rec));
 }
 /* The viewer keeps a line's leading spaces in a span of class ws, which the
    workspace's own .ws { display: none } would hide, flattening every indent. */
