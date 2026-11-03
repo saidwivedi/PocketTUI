@@ -384,7 +384,19 @@ let pendingSwitch = null;
 // the name, or a brand-new session opens onto a dead one's buffer. The list is
 // where both are known, so it says so through these three (06-session-list.js)
 // rather than reaching into the map.
-function dropFileView(name) { fileViews.delete(name); }
+function dropFileView(name) {
+  releaseFileView(fileViews.get(name));
+  fileViews.delete(name);
+}
+
+// What a view holds beyond its record: the browser's frames stay parked in the
+// document with their pages running (browserStash, 42-browser.js), so a view
+// that is dropped rather than restored lets them go.
+function releaseFileView(view) {
+  if (!view) return;
+  browserRelease(view.browser);
+  browserRelease(view.browser2);
+}
 
 function renameFileView(from, to) {
   if (!fileViews.has(from)) return;
@@ -398,14 +410,17 @@ function renameFileView(from, to) {
 // listing that actually arrived is allowed to declare anything missing.
 function keepFileViews(names) {
   for (const name of fileViews.keys()) {
-    if (!names.has(name)) fileViews.delete(name);
+    if (!names.has(name)) dropFileView(name);
   }
 }
 
 // Every stash at once, for a switch to another computer: the sessions they were
 // put away for are on the machine being left, and a name that happens to repeat
 // over there is a different session entirely.
-function dropAllFileViews() { fileViews.clear(); }
+function dropAllFileViews() {
+  for (const view of fileViews.values()) releaseFileView(view);
+  fileViews.clear();
+}
 
 // Which file view is holding the pane, or null for none. The explorer on its
 // own is not one — it carries nothing the user would lose, and it closes.
@@ -471,7 +486,8 @@ function stashFileView(session, kind) {
     view.browser2 = browserStash("browser#2");
     // Both strips are in the entry by now, so both panes can let their tabs go:
     // what is left is one empty tab each, and the next session's globe opens on
-    // that rather than on this session's pages.
+    // that rather than on this session's pages. Their frames stay in the
+    // document, hidden, for the entry to take back.
     browserTeardown(true);
   }
   filesTeardown();
