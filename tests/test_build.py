@@ -1052,6 +1052,9 @@ let browserDocked = false, browserOpen = false, browserOriginFrom = null;
 let browserGen = 0, browserActive = 0;
 function browserNewTab() {{ return {{ stack: [], idx: -1, title: "", titleFor: "", lan: false }}; }}
 let browserTabs = [browserNewTab()];
+let browserParked = null;
+function browserTab() {{ return browserTabs[browserActive]; }}
+function browserShowTab() {{}}
 const full = [];
 function sideSetFull(pane, on) {{ full.push([pane, on]); }}
 function sideClaim() {{ return true; }}

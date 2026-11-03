@@ -1159,8 +1159,18 @@ function browserDropWeb(tab) {
 // Every page this pane holds, gone — for a teardown, a profile switch, or the
 // last tab's close: the frames out of the document, the streamed tabs closed on
 // the computer. The tabs keep their addresses; what goes is the page.
-function browserDropPages() {
+// `park` is a session switch's (browserTeardown): a frame that has landed stays
+// where it is, hidden, with its page still running, for the session's record to
+// take back (browserRestore). In the wrap rather than anywhere else, because a
+// frame taken out of the document or moved to another parent loads again. A
+// frame still loading has nothing yet worth keeping, and the streamed and
+// desktop views go as before.
+function browserDropPages(park = false) {
   for (const tab of browserTabs) {
+    if (park && tab.frame && !tab.full && !tab.web && !tab.navigating) {
+      tab.frame.hidden = true;
+      continue;
+    }
     if (tab.frame) tab.frame.remove();
     tab.frame = null;
     browserDropFull(tab);
@@ -3191,14 +3201,20 @@ attachEdgeSwipe(root, () => history.back());
 // The pane goes down with the session it belongs to (fileViews,
 // 09-image-viewer.js). No history is touched here: the caller is replacing
 // every screen at once and spends the entries itself.
-// The addresses, not the pages: the frames go with the pane and its streamed
-// tabs are closed on the computer (browserTeardown below), so the session that
-// comes back gets its tabs, its stacks and its names, and the tab it is left on
-// loads. Keeping them alive instead would keep every session's pages in the
-// document — and every session's tabs open in the computer's browser — at once,
-// for a switch that costs one page load.
+// The addresses, and the frames with them: a page that took a minute to load
+// its data (a viewer pulling a large recording) must not load it again for a
+// look at another session. The tabs themselves go into the record as `live`,
+// and the teardown that follows parks their frames in the wrap instead of
+// dropping them (browserDropPages), so the session that comes back gets the
+// same pages, still running. Streamed tabs are still closed on the computer and
+// load again from their addresses: keeping them would keep every session's tabs
+// open in the computer's browser at once. A record that is dropped rather than
+// restored lets its frames go (browserRelease, under the factory).
+let browserParked = null;
 function browserStash() {
+  browserParked = browserTabs;
   return {
+    live: browserTabs,
     docked: browserDocked, active: browserActive,
     // The session's own, as the docked explorer's is (filesStash).
     expanded: browserExpanded,
@@ -3228,7 +3244,9 @@ function browserTeardown(fresh = false) {
   browserDocked = false;
   browserOpen = false;
   browserOriginFrom = null;
-  browserDropPages();
+  // Parked only for the tabs a stash has just handed to its record.
+  browserDropPages(fresh && browserParked === browserTabs);
+  browserParked = null;
   browserDropLink();
   showBrowserZoomMenu(false);
   root.classList.remove("docked");
@@ -3253,10 +3271,12 @@ function browserTeardown(fresh = false) {
 function browserRestore(s) {
   const recs = Array.isArray(s.tabs) ? s.tabs : [];
   browserDropPages();
-  // Through the normaliser rather than as they were kept: a stash written
-  // before a restart can hold a proxied address, and restoring one as a page
-  // address is what the pane would then navigate to.
-  browserTabs = recs.length ? recs.map((r) => {
+  // The tabs themselves where the stash kept them, frames still in the wrap and
+  // their pages still running (browserStash); a record without them is one a
+  // reload or another path wrote. Through the normaliser rather than as they
+  // were kept: a stash written before a restart can hold a proxied address, and
+  // restoring one as a page address is what the pane would then navigate to.
+  browserTabs = Array.isArray(s.live) && s.live.length ? s.live : recs.length ? recs.map((r) => {
     const tab = browserNewTab();
     tab.stack = (r.stack || []).map((u) => browserNormalize(u));
     tab.idx = typeof r.idx === "number" ? r.idx : tab.stack.length - 1;
@@ -3266,15 +3286,18 @@ function browserRestore(s) {
     return tab;
   }) : [browserNewTab()];
   browserActive = Math.min(Math.max(0, s.active | 0), browserTabs.length - 1);
+  for (const t of browserTabs) if (t.frame) t.frame.hidden = t !== browserTab();
   renderBrowserTabs();
   syncBrowserFull();
   if (!s.docked) { syncBrowserNav(); return; }
   browserSetExpanded(!!s.expanded);
   openDockedBrowser();
   // The tab that was on screen, and it alone: the rest load when a chip asks
-  // for one, for browserShowTab's reason.
+  // for one, for browserShowTab's reason. A parked frame already holds its page,
+  // and showing it is all it needs.
   const u = browserCurrentUrl();
-  if (u) browserNavigate(u, false);
+  if (u && browserTab().frame && u === browserTab().loaded) browserShowTab(browserActive);
+  else if (u) browserNavigate(u, false);
   else { browserSetField(""); syncBrowserNav(); }
 }
 
@@ -3514,6 +3537,17 @@ function browserRestore(a, b) {
   if (b) {
     const pane = browserPaneAt("browser#2");
     if (pane) pane.restore(b);
+  }
+}
+
+// A record that will never be restored — its session gone, or on the computer
+// being left — and the frames it kept parked in the wrap with it
+// (browserStash). Nothing else holds them.
+function browserRelease(rec) {
+  if (!rec || !Array.isArray(rec.live)) return;
+  for (const tab of rec.live) {
+    if (tab.frame) tab.frame.remove();
+    tab.frame = null;
   }
 }
 
