@@ -1384,6 +1384,50 @@
   "show": true
  },
  {
+  "id": "files.commit-history",
+  "group": "Files and code",
+  "title": "Commit history of a branch",
+  "outcome": "See the commits of the branch picked in the branch pop-up, coloured like a git log: open one to the files it changed, and a file to the diff of that commit.",
+  "where": "File browser > the history key beside the branch pop-up (inside a repo); also the History section of the Source control view",
+  "surface": "both",
+  "gates": [],
+  "needs": "git_log",
+  "hidden": 4,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/50-source-control.js",
+   "src/mobile/js/28-file-explorer.js",
+   "app.py:5279-5425"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
+  "id": "files.source-control",
+  "group": "Files and code",
+  "title": "Stage, unstage and commit from the file browser",
+  "outcome": "The expanded file browser's left column switches to a Source control view: a message box with a Commit key, then Staged, Changes and Untracked with the diff pane's tick, cross and undo on every file; Commit lands the staged files, or every tracked change when nothing is staged.",
+  "where": "Expanded file browser > Source control tab at the top of the left column",
+  "surface": "wide",
+  "gates": [
+   "desktop"
+  ],
+  "needs": "git_commit",
+  "hidden": 3,
+  "agent": {
+   "kind": "convention",
+   "text": "A commit made from the view runs the repository's hooks normally and never invents an author; if git refuses (no identity, a failing hook), the user sees git's own text, so leave the repository's user.name and user.email as the user set them.",
+   "contract": null
+  },
+  "sources": [
+   "src/mobile/js/50-source-control.js",
+   "src/mobile/js/47-workspace.js",
+   "app.py:5746-5870"
+  ],
+  "shot": null,
+  "show": true
+ },
+ {
   "id": "files.workspace-inline-changes",
   "group": "Files and code",
   "title": "A file's changes marked in its text",
