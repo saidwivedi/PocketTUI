@@ -2510,12 +2510,15 @@ def test_a_commit_diff_is_drawn_without_actions(doc):
 
 
 def test_the_workspace_column_toggles_files_and_source_control(doc):
-    """The tree's head is a segmented control of two words, Folder and Git,
-    then the folder label reRoot writes; the view is closure state (the stashed ws
-    keeps it), the panel is made on the first switch, every status answer
-    repaints it, and the server's git_log gates its tab through syncScCap."""
+    """The tree's head is the folder label reRoot writes, then a segmented
+    control of two words, Folder and Git, at the right end; the view is closure
+    state (the stashed ws keeps it), the panel is made on the first switch, every
+    status answer repaints it, and the server's git_log gates its tab through
+    syncScCap."""
     ws = _js_chunk(doc, "function makeWorkspace(")
     assert 'el("div", { class: "ws-seg", role: "tablist", "aria-label": "Explorer view" },' in ws
+    head_row = ws[ws.index('const treeHead = el("div", { class: "ws-tree-head" },'):]
+    assert head_row.index("treeLabel,") < head_row.index('class: "ws-seg"')
     assert '"aria-label": "Folder tree" }, "Folder");' in ws
     assert 'el("button", { type: "button", class: "ws-seg-tab on", role: "tab",' in ws
     assert '"aria-label": "Git: changes, commit and history" }, "Git");' in ws

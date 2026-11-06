@@ -4191,8 +4191,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
     flex-direction: column;
     background: var(--paper-rec);
   }
-  /* The column's head: the Files | Source control pair, then the folder the
-     tree is drawn from in the sidebar's eyebrow scale. */
+  /* The column's head: the folder the tree is drawn from in the sidebar's
+     eyebrow scale, taking the room left and ellipsising, then the Folder | Git
+     pair at the right end at its own width (flex 0 0 auto, never clipped). */
   .ws-tree-head {
     flex: 0 0 auto;
     display: flex;

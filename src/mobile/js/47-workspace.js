@@ -543,9 +543,10 @@ function makeWorkspace(ctx) {
   const root = ctx.root;
   const wrap = root.querySelector(".files-wrap");
 
-  // The column's head: the folder tree or Source control, VS Code's activity
-  // bar folded into the column it switches, then the folder the tree is drawn
-  // from. Words rather than glyphs, short enough for the narrowest column.
+  // The column's head: the folder the tree is drawn from, then the folder tree
+  // or Source control at the right end, where the founder placed it: VS Code's
+  // activity bar folded into the column it switches. Words rather than glyphs,
+  // short enough for the narrowest column.
   const segFiles = el("button", { type: "button", class: "ws-seg-tab on", role: "tab",
                                   "aria-selected": "true", title: "Folder tree",
                                   "aria-label": "Folder tree" }, "Folder");
@@ -555,9 +556,9 @@ function makeWorkspace(ctx) {
                                "aria-label": "Git: changes, commit and history" }, "Git");
   const treeLabel = el("span", { class: "ws-tree-label" });
   const treeHead = el("div", { class: "ws-tree-head" },
+    treeLabel,
     el("div", { class: "ws-seg", role: "tablist", "aria-label": "Explorer view" },
-       segFiles, segSc),
-    treeLabel);
+       segFiles, segSc));
   const treeBody = el("div", { class: "ws-tree-body", role: "tree" });
   // The Source control view (scPanel, 50-source-control.js), made on the first
   // switch to it. The view is closure state, so a rail switch, which stashes
