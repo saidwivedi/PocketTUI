@@ -2093,3 +2093,341 @@ def test_concurrent_git_status_of_one_repo_share_one_walk(repo, monkeypatch):
 
 def test_version_names_git_status_as_a_capability(client):
     assert client.get("/api/version").json()["capabilities"]["git_status"] is True
+
+
+# ---------------------------------------------------------------------------
+# commit history and the commit box
+# ---------------------------------------------------------------------------
+
+def commit_as_t(root, *args):
+    run_git(root, "-c", "user.email=t@example.com", "-c", "user.name=T",
+            "commit", "-q", *args)
+
+
+@pytest.fixture
+def history_repo(repo):
+    """The repo fixture with two more commits on top of its init: an edit of
+    tracked.txt, then its rename to moved.txt plus a new text file and a
+    binary one. Each commit names its paths, so the fixture's staged file and
+    untracked folder stay as they were."""
+    (repo / "tracked.txt").write_text("one\ntwo\nthree\nfour\n")
+    commit_as_t(repo, "-m", "edit tracked", "tracked.txt")
+    run_git(repo, "mv", "tracked.txt", "moved.txt")
+    (repo / "added.txt").write_text("added\n")
+    (repo / "blob.bin").write_bytes(b"\x00\x01\x02binary\x00")
+    run_git(repo, "add", "added.txt", "blob.bin")
+    commit_as_t(repo, "-m", "rename and add", "-m", "the body",
+                "moved.txt", "tracked.txt", "added.txt", "blob.bin")
+    return repo
+
+
+def git_log(client, root, **params):
+    return client.get("/api/git/log", params={"root": str(root), **params})
+
+
+def git_commit_record(client, root, sha):
+    return client.get("/api/git/commit", params={"root": str(root), "sha": sha})
+
+
+def git_out(root, *args):
+    return subprocess.run(["git", *args], cwd=root, check=True,
+                          capture_output=True, text=True).stdout
+
+
+def git_head(root):
+    return git_out(root, "rev-parse", "HEAD").strip()
+
+
+@needs_git
+def test_log_lists_commits_newest_first_with_their_fields(client, history_repo):
+    r = git_log(client, history_repo)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ref"] == "HEAD" and data["more"] is False
+    assert [c["subject"] for c in data["commits"]] == [
+        "rename and add", "edit tracked", "init"]
+    tip = data["commits"][0]
+    assert tip["sha"] == git_head(history_repo)
+    assert tip["short"] and tip["sha"].startswith(tip["short"])
+    assert tip["author"] == "T" and tip["email"] == "t@example.com"
+    assert isinstance(tip["time"], int) and tip["time"] > 0
+    assert tip["body"] == "the body"
+    assert tip["parents"] == [data["commits"][1]["sha"]]
+    assert data["commits"][2]["parents"] == []
+    branch = git_out(history_repo, "symbolic-ref", "--short", "HEAD").strip()
+    assert any(branch in ref for ref in tip["refs"])
+    assert data["commits"][1]["refs"] == []
+
+
+@needs_git
+def test_log_pages_by_skip_and_n_and_says_when_there_is_more(client, history_repo):
+    first = git_log(client, history_repo, n=2, skip=0).json()
+    assert [c["subject"] for c in first["commits"]] == ["rename and add",
+                                                        "edit tracked"]
+    assert first["more"] is True
+    rest = git_log(client, history_repo, n=2, skip=2).json()
+    assert [c["subject"] for c in rest["commits"]] == ["init"]
+    assert rest["more"] is False
+
+
+@needs_git
+def test_log_reads_a_branch_it_is_not_on(client, history_repo):
+    run_git(history_repo, "branch", "old", "HEAD~2")
+    data = git_log(client, history_repo, ref="old").json()
+    assert data["ref"] == "old"
+    assert [c["subject"] for c in data["commits"]] == ["init"]
+
+
+@needs_git
+def test_log_refuses_a_flag_an_unknown_ref_and_a_bad_root(client, history_repo, tmp_path):
+    for bad in ("--all", "nope", "-n1"):
+        r = git_log(client, history_repo, ref=bad)
+        assert r.status_code == 400 and r.json()["error"] == "bad_ref"
+    # A subfolder is not the toplevel the client's paths are relative to.
+    assert git_log(client, history_repo / "sub").json()["error"] == "bad_root"
+    assert git_log(client, tmp_path / "absent").status_code == 400
+
+
+@needs_git
+def test_log_of_a_repo_with_no_commits_is_an_unborn_history(client, tmp_path):
+    root = tmp_path / "empty"
+    root.mkdir()
+    run_git(root, "init", "-q", ".")
+    r = git_log(client, root)
+    assert r.status_code == 200
+    assert r.json() == {"root": str(root), "ref": "HEAD", "commits": [],
+                        "more": False, "unborn": True}
+    assert git_log(client, root, ref="main").status_code == 400
+
+
+@needs_git
+def test_commit_record_lists_a_rename_with_its_old_name_and_counts(client, history_repo):
+    r = git_commit_record(client, history_repo, "HEAD")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["subject"] == "rename and add" and data["body"] == "the body"
+    assert data["merge"] is False and len(data["parents"]) == 1
+    assert data["sha"] == git_head(history_repo)
+    by = {f["path"]: f for f in data["files"]}
+    assert set(by) == {"moved.txt", "added.txt", "blob.bin"}
+    assert by["moved.txt"]["status"] == "R"
+    assert by["moved.txt"]["old"] == "tracked.txt"
+    assert by["added.txt"] == {"path": "added.txt", "status": "A", "adds": 1,
+                               "dels": 0, "binary": False}
+    assert by["blob.bin"]["binary"] is True
+    assert by["blob.bin"]["adds"] == 0 and by["blob.bin"]["dels"] == 0
+
+    edit = git_commit_record(client, history_repo, "HEAD~1").json()
+    assert edit["files"] == [{"path": "tracked.txt", "status": "M", "adds": 1,
+                              "dels": 0, "binary": False}]
+
+
+@needs_git
+def test_commit_record_of_the_root_commit_answers_its_files(client, history_repo):
+    data = git_commit_record(client, history_repo, "HEAD~2").json()
+    assert data["subject"] == "init" and data["parents"] == []
+    assert data["files"] == [{"path": "tracked.txt", "status": "A", "adds": 3,
+                              "dels": 0, "binary": False}]
+
+
+@needs_git
+def test_commit_record_of_a_merge_lists_it_against_the_first_parent(client, history_repo):
+    run_git(history_repo, "reset", "-q", "--", "staged.txt")
+    run_git(history_repo, "checkout", "-q", "-b", "side", "HEAD~1")
+    (history_repo / "side.txt").write_text("side\n")
+    run_git(history_repo, "add", "side.txt")
+    commit_as_t(history_repo, "-m", "side work", "side.txt")
+    run_git(history_repo, "checkout", "-q", "-")
+    run_git(history_repo, "-c", "user.email=t@example.com", "-c", "user.name=T",
+            "merge", "-q", "--no-ff", "-m", "merge side", "side")
+    data = git_commit_record(client, history_repo, "HEAD").json()
+    assert data["merge"] is True and len(data["parents"]) == 2
+    assert [f["path"] for f in data["files"]] == ["side.txt"]
+
+
+@needs_git
+def test_commit_record_refuses_a_bad_sha_and_a_bad_root(client, history_repo):
+    for bad in ("", "--all", "0" * 40):
+        r = git_commit_record(client, history_repo, bad)
+        assert r.status_code == 400 and r.json()["error"] == "bad_ref"
+    assert git_commit_record(client, history_repo / "sub",
+                             "HEAD").json()["error"] == "bad_root"
+
+
+def git_diff_at(client, root, sha, path, **params):
+    return client.get("/api/git/diff", params={
+        "root": str(root), "path": path, "sha": sha, **params})
+
+
+@needs_git
+def test_diff_at_a_sha_reads_the_root_commit_a_rename_and_a_binary(client, history_repo):
+    root_sha = git_out(history_repo, "rev-list", "--max-parents=0", "HEAD").strip()
+    d = git_diff_at(client, history_repo, root_sha, "tracked.txt").json()
+    assert "+one\n+two\n+three" in d["diff"] and d["truncated"] is False
+    assert d["diff"].startswith("diff --git")
+
+    # The rename with its old name: -M pairs them, so the diff is a rename
+    # header and nothing else (the content did not change), not a whole file
+    # deleted and another added.
+    d = git_diff_at(client, history_repo, "HEAD", "moved.txt",
+                    old="tracked.txt").json()
+    assert "rename from tracked.txt" in d["diff"]
+    assert "rename to moved.txt" in d["diff"]
+    assert "-one" not in d["diff"]
+
+    # The scope is ignored: this is HEAD~1's edit, not the worktree's.
+    d = git_diff_at(client, history_repo, "HEAD~1", "tracked.txt",
+                    scope="staged").json()
+    assert "+four" in d["diff"] and "TWO" not in d["diff"]
+
+    assert git_diff_at(client, history_repo, "HEAD", "blob.bin").json() == {
+        "diff": "", "binary": True}
+
+
+@needs_git
+def test_diff_at_a_sha_refuses_a_bad_sha_and_a_bad_old(client, history_repo):
+    r = git_diff_at(client, history_repo, "--all", "moved.txt")
+    assert r.status_code == 400 and r.json()["error"] == "bad_ref"
+    r = git_diff_at(client, history_repo, "HEAD", "moved.txt", old="../x")
+    assert r.status_code == 400 and r.json()["error"] == "bad_path"
+
+
+@pytest.fixture
+def identity(monkeypatch):
+    for k in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(k, "T")
+    for k in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(k, "t@example.com")
+
+
+def git_commit_post(client, root, message, **extra):
+    return client.post("/api/git/commit",
+                       json={"root": str(root), "message": message, **extra})
+
+
+@needs_git
+def test_commit_takes_only_the_staged_file_when_something_is_staged(client, repo, identity):
+    r = git_commit_post(client, repo, "add staged\n\nwith a body\n")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["ok"] is True and data["subject"] == "add staged"
+    assert data["sha"] == git_head(repo) and data["sha"].startswith(data["short"])
+    assert git_out(repo, "show", "--name-only", "--format=", "HEAD").split() == [
+        "staged.txt"]
+    assert git_out(repo, "log", "-1", "--format=%B").strip() == \
+        "add staged\n\nwith a body"
+    # The worktree edit was not swept in, and the untracked file stays new.
+    status = git_out(repo, "status", "--porcelain")
+    assert " M tracked.txt" in status and "?? sub/" in status
+
+
+@needs_git
+def test_commit_takes_every_tracked_change_when_nothing_is_staged(client, repo, identity):
+    run_git(repo, "reset", "-q", "--", "staged.txt")
+    r = git_commit_post(client, repo, "all tracked")
+    assert r.status_code == 200, r.text
+    assert git_out(repo, "show", "--name-only", "--format=", "HEAD").split() == [
+        "tracked.txt"]
+    status = git_out(repo, "status", "--porcelain")
+    assert "?? staged.txt" in status and "?? sub/" in status
+
+
+@needs_git
+def test_commit_all_true_sweeps_tracked_changes_in_beside_the_staged(client, repo, identity):
+    assert git_commit_post(client, repo, "both", all=True).status_code == 200
+    assert git_out(repo, "show", "--name-only", "--format=", "HEAD").split() == [
+        "staged.txt", "tracked.txt"]
+
+
+@needs_git
+def test_commit_all_false_on_an_empty_index_is_nothing_to_commit(client, repo, identity):
+    run_git(repo, "reset", "-q", "--", "staged.txt")
+    r = git_commit_post(client, repo, "staged only", all=False)
+    assert r.status_code == 409 and r.json()["error"] == "nothing_to_commit"
+
+
+@needs_git
+def test_commit_of_a_clean_tree_is_nothing_to_commit(client, repo, identity):
+    commit_as_t(repo, "-am", "everything")
+    before = git_head(repo)
+    r = git_commit_post(client, repo, "again")
+    assert r.status_code == 409
+    assert r.json()["error"] == "nothing_to_commit" and r.json()["detail"]
+    assert git_head(repo) == before
+
+
+@needs_git
+def test_commit_refuses_an_empty_message_and_a_bad_root(client, repo, identity):
+    r = git_commit_post(client, repo, "  \n\t")
+    assert r.status_code == 400 and r.json()["error"] == "empty_message"
+    assert git_commit_post(client, repo / "sub", "x").json()["error"] == "bad_root"
+    assert git_commit_post(client, "relative", "x").status_code == 400
+
+
+@needs_git
+def test_commit_with_no_identity_is_a_409_naming_it(client, repo, tmp_path, monkeypatch):
+    """The route never makes up an author. With nothing configured git falls
+    back to user@hostname, which goes through on a host whose name has a
+    domain, so the repo turns that fallback off as a user can
+    (user.useConfigOnly) and the test means the same thing on every host."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+              "GIT_COMMITTER_EMAIL", "EMAIL"):
+        monkeypatch.delenv(k, raising=False)
+    run_git(repo, "config", "user.useConfigOnly", "true")
+    before = git_head(repo)
+    r = git_commit_post(client, repo, "who")
+    assert r.status_code == 409 and r.json()["error"] == "identity"
+    assert 0 < len(r.json()["detail"]) <= A.GIT_ERR_MAX
+    assert git_head(repo) == before
+
+
+def write_hook(repo, body):
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\n" + body + "\n")
+    hook.chmod(0o755)
+
+
+@needs_git
+def test_a_failing_pre_commit_hook_is_commit_failed_and_head_stays(client, repo, identity):
+    write_hook(repo, "echo 'lint says no'\nexit 1")
+    before = git_head(repo)
+    r = git_commit_post(client, repo, "blocked")
+    assert r.status_code == 409
+    assert r.json()["error"] == "commit_failed"
+    assert "lint says no" in r.json()["detail"]
+    assert git_head(repo) == before
+
+
+@needs_git
+def test_a_hook_reading_stdin_gets_eof_and_the_commit_lands(client, repo, identity):
+    write_hook(repo, "cat > /dev/null\nexit 0")
+    began = time.monotonic()
+    r = git_commit_post(client, repo, "hooked")
+    assert r.status_code == 200, r.text
+    assert time.monotonic() - began < 10
+    assert git_out(repo, "log", "-1", "--format=%s").strip() == "hooked"
+
+
+@needs_git
+def test_a_hook_past_the_ceiling_is_a_timeout_and_is_killed(client, repo, identity,
+                                                            monkeypatch, tmp_path):
+    """The whole hook goes, not just git: a hook left running would hold the
+    index lock past the 409."""
+    marker = tmp_path / "survived"
+    write_hook(repo, "sleep 3\ntouch '%s'" % marker)
+    monkeypatch.setattr(A, "COMMIT_TIMEOUT", 0.5)
+    r = git_commit_post(client, repo, "slow")
+    assert r.status_code == 409 and r.json()["error"] == "timeout"
+    assert not (repo / ".git" / "index.lock").exists()
+    time.sleep(3.5)
+    assert not marker.exists()
+
+
+def test_version_names_git_log_and_git_commit_as_capabilities(client):
+    caps = client.get("/api/version").json()["capabilities"]
+    assert caps["git_log"] is True and caps["git_commit"] is True

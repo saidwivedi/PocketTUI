@@ -1441,6 +1441,8 @@ def server_capabilities() -> dict:
         # by the shell: an older server 404s the POST, and a brief with no
         # marks reads as one nothing has moved under.
         "git_hunks": True,
+        "git_log": True,        # /api/git/log, GET /api/git/commit, /api/git/diff?sha=
+        "git_commit": True,     # POST /api/git/commit
         "search": True,         # /api/search — the wide layout's find bar
         "ping": True,           # the attach socket's liveness probe: this
                                 # server answers it instead of typing it
@@ -3648,6 +3650,20 @@ def git_ref_obj(ref: str, rel: str) -> str:
     return (":" if ref == GIT_INDEX_REF else ref + ":") + rel
 
 
+def git_ref_ok(root: str, ref: str) -> bool:
+    """Whether `ref` names a commit in the repository at `root`.
+
+    The leading-dash refusal is not about a ref that could exist — `git
+    rev-parse` would read "--all" as its own flag long before it read it as a
+    name, and every caller passes the ref in that same position. ^{commit}
+    rather than a bare verify: a tag pointing at a tree or a blob resolves, and
+    nothing that reads a ref here can do anything with one.
+    """
+    if not ref or ref.startswith("-"):
+        return False
+    return git(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}")[0] == 0
+
+
 def git_ref_at(root: str, path: str, ref: str,
                index_ok: bool = False) -> tuple[str, str]:
     """(the repo-relative path, "") for a triple that checks out, else ("", why).
@@ -3656,11 +3672,8 @@ def git_ref_at(root: str, path: str, ref: str,
     request means: a `root` that is a repository, a `path` inside it, and a
     `ref` git can resolve to a commit. Anything else is a client that has lost
     track of which repo it is browsing, and earns the same 400 git_target's
-    callers do.
-
-    The leading-dash refusal is not about a ref that could exist — `git
-    rev-parse` would read "--all" as its own flag long before it read it as a
-    name, and every call below passes the ref in that same position.
+    callers do. What makes a ref acceptable is git_ref_ok's, which the history
+    routes share.
     """
     if not git_ref_root(root):
         return "", "bad_root"
@@ -3669,9 +3682,7 @@ def git_ref_at(root: str, path: str, ref: str,
         return "", "bad_path"
     if index_ok and ref == GIT_INDEX_REF:
         return rel, ""
-    if not ref or ref.startswith("-"):
-        return "", "bad_ref"
-    if git(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}")[0] != 0:
+    if not git_ref_ok(root, ref):
         return "", "bad_ref"
     return rel, ""
 
@@ -4848,6 +4859,10 @@ def api_fs_site(request: Request, exp: str, sig: str, root: str,
 # which is what any staging does.
 
 GIT_TIMEOUT = 20
+# A commit runs the repository's hooks, and a pre-commit that lints or tests the
+# tree can take a minute on its own; the ceiling is for a hook that hangs, not
+# one that works.
+COMMIT_TIMEOUT = 120
 # The walk is the slow half. On a network checkout `git status` spends its time
 # in stat calls the mount answers over the wire — measured on a 3600-file CIFS
 # tree, the tracked walk takes seconds and the untracked one tens of seconds —
@@ -5153,8 +5168,9 @@ def git_target(root: str, path: str) -> tuple[str, str]:
 
 
 @app.get("/api/git/diff")
-def api_git_diff(root: str = "", path: str = "", scope: str = "unstaged") -> Response:
-    """One file's unified diff, in one of the pane's two scopes.
+def api_git_diff(root: str = "", path: str = "", scope: str = "unstaged",
+                 sha: str = "", old: str = "") -> Response:
+    """One file's unified diff, in one of the pane's two scopes, or as one commit changed it.
 
     The scopes are the split git itself makes and the two lists the pane draws:
     unstaged is the worktree against the index, staged is the index against
@@ -5162,12 +5178,37 @@ def api_git_diff(root: str = "", path: str = "", scope: str = "unstaged") -> Res
     commit has not been made — with no HEAD it compares against the empty tree
     rather than failing — so the scope split retires the fallback the single
     `diff HEAD` call used to need.
+
+    With `sha` the scope is ignored and the answer is what that commit did to
+    the file: its first parent against it, which is also how a merge is read
+    (the commit record lists a merge's files the same way, so a file tapped
+    there has a diff here). `old` is the name a rename came from, as the
+    commit record gives it; with both names in the pathspec -M can pair them
+    and the answer is the edit, not a whole-file delete and a whole-file add.
+    A root commit has no parent to diff against, and diff-tree --root is the
+    spelling that diffs it against the empty tree.
     """
     _, bad = git_target(root, path)
     if bad:
         return fs_error(bad, 400)
 
-    if scope == "staged":
+    if sha:
+        if old:
+            _, bad = git_target(root, old)
+            if bad:
+                return fs_error(bad, 400)
+        if not git_ref_ok(root, sha):
+            return fs_error("bad_ref", 400)
+        parents, err = git_parents(root, sha)
+        if err:
+            return no_store(JSONResponse({"diff": "", "error": err}))
+        if parents:
+            rc, out, err = git(root, "diff", "--no-color", "--no-ext-diff", "-M",
+                               parents[0], sha, "--", path, *([old] if old else []))
+        else:
+            rc, out, err = git(root, "diff-tree", "-p", "--root", "--no-color",
+                               "--no-ext-diff", "--no-commit-id", sha, "--", path)
+    elif scope == "staged":
         rc, out, err = git(root, "diff", "--no-color", "--no-ext-diff",
                            "--cached", "--", path)
     else:
@@ -5191,6 +5232,184 @@ def api_git_diff(root: str = "", path: str = "", scope: str = "unstaged") -> Res
     if "\nBinary files " in text or text.startswith("Binary files "):
         return no_store(JSONResponse({"diff": "", "binary": True}))
     return no_store(JSONResponse({"diff": text, "truncated": truncated}))
+
+
+# One commit per record: the fields NUL-separated, since a subject or a body
+# can hold anything printable but never a NUL, and the record ended by a byte
+# a commit message cannot plausibly carry. The body is last because it is the
+# one field with newlines in it.
+GIT_LOG_FORMAT = "%H%x00%h%x00%P%x00%an%x00%ae%x00%at%x00%D%x00%s%x00%b%x1e"
+GIT_LOG_MAX = 200
+
+
+def git_log_records(raw: bytes) -> list[dict]:
+    """`log --format=GIT_LOG_FORMAT` output -> one dict per commit, in order.
+
+    `refs` is %D cut at its commas and kept in git's own spelling ("HEAD ->
+    main", "tag: v1", "origin/main"), since which branch HEAD sits on and
+    what is a tag is exactly what those spellings say.
+    """
+    commits = []
+    for rec in raw.decode("utf-8", "replace").split("\x1e"):
+        f = rec.lstrip("\n").split("\0")
+        if len(f) < 9:
+            continue
+        commits.append({
+            "sha": f[0],
+            "short": f[1],
+            "parents": f[2].split(),
+            "author": f[3],
+            "email": f[4],
+            "time": int(f[5]) if f[5].isdigit() else 0,
+            "refs": [r for r in f[6].split(", ") if r],
+            "subject": f[7],
+            "body": "\0".join(f[8:]).rstrip(),
+        })
+    return commits
+
+
+def git_parents(root: str, sha: str) -> tuple[list[str], str]:
+    """(`sha`'s parents, first parent first, "") or ([], why git failed)."""
+    rc, out, err = git(root, "rev-list", "--parents", "-n1", sha, "--")
+    if rc != 0:
+        return [], err or "git could not read that commit"
+    return out.decode("utf-8", "replace").split()[1:], ""
+
+
+@app.get("/api/git/log")
+def api_git_log(root: str = "", ref: str = "HEAD", skip: int = 0,
+                n: int = 50) -> Response:
+    """A page of the commit history reachable from `ref`, newest first.
+
+    A plain route on the request threadpool rather than on the git side pool:
+    that pool has two workers so the explorer's status polls never queue
+    behind each other, and a log of a long history on a network mount must not
+    hold one of them while a poll waits.
+
+    `more` is whether there is a page after this one, learned by asking for
+    one commit past the page rather than counting the history, which on a big
+    repository is the walk the page exists to avoid. A repository whose first
+    commit has not been made has an unborn HEAD — a real state the pane draws
+    as an empty history, so it answers 200 with `unborn` — while any other ref
+    that names no commit is a client asking about a branch that is not there,
+    and earns the 400 the ref read routes give. A git that fails mid-read is
+    an answer, as on /api/git/status: 200 with `error` and no commits.
+    """
+    if not git_ref_root(root):
+        return fs_error("bad_root", 400)
+    ref = ref or "HEAD"
+    skip = max(0, skip)
+    n = min(GIT_LOG_MAX, max(1, n))
+    if not git_ref_ok(root, ref):
+        if ref == "HEAD" and git(root, "symbolic-ref", "-q", "HEAD")[0] == 0:
+            return no_store(JSONResponse({"root": root, "ref": ref, "commits": [],
+                                          "more": False, "unborn": True}))
+        return fs_error("bad_ref", 400)
+    rc, out, err = git(root, "log", "--no-color", "--skip=%d" % skip,
+                       "-n", str(n + 1), "--format=" + GIT_LOG_FORMAT, ref, "--")
+    if rc != 0:
+        return no_store(JSONResponse({"root": root, "ref": ref, "commits": [],
+                                      "more": False,
+                                      "error": err or "git log failed"}))
+    commits = git_log_records(out)
+    return no_store(JSONResponse({"root": root, "ref": ref,
+                                  "commits": commits[:n],
+                                  "more": len(commits) > n}))
+
+
+def git_commit_files(root: str, sha: str, parent: str) -> tuple[list[dict], str]:
+    """The files `sha` changed against `parent` ("" for a root commit).
+
+    Two diff-tree reads joined by the path the file has after the commit:
+    --name-status for the letter and the name a rename or copy came from,
+    --numstat for the line counts, where "-" is git saying the file is binary.
+    Both with -z, so a path is the filesystem's bytes rather than git's quoted
+    spelling, and laid out the same way: a rename spends two fields on its
+    names ("R100", old, new; and adds, dels and an empty name, then old, new)
+    where every other record has one. The similarity score on R and C is cut
+    to the letter.
+    """
+    base = (parent, sha) if parent else ("--root", sha)
+    rc, out, err = git(root, "diff-tree", "-r", "-M", "-z", "--no-commit-id",
+                       "--name-status", *base)
+    if rc != 0:
+        return [], err or "git could not read that commit"
+    files, by_path = [], {}
+    tok = out.decode("utf-8", "replace").split("\0")
+    i = 0
+    while i < len(tok):
+        st = tok[i]
+        i += 1
+        if not st:
+            continue
+        f = {"path": "", "status": st[0], "adds": 0, "dels": 0, "binary": False}
+        if st[0] in ("R", "C"):
+            f["old"], f["path"] = tok[i:i + 2] if i + 1 < len(tok) else ("", "")
+            i += 2
+        else:
+            f["path"] = tok[i] if i < len(tok) else ""
+            i += 1
+        files.append(f)
+        by_path[f["path"]] = f
+
+    rc, out, err = git(root, "diff-tree", "-r", "-M", "-z", "--no-commit-id",
+                       "--numstat", *base)
+    if rc != 0:
+        return files, ""        # the list stands without its counts
+    tok = out.decode("utf-8", "replace").split("\0")
+    i = 0
+    while i < len(tok):
+        head = tok[i]
+        i += 1
+        parts = head.split("\t", 2)
+        if len(parts) < 3:
+            continue
+        path = parts[2]
+        if not path:            # a rename or copy: old and new follow
+            path = tok[i + 1] if i + 1 < len(tok) else ""
+            i += 2
+        f = by_path.get(path)
+        if f is None:
+            continue
+        if parts[0] == "-" or parts[1] == "-":
+            f["binary"] = True
+        else:
+            f["adds"] = int(parts[0]) if parts[0].isdigit() else 0
+            f["dels"] = int(parts[1]) if parts[1].isdigit() else 0
+    return files, ""
+
+
+@app.get("/api/git/commit")
+def api_git_commit_record(root: str = "", sha: str = "") -> Response:
+    """One commit: its message, author, parents and the files it changed.
+
+    What a tapped row of the history expands to. `sha` is anything that names
+    a commit — a branch tip reads as well as a hash. A merge is listed against
+    its first parent, the line it was merged into, which is what "what did
+    this merge bring in" means on a branch's history, and says `merge` so the
+    pane can say it too; /api/git/diff?sha= diffs the same way, so the list and
+    the per-file diffs agree. A root commit's files are all additions, against
+    the empty tree.
+    """
+    if not git_ref_root(root):
+        return fs_error("bad_root", 400)
+    if not git_ref_ok(root, sha):
+        return fs_error("bad_ref", 400)
+    rc, out, err = git(root, "log", "-1", "--no-color",
+                       "--format=" + GIT_LOG_FORMAT, sha, "--")
+    recs = git_log_records(out) if rc == 0 else []
+    if not recs:
+        return no_store(JSONResponse({"sha": sha, "files": [],
+                                      "error": err or "git could not read that commit"}))
+    rec = recs[0]
+    parents, err = git_parents(root, rec["sha"])
+    if err:
+        return no_store(JSONResponse({**rec, "files": [], "error": err}))
+    files, err = git_commit_files(root, rec["sha"], parents[0] if parents else "")
+    body = {**rec, "parents": parents, "merge": len(parents) > 1, "files": files}
+    if err:
+        body["error"] = err
+    return no_store(JSONResponse(body))
 
 
 # A brief names a few dozen files; past this it is a client sending a tree,
@@ -5522,6 +5741,103 @@ def api_git_apply(body: dict = Body(...)) -> Response:
         return fs_error("bad_action", 400)
     return fs_error("apply_failed", 409, detail=why) if why else \
         no_store(JSONResponse({"ok": True}))
+
+
+def git_commit_run(root: str, message: str, all_: bool) -> tuple[str, str]:
+    """Run `git commit` with `message`; ("", "") when it worked, else (code, detail).
+
+    Not git_write: a commit runs the repository's hooks, which can lint or test
+    for longer than GIT_TIMEOUT, and nothing about this call may wait on a
+    person. The message goes in on stdin (-F -) exactly as typed, and stdin is
+    closed after it, so a hook that reads stdin gets EOF rather than a pipe
+    that never ends. GIT_EDITOR=true answers anything that would open an
+    editor, and GIT_TERMINAL_PROMPT=0 with a /bin/true askpass refuses any
+    credential prompt (a hook that fetches) rather than waiting on one. Its
+    own session, so a hook cannot reach a terminal either, and a timeout ends
+    the hook's whole process group, not just git, which would leave the hook
+    running with the index locked. TERM before KILL: git removes its
+    index.lock on TERM, and a lock left behind by a KILL would turn every
+    later commit, stage and checkout into "busy" until someone deletes it.
+
+    The code is what the pane says: nothing staged or changed, no identity
+    (the route never makes one up; a commit under a made-up name is worse than
+    the question), another git holding the index, a hook past the ceiling,
+    and everything else — a hook's refusal above all — as commit_failed with
+    git's and the hook's own words as the detail.
+    """
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": "true",
+           "GIT_ASKPASS": "/bin/true"}
+    args = ["git", "-C", root, "commit", *(["-a"] if all_ else []), "-F", "-"]
+    try:
+        p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, env=env,
+                             start_new_session=True)
+    except FileNotFoundError:
+        return "commit_failed", "git is not installed"
+    except OSError:
+        return "commit_failed", "git could not be run"
+    try:
+        out, _ = p.communicate(message.encode("utf-8"), timeout=COMMIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        for sig, grace in ((signal.SIGTERM, 5), (signal.SIGKILL, None)):
+            try:
+                os.killpg(p.pid, sig)
+            except OSError:
+                pass
+            try:
+                p.communicate(timeout=grace)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        return "timeout", "the commit (or a hook it ran) took longer than %g s" \
+            % COMMIT_TIMEOUT
+    if p.returncode == 0:
+        return "", ""
+    text = out.decode("utf-8", "replace").strip()
+    detail = text[:GIT_ERR_MAX] or "git refused the commit"
+    if "index.lock" in text:
+        return "busy", detail
+    if "Please tell me who you are" in text:
+        return "identity", detail
+    # git's three spellings: a clean tree, only untracked files, and (without
+    # -a) only unstaged changes.
+    if ("nothing to commit" in text or "nothing added to commit" in text
+            or "no changes added to commit" in text):
+        return "nothing_to_commit", detail
+    return "commit_failed", detail
+
+
+@app.post("/api/git/commit")
+def api_git_commit(body: dict = Body(...)) -> Response:
+    """Commit what is staged, or every tracked change when nothing is.
+
+    The workspace's commit box. `all` is the client's say when it has one;
+    without it the choice is made here from the index, because that is the
+    rule a person expects of a single Commit key: staged files when they
+    staged some, everything tracked otherwise. Untracked files are never
+    swept in — `-a` does not add them, and a new file stays the user's to
+    stage. A plain route like /api/git/apply, on the request threadpool rather
+    than the git side pool, which a hook running for a minute would starve.
+    """
+    root = str(body.get("root", ""))
+    message = str(body.get("message", ""))
+    if not git_ref_root(root):
+        return fs_error("bad_root", 400)
+    if not message.strip():
+        return fs_error("empty_message", 400)
+    all_ = body.get("all")
+    if all_ is None:
+        # Exit 0 is "the index matches HEAD": nothing staged. Works before the
+        # first commit too, against the empty tree.
+        all_ = git(root, "diff", "--cached", "--quiet")[0] == 0
+    code, detail = git_commit_run(root, message, bool(all_))
+    if code:
+        return fs_error(code, 409, detail=detail)
+    _, out, _ = git(root, "log", "-1", "--format=%H%x00%h%x00%s", "HEAD", "--")
+    sha, short, subject = (out.decode("utf-8", "replace").rstrip("\n")
+                           .split("\0") + ["", "", ""])[:3]
+    return no_store(JSONResponse({"ok": True, "sha": sha, "short": short,
+                                  "subject": subject}))
 
 
 def git_discard_untracked(full: str, root: str) -> str:
