@@ -133,6 +133,12 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+        # Every session's scrollback as it stands, so a reboot that follows
+        # this stop loses nothing the watcher had not saved yet.
+        try:
+            await asyncio.to_thread(restore_save_all)
+        except Exception as e:  # noqa: BLE001
+            log(f"restore: shutdown save failed: {e!r}")
         await shutdown_full_browser()
         await reap_lingering()
 
@@ -899,7 +905,8 @@ REPLAY_LINES = 500
 REPLAY_MAX_BYTES = 2 * 1024 * 1024
 
 
-def capture_history(name: str, lines: int = REPLAY_LINES) -> str:
+def capture_history(name: str, lines: int = REPLAY_LINES,
+                    screen: bool = False) -> str:
     """The tail of the active pane's *history* — the text above the visible
     screen — or "" when there is nothing worth replaying.
 
@@ -911,6 +918,9 @@ def capture_history(name: str, lines: int = REPLAY_LINES) -> str:
     A pane sitting in the alternate screen (htop, full-screen TUIs) answers ""
     outright: its history belongs to the primary screen the user is not looking
     at, and the attach repaint restores the TUI exactly as before.
+
+    `screen` takes the visible screen too, for the session-restore save: after
+    a reboot there is no repaint, and the last screen is the part worth having.
     """
     # The active pane is filtered here rather than with `list-panes -f`, the
     # way session_group avoids `list-sessions -f`: tmux 3.0a has no -f on the
@@ -930,7 +940,7 @@ def capture_history(name: str, lines: int = REPLAY_LINES) -> str:
     if not pane:
         return ""
     rc, out = tmux("capture-pane", "-p", "-e", "-J", "-t", pane,
-                   "-S", f"-{max(0, lines)}", "-E", "-1")
+                   "-S", f"-{max(0, lines)}", *(() if screen else ("-E", "-1")))
     if rc != 0:
         return ""
     text = out.rstrip("\n")
@@ -1513,6 +1523,11 @@ def server_capabilities() -> dict:
         # Strictly checked by the shell: an older server 404s the POST, and a
         # row that snaps back after every drop is worse than rows that stay put.
         "session_order": True,
+        # /api/restore — sessions a lost tmux server took with it (a reboot,
+        # a crash), offered back on the list with their folder, names and
+        # saved output. Strictly checked by the shell: an older server 404s
+        # the routes and its /api/sessions carries no count.
+        "restore": True,
     }
 
 
@@ -1570,7 +1585,8 @@ def api_pair_qr(base: str = "", a: str = "") -> Response:
 
 @app.get("/api/sessions")
 def api_sessions() -> Response:
-    return no_store(JSONResponse({"sessions": list_sessions()}))
+    return no_store(JSONResponse({"sessions": list_sessions(),
+                                  "restorable": restore_count()}))
 
 
 @app.get("/api/session_cwd")
@@ -1702,6 +1718,7 @@ def api_session_kill(request: Request, body: dict = Body(...)) -> Response:
         if rc != 0:
             return JSONResponse(
                 {"error": f"tmux could not kill '{member}'."}, status_code=500)
+    restore_forget(name)
     return no_store(JSONResponse({"killed": name}))
 
 
@@ -1746,6 +1763,7 @@ def api_session_rename(request: Request, body: dict = Body(...)) -> Response:
     if rc != 0:
         return JSONResponse(
             {"error": f"tmux could not rename '{old}'."}, status_code=500)
+    restore_rename(old, new)
     return no_store(JSONResponse({"session": new}))
 
 
@@ -10915,6 +10933,11 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         # A real attach: tmux re-initialises the client, so the terminal is
         # about to be rewritten anyway and history goes out first for the
         # repaint to land on top of.
+        # A restored session's first attach puts the output saved before the
+        # server was lost above the live history, behind a dim line saying so.
+        restored = await asyncio.to_thread(restore_take, session_name)
+        if restored:
+            history = restored + ("\n" + history if history else "")
         if history:
             await ws.send_text(json.dumps(
                 {"type": "replay", "data": history.replace("\n", "\r\n")}))
@@ -11885,7 +11908,7 @@ def watch_panes() -> list[dict]:
         "list-panes", "-a", "-F",
         "#{pane_active}\t#{window_active}\t#{session_name}"
         "\t#{window_activity}\t#{window_bell_flag}\t#{alternate_on}"
-        "\t#{pane_current_command}\t#{pane_id}",
+        "\t#{pane_current_command}\t#{pane_id}\t#{pane_current_path}",
     )
     if rc != 0:
         return []
@@ -11906,6 +11929,8 @@ def watch_panes() -> list[dict]:
             "cmd": parts[6],
             "window_active": parts[1] == "1",
             "pane": parts[7] if len(parts) > 7 else "",
+            # The folder session restore records (restore_rows).
+            "cwd": parts[8] if len(parts) > 8 else "",
         })
     return panes
 
@@ -12170,14 +12195,20 @@ def watch_tick_sync() -> list[dict]:
     so they are sent here; the WS prompt frames are returned instead, because
     an Attachment's queue belongs to the event loop.
     """
-    events = watch_update(session_rows(), watch_panes(),
-                          time.time(), time.monotonic())
+    rows, panes = session_rows(), watch_panes()
+    events = watch_update(rows, panes, time.time(), time.monotonic())
     ws_events = []
     for event in events:
         if event["kind"] == "push":
             dispatch_notification(event["payload"])
         else:
             ws_events.append(event)
+    # After the dispatch, and on its own: a restore record that fails to
+    # write must not cost the tick its notifications.
+    try:
+        restore_track(rows, panes)
+    except Exception as e:  # noqa: BLE001
+        log(f"restore error: {e!r}")
     return ws_events
 
 
@@ -12201,6 +12232,462 @@ async def watcher_loop() -> None:
         except Exception as e:  # noqa: BLE001 — the watcher outlives any tick
             log(f"watcher error: {e!r}")
         await asyncio.sleep(POLL_S)
+
+
+# ---------------------------------------------------------------------------
+# Session restore
+# ---------------------------------------------------------------------------
+# Sessions are tmux sessions, and a service restart keeps them (KillMode=
+# process), but a reboot, a power cut or a dead tmux server takes every one.
+# The watcher's tick keeps a record of what is open under which tmux server
+# (live.json); when the server it was recorded under is gone, those rows become
+# restore offers (pending.json), and the list offers to bring them back under
+# their old names, folders, alias, notify mode and place, with the output they
+# last showed replayed above the new prompt.
+#
+# The server's identity is what tells a deliberate end from a lost server: a
+# session that vanishes while the server it lived on is still the same one was
+# killed or exited on purpose and is simply forgotten. A hand kill of the last
+# session ends the server too, and reads as a loss; the card's Dismiss is the
+# answer to that one. A global session-closed hook could mark the deliberate
+# ends, but tmux never runs it for the session whose close ends the server,
+# which is the one case it would be needed for.
+
+RESTORE_DIR = Path.home() / ".pockettui" / "restore"
+
+# While a session keeps producing output, its scrollback is saved at most this
+# often; the busy->idle edge saves it regardless. One capture is ~20 ms and a
+# few dozen KB, so never per tick.
+RESTORE_SAVE_EVERY_S = 60.0
+
+# Ticks in a row that must find no server before the record counts as lost.
+# One unanswered display-message is more often a slow tmux than a dead one.
+RESTORE_GONE_TICKS = 2
+
+# The shutdown save's whole budget: a service stop must not wait on a tmux
+# that is itself going down.
+RESTORE_SHUTDOWN_S = 3.0
+
+# Fields a record row carries, in the order the files hold them.
+RESTORE_FIELDS = ("name", "sid", "alias", "notify", "order", "cwd", "command")
+
+RESTORE_LOCK = threading.RLock()
+
+# The two files as last read or written, keyed by the directory they belong
+# to so a test that moves RESTORE_DIR gets its own. "gone" counts the
+# consecutive ticks that found no server; "busy" and "tried" are the save
+# schedule (busy last tick, last capture attempt), per session, this process.
+_RESTORE: dict = {"dir": None}
+
+
+def restore_state() -> dict:
+    """The in-memory record, loaded from RESTORE_DIR on first use."""
+    if _RESTORE.get("dir") != RESTORE_DIR:
+        live = _restore_read("live.json")
+        pending = _restore_read("pending.json")
+        _RESTORE.clear()
+        _RESTORE.update({
+            "dir": RESTORE_DIR,
+            "live": {"server": live.get("server") or None,
+                     "sessions": [r for r in live.get("sessions", [])
+                                  if isinstance(r, dict) and r.get("name")]},
+            "pending": [r for r in pending.get("sessions", [])
+                        if isinstance(r, dict) and r.get("name")],
+            "gone": 0, "busy": {}, "tried": {},
+        })
+    return _RESTORE
+
+
+def _restore_read(name: str) -> dict:
+    try:
+        data = json.loads((RESTORE_DIR / name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _restore_write(name: str, data: dict) -> None:
+    """Write one record file whole, and only when its content changed."""
+    p = RESTORE_DIR / name
+    raw = json.dumps(data, indent=1, sort_keys=True).encode("utf-8")
+    try:
+        if p.read_bytes() == raw:
+            return
+    except OSError:
+        pass
+    try:
+        RESTORE_DIR.mkdir(parents=True, exist_ok=True)
+        atomic_write(p, raw, None)
+    except OSError as e:
+        log(f"restore: could not write {name}: {e}")
+
+
+def _restore_save_live(st: dict) -> None:
+    _restore_write("live.json", st["live"])
+
+
+def _restore_save_pending(st: dict) -> None:
+    _restore_write("pending.json", {"sessions": st["pending"]})
+
+
+def restore_hist(name: str, kind: str = "ansi") -> Path:
+    """The scrollback file for a session name: .ansi while it is live, .lost
+    while it is a restore offer, .restored between a restore and its first
+    attach. A hash keeps any two names apart; the readable prefix is only for
+    whoever lists the folder."""
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", name)[:40]
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+    return RESTORE_DIR / "hist" / f"{digest}-{safe}.{kind}"
+
+
+def _restore_unlink(name: str, *kinds: str) -> None:
+    for kind in kinds:
+        try:
+            restore_hist(name, kind).unlink()
+        except OSError:
+            pass
+
+
+def tmux_server_identity() -> str | None:
+    """Which tmux server is running, as "pid:start_time", or None when none is.
+
+    The pid alone could be reused by a later server after a reboot; the start
+    time cannot. A tmux that leaves the start time empty is identified by its
+    pid alone.
+    """
+    rc, out = tmux("display-message", "-p", "#{pid}\t#{start_time}")
+    if rc != 0:
+        return None
+    pid, _, started = out.strip().partition("\t")
+    if not pid.isdigit():
+        return None
+    return f"{pid}:{started.strip()}" if started.strip() else pid
+
+
+def restore_rows(rows: list[dict], panes: list[dict]) -> list[dict]:
+    """The record rows for the sessions the list shows: no device views, no
+    update session (it ends itself), each with its active window's folder and
+    command from watch_panes."""
+    front = {p["session"]: p for p in panes if p.get("window_active")}
+    out = []
+    for row in rows:
+        if (not row["representative"] or row.get("view")
+                or row["name"] == UPDATE_SESSION):
+            continue
+        pane = front.get(row["name"], {})
+        out.append({
+            "name": row["name"], "sid": row["sid"], "alias": row["alias"],
+            "notify": row["notify"], "order": row["order"],
+            "cwd": pane.get("cwd", ""), "command": pane.get("cmd", ""),
+        })
+    return out
+
+
+def _restore_lose(st: dict, now: float) -> None:
+    """Move every live row to the offers; a newer row replaces an older offer
+    of the same name, scrollback included."""
+    lost = st["live"]["sessions"]
+    if not lost:
+        return
+    names = {r["name"] for r in lost}
+    st["pending"] = [r for r in st["pending"] if r["name"] not in names]
+    for r in lost:
+        src = restore_hist(r["name"], "ansi")
+        try:
+            os.replace(src, restore_hist(r["name"], "lost"))
+        except OSError:
+            _restore_unlink(r["name"], "lost")
+        st["pending"].append({**r, "lost": int(now)})
+        # A session of the same name on the new server is new to the saves.
+        st["busy"].pop(r["name"], None)
+        st["tried"].pop(r["name"], None)
+    _restore_save_pending(st)
+    log(f"restore: tmux server {st['live']['server']} is gone; "
+        f"{len(lost)} session(s) offered for restore: "
+        + ", ".join(r["name"] for r in lost))
+
+
+def restore_track(rows: list[dict], panes: list[dict],
+                  now: float | None = None) -> None:
+    """Bring the record up to date with one watcher tick, then save the
+    scrollback of the sessions that are due.
+
+    `rows` and `panes` are the tick's own session_rows() and watch_panes(),
+    so this costs one more tmux call (the identity) plus the captures.
+    """
+    now = time.time() if now is None else now
+    ident = tmux_server_identity()
+    # A server always holds a session, so an identity with no rows, or rows
+    # with no identity, is a listing that failed this tick, not news.
+    if (ident is None) != (not rows):
+        return
+    current = restore_rows(rows, panes)
+    with RESTORE_LOCK:
+        st = restore_state()
+        live = st["live"]
+        if live["server"] and ident != live["server"]:
+            if ident is None:
+                st["gone"] += 1
+                if st["gone"] < RESTORE_GONE_TICKS:
+                    return
+            _restore_lose(st, now)
+            live["sessions"] = []
+        st["gone"] = 0
+        before = {r["name"]: r for r in live["sessions"]}
+        fresh = []
+        for row in current:
+            old = before.get(row["name"], {})
+            # A tick whose pane listing failed keeps the folder and command
+            # it had rather than blanking them.
+            if not row["cwd"] and not row["command"]:
+                row["cwd"] = old.get("cwd", "")
+                row["command"] = old.get("command", "")
+            row["saved"] = old.get("saved", 0)
+            fresh.append(row)
+        names = {r["name"] for r in fresh}
+        for name in before:
+            if name not in names:
+                # Gone while the same server lives: ended on purpose.
+                _restore_unlink(name, "ansi", "restored")
+                st["busy"].pop(name, None)
+                st["tried"].pop(name, None)
+        live["server"] = ident
+        live["sessions"] = fresh
+        _restore_save_live(st)
+        due = []
+        for row in fresh:
+            name = row["name"]
+            w = WATCHER.get(name)
+            busy = w is not None and w.state == "active"
+            was = st["busy"].get(name, False)
+            tried = st["tried"].get(name)
+            st["busy"][name] = busy
+            # First sight in this process, the busy->idle edge, and a busy
+            # session every RESTORE_SAVE_EVERY_S.
+            if (tried is None or (was and not busy)
+                    or (busy and now - tried >= RESTORE_SAVE_EVERY_S)):
+                st["tried"][name] = now
+                due.append(name)
+    for name in due:
+        restore_save(name, now)
+
+
+def restore_save(name: str, now: float | None = None) -> bool:
+    """Save one session's scrollback, screen included, to its .ansi file.
+
+    An empty capture (the alternate screen, a failed call) keeps whatever
+    the file already holds: an agent's TUI on screen at the moment of a save
+    must not wipe the shell output saved before it took over.
+    """
+    text = capture_history(name, screen=True)
+    if not text.strip():
+        return False
+    p = restore_hist(name, "ansi")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(p, text.encode("utf-8"), None)
+    except OSError as e:
+        log(f"restore: could not save scrollback of {name}: {e}")
+        return False
+    with RESTORE_LOCK:
+        st = restore_state()
+        row = next((r for r in st["live"]["sessions"] if r["name"] == name),
+                   None)
+        if row is None:
+            # Killed while the capture ran: the kill already forgot it.
+            _restore_unlink(name, "ansi")
+            return False
+        row["saved"] = int(time.time() if now is None else now)
+        _restore_save_live(st)
+    return True
+
+
+def restore_save_all() -> None:
+    """The shutdown save: every recorded session, within RESTORE_SHUTDOWN_S,
+    and nothing at all when tmux is not answering."""
+    if tmux_server_identity() is None:
+        return
+    deadline = time.monotonic() + RESTORE_SHUTDOWN_S
+    with RESTORE_LOCK:
+        names = [r["name"] for r in restore_state()["live"]["sessions"]]
+    for name in names:
+        if time.monotonic() > deadline:
+            break
+        restore_save(name)
+
+
+def restore_forget(name: str) -> None:
+    """A session ended on purpose (the kill route): drop it at once rather
+    than at the next tick, scrollback and all."""
+    with RESTORE_LOCK:
+        st = restore_state()
+        st["live"]["sessions"] = [r for r in st["live"]["sessions"]
+                                  if r["name"] != name]
+        _restore_save_live(st)
+        _restore_unlink(name, "ansi", "restored")
+
+
+def restore_rename(old: str, new: str) -> None:
+    """Carry a renamed session's record row and scrollback to its new name."""
+    with RESTORE_LOCK:
+        st = restore_state()
+        for r in st["live"]["sessions"]:
+            if r["name"] == old:
+                r["name"] = new
+        _restore_save_live(st)
+        for kind in ("ansi", "restored"):
+            try:
+                os.replace(restore_hist(old, kind), restore_hist(new, kind))
+            except OSError:
+                pass
+        for key in ("busy", "tried"):
+            if old in st[key]:
+                st[key][new] = st[key].pop(old)
+
+
+def restore_take(name: str) -> str:
+    """A restored session's saved scrollback with the dim line that closes it,
+    for its first attach, or "". The file goes as it is read: the first
+    device to attach is the one that sees it."""
+    p = restore_hist(name, "restored")
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(p.stat().st_mtime))
+        p.unlink()
+    except OSError:
+        return ""
+    text = text.rstrip("\n")
+    if not text:
+        return ""
+    return (text + "\n\x1b[0m\x1b[2m── restored " + when
+            + ", earlier output above ──\x1b[0m")
+
+
+def _restore_lines(name: str) -> int:
+    try:
+        text = restore_hist(name, "lost").read_text(encoding="utf-8",
+                                                    errors="replace")
+    except OSError:
+        return 0
+    text = text.rstrip("\n")
+    return text.count("\n") + 1 if text else 0
+
+
+def _restore_names(body: dict) -> list[str] | None:
+    names = body.get("names")
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        return None
+    return names
+
+
+@app.get("/api/restore")
+def api_restore_list() -> Response:
+    """The restore offers, newest loss first, each with what the card says
+    about it: its folder and whether that still exists, the command it was
+    running, and how many lines of output were saved."""
+    with RESTORE_LOCK:
+        pending = [dict(r) for r in restore_state()["pending"]]
+    pending.sort(key=lambda r: r.get("lost", 0), reverse=True)
+    out = []
+    for r in pending:
+        cwd = r.get("cwd", "")
+        out.append({
+            "name": r["name"], "alias": r.get("alias", ""), "cwd": cwd,
+            "cwd_exists": bool(cwd) and os.path.isdir(cwd),
+            "command": r.get("command", ""), "lost": r.get("lost", 0),
+            "lines": _restore_lines(r["name"]),
+        })
+    return no_store(JSONResponse({"sessions": out}))
+
+
+@app.post("/api/restore")
+def api_restore(request: Request, body: dict = Body(...)) -> Response:
+    """Bring back the named offers, in order, each exactly as api_new_session
+    would make it, then give it back its alias, notify mode and place, and,
+    for a session that was running Claude Code, put `claude --continue` at
+    its prompt (typed, not run, as /api/session/type does). Its saved output
+    waits for the first attach (restore_take)."""
+    refusal = throttled("session_mutate", RATE_SESSION_MUTATE, request)
+    if refusal is not None:
+        return refusal
+    names = _restore_names(body)
+    if names is None:
+        return JSONResponse({"error": "names must be a list of names"},
+                            status_code=400)
+    home = os.path.expanduser("~")
+    restored, errors = [], []
+    for name in names:
+        with RESTORE_LOCK:
+            st = restore_state()
+            row = next((r for r in st["pending"] if r["name"] == name), None)
+        if row is None:
+            errors.append({"name": name, "error": "nothing to restore"})
+            continue
+        if session_exists(name):
+            errors.append({"name": name, "error": "name in use"})
+            continue
+        cwd = row.get("cwd", "")
+        if not cwd or not os.path.isdir(cwd):
+            cwd = home
+        # The same ZDOTDIR pin as api_new_session, for the same reason.
+        rc, _ = tmux("new-session", "-d", "-e", f"ZDOTDIR={home}",
+                     "-s", name, "-c", cwd)
+        if rc != 0:
+            errors.append({"name": name, "error": "tmux could not create it"})
+            continue
+        # No "=" exact-match prefix: set-option rejects it, as noted in enable_mouse.
+        if row.get("alias"):
+            tmux("set-option", "-t", name, "@alias", str(row["alias"]))
+        if row.get("notify") in ("on", "quiet"):
+            tmux("set-option", "-t", name, "@notify", row["notify"])
+        if isinstance(row.get("order"), int):
+            tmux("set-option", "-t", name, "@ptui_order", str(row["order"]))
+        install_title_hook()
+        with RESTORE_LOCK:
+            st = restore_state()
+            try:
+                dest = restore_hist(name, "restored")
+                os.replace(restore_hist(name, "lost"), dest)
+                # The separator's time is when the session came back.
+                os.utime(dest)
+            except OSError:
+                pass
+            st["pending"] = [r for r in st["pending"] if r["name"] != name]
+            _restore_save_pending(st)
+        if os.path.basename(row.get("command", "")) == "claude":
+            tmux("send-keys", "-t", f"={name}:", "-l", "--", "claude --continue")
+        restored.append({"name": name, "cwd": cwd})
+    return no_store(JSONResponse({"restored": restored, "errors": errors}))
+
+
+@app.post("/api/restore/dismiss")
+def api_restore_dismiss(request: Request, body: dict = Body(...)) -> Response:
+    """Drop restore offers, the named ones or {"all": true}, with their
+    saved output."""
+    refusal = throttled("session_mutate", RATE_SESSION_MUTATE, request)
+    if refusal is not None:
+        return refusal
+    every = body.get("all") is True
+    names = None if every else _restore_names(body)
+    if names is None and not every:
+        return JSONResponse({"error": "names must be a list of names"},
+                            status_code=400)
+    with RESTORE_LOCK:
+        st = restore_state()
+        drop = [r["name"] for r in st["pending"]
+                if every or r["name"] in names]
+        st["pending"] = [r for r in st["pending"] if r["name"] not in drop]
+        for name in drop:
+            _restore_unlink(name, "lost")
+        _restore_save_pending(st)
+    return no_store(JSONResponse({"dismissed": drop}))
+
+
+def restore_count() -> int:
+    """How many offers are waiting, from memory: /api/sessions asks on every
+    poll."""
+    with RESTORE_LOCK:
+        return len(restore_state()["pending"])
 
 
 # ---------------------------------------------------------------------------

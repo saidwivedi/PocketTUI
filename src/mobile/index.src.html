@@ -459,6 +459,16 @@
       <span class="db-text"><span class="db-title">Demo.</span> Connect your computer to use your own sessions</span>
       <span class="db-act">Connect<svg aria-hidden="true"><use href="#i-back"/></svg></span>
     </button>
+    <!-- Sessions a lost tmux server took with it (a reboot, a crash), which
+         the server offers back (/api/restore). Kept out of #list, which every
+         poll rebuilds, so a ticked box stays as the user left it; filled by
+         renderRestoreCard (06-session-list.js). -->
+    <div id="restore-card" hidden>
+      <div class="rs-title">Restore sessions</div>
+      <div class="rs-note" id="restore-note"></div>
+      <div id="restore-rows"></div>
+      <div class="rs-keys"><button type="button" id="btn-restore">Restore</button><button type="button" id="btn-restore-dismiss">Dismiss</button></div>
+    </div>
     <div class="eyebrow" id="list-eyebrow">Sessions</div>
     <div id="list"></div>
     <div id="list-empty">No tmux sessions yet — New session starts one.</div>

@@ -111,6 +111,7 @@ async function fetchServerVersion() {
   syncThumbsCap();
   syncBrowseCap();
   syncPairCard();
+  syncRestoreCard();
 }
 
 // Everything this block knows about the computer it was describing, dropped for
