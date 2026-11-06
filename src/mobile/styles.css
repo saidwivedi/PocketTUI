@@ -3901,44 +3901,63 @@ html.term-open #dbg-panel { opacity: 0.85; }
     color: var(--umber);
     background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
   }
-  /* "File Explorer" / "Folder View" at the bar's left end: the expand key said
+  /* "Files" / "Workspace" at the bar's left end: the expand key said
      in words, which is what makes the way into the workspace findable when the
      small expand glyph alone was not (founder, 2026-10-24). A full accent pill
      was tried first and sat too loud at the head of the pane (founder,
      2026-10-25); the quiet accent tint that replaced it neither stood out nor
-     matched the pane's chrome, and the founder asked for it to pop (2026-11-06,
-     when the words also changed from "File viewer" / "Normal view"). So it is
-     now the macOS default button rather than a pill: the accent fill with the
-     paper as its ink, the way every other accent-filled control in the app
-     writes on it, but 22px tall with a 6px corner, 12px words and a 12px
-     glyph, the size of the keys beside it, not of a badge. A push button in
-     the card with a hairline border and a segmented "File Explorer | Folder
-     View" were rendered beside it in this head: the first read as one more
-     grey key, and the second ellipsised the folder's name at the docked width.
-     It sits in .files-nav, which grows with the right-hand group in equal
-     shares, so the centred title gives way to an ellipsis before this does
-     (see .files-toolrow). */
+     matched the pane's chrome (2026-11-06), and the accent-filled button tried
+     next was called lame the same day. A push button in the card and this
+     segmented control were rendered beside it, and the founder picked the
+     segment, with the words "Files" and "Workspace" ("File Explorer" and
+     "Folder View" before, "File viewer" and "Normal view" before that):
+     both modes on the bar at once, the one on screen raised out of a
+     recessed band the way the pane's active tab is (.tab-chip.on), so it says
+     where you are and where the other press goes without a glyph. No accent
+     anywhere. It sits in .files-nav, which never shrinks below its keys, so
+     the centred folder title gives way to an ellipsis before this does (see
+     .files-toolrow); under 520px the title also drops its folder glyph. */
   .files-mode-key {
     flex: 0 0 auto;
     align-items: center;
-    gap: 5px;
+    gap: 0;
     height: 22px;
     align-self: center;
     margin-left: 6px;
-    padding: 0 9px;
+    padding: 2px;
+    box-sizing: border-box;
+    border-radius: 5px;
+    background: var(--m-fill2);
+  }
+  .files-mode-seg {
+    display: inline-flex; align-items: center;
+    height: 18px;
+    padding: 0 8px;
     border: none;
-    border-radius: 6px;
-    background: var(--umber);
-    box-shadow: 0 1px 0 color-mix(in srgb, var(--ink) 12%, transparent);
+    border-radius: 4px;
+    background: transparent;
     font-family: var(--sans);
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
-    color: var(--paper);
+    color: var(--m-g1);
     cursor: pointer;
   }
-  .files-mode-key svg { flex: 0 0 auto; width: 12px; height: 12px; }
-  .files-mode-key:hover { background: color-mix(in srgb, var(--umber) 88%, #000); }
+  .files-mode-seg:not(.on):hover { color: var(--ink); }
+  .files-mode-seg.on {
+    background: var(--paper);
+    color: var(--ink);
+    box-shadow: 0 0 0 0.5px var(--m-sep), 0 1px 1px color-mix(in srgb, var(--ink) 12%, transparent);
+    cursor: default;
+  }
+  :root[data-theme="dark"] .files-mode-seg.on {
+    background: color-mix(in srgb, var(--ink) 13%, var(--paper));
+    box-shadow: 0 0 0 0.5px var(--m-sep);
+  }
+  :is(#screen-files, #screen-files-2) .files-toolrow { container: files-row / inline-size; }
+  @container files-row (max-width: 503px) {
+    :is(#screen-files, #screen-files-2).docked .files-title svg { display: none; }
+  }
   /* Living inside #screen-term is what saves the diff pane a visibility rule;
      this pane is a screen of its own, so it says the same thing in a selector:
      it is only on view while the terminal it is docked to is. The plain
