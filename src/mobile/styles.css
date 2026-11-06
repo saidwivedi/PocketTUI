@@ -4289,8 +4289,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
     flex-direction: column;
     background: var(--paper-rec);
   }
-  /* The column's head: the Files | Source control pair, then the folder the
-     tree is drawn from in the sidebar's eyebrow scale. */
+  /* The column's head: the folder the tree is drawn from in the sidebar's
+     eyebrow scale, taking the room left and ellipsising, then the Folder | Git
+     pair at the right end at its own width (flex 0 0 auto, never clipped). */
   .ws-tree-head {
     flex: 0 0 auto;
     display: flex;
@@ -4863,6 +4864,31 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   .ws-pane .cm-ws-acts .diff-act { width: 20px; height: 18px; }
   .ws-pane .cm-ws-acts .diff-act svg { width: 12px; height: 12px; }
+
+  /* The overview ruler (wsMarksKit): a 12px strip at the editor's right edge
+     that the scroller makes room for, so the native scrollbar keeps its own
+     hit area beside it. Ticks in the gutter bars' colours, the band for what
+     is on screen in the ink at a low alpha. */
+  .ws-pane .cm-editor.cm-ws-ruled > .cm-scroller { margin-right: 12px; }
+  .ws-pane .cm-ws-ruler {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 12px;
+    z-index: 3;
+    border-left: 1px solid var(--hair);
+    cursor: pointer;
+  }
+  .ws-pane .cm-ws-ruler-band,
+  .ws-pane .cm-ws-ruler-ticks { position: absolute; left: 0; right: 0; }
+  .ws-pane .cm-ws-ruler-ticks { top: 0; bottom: 0; }
+  .ws-pane .cm-ws-ruler-band { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+  .ws-pane .cm-ws-ruler-band[hidden] { display: none; }
+  .ws-pane .cm-ws-tick { position: absolute; left: 2px; right: 2px; border-radius: 1px; }
+  .ws-pane .cm-ws-tick.add { background: var(--diff-add-ink); }
+  .ws-pane .cm-ws-tick.mod { background: var(--warn); }
+  .ws-pane .cm-ws-tick.del { background: var(--diff-del-ink); }
 }
 
 /* Stacked full-width choices — the action sheets are menus, not forms. */

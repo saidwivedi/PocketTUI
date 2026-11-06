@@ -2510,12 +2510,15 @@ def test_a_commit_diff_is_drawn_without_actions(doc):
 
 
 def test_the_workspace_column_toggles_files_and_source_control(doc):
-    """The tree's head is a segmented control of two words, Folder and Git,
-    then the folder label reRoot writes; the view is closure state (the stashed ws
-    keeps it), the panel is made on the first switch, every status answer
-    repaints it, and the server's git_log gates its tab through syncScCap."""
+    """The tree's head is the folder label reRoot writes, then a segmented
+    control of two words, Folder and Git, at the right end; the view is closure
+    state (the stashed ws keeps it), the panel is made on the first switch, every
+    status answer repaints it, and the server's git_log gates its tab through
+    syncScCap."""
     ws = _js_chunk(doc, "function makeWorkspace(")
     assert 'el("div", { class: "ws-seg", role: "tablist", "aria-label": "Explorer view" },' in ws
+    head_row = ws[ws.index('const treeHead = el("div", { class: "ws-tree-head" },'):]
+    assert head_row.index("treeLabel,") < head_row.index('class: "ws-seg"')
     assert '"aria-label": "Folder tree" }, "Folder");' in ws
     assert 'el("button", { type: "button", class: "ws-seg-tab on", role: "tab",' in ws
     assert '"aria-label": "Git: changes, commit and history" }, "Git");' in ws
@@ -4333,8 +4336,30 @@ def test_the_codemirror_bundle_exports_what_the_marks_build_on():
     assert "explore/build_codemirror_vendor.sh" in body[:1500]
     head = body[body.index("var CM6="):][:3000]
     for name in ("WidgetType", "StateField", "StateEffect", "gutter", "GutterMarker",
-                 "Decoration", "RangeSetBuilder", "Compartment", "EditorView", "vim"):
+                 "Decoration", "RangeSetBuilder", "Compartment", "EditorView", "vim",
+                 "ViewPlugin", "keymap"):
         assert re.search(r"[{,]" + name + r":\(\)=>", head), name
+
+
+def test_a_marked_workspace_editor_has_an_overview_ruler_and_jump_keys(doc):
+    """Founder, 2026-11-06: in the expanded view the editor's right edge shows
+    where the changes are, to jump straight to one. The ruler is part of the
+    marks' extension (so it goes with the +/- key and exists only where the
+    workspace's marks do), ticks are the field's own hunks, a press jumps to the
+    nearest tick, and Alt+F5 / Shift+Alt+F5 step through them, since Alt+Up and
+    Alt+Down are the default keymap's move-line."""
+    kit = _js_chunk(doc, "function wsMarksKit(")
+    ext = kit[kit.index("const ext = (onDoc) => ["):]
+    assert "ruler," in ext
+    assert 'CM.EditorView.editorAttributes.of({ class: "cm-ws-ruled" }),' in ext
+    assert '{ key: "Alt-F5", run: step(1), shift: step(-1), preventDefault: true }' in ext
+    assert "hunks: v.hunks" in kit and "bars: gb.finish(), hunks };" in kit
+    assert "for (const t of wsRulerTicks(this.hunks, this.lines))" in kit
+    assert "if (best) jump(this.view, best._hunk);" in kit
+    assert 'effects: CM.EditorView.scrollIntoView(pos, { y: "center" }) });' in kit
+    assert ".ws-pane .cm-editor.cm-ws-ruled > .cm-scroller { margin-right: 12px; }" in doc
+    assert ".ws-pane .cm-ws-tick.add { background: var(--diff-add-ink); }" in doc
+    assert "wsMarksKit" not in _js_chunk(doc, "function edMakeView(")
 
 
 def test_an_expanded_explorer_keeps_the_listing_out_of_view_and_says_how_to_open(doc):
