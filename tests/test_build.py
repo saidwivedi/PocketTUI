@@ -2502,6 +2502,78 @@ def test_a_commit_diff_is_drawn_without_actions(doc):
     assert "\n.diff-line.add {" in css
 
 
+def test_the_workspace_column_toggles_files_and_source_control(doc):
+    """The tree's head is a segmented control, Files and Source control, then
+    the folder label reRoot writes; the view is closure state (the stashed ws
+    keeps it), the panel is made on the first switch, every status answer
+    repaints it, and the server's git_log gates its tab through syncScCap."""
+    ws = _js_chunk(doc, "function makeWorkspace(")
+    assert 'el("div", { class: "ws-seg", role: "tablist", "aria-label": "Explorer view" },' in ws
+    assert 'svgIcon("i-m-folder")' in ws and 'svgIcon("i-m-commit")' in ws
+    assert '<symbol id="i-m-commit" viewBox="0 0 24 24"' in doc
+    re_root = _ws_inner(doc, "reRoot")
+    assert "treeLabel.textContent = wsFolderLabel(path, ctx.home());" in re_root
+    assert "treeHead.textContent" not in ws
+    assert 'let wsView = "files";' in ws
+    assert 'el("aside", { class: "ws-tree" }, treeHead, treeBody, scBox)' in ws
+    view = _ws_inner(doc, "setView")
+    assert "scp = scPanel(scContext());" in view and "if (sc && !scp) {" in view
+    assert "if (scp) scp.paint(gitFiles, gitRoot);" in _ws_inner(doc, "paintStatus")
+    caps = _ws_inner(doc, "syncCaps")
+    assert 'segSc.hidden = !hasCapStrict("git_log");' in caps
+    assert "if (scp) { scp.destroy(); scp = null; }" in _ws_inner(doc, "destroy")
+    assert "if (ws) ws.syncCaps();" in doc and "if (ws) ws.syncRef();" in doc
+    ctx = _js_chunk(doc, "function wsContext() {")
+    assert "refRoot: () => filesRefRoot," in ctx
+    # The lists are the poll's rows split three ways, the actions the diff
+    # pane's, and a commit waits on its message, its server and its tree.
+    panel = _js_chunk(doc, "function scPanel(")
+    assert 'all.filter((f) => f.staged)' in panel
+    assert 'all.filter((f) => f.unstaged && f.status !== "??")' in panel
+    assert 'all.filter((f) => f.status === "??")' in panel
+    assert 'scSection("Untracked", true)' in panel
+    assert '!hasCapStrict("git_commit")' in panel
+    assert 'e.key === "Enter" && (e.ctrlKey || e.metaKey)' in panel
+    row = _js_chunk(doc, "function scFileRow(")
+    assert "diffBadge(scope, f.status)" in row and "diffFileActs(scope, f, h)" in row
+
+
+def test_a_git_diff_tab_has_a_key_that_is_never_a_path(doc):
+    """addTab takes a caller's key, the diff tab's names its scope, commit and
+    file, so open() of the same path still finds only the editor; fillTab
+    mounts the commit diff view, live only for the staged scope."""
+    ws = _js_chunk(doc, "function makeWorkspace(")
+    assert "tab.key = props.key || wsTabKey(tab.path, tab.ref);" in ws
+    og = _ws_inner(doc, "openGitDiff")
+    assert 'const key = "gitdiff:" + info.scope + ":" + (info.sha || "") + ":" + info.rel;' in og
+    assert 'kind: "gitdiff"' in og
+    assert 'if (tab.kind === "gitdiff") return fillGitDiff(tab);' in _ws_inner(doc, "fillTab")
+    fill = _ws_inner(doc, "fillGitDiff")
+    assert "h: staged ? {" in fill and "scCommitDiffView(" in fill
+    view = _js_chunk(doc, "function scCommitDiffView(")
+    assert 'if (staged) diffRender(body, data, "staged", info.path, ctx.h);' in view
+
+
+def test_a_refused_commit_says_why_in_a_line(doc, tmp_path):
+    """git's own words, two lines at most, the second its fatal line when it
+    has one; a timeout warns about a hook."""
+    out = _node_json(tmp_path, "commit_err.mjs", _js_chunk(doc, "function scCommitError(") + """
+console.log(JSON.stringify([
+  scCommitError({ status: 409, data: { error: "identity", detail: "*** Please tell me who you are.\\n\\nRun\\n\\n  git config --global user.email\\n\\nfatal: no email was given and auto-detection is disabled" } }),
+  scCommitError({ status: 409, data: { error: "commit_failed", detail: "hook said no\\nsecond line\\nthird" } }),
+  scCommitError({ status: 409, data: { error: "nothing_to_commit", detail: "" } }),
+  scCommitError({ status: 409, data: { error: "timeout", detail: "x" } }),
+  scCommitError({ status: 0, data: null }),
+]));
+""")
+    assert out[0] == ("*** Please tell me who you are. "
+                      "fatal: no email was given and auto-detection is disabled")
+    assert out[1] == "hook said no second line"
+    assert out[2] == "Nothing to commit"
+    assert "hook may have half-run" in out[3]
+    assert out[4] == "Could not reach the server"
+
+
 def _explorer_load(doc):
     return "\n".join(_js_chunk(doc, h) for h in (
         "function filesStopLoad() {", "async function loadDir(path, primed) {"))
@@ -3706,7 +3778,8 @@ def test_a_workspace_tab_kind_class_is_styled_only_through_ws_pane(doc):
     under the one in front."""
     css = (REPO / "src" / "mobile" / "styles.css").read_text(encoding="utf-8")
     assert 'tab.body = el("div", { class: "ws-pane ws-" + tab.kind });' in doc
-    assert not re.search(r"\.ws-(editor|reader|mesh|pdf|media|html)(?![\w-])", css)
+    assert not re.search(r"\.ws-(editor|reader|mesh|pdf|media|html|gitdiff)(?![\w-])",
+                         css.replace(".ws-pane.ws-gitdiff", ""))
     assert 'el("div", { class: "ws-media-box" }, media)' in doc
 
 

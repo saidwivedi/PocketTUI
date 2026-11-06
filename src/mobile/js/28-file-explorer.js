@@ -715,6 +715,7 @@ function wsContext() {
     path: () => filesPath,
     home: () => filesHome,
     refFor, fsList, cachedListing, openFileActions, openRendered, wireMoveTarget,
+    refRoot: () => filesRefRoot,
     readText: fsReadText,
     navigate: (path) => navigateDir(path),
   };
@@ -2099,6 +2100,8 @@ function syncRefBar() {
   const repo = filesRepo && filesRepo.root ? filesRepo : null;
   q("files-ref-wrap").hidden = !repo;
   q("files-ref-ro").hidden = !filesRef;
+  // The workspace's Source control view follows the branch read here.
+  if (ws) ws.syncRef();
   // Out of the repo (the terminal cd'd away under the docked pane), there is
   // no history to show; into another one, it is that repo's.
   if (!repo) { showRefMenu(false); filesHistoryEnd(); return; }
@@ -3133,7 +3136,10 @@ const api = {
   teardown: filesTeardown,
   reset: filesReset,
   syncRefCap: syncRefCap,
-  syncScCap: () => { if (filesRepo && filesRepo.root) syncHistoryKey(); },
+  syncScCap: () => {
+    if (filesRepo && filesRepo.root) syncHistoryKey();
+    if (ws) ws.syncCaps();
+  },
   syncThumbsCap: syncThumbsCap,
   sheet: { edit: sheetEdit, rename: sheetRename,
            download: sheetDownload, remove: sheetDelete },
