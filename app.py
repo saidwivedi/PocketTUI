@@ -921,6 +921,9 @@ def capture_history(name: str, lines: int = REPLAY_LINES,
 
     `screen` takes the visible screen too, for the session-restore save: after
     a reboot there is no repaint, and the last screen is the part worth having.
+    On the alternate screen that is the TUI's last frame (the end of a Claude
+    Code conversation), captured alone: plain capture-pane with no -S/-E reads
+    the visible grid, where `-a` would read the hidden primary one.
     """
     # The active pane is filtered here rather than with `list-panes -f`, the
     # way session_group avoids `list-sessions -f`: tmux 3.0a has no -f on the
@@ -930,17 +933,23 @@ def capture_history(name: str, lines: int = REPLAY_LINES,
     if rc != 0:
         return ""
     pane = ""
+    alt = False
     for line in out.splitlines():
         parts = line.split("\t")
         if len(parts) >= 2 and parts[0] == "1":
             pane = parts[1].strip()
-            if len(parts) > 2 and parts[2].strip() == "1":
+            alt = len(parts) > 2 and parts[2].strip() == "1"
+            if alt and not screen:
                 return ""
             break
     if not pane:
         return ""
-    rc, out = tmux("capture-pane", "-p", "-e", "-J", "-t", pane,
-                   "-S", f"-{max(0, lines)}", *(() if screen else ("-E", "-1")))
+    if alt:
+        rc, out = tmux("capture-pane", "-p", "-e", "-J", "-t", pane)
+    else:
+        rc, out = tmux("capture-pane", "-p", "-e", "-J", "-t", pane,
+                       "-S", f"-{max(0, lines)}",
+                       *(() if screen else ("-E", "-1")))
     if rc != 0:
         return ""
     text = out.rstrip("\n")
@@ -12475,9 +12484,9 @@ def restore_track(rows: list[dict], panes: list[dict],
 def restore_save(name: str, now: float | None = None) -> bool:
     """Save one session's scrollback, screen included, to its .ansi file.
 
-    An empty capture (the alternate screen, a failed call) keeps whatever
-    the file already holds: an agent's TUI on screen at the moment of a save
-    must not wipe the shell output saved before it took over.
+    An empty capture (a blank screen, a failed call) keeps whatever the file
+    already holds. A pane on the alternate screen saves the TUI's visible
+    frame, which replaces the shell output saved before it took over.
     """
     text = capture_history(name, screen=True)
     if not text.strip():
