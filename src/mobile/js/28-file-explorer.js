@@ -844,13 +844,12 @@ function syncFilesExpand() {
       use.setAttribute("href", "#i-" + m + (on ? "collapse" : "expand"));
       btn.setAttribute("aria-label", on ? "Shrink the file pane" : "Expand the file pane");
     }
-    // The same key said in words at the bar's left end, written here so the
-    // word and the right key's glyph are always the same state.
-    for (const btn of box.querySelectorAll(".files-mode-key")) {
-      btn.querySelector("use").setAttribute("href", on ? "#i-m-collapse" : "#i-m-expand");
-      btn.querySelector(".files-mode-word").textContent = on ? "Folder View" : "File Explorer";
-      btn.setAttribute("aria-label", on ? "Back to File explorer" : "Expand to Folder view");
-      btn.title = on ? "Back to File explorer" : "Expand to Folder view";
+    // The same state as a segmented control at the bar's left end, marked here
+    // so the selected segment and the right key's glyph always agree.
+    for (const seg of box.querySelectorAll(".files-mode-seg")) {
+      const sel = (seg.dataset.expanded === "1") === on;
+      seg.classList.toggle("on", sel);
+      seg.setAttribute("aria-selected", sel ? "true" : "false");
     }
   }
 }
@@ -951,9 +950,19 @@ function filesBack() {
 // The same pair in the three file views is wired once under the factory — there
 // is one editor, one reader and one viewer for both rows — and acts on whichever
 // listing owns them.
-for (const btn of root.querySelectorAll(".dock-expand, .files-mode-key")) {
+for (const btn of root.querySelectorAll(".dock-expand")) {
   btn.addEventListener("click", () => {
     filesSetExpanded(!filesExpanded);
+    refit(0);
+  });
+}
+// A segment sets its own mode, so a press on the one already selected does
+// nothing.
+for (const seg of root.querySelectorAll(".files-mode-seg")) {
+  seg.addEventListener("click", () => {
+    const want = seg.dataset.expanded === "1";
+    if (want === filesExpanded) return;
+    filesSetExpanded(want);
     refit(0);
   });
 }
