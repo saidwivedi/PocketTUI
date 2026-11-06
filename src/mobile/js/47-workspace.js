@@ -404,6 +404,34 @@ function wsMarksKeyState(tab, mark, git, hunks) {
   return { show, pressed: on, title: on ? "Hide the changes" : "Show the changes" };
 }
 
+// A hunk's first line in the buffer, 0-based: its first added line, or for a
+// pure deletion the line that now follows the removed ones (the last line when
+// they were at the end).
+function wsHunkLine(h, lines) {
+  return Math.max(0, Math.min(h.b, lines - 1));
+}
+
+// The overview ruler's ticks for `hunks` in a buffer of `lines` lines: where
+// each sits as a fraction of the file (`top`), how much of it its added lines
+// take (`size`, 0 for a deletion, which the ruler draws at its 2px minimum),
+// and its kind in the gutter bars' terms.
+function wsRulerTicks(hunks, lines) {
+  const n = Math.max(1, lines);
+  return hunks.map((h) => ({
+    hunk: h, top: wsHunkLine(h, lines) / n, size: h.bl / n,
+    kind: h.al && h.bl ? "mod" : h.bl ? "add" : "del",
+  }));
+}
+
+// The hunk after (dir 1) or before (dir -1) line `cur` (0-based), wrapping
+// round the file; null when there are none.
+function wsNextHunk(hunks, lines, cur, dir) {
+  if (!hunks.length) return null;
+  if (dir > 0) return hunks.find((h) => wsHunkLine(h, lines) > cur) || hunks[0];
+  for (let i = hunks.length - 1; i >= 0; i--) if (wsHunkLine(hunks[i], lines) < cur) return hunks[i];
+  return hunks[hunks.length - 1];
+}
+
 // The CodeMirror half of the marks, made once on first use: the editor bundle
 // loads lazily (ensureCM, 29-editor.js), and these classes extend its own.
 // `set` replaces a view's marks; between two counts the field moves them with
@@ -413,12 +441,16 @@ function wsMarksKit() {
   if (wsMarksKitMemo) return wsMarksKitMemo;
   const CM = window.CM6;
   const set = CM.StateEffect.define();
-  const none = () => ({ deco: CM.Decoration.none, bars: new CM.RangeSetBuilder().finish() });
+  const none = () => ({ deco: CM.Decoration.none, bars: new CM.RangeSetBuilder().finish(),
+                        hunks: [] });
+  // The hunks ride along for the ruler and the jump keys; between two counts
+  // they keep the last count's lines, which the next count 150 ms on corrects.
   const field = CM.StateField.define({
     create: none,
     update(v, tr) {
       for (const e of tr.effects) if (e.is(set)) return e.value;
-      return tr.docChanged ? { deco: v.deco.map(tr.changes), bars: v.bars.map(tr.changes) } : v;
+      return tr.docChanged
+        ? { deco: v.deco.map(tr.changes), bars: v.bars.map(tr.changes), hunks: v.hunks } : v;
     },
     provide: (f) => CM.EditorView.decorations.from(f, (v) => v.deco),
   });
@@ -482,13 +514,104 @@ function wsMarksKit() {
         gb.add(from, from, bars.del);
       }
     }
-    return { deco: CM.Decoration.set(ranges, true), bars: gb.finish() };
+    return { deco: CM.Decoration.set(ranges, true), bars: gb.finish(), hunks };
   }
-  // A view's extension: the field, its gutter, and `onDoc` told of each edit.
+  // Put the caret on a hunk's first line, that line in the middle of the
+  // scroller, and the keyboard in the editor.
+  function jump(view, h) {
+    const doc = view.state.doc;
+    const pos = doc.line(wsHunkLine(h, doc.lines) + 1).from;
+    view.dispatch({ selection: { anchor: pos },
+                    effects: CM.EditorView.scrollIntoView(pos, { y: "center" }) });
+    view.focus();
+  }
+  // The next (dir 1) or previous (-1) hunk from the caret's line, wrapping.
+  // No hunks leaves the key to whatever else wants it.
+  const step = (dir) => (view) => {
+    const { doc, selection } = view.state;
+    const h = wsNextHunk(view.state.field(field).hunks, doc.lines,
+                         doc.lineAt(selection.main.head).number - 1, dir);
+    if (!h) return false;
+    jump(view, h);
+    return true;
+  };
+  // The overview ruler, VS Code's: a strip at the editor's right edge, beside
+  // the scroller's own scrollbar (the scroller gives up its width in CSS, so
+  // the native bar keeps all of its hit area), with a tick per hunk where its
+  // lines sit in the file and a faint band for what is on screen. A press near
+  // a tick jumps to that hunk. It lives in the marks' compartment, so it goes
+  // when they go, and only the workspace's editors have the marks.
+  const ruler = CM.ViewPlugin.fromClass(class {
+    constructor(view) {
+      this.view = view;
+      this.hunks = null;
+      this.lines = 0;
+      this.band = el("div", { class: "cm-ws-ruler-band" });
+      this.ticks = el("div", { class: "cm-ws-ruler-ticks" });
+      this.dom = el("div", { class: "cm-ws-ruler", "aria-hidden": "true" }, this.band, this.ticks);
+      this.dom.addEventListener("mousedown", (e) => this.press(e));
+      this.onScroll = () => this.paintBand();
+      view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
+      view.dom.appendChild(this.dom);
+      this.paint();
+    }
+    update(u) {
+      const hunks = u.state.field(field).hunks;
+      if (hunks !== this.hunks || u.state.doc.lines !== this.lines) this.paint();
+      else if (u.geometryChanged || u.viewportChanged) this.paintBand();
+    }
+    // Ticks are placed in percent of the strip, so a resize needs no repaint.
+    paint() {
+      this.hunks = this.view.state.field(field).hunks;
+      this.lines = this.view.state.doc.lines;
+      this.ticks.textContent = "";
+      for (const t of wsRulerTicks(this.hunks, this.lines)) {
+        const tick = el("div", { class: "cm-ws-tick " + t.kind });
+        tick.style.top = "min(" + (t.top * 100) + "%, calc(100% - 2px))";
+        tick.style.height = "max(2px, " + (t.size * 100) + "%)";
+        tick._hunk = t.hunk;
+        this.ticks.appendChild(tick);
+      }
+      this.paintBand();
+    }
+    paintBand() {
+      const s = this.view.scrollDOM;
+      const over = s.scrollHeight > s.clientHeight + 1;
+      this.band.hidden = !over;
+      if (!over) return;
+      this.band.style.top = (s.scrollTop / s.scrollHeight * 100) + "%";
+      this.band.style.height = (s.clientHeight / s.scrollHeight * 100) + "%";
+    }
+    // The nearest tick within 6px of the press, so a 2px tick is still a
+    // target a pointer can hit.
+    press(e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      let best = null, gap = 7;
+      for (const tick of this.ticks.children) {
+        const r = tick.getBoundingClientRect();
+        const d = e.clientY < r.top ? r.top - e.clientY
+                : e.clientY > r.bottom ? e.clientY - r.bottom : 0;
+        if (d < gap) { gap = d; best = tick; }
+      }
+      if (best) jump(this.view, best._hunk);
+    }
+    destroy() {
+      this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
+      this.dom.remove();
+    }
+  });
+  // A view's extension: the field, its gutter, the ruler and the jump keys,
+  // and `onDoc` told of each edit. The keys are VS Code's Alt+F5 and
+  // Shift+Alt+F5: Alt+Up and Alt+Down are the default keymap's move-line.
   const ext = (onDoc) => [
     field,
     CM.gutter({ class: "cm-ws-gutter", markers: (view) => view.state.field(field).bars }),
     CM.EditorView.updateListener.of((u) => { if (u.docChanged) onDoc(); }),
+    CM.EditorView.editorAttributes.of({ class: "cm-ws-ruled" }),
+    ruler,
+    CM.keymap.of([{ key: "Alt-F5", run: step(1), shift: step(-1), preventDefault: true }]),
   ];
   wsMarksKitMemo = { set, build, ext };
   return wsMarksKitMemo;
