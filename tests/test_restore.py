@@ -62,6 +62,8 @@ class RestoreTmux(FakeTmux):
             pane = args[args.index("-t") + 1]
             for s in self.sessions:
                 if f"%{s['sid']}" == pane:
+                    if s.get("alt") and "-S" not in args:
+                        return 0, s.get("screen", "")   # the visible TUI
                     return 0, s.get("hist", "")
             return 1, ""
         return super().__call__(*args)
@@ -252,13 +254,30 @@ def test_scrollback_is_saved_on_first_sight_busy_to_idle_and_every_minute_busy(
 def test_an_empty_capture_never_overwrites_saved_scrollback(monkeypatch):
     t = fake(monkeypatch, [{"name": "a", "hist": "kept\n"}])
     tick(1000)
-    t.sessions[0]["alt"] = True                 # a TUI on the alternate screen
+    t.sessions[0]["alt"] = True                 # a blank alternate screen
+    t.sessions[0]["screen"] = "\n\n"
     assert A.restore_save("a", 2000) is False
     t.sessions[0]["alt"] = False
     t.sessions[0]["hist"] = "\n\n"
     assert A.restore_save("a", 2000) is False
     assert A.restore_hist("a").read_text() == "kept"
     assert live()["sessions"][0]["saved"] == 1000
+
+
+def test_a_tui_on_the_alternate_screen_saves_its_visible_frame(monkeypatch):
+    t = fake(monkeypatch, [{"name": "a", "alt": True, "hist": "shell\n",
+                            "screen": "> fix the bug\n\x1b[1mDone.\x1b[0m\n"}])
+    tick(1000)
+    assert A.restore_hist("a").read_text() == "> fix the bug\n\x1b[1mDone.\x1b[0m"
+    assert live()["sessions"][0]["saved"] == 1000
+    # The visible screen only: no -S/-E, and not -a (the hidden primary grid).
+    cap = [c for c in t.calls if c[0] == "capture-pane"][-1]
+    assert cap == ("capture-pane", "-p", "-e", "-J", "-t", "%0")
+    # The reconnect replay still answers "" for the alternate screen, and
+    # never captures at all.
+    before = captures(t)
+    assert A.capture_history("a") == ""
+    assert captures(t) == before
 
 
 def test_the_shutdown_save_skips_a_tmux_that_is_not_answering(monkeypatch):
