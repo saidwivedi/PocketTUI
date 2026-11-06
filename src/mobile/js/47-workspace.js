@@ -543,14 +543,16 @@ function makeWorkspace(ctx) {
   const root = ctx.root;
   const wrap = root.querySelector(".files-wrap");
 
-  // The column's head: Files or Source control, VS Code's activity bar folded
-  // into the column it switches, then the folder the tree is drawn from.
-  const segFiles = el("button", { type: "button", class: "ws-seg-tab", role: "tab",
-                                  "aria-selected": "true", title: "Files",
-                                  "aria-label": "Files" }, svgIcon("i-m-folder"));
+  // The column's head: the folder tree or Source control, VS Code's activity
+  // bar folded into the column it switches, then the folder the tree is drawn
+  // from. Words rather than glyphs, short enough for the narrowest column.
+  const segFiles = el("button", { type: "button", class: "ws-seg-tab on", role: "tab",
+                                  "aria-selected": "true", title: "Folder tree",
+                                  "aria-label": "Folder tree" }, "Folder");
   const segSc = el("button", { type: "button", class: "ws-seg-tab", role: "tab",
-                               "aria-selected": "false", title: "Source control",
-                               "aria-label": "Source control" }, svgIcon("i-m-commit"));
+                               "aria-selected": "false",
+                               title: "Git: changes, commit and history",
+                               "aria-label": "Git: changes, commit and history" }, "Git");
   const treeLabel = el("span", { class: "ws-tree-label" });
   const treeHead = el("div", { class: "ws-tree-head" },
     el("div", { class: "ws-seg", role: "tablist", "aria-label": "Explorer view" },

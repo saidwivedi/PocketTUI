@@ -303,24 +303,15 @@
     <symbol id="i-m-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
       <path d="M4 11.5 12 5l8 6.5M6.5 10v9h11v-9"/>
     </symbol>
-    <!-- A clock whose rim runs backwards: the explorer's commit history key
-         (50-source-control.js). The rim is open at the top left and ends in a
-         corner arrowhead pointing back. A head on the rim at the top was tried
-         as well and at 13px read as #i-m-reload, the refresh key on the row
-         above. -->
-    <symbol id="i-m-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
-      <path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3L4.5 8.9"/>
-      <path d="M4.5 5v3.9h3.9"/>
-      <path d="M12 8.3V12l2.6 1.7"/>
-    </symbol>
     <symbol id="i-m-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
       <circle cx="7" cy="6" r="2.2"/>
       <circle cx="7" cy="18" r="2.2"/>
       <circle cx="17" cy="8" r="2.2"/>
       <path d="M7 8.2v7.6M17 10.2c0 4-10 2.5-10 5.6"/>
     </symbol>
-    <!-- A commit on its line: the workspace's Source control tab
-         (47-workspace.js), VS Code's glyph for the same view. -->
+    <!-- A commit on its line, VS Code's glyph for its Source control view:
+         the explorer's History pill and its title while the history is on
+         (28-file-explorer.js). -->
     <symbol id="i-m-commit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
       <circle cx="12" cy="12" r="3.6"/>
       <path d="M3.5 12h4.9M15.6 12h4.9"/>
@@ -875,8 +866,10 @@
       <!-- The commits of the branch beside it, in place of the listing until
            pressed again or backed out of (50-source-control.js). Inside the
            wrap so it is drawn exactly where a branch is; hidden on a server
-           that cannot answer /api/git/log (syncScCap). -->
-      <button type="button" class="icon-btn" id="btn-files-history" aria-pressed="false" aria-label="Commit history" title="Commit history"><svg><use href="#i-m-history"/></svg></button>
+           that cannot answer /api/git/log (syncScCap). A pill in the branch
+           pop-up's shape with a word beside the glyph, since a glyph alone was
+           not read as history; on a narrow bar the word goes. -->
+      <button type="button" id="btn-files-history" aria-pressed="false" aria-label="Commit history" title="Commit history"><svg><use href="#i-m-commit"/></svg><span class="ref-label">History</span></button>
       <!-- Rows written by syncRefMenu(); .view-row and .view-check are the
            layout menu's, since these are the same choice in the same panel. -->
       <div id="files-ref-menu" role="menu"></div>

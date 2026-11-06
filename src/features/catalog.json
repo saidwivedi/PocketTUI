@@ -1407,7 +1407,7 @@
   "group": "Files and code",
   "title": "Stage, unstage and commit from the file browser",
   "outcome": "The expanded file browser's left column switches to a Source control view: a message box with a Commit key, then Staged, Changes and Untracked with the diff pane's tick, cross and undo on every file; Commit lands the staged files, or every tracked change when nothing is staged.",
-  "where": "Expanded file browser > Source control tab at the top of the left column",
+  "where": "Expanded file browser > Git tab at the top of the left column",
   "surface": "wide",
   "gates": [
    "desktop"
