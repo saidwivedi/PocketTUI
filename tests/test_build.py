@@ -3715,7 +3715,26 @@ def test_the_workspace_tree_never_roots_at_an_empty_path(doc):
     click = body[body.index('treeBody.addEventListener("click"'):]
     click = click[:click.index("\n  });\n")]
     assert "expand(node);\n      }\n      ctx.navigate(node.path);" not in click
-    assert "} else if (keepShut === node.path) keepShut = null;\n      ctx.navigate(node.path);" in click
+    assert ("} else if (keepShut === node.path) keepShut = null;\n"
+            "      treeNav = node.path;\n      ctx.navigate(node.path);") in click
+
+
+def test_the_workspace_tree_roots_at_the_address_bars_folder(doc):
+    """Founder, 2026-11-06: the expanded explorer's root should be the folder in
+    the address bar. Every move of the listing from outside the tree (crumb,
+    path field, back, remembered folder, tapped path, terminal cwd) roots the
+    tree there; a folder opened from the tree marks its own navigation
+    (treeNav) and keeps the root, and a reload of the same folder is no move."""
+    body = _js_chunk(doc, "function makeWorkspace(")
+    moved = body[body.index("  function movedFromOutside(path) {"):]
+    moved = moved[:moved.index("\n  }\n")]
+    assert "if (!path || path === listedAt) return false;" in moved
+    assert "const fromTree = treeNav === path;" in moved
+    listing = body[body.index("  function onListing(data) {"):]
+    assert ("    if (!on) return;\n"
+            "    if (movedFromOutside(data.path)) rootAt(data.path);\n") in listing
+    on = body[body.index("  function setOn(v) {"):]
+    assert "if (movedFromOutside(ctx.path())) rootAt(ctx.path());\n      reveal(ctx.path());" in on
 
 
 def test_the_workspace_tree_lists_folders_first_in_the_backends_order(doc, tmp_path):
