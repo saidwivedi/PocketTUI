@@ -686,6 +686,7 @@ let filesHistoryOn = false;
 let filesHistory = null;      // the commit list (scHistory), while on
 let filesHistoryDiff = null;  // one commit's diff of one file, over the list
 let filesHistoryRoot = "";    // the repo the list was loaded for
+let filesFolderTitle = "";    // the folder the crumbs end on, for syncFilesTitle
 // The branch was changed while the listing was covered (pickRef reloads the
 // list instead), so the listing is the old branch's and closing reloads it.
 let filesListStale = false;
@@ -1551,8 +1552,8 @@ function renderCrumbs(path) {
     wrap.appendChild(crumbBtn(seg, prefix, i === parts.length - 1));
   });
   // The tool row's title is the folder the crumbs end on.
-  root.querySelector(".files-title-name").textContent =
-    parts.length ? parts[parts.length - 1] : rootLabel;
+  filesFolderTitle = parts.length ? parts[parts.length - 1] : rootLabel;
+  syncFilesTitle();
   // The tail is the current folder — that is the segment to keep in view.
   wrap.scrollLeft = wrap.scrollWidth;
 }
@@ -2112,6 +2113,7 @@ function syncRefBar() {
     filesCloseCommitDiff();
     filesHistory.load(filesRef || "HEAD");
   }
+  if (filesHistoryOn) syncFilesTitle();
   const live = repo.current || "HEAD";
   const btn = q("btn-files-ref");
   btn.textContent = "";
@@ -2261,6 +2263,17 @@ function syncHistoryView() {
   btn.classList.toggle("on", filesHistoryOn);
   btn.setAttribute("aria-pressed", filesHistoryOn ? "true" : "false");
   if (filesHistory) filesHistory.el.hidden = !!filesHistoryDiff;
+  syncFilesTitle();
+}
+
+// The tool row's title: the folder, or while the history covers the listing
+// (a commit's diff included), whose history it is, under the commit glyph.
+function syncFilesTitle() {
+  const ref = filesRef || (filesRepo && filesRepo.current) || "HEAD";
+  root.querySelector(".files-title use").setAttribute(
+    "href", filesHistoryOn ? "#i-m-commit" : "#i-m-folder");
+  root.querySelector(".files-title-name").textContent =
+    filesHistoryOn ? "History · " + ref : filesFolderTitle;
 }
 
 // The diff replaces the list rather than stacking over it: the list stays in

@@ -2457,16 +2457,23 @@ def test_the_explorer_head_has_a_refresh_key(doc):
 
 
 def test_the_branch_bar_has_a_history_key(doc):
-    """Beside the branch pop-up on the path bar (row 1 is untouched), gated on
-    the server's git_log, swapping the listing for #files-history, which the
-    second pane's copy carries emptied."""
+    """Beside the branch pop-up on the path bar (row 1 is untouched), a pill in
+    its shape with the commit glyph and a word that goes on a narrow bar, gated
+    on the server's git_log, swapping the listing for #files-history, which the
+    second pane's copy carries emptied; while on, the title names the branch."""
     ref = doc[doc.index('<div id="files-ref-wrap" hidden>'):]
     ref = ref[:ref.index('<div id="files-ref-menu"')]
     assert ref.index('id="btn-files-ref"') < ref.index('id="btn-files-history"')
-    assert ('<button type="button" class="icon-btn" id="btn-files-history" aria-pressed="false" '
+    assert ('<button type="button" id="btn-files-history" aria-pressed="false" '
             'aria-label="Commit history" title="Commit history">'
-            '<svg><use href="#i-m-history"/></svg></button>') in doc
-    assert '<symbol id="i-m-history" viewBox="0 0 24 24"' in doc
+            '<svg><use href="#i-m-commit"/></svg><span class="ref-label">History</span></button>') in doc
+    assert 'i-m-history' not in doc
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    assert "@container (max-width: 420px) { #btn-files-history .ref-label { display: none; } }" in css
+    title = _js_chunk(doc, "function syncFilesTitle() {")
+    assert '"History · " + ref' in title
+    assert 'filesHistoryOn ? "#i-m-commit" : "#i-m-folder"' in title
+    assert "  syncFilesTitle();\n}" in _js_chunk(doc, "function syncHistoryView() {")
     wrap = doc[doc.index('<div class="files-wrap">'):]
     wrap = wrap[:wrap.index("</div>\n</div>")]
     assert '<div id="files-history" hidden></div>' in wrap
@@ -2503,13 +2510,17 @@ def test_a_commit_diff_is_drawn_without_actions(doc):
 
 
 def test_the_workspace_column_toggles_files_and_source_control(doc):
-    """The tree's head is a segmented control, Files and Source control, then
-    the folder label reRoot writes; the view is closure state (the stashed ws
+    """The tree's head is a segmented control of two words, Folder and Git,
+    then the folder label reRoot writes; the view is closure state (the stashed ws
     keeps it), the panel is made on the first switch, every status answer
     repaints it, and the server's git_log gates its tab through syncScCap."""
     ws = _js_chunk(doc, "function makeWorkspace(")
     assert 'el("div", { class: "ws-seg", role: "tablist", "aria-label": "Explorer view" },' in ws
-    assert 'svgIcon("i-m-folder")' in ws and 'svgIcon("i-m-commit")' in ws
+    assert '"aria-label": "Folder tree" }, "Folder");' in ws
+    assert 'el("button", { type: "button", class: "ws-seg-tab on", role: "tab",' in ws
+    assert '"aria-label": "Git: changes, commit and history" }, "Git");' in ws
+    head = ws[ws.index("const segFiles"):ws.index("const treeLabel")]
+    assert "svgIcon" not in head
     assert '<symbol id="i-m-commit" viewBox="0 0 24 24"' in doc
     re_root = _ws_inner(doc, "reRoot")
     assert "treeLabel.textContent = wsFolderLabel(path, ctx.home());" in re_root

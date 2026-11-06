@@ -3250,6 +3250,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .files-pathbar {
   display: flex; align-items: center;
   height: 28px;
+  /* A size container, so the history pill's word can give way on a narrow
+     pane (.browser-topbar's recipe, at its width). */
+  container-type: inline-size;
   padding: 0 10px;
   border-bottom: 1px solid var(--m-sep);
   cursor: text;
@@ -3415,7 +3418,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   padding-left: 8px;
 }
 #files-ref-wrap[hidden] { display: none; }
-#btn-files-ref {
+#btn-files-ref, #btn-files-history {
   display: flex; align-items: center; gap: 4px;
   max-width: 150px;
   height: 22px;
@@ -3429,10 +3432,11 @@ html.term-open #dbg-panel { opacity: 0.85; }
   padding: 0 4px;
   cursor: pointer;
 }
-#btn-files-ref svg { flex: 0 0 auto; width: 12px; height: 12px; }
+#btn-files-ref svg, #btn-files-history svg { flex: 0 0 auto; width: 12px; height: 12px; }
 #btn-files-ref svg:last-child { width: 10px; height: 10px; color: var(--m-g2); }
 #btn-files-ref .ref-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-#btn-files-ref:is(:hover, :active, [aria-expanded="true"]) { color: var(--ink); background: var(--m-fill2); }
+#btn-files-ref:is(:hover, :active, [aria-expanded="true"]),
+#btn-files-history:is(:hover, :active) { color: var(--ink); background: var(--m-fill2); }
 /* Off the working tree: the one state where what the explorer is showing is
    not what is on the disk, so the control that put it there wears the accent
    for as long as it lasts. */
@@ -4168,8 +4172,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
     padding: 6px 8px 4px;
     min-width: 0;
   }
-  /* Two icon keys in one recessed track, the selected one raised on paper:
-     the macOS segmented control the pane heads already follow. */
+  /* Two words in one recessed track, the selected one in the accent fill the
+     path bar's branch and history pills wear when on. */
   .ws-seg {
     flex: 0 0 auto;
     display: flex;
@@ -4182,22 +4186,23 @@ html.term-open #dbg-panel { opacity: 0.85; }
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
     height: 20px;
-    padding: 0;
+    padding: 0 8px;
     border: none;
     border-radius: 5px;
     background: transparent;
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
     color: var(--m-g1);
     cursor: pointer;
   }
   .ws-seg-tab[hidden] { display: none; }
-  .ws-seg-tab svg { width: 14px; height: 14px; }
   .ws-seg-tab:hover { color: var(--ink); }
   .ws-seg-tab.on {
-    background: var(--paper);
-    color: var(--ink);
-    box-shadow: 0 0 0 0.5px var(--m-sep), 0 1px 2px rgba(20, 16, 10, 0.12);
+    background: var(--umber-soft);
+    color: var(--umber);
   }
   .ws-tree-label {
     flex: 1 1 auto;
@@ -6902,18 +6907,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
   display: none !important;
 }
 #files-history[hidden] { display: none; }
-#btn-files-history {
-  flex: 0 0 auto;
-  width: 22px; height: 20px;
-  margin-left: 2px;
-  padding: 0;
-  border-radius: 4px;
-  color: var(--m-g1);
-}
+#btn-files-history { margin-left: 2px; }
 #btn-files-history[hidden] { display: none; }
-#btn-files-history svg { width: 13px; height: 13px; }
-#btn-files-history:is(:hover, :active) { color: var(--ink); background: var(--m-fill2); }
-#btn-files-history:active { transform: none; }
+@container (max-width: 420px) { #btn-files-history .ref-label { display: none; } }
 /* On, it wears the branch pop-up's off-the-working-tree accent: the two are
    the bar's ways of showing something other than the folder on disk. */
 #btn-files-history.on { color: var(--umber); background: var(--umber-soft); }
