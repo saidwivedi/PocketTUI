@@ -596,6 +596,16 @@ function makeWorkspace(ctx) {
   // Kept while the listing stays on it, for its partial answers on a slow
   // mount, and dropped once it moves elsewhere or the folder is opened.
   let keepShut = null;
+  // The tree is rooted at the folder the address bar shows whenever the
+  // listing got there from outside the tree: a crumb, the path field, the back
+  // key, a remembered folder, a tapped path, the terminal's cwd. A folder
+  // opened from the tree itself keeps the root, or every click would fold the
+  // tree down to one level. listedAt is the folder of the last listing the tree
+  // saw, so a reload of the same folder (a write, a slow mount's partial
+  // answers) is no move at all; treeNav is the folder a click in the tree sent
+  // the listing to, which its answer consumes.
+  let listedAt = null;
+  let treeNav = null;
 
   function makeNode(path, name, type, depth, entry) {
     const node = { path, name, type, depth, entry, expanded: false, loaded: false,
@@ -752,7 +762,8 @@ function makeWorkspace(ctx) {
   // The folder the listing is on, found in the tree: every folder from the
   // tree's root down to it opened (and listed, where it never was), then it
   // is the selected row unless a file's tab is in front, whose row that is. A
-  // folder outside the tree's root is a new root. No folder yet (the pane
+  // folder outside the tree's root is a new root (a move from outside the tree
+  // has already rooted it there: movedFromOutside). No folder yet (the pane
   // expanded before its first listing landed, filesPath still "") is nothing
   // to root at: a root of "" lists the backend's default folder, home, under
   // a path of "", so every child would be "/" + name, and every folder
@@ -773,6 +784,20 @@ function makeWorkspace(ctx) {
       if (!(await expand(node))) return;
     }
     if (on && !frontTab()) select(path);
+  }
+
+  // Whether the listing's move to `path` came from outside the tree, and so
+  // roots the tree there. No folder yet ("") is no move: see reveal.
+  function movedFromOutside(path) {
+    if (!path || path === listedAt) return false;
+    listedAt = path;
+    const fromTree = treeNav === path;
+    treeNav = null;
+    return !fromTree;
+  }
+
+  function rootAt(path) {
+    if (!treeRoot || treeRoot.path !== path) reRoot(path);
   }
 
   function insideDir(path, dir) {
@@ -804,6 +829,7 @@ function makeWorkspace(ctx) {
         keepShut = node.path;
         setExpanded(node, false);
       } else if (keepShut === node.path) keepShut = null;
+      treeNav = node.path;
       ctx.navigate(node.path);
       return;
     }
@@ -2201,6 +2227,9 @@ function makeWorkspace(ctx) {
     if (v) {
       if (!treeW) applyTreeW(cfg.wsTreeW || WS_TREE_W);
       hold.appendChild(wrap);
+      // A folder the listing moved to while the pane was collapsed is one the
+      // tree never saw, so the address bar's folder is the root again.
+      if (movedFromOutside(ctx.path())) rootAt(ctx.path());
       reveal(ctx.path());
       relayout();
       kickStatus();
@@ -2253,6 +2282,7 @@ function makeWorkspace(ctx) {
   // get their badges.
   function onListing(data) {
     if (!on) return;
+    if (movedFromOutside(data.path)) rootAt(data.path);
     if (treeRoot && insideDir(data.path, treeRoot.path)) {
       const node = nodes.get(data.path);
       if (node) fill(node, data);
