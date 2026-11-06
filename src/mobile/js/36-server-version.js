@@ -107,6 +107,7 @@ async function fetchServerVersion() {
   syncSearchCap();
   syncComposeAttach();
   syncRefCap();
+  syncScCap();
   syncThumbsCap();
   syncBrowseCap();
   syncPairCard();
@@ -128,6 +129,8 @@ function versionResetForProfile() {
   // The browser pane's two entry points are gated on a capability that is now
   // unknown again, and an unknown server has none (hasCapStrict).
   syncBrowseCap();
+  // So is the history key's (50-source-control.js).
+  syncScCap();
 }
 
 // A computer says its own name, and the profile keeps it: "mac-mini" reads

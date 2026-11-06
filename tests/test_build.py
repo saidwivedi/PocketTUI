@@ -968,6 +968,13 @@ let filesExpanded = cfg.filesExpanded;
 let filesDocked = false, filesOrigin = null, filesStack = [], filesPath = "";
 let filesSyncedCwd = "", filesHeldAt = "", filesRef = "", filesRefRoot = "";
 let filesRepo = null, filesRepoAsked = "", ws = null, wsHanded = false;
+let filesHistoryOn = false, filesHistory = null, filesHistoryDiff = null;
+let filesHistoryRoot = "", filesHistoryHanded = false, filesListStale = false;
+let filesListY = 0, filesHistoryY = 0;
+function filesHistoryEnd() {{}}
+function syncHistoryView() {{}}
+function filesScrollY() {{ return 0; }}
+function filesScrollTo() {{}}
 const full = [];
 function sideSetFull(pane, on) {{ full.push([pane, on]); }}
 function sideClaim() {{ return true; }}
@@ -1949,6 +1956,7 @@ function filesEntryState() {{
 const location = {{ href: "x" }};
 const history = {{ pushState(s) {{ calls.push("push " + JSON.stringify(s)); }} }};
 function closeExplorer() {{ calls.push("closeExplorer"); }}
+function filesHistoryBack() {{ return false; }}
 function cachedListing(p) {{ return {{ path: p }}; }}
 function applyListing(d) {{ calls.push("apply " + d.path); }}
 function loadDir(p) {{ calls.push("load " + p); }}
@@ -2446,6 +2454,52 @@ def test_the_explorer_head_has_a_refresh_key(doc):
     assert "loadDir(filesPath)" in handler
     assert 'btn.classList.remove("spin");' in handler
     assert ".icon-btn.spin svg { animation: spin" in doc
+
+
+def test_the_branch_bar_has_a_history_key(doc):
+    """Beside the branch pop-up on the path bar (row 1 is untouched), gated on
+    the server's git_log, swapping the listing for #files-history, which the
+    second pane's copy carries emptied."""
+    ref = doc[doc.index('<div id="files-ref-wrap" hidden>'):]
+    ref = ref[:ref.index('<div id="files-ref-menu"')]
+    assert ref.index('id="btn-files-ref"') < ref.index('id="btn-files-history"')
+    assert ('<button type="button" class="icon-btn" id="btn-files-history" aria-pressed="false" '
+            'aria-label="Commit history" title="Commit history">'
+            '<svg><use href="#i-m-history"/></svg></button>') in doc
+    assert '<symbol id="i-m-history" viewBox="0 0 24 24"' in doc
+    wrap = doc[doc.index('<div class="files-wrap">'):]
+    wrap = wrap[:wrap.index("</div>\n</div>")]
+    assert '<div id="files-history" hidden></div>' in wrap
+    assert 'history: (filesHistoryHanded = filesHistoryOn) ? {' in doc
+    assert '"files-list", "files-crumbs", "files-suggest", "files-history"' in doc
+    key = _js_chunk(doc, "function syncHistoryKey() {")
+    assert 'hasCapStrict("git_log")' in key
+    assert "  syncRefCap();\n  syncScCap();\n" in doc
+
+
+def test_source_control_fragment_sits_before_boot_and_runs_nothing_at_load(doc):
+    """After the explorer and the diff pane whose helpers it calls, and every
+    top-level statement a declaration (the bundle's TDZ rule)."""
+    at = build_mobile.JS_FRAGMENTS.index
+    assert at("37-git-diff.js") < at("49-human-code.js") < at("50-source-control.js") < at("27-boot.js")
+    src = (SRC / "js" / "50-source-control.js").read_text(encoding="utf-8")
+    for line in src.splitlines():
+        if not line or line[0] in " /}":
+            continue
+        assert re.match(r"(?:async )?function ", line), line
+
+
+def test_a_commit_diff_is_drawn_without_actions(doc):
+    """diffRender with no h keeps each block's box and drops its pill; the
+    commit view passes none, and the diff lines are styled outside the
+    wide-layout block so a phone colours them too."""
+    render = _js_chunk(doc, "function diffRender(")
+    assert "h ? diffBlockActs(scope, path, header, hunk, block, h) : null);" in render
+    view = _js_chunk(doc, "function scCommitDiffView(")
+    assert 'diffRender(body, data, "commit", info.path, null);' in view
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    assert "\n.diff-line {\n" in css and "\n  .diff-line {" not in css
+    assert "\n.diff-line.add {" in css
 
 
 def _explorer_load(doc):
@@ -4182,6 +4236,7 @@ let ws = {{
   destroy() {{ calls.push("destroy"); }},
 }};
 function closeDockedFileView() {{ return true; }}
+function filesHistoryEnd() {{}}
 function closeFilesMenus() {{}}
 function closePathEdit() {{}}
 function clearRefState() {{}}
