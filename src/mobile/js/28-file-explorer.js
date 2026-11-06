@@ -848,8 +848,9 @@ function syncFilesExpand() {
     // word and the right key's glyph are always the same state.
     for (const btn of box.querySelectorAll(".files-mode-key")) {
       btn.querySelector("use").setAttribute("href", on ? "#i-m-collapse" : "#i-m-expand");
-      btn.querySelector(".files-mode-word").textContent = on ? "Normal view" : "File viewer";
-      btn.setAttribute("aria-label", on ? "Shrink the file pane" : "Expand the file pane");
+      btn.querySelector(".files-mode-word").textContent = on ? "Folder View" : "File Explorer";
+      btn.setAttribute("aria-label", on ? "Back to File explorer" : "Expand to Folder view");
+      btn.title = on ? "Back to File explorer" : "Expand to Folder view";
     }
   }
 }
