@@ -716,6 +716,7 @@ function wsContext() {
     home: () => filesHome,
     refFor, fsList, cachedListing, openFileActions, openRendered, wireMoveTarget,
     refRoot: () => filesRefRoot,
+    branch: () => (filesRepo && filesRepo.current) || "",
     readText: fsReadText,
     navigate: (path) => navigateDir(path),
   };
