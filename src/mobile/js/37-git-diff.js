@@ -338,8 +338,10 @@ function diffRender(body, data, scope, path, h) {
       const line = hunk.lines[i];
       const block = blocks[bi];
       if (block && i === block.from) {
+        // No h is a diff to read rather than act on (a commit's, in
+        // 50-source-control.js): the block keeps its box and loses its pill.
         box = el("div", { class: "diff-block" },
-          diffBlockActs(scope, path, header, hunk, block, h));
+          h ? diffBlockActs(scope, path, header, hunk, block, h) : null);
         frag.appendChild(box);
       }
       const kind = diffLineClass(line);
