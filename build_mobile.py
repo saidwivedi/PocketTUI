@@ -114,6 +114,7 @@ JS_FRAGMENTS = (
     "47-workspace.js",
     "48-mesh-viewer.js",
     "49-human-code.js",
+    "50-source-control.js",
     "27-boot.js",
 )
 

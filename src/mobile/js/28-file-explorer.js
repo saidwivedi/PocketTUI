@@ -676,6 +676,26 @@ let filesRepo = null;
 // against, so this is what says whether the question needs asking again.
 let filesRepoAsked = "";
 
+// ---- commit history (50-source-control.js) ---------------------------------
+// The key beside the branch swaps the listing for that branch's commits, and a
+// file in a commit for that file's diff. A view of the repo rather than a place
+// in it, so it is the pane's state and not a filesStack level: back, Escape and
+// a crumb step out of it before they climb or navigate, and the folder
+// underneath is still where it was, scrolled where it was.
+let filesHistoryOn = false;
+let filesHistory = null;      // the commit list (scHistory), while on
+let filesHistoryDiff = null;  // one commit's diff of one file, over the list
+let filesHistoryRoot = "";    // the repo the list was loaded for
+// The branch was changed while the listing was covered (pickRef reloads the
+// list instead), so the listing is the old branch's and closing reloads it.
+let filesListStale = false;
+// Where each covered view was scrolled, put back when it is uncovered.
+let filesListY = 0;
+let filesHistoryY = 0;
+// Whether the two views went into a stash rather than ending with the pane,
+// the workspace's wsHanded below.
+let filesHistoryHanded = false;
+
 // ---- the workspace (47-workspace.js) ---------------------------------------
 // The tree and the file tabs the pane becomes while it is docked and expanded.
 // Made on the first expand rather than here: this body runs while the bundle
@@ -781,6 +801,7 @@ function closeExplorer() {
   const back = filesOrigin || "screen-list";
   filesOrigin = null;
   filesStack = [];
+  filesHistoryEnd();
   clearRefState();
   filesClearListing();
   $(back).classList.add("active");
@@ -887,6 +908,7 @@ function closeDockedFiles() {
   // evicted from under a listing that owns nothing asks nothing.
   if (!closeDockedFileView(id)) return;
   if (ws) { ws.destroy(); ws = null; }
+  filesHistoryEnd();
   closeFilesMenus();
   closePathEdit();
   filesDocked = false;
@@ -904,6 +926,9 @@ function closeDockedFiles() {
 // The docked pane owns no history entries, so its back arrow has to do what a
 // pop does for the full-screen explorer: climb filesStack, and close at [0].
 function filesBack() {
+  // The history is not a history entry (see filesHistoryOn), so stepping out
+  // of it spends none, full screen or docked.
+  if (!q("files-path-wrap").classList.contains("editing") && filesHistoryBack()) return;
   if (!filesDocked) { history.back(); return; }
   if (q("files-path-wrap").classList.contains("editing")) { closePathEdit(); return; }
   if (filesStack.length > 1) {
@@ -992,6 +1017,11 @@ function filesStash() {
     expanded: filesExpanded,
     // The tree and every tab, unsaved edits included, go with the session.
     ws: (wsHanded = !!ws) ? ws : null,
+    // The commit list and the diff over it, as they are, expanded rows and all.
+    history: (filesHistoryHanded = filesHistoryOn) ? {
+      list: filesHistory, diff: filesHistoryDiff, root: filesHistoryRoot,
+      listY: filesListY, historyY: filesHistoryY, y: filesScrollY(),
+    } : null,
   };
 }
 
@@ -1006,6 +1036,18 @@ function filesTeardown() {
     ws = null;
   }
   wsHanded = false;
+  // The same for the history: one in a stash leaves the pane, intact.
+  if (filesHistoryHanded) {
+    if (filesHistory) filesHistory.el.remove();
+    if (filesHistoryDiff) filesHistoryDiff.el.remove();
+    filesHistory = filesHistoryDiff = null;
+    filesHistoryOn = false;
+    filesHistoryRoot = "";
+    syncHistoryView();
+  } else {
+    filesHistoryEnd();
+  }
+  filesHistoryHanded = false;
   root.classList.remove("active");
   filesOrigin = null;
   filesStack = [];
@@ -1032,6 +1074,7 @@ function filesTeardown() {
 function filesReset() {
   // Unsaved tabs are files on the computer being left, so nothing is asked.
   if (ws) { ws.destroy(); ws = null; }
+  filesHistoryEnd();
   closeFilesMenus();
   closePathEdit();
   if (filesDocked) closeDockedFiles();
@@ -1077,6 +1120,21 @@ function filesRestore(s) {
   const hit = cachedListing(filesPath);
   if (hit) applyListing(hit);
   else loadDir(filesPath);
+  // The listing under it was just read at the stashed ref, so it is current.
+  const h = s.history;
+  if (h && h.list) {
+    filesHistoryOn = true;
+    filesHistory = h.list;
+    filesHistoryDiff = h.diff || null;
+    filesHistoryRoot = h.root;
+    filesListStale = false;
+    filesListY = h.listY;
+    filesHistoryY = h.historyY;
+    q("files-history").appendChild(h.list.el);
+    if (h.diff) q("files-history").appendChild(h.diff.el);
+    syncHistoryView();
+    filesScrollTo(h.y);
+  }
 }
 
 // Where the pane this device is looking at currently sits, or "" when tmux
@@ -1457,7 +1515,12 @@ function crumbBtn(label, target, current) {
   const btn = el("button", {
     type: "button",
     class: "crumb" + (current ? " current" : ""),
-    onclick: () => { if (!current) navigateDir(target); },
+    // Out of the commit history first: a crumb is a folder to list, and the
+    // current folder's own crumb is the way back to its listing.
+    onclick: () => {
+      if (filesHistoryOn) filesShowHistory(false);
+      if (!current) navigateDir(target);
+    },
   }, label);
   // An ancestor crumb is how a dragged entry moves up out of here. The current
   // folder's own crumb is where the entry already is, so it takes nothing.
@@ -1521,6 +1584,8 @@ function openPathEdit() {
   // with it — so close them here, or the scrim would be left dimming the
   // screen with nothing to tap it away.
   closeFilesMenus();
+  // A typed path is a folder to list, so the listing comes back under the field.
+  if (filesHistoryOn) filesShowHistory(false);
   q("files-path-wrap").classList.add("editing");
   q("files-suggest-scrim").classList.add("show");
   const input = q("files-path-input");
@@ -1667,8 +1732,11 @@ q("btn-files-edit-path").addEventListener("click", () => {
 // The bar is the field too: a click on its empty stretch (past the last crumb,
 // between two, on a separator) opens it the way the pencil does. A crumb, the
 // branch pop-up and the read-only tag keep their own jobs, and a click inside
-// the open field is typing.
+// the open field is typing. A target no longer in the pane was a branch row:
+// picking one redraws the menu (syncRefMenu) before the click bubbles here, and
+// a detached row has no #files-ref-wrap above it to be recognised by.
 root.querySelector(".files-pathbar").addEventListener("click", (e) => {
+  if (!root.contains(e.target)) return;
   if (e.target.closest(".crumb, #files-ref-wrap, #files-ref-ro, #btn-files-edit-path")) return;
   if (q("files-path-wrap").classList.contains("editing")) return;
   openPathEdit();
@@ -2031,7 +2099,15 @@ function syncRefBar() {
   const repo = filesRepo && filesRepo.root ? filesRepo : null;
   q("files-ref-wrap").hidden = !repo;
   q("files-ref-ro").hidden = !filesRef;
-  if (!repo) { showRefMenu(false); return; }
+  // Out of the repo (the terminal cd'd away under the docked pane), there is
+  // no history to show; into another one, it is that repo's.
+  if (!repo) { showRefMenu(false); filesHistoryEnd(); return; }
+  syncHistoryKey();
+  if (filesHistoryOn && repo.root !== filesHistoryRoot) {
+    filesHistoryRoot = repo.root;
+    filesCloseCommitDiff();
+    filesHistory.load(filesRef || "HEAD");
+  }
   const live = repo.current || "HEAD";
   const btn = q("btn-files-ref");
   btn.textContent = "";
@@ -2073,6 +2149,14 @@ function pickRef(ref) {
   filesRefRoot = ref && filesRepo ? filesRepo.root || "" : "";
   syncRefBar();
   syncRefActions();
+  // Over the commit history the branch picked is the history's: the list
+  // reloads, and the listing it covers waits until it is uncovered.
+  if (filesHistoryOn) {
+    filesCloseCommitDiff();
+    filesHistory.load(ref || "HEAD");
+    filesListStale = true;
+    return;
+  }
   // The same folder, read from somewhere else. The cache is keyed by ref, so
   // this is a fetch rather than a repaint of what is already on screen.
   loadDir(filesPath);
@@ -2111,6 +2195,109 @@ function syncRefCap() {
 q("btn-files-ref").addEventListener("click", () => {
   showRefMenu(!q("files-ref-wrap").classList.contains("open"));
 });
+
+// ---- the commit history (state above, under filesHistoryOn) -----------------
+
+// The pane's one scroller: the page while the explorer is the whole window,
+// the list's own box while it is docked.
+function filesScrollY() { return filesDocked ? filesDropZone.scrollTop : window.scrollY; }
+function filesScrollTo(y) {
+  if (filesDocked) filesDropZone.scrollTop = y;
+  else window.scrollTo(0, y);
+}
+
+function filesHistoryCtx() {
+  return {
+    root: () => filesHistoryRoot,
+    openCommitDiff: filesOpenCommitDiff,
+    back: filesCloseCommitDiff,
+  };
+}
+
+// On: the list of the branch the bar names, in the listing's place. Off: the
+// listing back as it was left, or reloaded if the branch moved meanwhile.
+function filesShowHistory(on) {
+  if (on === filesHistoryOn) return;
+  if (on) {
+    const repo = filesRepo && filesRepo.root;
+    if (!repo || !hasCapStrict("git_log")) return;
+    closeFilesMenus();
+    filesListY = filesScrollY();
+    filesHistoryOn = true;
+    filesHistoryRoot = repo;
+    filesHistory = scHistory(filesHistoryCtx());
+    q("files-history").appendChild(filesHistory.el);
+    syncHistoryView();
+    filesScrollTo(0);
+    filesHistory.load(filesRef || "HEAD");
+    return;
+  }
+  filesHistoryEnd();
+  if (filesListStale) { filesListStale = false; loadDir(filesPath); }
+  else filesScrollTo(filesListY);
+}
+
+// Off with nothing put back: the pane is closing, the folder left the repo, or
+// the caller is about to repaint the listing itself.
+function filesHistoryEnd() {
+  if (!filesHistoryOn && !filesHistory) return;
+  filesHistoryOn = false;
+  if (filesHistoryDiff) { filesHistoryDiff.el.remove(); filesHistoryDiff = null; }
+  if (filesHistory) { filesHistory.destroy(); filesHistory = null; }
+  filesHistoryRoot = "";
+  syncHistoryView();
+}
+
+// Which of the three is showing, said by the pane's class (the stylesheet
+// hides the listing under it), the holder and the key.
+function syncHistoryView() {
+  root.classList.toggle("history", filesHistoryOn);
+  q("files-history").hidden = !filesHistoryOn;
+  const btn = q("btn-files-history");
+  btn.classList.toggle("on", filesHistoryOn);
+  btn.setAttribute("aria-pressed", filesHistoryOn ? "true" : "false");
+  if (filesHistory) filesHistory.el.hidden = !!filesHistoryDiff;
+}
+
+// The diff replaces the list rather than stacking over it: the list stays in
+// the document, hidden, so its rows and their expansions are there on the way
+// back, and its scroll is put back where it was.
+function filesOpenCommitDiff(info) {
+  if (!filesHistoryOn) return;
+  filesHistoryY = filesScrollY();
+  if (filesHistoryDiff) filesHistoryDiff.el.remove();
+  filesHistoryDiff = scCommitDiffView(filesHistoryCtx(), info);
+  q("files-history").appendChild(filesHistoryDiff.el);
+  syncHistoryView();
+  filesScrollTo(0);
+  filesHistoryDiff.load();
+}
+
+function filesCloseCommitDiff() {
+  if (!filesHistoryDiff) return;
+  filesHistoryDiff.el.remove();
+  filesHistoryDiff = null;
+  syncHistoryView();
+  filesScrollTo(filesHistoryY);
+}
+
+// One step out: the diff to the list, the list to the listing. False when
+// there is no history on screen, so the caller's own back goes ahead.
+function filesHistoryBack() {
+  if (filesHistoryDiff) { filesCloseCommitDiff(); return true; }
+  if (filesHistoryOn) { filesShowHistory(false); return true; }
+  return false;
+}
+
+// Shown wherever the branch is (it sits in the same wrap) and the server can
+// answer /api/git/log; a server that stops answering closes it.
+function syncHistoryKey() {
+  const ok = hasCapStrict("git_log");
+  q("btn-files-history").hidden = !ok;
+  if (!ok && filesHistoryOn) filesShowHistory(false);
+}
+
+q("btn-files-history").addEventListener("click", () => filesShowHistory(!filesHistoryOn));
 
 // Tap opens; a long press (or a desktop right-click) opens the action sheet.
 function wireRow(row, entry) {
@@ -2794,6 +2981,13 @@ document.addEventListener("keydown", (e) => {
     closeFilesMenus();
     return;
   }
+  // The commit history is one step in, wherever the explorer came from.
+  if (filesHistoryOn && !q("files-path-wrap").classList.contains("editing")
+      && !$("sheet-scrim").classList.contains("show")) {
+    e.preventDefault();
+    filesHistoryBack();
+    return;
+  }
   if (filesOrigin !== "screen-term") return;          // nothing to jump back to
   if (q("files-path-wrap").classList.contains("editing")) return;
   if ($("sheet-scrim").classList.contains("show")) return;
@@ -2843,6 +3037,12 @@ window.addEventListener("popstate", () => {
   // An open address field takes the back first — closeExplorer turns that one
   // into closing just the field, and re-pushes the entry the pop consumed.
   if (q("files-path-wrap").classList.contains("editing")) { closeExplorer(); return; }
+  // The commit history pushed nothing either: the pop that stepped out of it
+  // spent the folder's entry, which goes back, the viewer's way above.
+  if (filesHistoryBack()) {
+    history.pushState(filesEntryState(), "", location.href);
+    return;
+  }
   // The popped entry's own state is deliberately not consulted: iOS wipes the
   // stored state objects out from under us (see filesStack above), and a
   // handler that trusted them read every later pop as the pop past the entry
@@ -2933,6 +3133,7 @@ const api = {
   teardown: filesTeardown,
   reset: filesReset,
   syncRefCap: syncRefCap,
+  syncScCap: () => { if (filesRepo && filesRepo.root) syncHistoryKey(); },
   syncThumbsCap: syncThumbsCap,
   sheet: { edit: sheetEdit, rename: sheetRename,
            download: sheetDownload, remove: sheetDelete },
@@ -2976,9 +3177,14 @@ function filesMakeAt(id) {
     cloneWs.remove();
   }
   clone.style.removeProperty("--ws-tree-w");
-  for (const name of ["files-list", "files-crumbs", "files-suggest"]) {
+  for (const name of ["files-list", "files-crumbs", "files-suggest", "files-history"]) {
     clone.querySelector("#" + name).innerHTML = "";
   }
+  clone.classList.remove("history");
+  clone.querySelector("#files-history").hidden = true;
+  const histKey = clone.querySelector("#btn-files-history");
+  histKey.classList.remove("on");
+  histKey.setAttribute("aria-pressed", "false");
   clone.querySelector("#files-list").classList.remove("files-grid");
   clone.querySelector("#files-path-wrap").classList.remove("editing");
   clone.querySelector("#files-suggest").classList.remove("show");

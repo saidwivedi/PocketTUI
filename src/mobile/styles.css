@@ -6550,70 +6550,6 @@ html.term-open #dbg-panel { opacity: 0.85; }
     font-size: 12px;
     line-height: 1.45;
   }
-  /* A row spans the pane, so a line's tint reaches the right edge however
-     short its text. */
-  .diff-line {
-    display: flex;
-    background: var(--paper);
-  }
-  /* Old and new line numbers, kept on the first row of a wrapped line: the
-     numbers are what tells you where you are. */
-  .diff-line .nos {
-    flex: 0 0 auto;
-    align-self: flex-start;
-    display: flex;
-    color: var(--whisper);
-    -webkit-user-select: none; user-select: none;
-  }
-  .diff-line .nos > span {
-    width: 3.6em;
-    padding-right: 0.7em;
-    text-align: right;
-  }
-  /* Wraps at any point, since code has long runs with no space to break at;
-     `pre-wrap` keeps the indentation a diff line leads with. */
-  .diff-line .tx {
-    flex: 1 1 auto;
-    min-width: 0;
-    padding-right: 12px;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  .diff-line.add { background: var(--diff-add-bg); color: var(--diff-add-ink); }
-  .diff-line.del { background: var(--diff-del-bg); color: var(--diff-del-ink); }
-  .diff-line.hunk {
-    background: var(--diff-hunk-bg);
-    color: var(--diff-hunk-ink);
-  }
-  /* The `diff --git`, `index` and `---`/`+++` lines: true but not read. Small
-     and dim, so the eye starts at the first hunk. */
-  .diff-line.meta {
-    color: var(--whisper);
-    font-size: 11px;
-  }
-  .diff-line.ctx { color: var(--ink-2); }
-
-  /* Nothing to show, or a reason there is nothing — including the wait for a
-     repo's first answer, which on a network checkout is seconds long: one
-     voice for all of them, in the app's own quiet-hint idiom. */
-  .diff-note {
-    padding: 22px 16px;
-    font-family: var(--serif);
-    font-style: italic;
-    font-size: 13px;
-    line-height: 1.5;
-    color: var(--tertiary);
-    text-align: center;
-  }
-  /* A notice about the diff above it rather than instead of it — binary, or a
-     megabyte reached — so it sits in the body's own type, not the hint's. */
-  .diff-notice {
-    padding: 10px 14px;
-    font-family: var(--sans);
-    font-size: 12px;
-    color: var(--tertiary);
-  }
-
   /* Stage, Revert, Unstage, Discard. Dim at rest and full strength once the
      row or block they belong to is under the pointer or holds the focus —
      never absent, because a button that only exists under a pointer cannot be
@@ -6675,7 +6611,6 @@ html.term-open #dbg-panel { opacity: 0.85; }
      the pane's own offer, and one that has to be hunted for with the pointer
      is one nobody finds. The pill is what keeps them legible over a red or
      green line — opaque, so the text under it never shows through. */
-  .diff-block { position: relative; }
   .diff-block .diff-acts {
     position: absolute;
     top: -1px;
@@ -6716,6 +6651,257 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #diff-toast .msg { flex: 0 1 auto; min-width: 0; }
   #diff-toast .sep { flex: 0 0 auto; color: var(--whisper); }
   #diff-toast .diff-act { flex: 0 0 auto; opacity: 1; color: var(--umber); }
+}
+
+/* A diff's lines and notes, out of the wide-layout block the diff pane lives in:
+   the explorer's commit history draws them on a phone too (50-source-control.js),
+   and the diff pane itself is only ever made on the wide layout. */
+/* A row spans the pane, so a line's tint reaches the right edge however
+   short its text. */
+.diff-line {
+  display: flex;
+  background: var(--paper);
+}
+/* Old and new line numbers, kept on the first row of a wrapped line: the
+   numbers are what tells you where you are. */
+.diff-line .nos {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  display: flex;
+  color: var(--whisper);
+  -webkit-user-select: none; user-select: none;
+}
+.diff-line .nos > span {
+  width: 3.6em;
+  padding-right: 0.7em;
+  text-align: right;
+}
+/* Wraps at any point, since code has long runs with no space to break at;
+   `pre-wrap` keeps the indentation a diff line leads with. */
+.diff-line .tx {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff-line.add { background: var(--diff-add-bg); color: var(--diff-add-ink); }
+.diff-line.del { background: var(--diff-del-bg); color: var(--diff-del-ink); }
+.diff-line.hunk {
+  background: var(--diff-hunk-bg);
+  color: var(--diff-hunk-ink);
+}
+/* The `diff --git`, `index` and `---`/`+++` lines: true but not read. Small
+   and dim, so the eye starts at the first hunk. */
+.diff-line.meta {
+  color: var(--whisper);
+  font-size: 11px;
+}
+.diff-line.ctx { color: var(--ink-2); }
+
+/* Nothing to show, or a reason there is nothing — including the wait for a
+   repo's first answer, which on a network checkout is seconds long: one
+   voice for all of them, in the app's own quiet-hint idiom. */
+.diff-note {
+  padding: 22px 16px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--tertiary);
+  text-align: center;
+}
+/* A notice about the diff above it rather than instead of it — binary, or a
+   megabyte reached — so it sits in the body's own type, not the hint's. */
+.diff-notice {
+  padding: 10px 14px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--tertiary);
+}
+.diff-block { position: relative; }
+
+/* The explorer's commit history (50-source-control.js), in the listing's place
+   while #btn-files-history is on. The listing, its empty note and its error
+   stay in the document under it. */
+:is(#screen-files, #screen-files-2).history :is(#files-list, #files-empty, #files-error) {
+  display: none !important;
+}
+#files-history[hidden] { display: none; }
+#btn-files-history {
+  flex: 0 0 auto;
+  width: 22px; height: 20px;
+  margin-left: 2px;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--m-g1);
+}
+#btn-files-history[hidden] { display: none; }
+#btn-files-history svg { width: 13px; height: 13px; }
+#btn-files-history:is(:hover, :active) { color: var(--ink); background: var(--m-fill2); }
+#btn-files-history:active { transform: none; }
+/* On, it wears the branch pop-up's off-the-working-tree accent: the two are
+   the bar's ways of showing something other than the folder on disk. */
+#btn-files-history.on { color: var(--umber); background: var(--umber-soft); }
+/* The workspace is the expanded pane's own view of the repo, and the listing
+   this would cover is not on screen there. */
+.ws-on #btn-files-history { display: none; }
+
+/* One commit: its subject on one line with its branch and tag pills, then who,
+   when and which, in the bar's greys. A tap opens its files under it. */
+.sc-commit { border-bottom: 1px solid var(--hair); }
+.sc-row {
+  display: flex; flex-direction: column; justify-content: center; gap: 3px;
+  width: 100%;
+  min-height: 44px;
+  padding: 7px 6px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--sans);
+  color: var(--ink);
+}
+.sc-row:hover { background: color-mix(in srgb, var(--ink) 3%, transparent); }
+.sc-row:active { background: var(--umber-tint); }
+.sc-commit.open > .sc-row { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.sc-line {
+  display: flex; align-items: center; gap: 5px;
+  min-width: 0;
+}
+.sc-subj {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13.5px;
+}
+.sc-sub {
+  display: block;
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--ink) 50%, transparent);
+}
+.sc-dot { color: color-mix(in srgb, var(--ink) 30%, transparent); }
+.sc-sha { font-family: var(--mono); font-size: 11px; }
+/* A branch or tag name: filled, not outlined, in the bar's lightest fill, so it
+   reads as a label on the row rather than a key on it. */
+.sc-pill {
+  flex: 0 0 auto;
+  max-width: 40%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--diff-blue);
+  background: color-mix(in srgb, var(--diff-blue) 13%, transparent);
+}
+.sc-pill.tag { color: var(--umber); background: var(--umber-soft); }
+/* A commit's files, indented under it. */
+.sc-files { padding: 0 0 6px 14px; }
+.sc-files[hidden] { display: none; }
+.sc-files .diff-note { padding: 10px 6px; text-align: left; }
+.sc-files-note {
+  padding: 6px 6px 2px;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--tertiary);
+}
+.sc-file {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 3px 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.sc-file:hover { background: var(--m-fill2); }
+.sc-file:active { background: var(--umber-tint); }
+@media (pointer: coarse) { .sc-file { min-height: 44px; } }
+/* The diff pane's letters in the diff pane's colours. */
+.sc-badge {
+  flex: 0 0 auto;
+  width: 1.1em;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--tertiary);
+}
+.sc-badge.new { color: var(--diff-add-ink); }
+.sc-badge.mod { color: var(--warn); }
+.sc-badge.del { color: var(--diff-del-ink); }
+.sc-badge.ren { color: var(--diff-blue); }
+.sc-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sc-dir, .sc-arrow { color: color-mix(in srgb, var(--ink) 45%, transparent); }
+.sc-count {
+  flex: 0 0 auto;
+  display: flex; gap: 6px;
+  font-size: 11px;
+}
+.sc-count .add { color: var(--diff-add-ink); }
+.sc-count .del { color: var(--diff-del-ink); }
+.sc-bin { color: var(--tertiary); font-family: var(--sans); }
+.sc-foot .diff-note { padding: 18px 6px; }
+.sc-more {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  border: none;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--umber);
+  cursor: pointer;
+}
+.sc-more:hover { background: var(--m-fill2); }
+
+/* A commit's diff of one file: a head with the way back, the letter, the path
+   and the commit, then the diff in the diff pane's face. Docked, the head
+   sticks to the top of the pane's own scroller, so the way back stays in reach
+   down a long diff; full screen the page scrolls under the sticky topbar, and
+   the bar's back key does the same job. */
+:is(#screen-files, #screen-files-2).docked .sc-diff-head { position: sticky; top: 0; z-index: 1; }
+.sc-diff-head {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 -6px;
+  padding: 6px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--hair);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.sc-diff-head .sc-back {
+  flex: 0 0 auto;
+  width: 26px; height: 24px;
+  padding: 0;
+  border-radius: 5px;
+  color: var(--m-g1);
+}
+.sc-diff-head .sc-back svg { width: 13px; height: 13px; }
+.sc-diff-head .sc-back:hover { color: var(--ink); background: var(--m-fill2); }
+@media (pointer: coarse) { .sc-diff-head .sc-back { width: 40px; height: 40px; } }
+.sc-diff-what { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.sc-diff-what .sc-path { display: block; }
+.sc-diff-body {
+  margin: 0 -6px;
+  font-family: Menlo, ui-monospace, "SF Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 /* The test deployment's password panel (index.src.html #test-gate). Over
