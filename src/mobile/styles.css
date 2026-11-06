@@ -3897,34 +3897,44 @@ html.term-open #dbg-panel { opacity: 0.85; }
     color: var(--umber);
     background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
   }
-  /* "File viewer" / "Normal view" at the bar's left end: the expand key said in
-     words, which is what makes the way into the workspace findable when the
-     small expand glyph alone was not (founder, 2026-10-24). It is a quiet
-     accent pill in both states, the accent over a soft tint; the full fill
-     was tried and sat too loud at the head of the pane (founder, 2026-10-25).
+  /* "File Explorer" / "Folder View" at the bar's left end: the expand key said
+     in words, which is what makes the way into the workspace findable when the
+     small expand glyph alone was not (founder, 2026-10-24). A full accent pill
+     was tried first and sat too loud at the head of the pane (founder,
+     2026-10-25); the quiet accent tint that replaced it neither stood out nor
+     matched the pane's chrome, and the founder asked for it to pop (2026-11-06,
+     when the words also changed from "File viewer" / "Normal view"). So it is
+     now the macOS default button rather than a pill: the accent fill with the
+     paper as its ink, the way every other accent-filled control in the app
+     writes on it, but 22px tall with a 6px corner, 12px words and a 12px
+     glyph, the size of the keys beside it, not of a badge. A push button in
+     the card with a hairline border and a segmented "File Explorer | Folder
+     View" were rendered beside it in this head: the first read as one more
+     grey key, and the second ellipsised the folder's name at the docked width.
      It sits in .files-nav, which grows with the right-hand group in equal
      shares, so the centred title gives way to an ellipsis before this does
      (see .files-toolrow). */
   .files-mode-key {
     flex: 0 0 auto;
     align-items: center;
-    gap: 6px;
-    height: 24px;
+    gap: 5px;
+    height: 22px;
     align-self: center;
-    margin-left: 4px;
-    padding: 0 11px 0 9px;
+    margin-left: 6px;
+    padding: 0 9px;
     border: none;
-    border-radius: 999px;
-    background: var(--umber-soft);
+    border-radius: 6px;
+    background: var(--umber);
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--ink) 12%, transparent);
     font-family: var(--sans);
-    font-size: 12.5px;
+    font-size: 12px;
     font-weight: 600;
     white-space: nowrap;
-    color: var(--umber);
+    color: var(--paper);
     cursor: pointer;
   }
-  .files-mode-key svg { flex: 0 0 auto; width: 13px; height: 13px; }
-  .files-mode-key:hover { background: color-mix(in srgb, var(--umber) 20%, transparent); }
+  .files-mode-key svg { flex: 0 0 auto; width: 12px; height: 12px; }
+  .files-mode-key:hover { background: color-mix(in srgb, var(--umber) 88%, #000); }
   /* Living inside #screen-term is what saves the diff pane a visibility rule;
      this pane is a screen of its own, so it says the same thing in a selector:
      it is only on view while the terminal it is docked to is. The plain

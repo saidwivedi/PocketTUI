@@ -4627,19 +4627,21 @@ def test_the_workspace_terminal_fits_once_and_hiding_never_fits(doc):
     assert "wsTermSetHidden(!cfg.wsTermHidden)" in key
 
 
-def test_the_docked_explorer_says_file_viewer(doc):
-    """Founder, 2026-10-24: the docked pane's bar says "File viewer" at its
-    left end and expands like the right-hand key; expanded it says "Normal
-    view" and collapses. One handler for both keys, one writer for both faces,
+def test_the_docked_explorer_says_file_explorer(doc):
+    """Founder, 2026-10-24: the docked pane's bar says its mode in words at its
+    left end and expands like the right-hand key; since 2026-11-06 it says
+    "File Explorer" docked and "Folder View" expanded, where it collapses. One handler for both keys, one writer for both faces,
     docked only (so never on the phone). The terminal-panel key shows only
     while the workspace is up."""
     nav = doc[doc.index('<span class="files-nav">'):]
     nav = nav[:nav.index("</span>\n")]
     assert 'class="files-mode-key dock-only" id="btn-files-mode"' in nav
-    assert '<span class="files-mode-word">File viewer</span>' in nav
+    assert '<span class="files-mode-word">File Explorer</span>' in nav
+    assert 'aria-label="Expand to Folder view"' in nav
     assert 'querySelectorAll(".dock-expand, .files-mode-key")' in doc
     sync = _js_chunk(doc, "function syncFilesExpand(")
-    assert '"Normal view" : "File viewer"' in sync
+    assert '"Folder View" : "File Explorer"' in sync
+    assert '"Back to File explorer" : "Expand to Folder view"' in sync
     assert 'on ? "#i-m-collapse" : "#i-m-expand"' in sync
     css = (SRC / "styles.css").read_text(encoding="utf-8")
     assert ":is(#screen-files, #screen-files-2) .dock-term { display: none; }" in css
