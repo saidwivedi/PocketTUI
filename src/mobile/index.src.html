@@ -758,11 +758,12 @@
     <button class="icon-btn" id="btn-files-back" aria-label="Back"><svg><use href="#i-m-chev-left"/></svg></button>
     <!-- The expand said in words, for a docked pane on the wide layout: the
          icon on the right is easy to miss, and nobody finds the workspace
-         without it. "File viewer" while docked, "Normal view" while expanded;
-         the glyph and the word are written by syncFilesExpand with the right
-         key's, so the two never disagree. -->
+         without it. "File Explorer" while docked, "Folder View" while expanded
+         (the founder's names, 2026-11-06; "File viewer" and "Normal view"
+         before); the glyph and the word are written by syncFilesExpand with
+         the right key's, so the two never disagree. -->
     <button type="button" class="files-mode-key dock-only" id="btn-files-mode"
-            aria-label="Expand the file pane"><svg aria-hidden="true"><use href="#i-m-expand"/></svg><span class="files-mode-word">File viewer</span></button>
+            aria-label="Expand to Folder view" title="Expand to Folder view"><svg aria-hidden="true"><use href="#i-m-expand"/></svg><span class="files-mode-word">File Explorer</span></button>
     </span>
     <!-- The folder being listed, centred on the row whatever the keys either
          side of it add up to (renderCrumbs writes the name). Not a control:
