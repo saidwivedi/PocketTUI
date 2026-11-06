@@ -543,8 +543,27 @@ function makeWorkspace(ctx) {
   const root = ctx.root;
   const wrap = root.querySelector(".files-wrap");
 
-  const treeHead = el("div", { class: "ws-tree-head" });
+  // The column's head: Files or Source control, VS Code's activity bar folded
+  // into the column it switches, then the folder the tree is drawn from.
+  const segFiles = el("button", { type: "button", class: "ws-seg-tab", role: "tab",
+                                  "aria-selected": "true", title: "Files",
+                                  "aria-label": "Files" }, svgIcon("i-m-folder"));
+  const segSc = el("button", { type: "button", class: "ws-seg-tab", role: "tab",
+                               "aria-selected": "false", title: "Source control",
+                               "aria-label": "Source control" }, svgIcon("i-m-commit"));
+  const treeLabel = el("span", { class: "ws-tree-label" });
+  const treeHead = el("div", { class: "ws-tree-head" },
+    el("div", { class: "ws-seg", role: "tablist", "aria-label": "Explorer view" },
+       segFiles, segSc),
+    treeLabel);
   const treeBody = el("div", { class: "ws-tree-body", role: "tree" });
+  // The Source control view (scPanel, 50-source-control.js), made on the first
+  // switch to it. The view is closure state, so a rail switch, which stashes
+  // this workspace whole, comes back to the view it left.
+  const scBox = el("div", { class: "ws-sc" });
+  scBox.hidden = true;
+  let wsView = "files";
+  let scp = null;
   const seam = el("div", { class: "ws-seam ws-tree-seam", role: "separator",
                            "aria-orientation": "vertical",
                            "aria-label": "Resize the folder tree" });
@@ -557,7 +576,7 @@ function makeWorkspace(ctx) {
   const hold = el("div", { class: "ws-hold" });
   hold.hidden = true;
   const wsEl = el("div", { class: "ws", tabindex: "-1" },
-    el("aside", { class: "ws-tree" }, treeHead, treeBody), seam, groupsEl, hold);
+    el("aside", { class: "ws-tree" }, treeHead, treeBody, scBox), seam, groupsEl, hold);
   root.appendChild(wsEl);
 
   let on = false;
@@ -647,8 +666,8 @@ function makeWorkspace(ctx) {
     selected = null;
     treeRoot = makeNode(path, baseName(path) || "/", "dir", -1, null);
     treeRoot.expanded = true;
-    treeHead.textContent = wsFolderLabel(path, ctx.home());
-    treeHead.title = path;
+    treeLabel.textContent = wsFolderLabel(path, ctx.home());
+    treeLabel.title = path;
     kickStatus();
   }
 
@@ -911,6 +930,9 @@ function makeWorkspace(ctx) {
     const name = el("button", { type: "button", class: "tab-name", role: "tab",
                                 title: tab.path || "" },
       el("span", { class: "tab-word" }, tab.title));
+    // A diff tab says which diff after the name: "staged", or the commit's
+    // short sha, smaller and dim, so two of one file tell apart.
+    if (tab.suffix) name.appendChild(el("span", { class: "tab-suffix" }, tab.suffix));
     name.addEventListener("click", () => activate(tab));
     const chip = el("div", { class: "tab-chip" }, name);
     if (tab.kind === "editor") {
@@ -969,7 +991,9 @@ function makeWorkspace(ctx) {
                                 dirty: false, chip: null, body: null,
                                 rec: null, mesh: null, closed: false, group: g,
                                 marksOn: false, marks: null, ref: "", hc: null }, props);
-    tab.key = wsTabKey(tab.path, tab.ref);
+    // A diff tab (openGitDiff) brings a key of its own, which is never a
+    // path, so open() of the same file still finds only its editor.
+    tab.key = props.key || wsTabKey(tab.path, tab.ref);
     tab.body = el("div", { class: "ws-pane ws-" + tab.kind });
     makeChip(tab);
     g.tabs.push(tab);
@@ -1081,6 +1105,46 @@ function makeWorkspace(ctx) {
     const view = tab.rec.view;
     view.dispatch({ effects: edRangeComp.reconfigure(edRangeField(r)) });
     edShowLine(r.line, view);
+  }
+
+  // ---- a git diff in a tab -------------------------------------------------------
+  // One file's diff from the Source control view: what is staged of it, with
+  // the Staged list's Unstage on each block, or what a commit did to it, read
+  // only. `info` is {scope: "staged"|"commit", rel, root, status, and for a
+  // commit sha, short, subject, old}. Keyed by scope, commit and path rather
+  // than by path, so the file's own editor is another tab beside it.
+  function openGitDiff(info) {
+    const key = "gitdiff:" + info.scope + ":" + (info.sha || "") + ":" + info.rel;
+    const have = byPath.get(key);
+    if (have) { activate(have); return have; }
+    const into = focusGroup || groups[0];
+    const tab = addTab(into, {
+      key, kind: "gitdiff", path: info.root + "/" + info.rel, title: baseName(info.rel),
+      suffix: info.scope === "staged" ? "staged" : (info.short || String(info.sha).slice(0, 7)),
+      git: info,
+    });
+    activate(tab);
+    fillTab(tab, {});
+    return tab;
+  }
+
+  function fillGitDiff(tab) {
+    const info = tab.git;
+    const staged = info.scope === "staged";
+    const view = scCommitDiffView({
+      root: () => info.root,
+      // An unstage lands, then the diff is read again: what is left staged.
+      h: staged ? {
+        apply: (p) => scApply(p).then((ok) => { if (!tab.closed) view.load(true); return ok; }),
+        toast: (text) => toast(text),
+      } : null,
+    }, { scope: info.scope, path: info.rel, sha: info.sha, short: info.short,
+         subject: info.subject, old: info.old || "", status: info.status });
+    tab.gitView = view;
+    tab.gitSig = staged ? JSON.stringify(gitFiles.get(info.rel) || null) : "";
+    tab.body.appendChild(el("div", { class: "ws-scroll" }, view.el));
+    view.load();
+    return true;
   }
 
   // ---- a human-code brief in a tab --------------------------------------------
@@ -1222,6 +1286,7 @@ function makeWorkspace(ctx) {
       return true;
     }
     if (tab.kind === "humancode") return fillBrief(tab);
+    if (tab.kind === "gitdiff") return fillGitDiff(tab);
     if (tab.kind === "reader") {
       const data = await ctx.readText(path);
       if (!data || tab.closed) return !!data;
@@ -1775,6 +1840,9 @@ function makeWorkspace(ctx) {
   // repo-relative path: what an editor's change marks are read and staged by.
   let gitRoot = "";
   let gitFiles = new Map();
+  // Whether any answer has landed: until one has, "" is "not asked yet" rather
+  // than "not a repository".
+  let statusSeen = false;
 
   function pollWanted() {
     return on && attached && !document.hidden && !!treeRoot && !demoApiOn()
@@ -1805,7 +1873,16 @@ function makeWorkspace(ctx) {
     marks = data.root ? wsAggregate(data.files, data.root) : new Map();
     gitRoot = String(data.root || "").replace(/\/+$/, "");
     gitFiles = new Map((data.files || []).map((f) => [f.path, f]));
+    statusSeen = true;
     paintAll();
+    if (scp) scp.paint(gitFiles, gitRoot);
+    // A staged diff whose file's row moved (staged more, unstaged, committed)
+    // reads its diff again.
+    for (const t of fileTabs()) {
+      if (t.kind !== "gitdiff" || t.git.scope !== "staged" || !t.gitView) continue;
+      const sig = JSON.stringify(gitFiles.get(t.git.rel) || null);
+      if (sig !== t.gitSig) { t.gitSig = sig; t.gitView.load(true); }
+    }
   }
 
   const poller = wsPoller(pollWanted, askStatus, paintStatus);
@@ -1816,6 +1893,78 @@ function makeWorkspace(ctx) {
     else kickStatus();
   };
   document.addEventListener("visibilitychange", onVisibility);
+
+  // ---- the Source control view ---------------------------------------------
+  // The column shows the tree or scPanel, never both. Its lists are the poll's
+  // rows above, painted on every answer; its writes go through the diff pane's
+  // apply request and ask the poll at once, so a ticked file moves list
+  // within the one answer that follows.
+
+  // The ref the tree is read at, which is the view's too: at a branch there is
+  // no working tree to stage in, and the poll is off.
+  function scRef() { return treeRoot ? ctx.refFor(treeRoot.path) : ""; }
+
+  function scApply(payload) {
+    return diffApplyTo(gitRoot, payload, toast).finally(kickStatus);
+  }
+
+  function scContext() {
+    return {
+      root: () => scRef() ? ctx.refRoot() : gitRoot,
+      ref: scRef,
+      apply: scApply,
+      toast: (text, ms) => toast(text, ms),
+      kickStatus,
+      openFile: (rel, opts) => open(gitRoot + "/" + rel, "editor", opts),
+      openStagedDiff: (f) => openGitDiff({ scope: "staged", rel: f.path, root: gitRoot,
+                                           status: f.status[0] }),
+      // An untracked folder is a place, not a diff: the tree goes there.
+      openFolder: (rel) => {
+        setView("files");
+        ctx.navigate(gitRoot + "/" + rel.replace(/\/$/, ""));
+      },
+      commit: (message) => scPost("api/git/commit", { root: gitRoot, message: message }),
+    };
+  }
+
+  function setView(v) {
+    if (v === "sc" && !hasCapStrict("git_log")) v = "files";
+    wsView = v;
+    const sc = v === "sc";
+    if (sc && !scp) {
+      scp = scPanel(scContext());
+      scBox.appendChild(scp.el);
+      if (statusSeen) scp.paint(gitFiles, gitRoot);
+    }
+    treeBody.hidden = sc;
+    scBox.hidden = !sc;
+    segFiles.classList.toggle("on", !sc);
+    segSc.classList.toggle("on", sc);
+    segFiles.setAttribute("aria-selected", sc ? "false" : "true");
+    segSc.setAttribute("aria-selected", sc ? "true" : "false");
+    if (sc) kickStatus();
+  }
+  segFiles.addEventListener("click", () => setView("files"));
+  segSc.addEventListener("click", () => setView("sc"));
+
+  // The server's say (syncScCap, 50-source-control.js): no git_log, no tab.
+  function syncCaps() {
+    segSc.hidden = !hasCapStrict("git_log");
+    if (segSc.hidden && wsView === "sc") setView("files");
+    if (scp) scp.syncCaps();
+  }
+  syncCaps();
+
+  // The branch picker moved (syncRefBar, 28-file-explorer.js). Back on the
+  // working tree the poll has to be asked again: it stopped itself at the ref.
+  let lastRef = "";
+  function syncRef() {
+    const ref = scRef();
+    if (ref === lastRef) return;
+    lastRef = ref;
+    if (scp) scp.setRef(ref);
+    if (!ref) kickStatus();
+  }
 
   function markOf(path, isDir) {
     if (!on || ctx.refFor(path)) return null;
@@ -2084,6 +2233,7 @@ function makeWorkspace(ctx) {
   function destroy() {
     endDrag(false);
     for (const t of fileTabs()) drop(t);
+    if (scp) { scp.destroy(); scp = null; }
     detach();
     document.removeEventListener("visibilitychange", onVisibility);
     wsLive.delete(api);
@@ -2114,6 +2264,8 @@ function makeWorkspace(ctx) {
     groups,
     setOn, onListing, refreshDir, kickStatus, open, close,
     attach, detach, destroy, dirtyCount, askDiscardAll, saveAt, relayout,
+    syncCaps, syncRef,
+    get view() { return wsView; },
   };
   wsLive.add(api);
   return api;

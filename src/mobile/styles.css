@@ -4158,10 +4158,50 @@ html.term-open #dbg-panel { opacity: 0.85; }
     flex-direction: column;
     background: var(--paper-rec);
   }
-  /* The folder the tree is drawn from, in the sidebar's eyebrow scale. */
+  /* The column's head: the Files | Source control pair, then the folder the
+     tree is drawn from in the sidebar's eyebrow scale. */
   .ws-tree-head {
     flex: 0 0 auto;
-    padding: 9px 12px 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px 4px;
+    min-width: 0;
+  }
+  /* Two icon keys in one recessed track, the selected one raised on paper:
+     the macOS segmented control the pane heads already follow. */
+  .ws-seg {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 1px;
+    padding: 2px;
+    border-radius: 7px;
+    background: var(--m-fill2);
+  }
+  .ws-seg-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--m-g1);
+    cursor: pointer;
+  }
+  .ws-seg-tab[hidden] { display: none; }
+  .ws-seg-tab svg { width: 14px; height: 14px; }
+  .ws-seg-tab:hover { color: var(--ink); }
+  .ws-seg-tab.on {
+    background: var(--paper);
+    color: var(--ink);
+    box-shadow: 0 0 0 0.5px var(--m-sep), 0 1px 2px rgba(20, 16, 10, 0.12);
+  }
+  .ws-tree-label {
+    flex: 1 1 auto;
+    min-width: 0;
     font-family: var(--sans);
     font-size: 11px;
     font-weight: 600;
@@ -4179,6 +4219,119 @@ html.term-open #dbg-panel { opacity: 0.85; }
     overscroll-behavior: contain;
     padding-bottom: 24px;
   }
+  .ws-tree-body[hidden], .ws-sc[hidden] { display: none; }
+  /* The Source control view (scPanel, 50-source-control.js) in the tree's
+     place: one scroller for the box, the lists and the history under them. */
+  .ws-sc {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding: 2px 8px 24px;
+  }
+  /* The message and its key. The field is the path field's (#files-path-input)
+     look, grown from one line to six by scPanel's grow(); the key is the
+     editor's Save pill, lit in the accent while there is something to commit. */
+  .sc-compose[hidden], .sc-lists[hidden], .sc-note[hidden], .sc-sec[hidden],
+  .sc-sec-body[hidden] { display: none; }
+  .sc-compose { display: flex; flex-direction: column; gap: 6px; padding: 4px 0 8px; }
+  .sc-msg {
+    display: block;
+    width: 100%;
+    min-height: 26px;
+    max-height: calc(6 * 18px + 8px);
+    padding: 4px 7px;
+    resize: none;
+    overflow-y: auto;
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--ink);
+    background: var(--m-fill);
+    border: 1px solid transparent;
+    border-radius: 5px;
+  }
+  .sc-msg::placeholder { color: var(--m-g2); }
+  .sc-msg:focus { border-color: var(--umber); outline: none; }
+  .sc-commit-key {
+    align-self: stretch;
+    height: 26px;
+    border: 1px solid var(--umber);
+    border-radius: 999px;
+    background: var(--umber);
+    color: var(--paper);
+    font-family: var(--sans);
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .sc-commit-key:active { transform: scale(0.98); }
+  .sc-commit-key[disabled] {
+    background: transparent;
+    border-color: var(--hair-strong);
+    color: var(--m-g2);
+    cursor: default;
+    transform: none;
+  }
+  .sc-note {
+    padding: 10px 4px;
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--m-g2);
+  }
+  /* Staged, Changes, Untracked: the diff pane's eyebrow and count, then rows
+     at the tree's own height. */
+  .sc-sec { margin-top: 4px; }
+  .sc-eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 4px 2px 3px;
+    border: none;
+    background: transparent;
+    text-align: left;
+    font-family: var(--sans);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--m-g2);
+  }
+  .sc-eyebrow .n { color: var(--m-g3); letter-spacing: 0; }
+  .sc-fold { cursor: pointer; }
+  .sc-fold:hover { color: var(--ink); }
+  .sc-fold svg { width: 10px; height: 10px; transition: transform 0.12s var(--ease-out); }
+  .sc-fold[aria-expanded="true"] svg { transform: rotate(90deg); }
+  .sc-frow { display: flex; align-items: center; border-radius: 5px; }
+  .sc-frow:hover { background: var(--m-fill); }
+  .sc-frow-open {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 24px;
+    padding: 0 4px;
+    border: none;
+    background: transparent;
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .sc-frow .diff-acts { padding-right: 2px; }
+  .sc-frow:hover .diff-acts, .sc-frow:focus-within .diff-acts { opacity: 1; }
+  /* A diff tab's "staged" or short sha after the file's name. */
+  .tab-suffix {
+    margin-left: 5px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--m-g2);
+  }
+  .ws-pane.ws-gitdiff .sc-diff { padding: 0 6px; }
+  .ws-pane.ws-gitdiff .sc-diff-head { position: sticky; top: 0; z-index: 2; }
   /* A row per entry, indented by its depth: the chevron, the listing's own
      icon, the name, and the git badge at the right. */
   .ws-node {
