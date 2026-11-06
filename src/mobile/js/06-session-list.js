@@ -245,6 +245,7 @@ async function loadSessions(spin=false, quiet=false) {
     const data = await r.json();
     if (gen !== sessListGen || pgen !== profileGen) return;
     renderSessions(data.sessions || []);
+    noteRestorable(data.restorable);
     $("list-error").style.display = "none";
     sessionsEverLoaded = true;
     noteActiveVerdict(null);
@@ -386,6 +387,7 @@ function sessionsResetForProfile() {
   $("list-error").style.display = "none";
   lastStates = null;
   sessionsEverLoaded = false;
+  restoreReset();
 }
 
 // The one useful thing a row can say about what a session is holding. An agent
@@ -505,6 +507,154 @@ function markSelectedSession() {
       !!currentSession && row.dataset.name === currentSession);
   }
 }
+
+// ---- restore card -----------------------------------------------------------
+// After a reboot, or anything else that takes the tmux server down, the server
+// offers back the sessions that were open (app.py, "Session restore"), and the
+// list shows them in a card above its rows: tick the ones to bring back, then
+// Restore, or Dismiss them all. /api/sessions carries only the count; the
+// offers themselves are asked for once per change of it, and the card stays as
+// built between polls so a box the user unticked stays unticked.
+let restorableSeen = 0;
+// The count the card was built for; 0 while it is hidden.
+let restoreShownFor = 0;
+// name -> why its last restore failed, drawn under its row until it goes.
+let restoreErrors = {};
+
+function noteRestorable(n) {
+  restorableSeen = Number.isInteger(n) && n > 0 ? n : 0;
+  syncRestoreCard();
+}
+
+// Also called once the capability map arrives, which can be after the first
+// list: the count is held until the server is known to have the routes.
+function syncRestoreCard() {
+  const n = needsSetup() || demoMode || !hasCapStrict("restore") ? 0 : restorableSeen;
+  if (n === restoreShownFor) return;
+  restoreShownFor = n;
+  if (!n) { $("restore-card").hidden = true; return; }
+  loadRestoreCard();
+}
+
+function restoreReset() {
+  restorableSeen = 0;
+  restoreShownFor = 0;
+  restoreErrors = {};
+  $("restore-card").hidden = true;
+  $("restore-rows").innerHTML = "";
+}
+
+async function loadRestoreCard() {
+  const pgen = profileGen;
+  try {
+    const r = await fetch(apiURL("api/restore"), { cache: "no-store", headers: authHeaders() });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    if (pgen !== profileGen) return;
+    renderRestoreCard(data.sessions || []);
+  } catch (e) {
+    dbg("restore list failed:", e);
+    // Asked again on the next poll rather than left hidden for good.
+    if (pgen === profileGen) restoreShownFor = 0;
+  }
+}
+
+// "Fri 6 Nov, 14:02" in the device's own locale and clock.
+function restoreWhen(epoch) {
+  return new Date(epoch * 1000).toLocaleString([], {
+    weekday: "short", day: "numeric", month: "short",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+// Folder, last command, saved output, and a missing folder said outright:
+// the session then starts in the home folder instead.
+function restoreByline(s) {
+  const parts = [];
+  const cwd = (s.cwd || "").replace(/\/+$/, "");
+  if (cwd) parts.push(["where", cwd.slice(cwd.lastIndexOf("/") + 1) || "/"]);
+  if (s.command) parts.push(["cmd", s.command]);
+  if (s.lines > 0) parts.push(["", s.lines + (s.lines === 1 ? " line" : " lines") + " of output"]);
+  if (!s.cwd_exists) parts.push(["missing", "folder missing"]);
+  return parts;
+}
+
+function renderRestoreCard(rows) {
+  const card = $("restore-card");
+  const box = $("restore-rows");
+  box.innerHTML = "";
+  if (!rows.length) { card.hidden = true; return; }
+  const newest = Math.max(...rows.map((s) => s.lost || 0));
+  $("restore-note").textContent = "The computer restarted on " + restoreWhen(newest) +
+    ". These sessions were open.";
+  for (const s of rows) {
+    const meta = el("div", { class: "rs-meta" });
+    // Each part carries the dot before it, so a wrapped byline never ends
+    // a line on a dot.
+    for (const [cls, text] of restoreByline(s)) {
+      meta.appendChild(el("span", { class: "rs-part" },
+        meta.childNodes.length ? el("span", { class: "sep" }, "·") : null,
+        el("span", cls ? { class: cls } : {}, text)));
+    }
+    const name = el("div", { class: "rs-name" }, s.alias || s.name);
+    if (s.alias) name.appendChild(el("div", { class: "realname" }, s.name));
+    const tick = el("input", { type: "checkbox", "data-name": s.name });
+    tick.checked = true;
+    box.appendChild(el("label", { class: "rs-row" },
+      tick,
+      el("div", { class: "rs-text" }, name, meta,
+        restoreErrors[s.name] ? el("div", { class: "rs-error" }, restoreErrors[s.name]) : null),
+    ));
+  }
+  card.hidden = false;
+}
+
+async function restorePost(path, body) {
+  const r = await fetch(apiURL(path), {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  const data = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(data && data.error ? data.error : "HTTP " + r.status);
+  return data;
+}
+
+async function restoreTicked() {
+  const names = [...$("restore-rows").querySelectorAll("input[type=checkbox]")]
+    .filter((b) => b.checked).map((b) => b.dataset.name);
+  if (!names.length) { toast("Tick a session to restore"); return; }
+  const btn = $("btn-restore");
+  btn.disabled = true;
+  try {
+    const data = await restorePost("api/restore", { names });
+    restoreErrors = {};
+    for (const e of data.errors || []) restoreErrors[e.name] = e.error;
+    if ((data.errors || []).length) toast("Some sessions could not be restored");
+    // Rebuilt from the server's answer on the next list, errors included.
+    restoreShownFor = -1;
+    loadSessions();
+  } catch (e) {
+    toast("Couldn't restore: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function dismissRestore() {
+  try {
+    await restorePost("api/restore/dismiss", { all: true });
+    restoreErrors = {};
+    restorableSeen = 0;
+    syncRestoreCard();
+    loadSessions();
+  } catch (e) {
+    toast("Couldn't dismiss: " + e.message);
+  }
+}
+
+$("btn-restore").addEventListener("click", restoreTicked);
+$("btn-restore-dismiss").addEventListener("click", dismissRestore);
 
 // ---- drag to reorder --------------------------------------------------------
 // Rows are dragged into the order the user wants, and the order is the

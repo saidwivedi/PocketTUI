@@ -783,6 +783,104 @@ body.sess-dragging { -webkit-user-select: none; user-select: none; cursor: grabb
 }
 #demo-banner .db-act svg { width: 11px; height: 11px; transform: rotate(180deg); }
 
+/* Sessions a lost tmux server took with it, offered back above the rows
+   (renderRestoreCard, 06-session-list.js). The demo banner's tint and border,
+   being about the list rather than a row of it; inside, the rows' own voices
+   (serif name, mono byline) on 44px rows a finger can tick, and the sheets'
+   two keys: Restore filled like their .primary, Dismiss the quiet outline. */
+#restore-card {
+  margin: 0 0 18px;
+  padding: 14px 16px 12px;
+  background: var(--umber-tint);
+  border: 1px solid var(--umber-soft);
+  border-radius: 16px;
+}
+#restore-card[hidden] { display: none; }
+#restore-card .rs-title {
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.012em;
+  color: var(--ink);
+}
+#restore-card .rs-note {
+  margin-top: 4px;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--secondary);
+}
+#restore-rows { margin-top: 8px; }
+#restore-card .rs-row {
+  display: flex; gap: 12px; align-items: center;
+  min-height: 44px;
+  padding: 6px 0;
+  border-top: 1px solid var(--hair);
+  cursor: pointer;
+}
+#restore-card .rs-row input {
+  flex: 0 0 auto;
+  width: 18px; height: 18px;
+  margin: 0;
+  accent-color: var(--umber);
+}
+#restore-card .rs-text { flex: 1; min-width: 0; }
+#restore-card .rs-name {
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+#restore-card .realname {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--tertiary);
+  margin-top: 2px;
+}
+#restore-card .rs-meta {
+  margin-top: 3px;
+  display: flex; flex-wrap: wrap; gap: 0 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--tertiary);
+  letter-spacing: -0.005em;
+}
+#restore-card .rs-meta .rs-part { display: inline-flex; gap: 6px; white-space: nowrap; }
+#restore-card .rs-meta .sep { color: var(--whisper); }
+#restore-card .rs-meta .cmd { color: var(--umber); font-weight: 600; }
+#restore-card .rs-meta .missing { color: var(--warn); }
+#restore-card .rs-error {
+  margin-top: 3px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--bad);
+}
+#restore-card .rs-keys {
+  display: flex; gap: 8px; justify-content: flex-end;
+  margin-top: 10px;
+}
+#restore-card .rs-keys button {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 9px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+}
+#restore-card .rs-keys button:active { transform: scale(0.96); }
+#restore-card #btn-restore {
+  background: var(--umber);
+  border-color: var(--umber);
+  color: var(--paper);
+}
+#restore-card #btn-restore:disabled { opacity: 0.45; }
+
 /* ============================================================
    TERMINAL SCREEN
    ============================================================ */

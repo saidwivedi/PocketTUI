@@ -32,3 +32,14 @@ def pinned_path_commands(monkeypatch):
 @pytest.fixture(autouse=True)
 def no_install_check(monkeypatch):
     monkeypatch.setenv("POCKETTUI_NO_PING", "1")
+
+
+# Session restore keeps its record under ~/.pockettui/restore, which the
+# installed service on this machine reads and writes too. Every test that runs
+# the watcher or a session route gets a private one instead.
+@pytest.fixture(autouse=True)
+def private_restore_dir(monkeypatch, tmp_path_factory):
+    app = sys.modules.get("app")
+    if app is not None and hasattr(app, "RESTORE_DIR"):
+        monkeypatch.setattr(app, "RESTORE_DIR",
+                            tmp_path_factory.mktemp("restore"))

@@ -166,6 +166,24 @@
   "show": false
  },
  {
+  "id": "sessions.restore",
+  "group": "Stay attached to your work",
+  "title": "Bring sessions back after a restart",
+  "outcome": "When the computer restarts or tmux dies, the list offers back the sessions that were open: tick the ones you want and they return under their old names, folders, aliases, bells and places, with the output they last showed above the new prompt and claude --continue typed where Claude Code was running.",
+  "where": "Session list: the Restore sessions card above the rows (phone list and sidebar)",
+  "surface": "both",
+  "gates": [],
+  "needs": "restore",
+  "hidden": 3,
+  "agent": null,
+  "sources": [
+   "src/mobile/js/06-session-list.js:511-657",
+   "app.py:12237-12691"
+  ],
+  "shot": null,
+  "show": false
+ },
+ {
   "id": "sessions.kill",
   "group": "Stay attached to your work",
   "title": "Close a session",

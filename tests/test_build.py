@@ -5302,3 +5302,38 @@ console.log(JSON.stringify([
     assert (tree.index('ev.target.closest(".ws-twisty")')
             < tree.index("if (node.brief) { open(node.brief); return; }")
             < tree.index("ctx.navigate(node.path);"))
+
+
+def test_the_restore_card_sits_above_the_rows_outside_the_rebuilt_list(doc):
+    """Above the eyebrow and #list, which every poll empties, so a box the
+    user unticked stays unticked; title, note, rows, then Restore filled and
+    Dismiss plain."""
+    wrap = doc[doc.index('<div class="list-wrap" id="list-wrap">'):]
+    assert (wrap.index('<div id="restore-card" hidden>')
+            < wrap.index('<div class="eyebrow" id="list-eyebrow">Sessions</div>')
+            < wrap.index('<div id="list"></div>'))
+    assert ('<div class="rs-title">Restore sessions</div>\n'
+            '      <div class="rs-note" id="restore-note"></div>\n'
+            '      <div id="restore-rows"></div>\n'
+            '      <div class="rs-keys"><button type="button" id="btn-restore">Restore</button>'
+            '<button type="button" id="btn-restore-dismiss">Dismiss</button></div>') in doc
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    assert "#restore-card[hidden] { display: none; }" in css
+    assert "  min-height: 44px;\n" in css[css.index("#restore-card .rs-row {"):]
+
+
+def test_the_restore_card_follows_the_count_on_a_strict_cap(doc):
+    """The list's count drives it, the capability map's arrival re-checks it,
+    a profile switch clears it, and only a server that says it has the routes
+    is asked."""
+    load = _js_chunk(doc, "async function loadSessions(")
+    assert "    renderSessions(data.sessions || []);\n    noteRestorable(data.restorable);\n" in load
+    assert "  syncPairCard();\n  syncRestoreCard();\n}" in doc
+    assert "  restoreReset();\n}" in _js_chunk(doc, "function sessionsResetForProfile() {")
+    sync = _js_chunk(doc, "function syncRestoreCard() {")
+    assert 'needsSetup() || demoMode || !hasCapStrict("restore") ? 0 : restorableSeen' in sync
+    assert "if (n === restoreShownFor) return;" in sync
+    assert 'apiURL("api/restore")' in _js_chunk(doc, "async function loadRestoreCard() {")
+    assert 'restorePost("api/restore", { names })' in _js_chunk(doc, "async function restoreTicked() {")
+    assert 'restorePost("api/restore/dismiss", { all: true })' in _js_chunk(
+        doc, "async function dismissRestore() {")
