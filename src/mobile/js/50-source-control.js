@@ -78,22 +78,28 @@ function scPathEl(path, old) {
   return el("span", { class: "sc-path", title: old ? old + " → " + path : path }, ...kids);
 }
 
-// git's decoration list, as the pills a row wears. "HEAD -> main" is the branch
-// HEAD is on, and the branch is the name worth reading; a detached HEAD stays
-// as itself. Tags lose their "tag: " and keep a class of their own.
+// git's decoration list, as the pills a row wears, coloured by kind the way a
+// coloured `git log --decorate` is: the branch HEAD is on filled in the accent
+// ("HEAD -> main" reads as main; a detached HEAD stays as itself), other local
+// branches green, remote-tracking ones blue, tags amber without their "tag: ".
+// %D spells a remote branch as "origin/main", which a local branch can also
+// be called, so a name counts as remote when its first part is a remote: the
+// usual two, or one whose HEAD the same list shows ("origin/HEAD").
 function scRefPills(refs) {
-  const out = [];
+  const names = [];
   for (const raw of refs || []) {
-    for (let name of String(raw).split(", ")) {
-      name = name.trim();
-      if (!name) continue;
-      let tag = false;
-      if (name.startsWith("HEAD -> ")) name = name.slice(8);
-      else if (name.startsWith("tag: ")) { name = name.slice(5); tag = true; }
-      out.push(el("span", { class: "sc-pill" + (tag ? " tag" : ""), title: name }, name));
-    }
+    for (const name of String(raw).split(", ")) if (name.trim()) names.push(name.trim());
   }
-  return out;
+  const remotes = new Set(["origin", "upstream"]);
+  for (const n of names) if (/^[^/\s]+\/HEAD$/.test(n)) remotes.add(n.split("/")[0]);
+  return names.map((name) => {
+    let kind = "branch";
+    if (name.startsWith("HEAD -> ")) { name = name.slice(8); kind = "head"; }
+    else if (name === "HEAD") kind = "head";
+    else if (name.startsWith("tag: ")) { name = name.slice(5); kind = "tag"; }
+    else if (name.includes("/") && remotes.has(name.split("/")[0])) kind = "remote";
+    return el("span", { class: "sc-pill " + kind, title: name }, name);
+  });
 }
 
 // ---- the commit list ---------------------------------------------------------
@@ -149,13 +155,17 @@ function scHistory(ctx) {
       paintFoot(d.unborn ? "No commits yet" : "No commits");
       return;
     }
-    for (const c of commits) list.appendChild(commitEl(c, root));
+    commits.forEach((c, i) => list.appendChild(commitEl(c, root, !count && !i)));
     count += commits.length;
     more = !!d.more;
     paintFoot();
   }
 
-  function commitEl(c, root) {
+  // The row's left edge is the graph of the branch being walked: one rail in
+  // the accent through every commit, a ring on each, filled on the tip; the
+  // rail starts at the tip and stops at a root commit. One line, not lanes: a
+  // merge's other parents are not drawn.
+  function commitEl(c, root, tip) {
     const files = el("div", { class: "sc-files", hidden: "" });
     const row = el("button", {
       type: "button", class: "sc-row", "aria-expanded": "false",
@@ -167,7 +177,7 @@ function scHistory(ctx) {
       el("span", { class: "sc-sub" },
         el("span", { class: "sc-author" }, c.author || ""),
         el("span", { class: "sc-dot" }, " · "),
-        el("span", {}, c.time ? relTime(c.time) : ""),
+        el("span", { class: "sc-time" }, c.time ? relTime(c.time) : ""),
         el("span", { class: "sc-dot" }, " · "),
         el("span", { class: "sc-sha" }, c.short || String(c.sha).slice(0, 7))));
     row.addEventListener("click", () => {
@@ -177,7 +187,9 @@ function scHistory(ctx) {
       row.parentNode.classList.toggle("open", open);
       if (open && !files.firstChild) fillFiles(files, c, root);
     });
-    return el("div", { class: "sc-commit" }, row, files);
+    const isRoot = Array.isArray(c.parents) && !c.parents.length;
+    return el("div", { class: "sc-commit" + (tip ? " tip" : "") + (isRoot ? " root" : "") },
+      el("span", { class: "sc-graph", "aria-hidden": "true" }), row, files);
   }
 
   async function fillFiles(files, c, root) {
@@ -307,9 +319,9 @@ function scCommitDiffView(ctx, info) {
 // with the diff pane's own letter and actions. The lists are the workspace's
 // status poll drawn again (paint), so nothing here asks git on a timer.
 //
-// ctx: {root(), ref(), apply(payload) -> Promise<bool>, toast(text, ms),
-// kickStatus(), openFile(rel, opts), openStagedDiff(f), openFolder(rel),
-// commit(message) -> scPost's answer}.
+// ctx: {root(), ref(), branch(), apply(payload) -> Promise<bool>,
+// toast(text, ms), kickStatus(), openFile(rel, opts), openStagedDiff(f),
+// openFolder(rel), openCommitDiff(info), commit(message) -> scPost's answer}.
 
 // One changed file: the letter, the path with its folders dim, and the
 // actions its list earns (diffFileActs: Unstage on the staged side, Stage and
@@ -364,7 +376,18 @@ function scPanel(ctx) {
   const note = el("div", { class: "sc-note" });
   const lists = el("div", { class: "sc-lists" },
     sections.staged.el, sections.changes.el, sections.untracked.el);
-  const box = el("div", { class: "sc-panel" }, compose, note, lists);
+  // The branch's commits under the lists, scHistory as the explorer's History
+  // key shows it, without a back key: a file opens as a read-only diff tab
+  // (ctx.openCommitDiff). It is not a scroller of its own; the column scrolls
+  // the box, the lists and the history as one, so a long history never leaves
+  // a short scroll box under a short list.
+  const history = scHistory({ root: ctx.root, openCommitDiff: ctx.openCommitDiff });
+  const histRef = el("span", { class: "sc-hist-ref" });
+  const histSec = el("section", { class: "sc-hist" },
+    el("div", { class: "sc-eyebrow sc-hist-head" }, el("span", {}, "History"), histRef),
+    history.el);
+  let histKey = "";
+  const box = el("div", { class: "sc-panel" }, compose, note, lists, histSec);
 
   let files = new Map();
   let known = false;       // a status answer has been painted
@@ -465,11 +488,23 @@ function scPanel(ctx) {
     }
   }
 
+  // The history follows the repo and the ref; asked again only when either
+  // moved, since every status answer comes through here.
+  function syncHistory(root, ref) {
+    histSec.hidden = !root;
+    histRef.textContent = ref || ctx.branch() || "HEAD";
+    const k = root ? root + "\n" + ref : "";
+    if (k === histKey) return;
+    histKey = k;
+    if (root) history.load(ref || "HEAD");
+  }
+
   let paintSeq = 0;
   function render() {
     const ref = ctx.ref();
     const root = ctx.root();
     syncKey();
+    syncHistory(known || ref ? root : "", ref);
     note.textContent = "";
     let say = "";
     if (ref) say = "Browsing " + ref + "; changes are read on the disk";
@@ -497,7 +532,7 @@ function scPanel(ctx) {
 
   const api = {
     el: box,
-    history: null,
+    history: history,
     paint(gitFiles, gitRoot) {
       files = gitFiles || new Map();
       known = true;

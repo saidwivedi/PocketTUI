@@ -1908,10 +1908,13 @@ function makeWorkspace(ctx) {
     return diffApplyTo(gitRoot, payload, toast).finally(kickStatus);
   }
 
+  function scRoot() { return scRef() ? ctx.refRoot() : gitRoot; }
+
   function scContext() {
     return {
-      root: () => scRef() ? ctx.refRoot() : gitRoot,
+      root: scRoot,
       ref: scRef,
+      branch: ctx.branch,
       apply: scApply,
       toast: (text, ms) => toast(text, ms),
       kickStatus,
@@ -1923,6 +1926,11 @@ function makeWorkspace(ctx) {
         setView("files");
         ctx.navigate(gitRoot + "/" + rel.replace(/\/$/, ""));
       },
+      // A commit's file from the History section: read only, at that commit.
+      openCommitDiff: (info) => openGitDiff({
+        scope: "commit", rel: info.path, root: scRoot(), sha: info.sha, short: info.short,
+        subject: info.subject, old: info.old, status: info.status,
+      }),
       commit: (message) => scPost("api/git/commit", { root: gitRoot, message: message }),
     };
   }

@@ -2554,6 +2554,45 @@ def test_a_git_diff_tab_has_a_key_that_is_never_a_path(doc):
     assert 'if (staged) diffRender(body, data, "staged", info.path, ctx.h);' in view
 
 
+def test_the_source_control_view_ends_in_the_branch_history(doc):
+    """scPanel mounts scHistory under the lists with no back key, loads it when
+    the repo or the ref moves and reloads it after a commit; a file of a
+    commit opens as a read-only gitdiff tab of scope commit."""
+    panel = _js_chunk(doc, "function scPanel(")
+    assert "scHistory({ root: ctx.root, openCommitDiff: ctx.openCommitDiff });" in panel
+    assert "if (root) history.load(ref || \"HEAD\");" in panel
+    assert "if (api.history) api.history.reload();" in panel
+    ctx = _ws_inner(doc, "scContext")
+    assert 'openCommitDiff: (info) => openGitDiff({\n        scope: "commit",' in ctx
+    assert 'branch: () => (filesRepo && filesRepo.current) || "",' in _js_chunk(doc, "function wsContext() {")
+
+
+def test_the_commit_log_is_coloured_by_kind_with_palette_tokens(doc, tmp_path):
+    """The checked-out branch, other branches, remote branches and tags each
+    get a class; the rules colour them from the palette's tokens only, so a
+    user palette and dark mode carry them; the graph rail and ring are the
+    accent, filled on the tip."""
+    stub = """
+function el(tag, attrs, ...kids) { return { cls: attrs.class, text: kids.join("") }; }
+"""
+    out = _node_json(tmp_path, "pills.mjs", stub + _js_chunk(doc, "function scRefPills(") + """
+console.log(JSON.stringify(scRefPills(["HEAD -> main, origin/main, origin/HEAD, feature/x, tag: v1, fork/dev"])
+  .map((p) => p.cls + " " + p.text)));
+""")
+    assert out == ["sc-pill head main", "sc-pill remote origin/main", "sc-pill remote origin/HEAD",
+                   "sc-pill branch feature/x", "sc-pill tag v1", "sc-pill branch fork/dev"]
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    for sel in (".sc-pill {", ".sc-pill.head {", ".sc-pill.remote {", ".sc-pill.tag {",
+                ".sc-graph::after {", ".sc-graph::before {", ".sc-sha {", ".sc-author {", ".sc-time {"):
+        at = css.index("\n" + sel)
+        rule = css[at:css.index("}", at)]
+        assert "#" not in rule and not re.search(r"\brgba?\(", rule), sel
+    assert ".sc-commit.tip > .sc-graph::after { background: var(--umber); }" in css
+    hist = _js_chunk(doc, "function scHistory(")
+    assert "commitEl(c, root, !count && !i)" in hist
+    assert 'el("span", { class: "sc-graph", "aria-hidden": "true" })' in hist
+
+
 def test_a_refused_commit_says_why_in_a_line(doc, tmp_path):
     """git's own words, two lines at most, the second its fatal line when it
     has one; a timeout warns about a hook."""

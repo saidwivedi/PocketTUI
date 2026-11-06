@@ -4323,6 +4323,27 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   .sc-frow .diff-acts { padding-right: 2px; }
   .sc-frow:hover .diff-acts, .sc-frow:focus-within .diff-acts { opacity: 1; }
+  /* The History section under the lists: the docked list's rows, tighter to
+     the column's pointer scale, and the graph's ring holed in the column's
+     recessed paper. */
+  .sc-hist[hidden] { display: none; }
+  .sc-hist { margin-top: 10px; }
+  .sc-hist-ref {
+    min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--mono);
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--umber);
+  }
+  .ws-sc .sc-commit { --sc-dot-y: 14px; --sc-bg: var(--paper-rec); }
+  .ws-sc .sc-row { min-height: 0; padding: 5px 4px 5px 24px; gap: 2px; }
+  .ws-sc .sc-subj { font-size: 12.5px; }
+  .ws-sc .sc-sub { font-size: 11px; }
+  .ws-sc .sc-graph { left: 4px; }
+  .ws-sc .sc-files { padding-left: 22px; }
+  .ws-sc .sc-file { min-height: 24px; padding: 2px 4px; font-size: 12px; }
+  .ws-sc .sc-more { min-height: 30px; font-size: 12px; }
   /* A diff tab's "staged" or short sha after the file's name. */
   .tab-suffix {
     margin-left: 5px;
@@ -6902,12 +6923,47 @@ html.term-open #dbg-panel { opacity: 0.85; }
 
 /* One commit: its subject on one line with its branch and tag pills, then who,
    when and which, in the bar's greys. A tap opens its files under it. */
-.sc-commit { border-bottom: 1px solid var(--hair); }
+.sc-commit {
+  --sc-dot-y: 17px;
+  position: relative;
+  border-bottom: 1px solid var(--hair);
+}
+/* The branch's graph at the row's left (scHistory's commitEl): a rail in the
+   accent through every commit, over the hair between rows, starting at the
+   tip and stopping at a root commit, and a ring on each commit, filled on the
+   tip. --sc-bg is what the ring's hole shows, the column's own paper. */
+.sc-graph {
+  position: absolute;
+  left: 6px; top: 0; bottom: -1px;
+  width: 12px;
+  pointer-events: none;
+}
+.sc-graph::before {
+  content: "";
+  position: absolute;
+  left: 5px; top: 0; bottom: 0;
+  width: 2px;
+  background: color-mix(in srgb, var(--umber) 60%, transparent);
+}
+.sc-commit.tip > .sc-graph::before { top: var(--sc-dot-y); }
+.sc-commit.root > .sc-graph::before { bottom: calc(100% - var(--sc-dot-y)); }
+.sc-commit.tip.root > .sc-graph::before { display: none; }
+.sc-graph::after {
+  content: "";
+  position: absolute;
+  left: 1px; top: calc(var(--sc-dot-y) - 5px);
+  width: 10px; height: 10px;
+  box-sizing: border-box;
+  border: 2px solid var(--umber);
+  border-radius: 50%;
+  background: var(--sc-bg, var(--paper));
+}
+.sc-commit.tip > .sc-graph::after { background: var(--umber); }
 .sc-row {
   display: flex; flex-direction: column; justify-content: center; gap: 3px;
   width: 100%;
   min-height: 44px;
-  padding: 7px 6px;
+  padding: 7px 6px 7px 26px;
   border: none;
   background: transparent;
   text-align: left;
@@ -6937,9 +6993,15 @@ html.term-open #dbg-panel { opacity: 0.85; }
   color: color-mix(in srgb, var(--ink) 50%, transparent);
 }
 .sc-dot { color: color-mix(in srgb, var(--ink) 30%, transparent); }
-.sc-sha { font-family: var(--mono); font-size: 11px; }
-/* A branch or tag name: filled, not outlined, in the bar's lightest fill, so it
-   reads as a label on the row rather than a key on it. */
+/* Who in the secondary ink, when dimmer, which commit in the accent: the
+   short sha is the name a reader copies, so it is the one that stands out. */
+.sc-author { color: var(--secondary); }
+.sc-time { color: var(--tertiary); }
+.sc-sha { font-family: var(--mono); font-size: 11px; color: var(--umber); }
+/* A branch or tag name: filled, not outlined, so it reads as a label on the
+   row rather than a key on it, coloured by kind as a coloured git log is (see
+   scRefPills): the checked-out branch filled in the accent, other branches
+   green, remote ones blue, tags amber. */
 .sc-pill {
   flex: 0 0 auto;
   max-width: 40%;
@@ -6949,12 +7011,14 @@ html.term-open #dbg-panel { opacity: 0.85; }
   font-family: var(--mono);
   font-size: 10.5px;
   line-height: 1.5;
-  color: var(--diff-blue);
-  background: color-mix(in srgb, var(--diff-blue) 13%, transparent);
+  color: var(--good);
+  background: color-mix(in srgb, var(--good) 15%, transparent);
 }
-.sc-pill.tag { color: var(--umber); background: var(--umber-soft); }
-/* A commit's files, indented under it. */
-.sc-files { padding: 0 0 6px 14px; }
+.sc-pill.head { color: var(--paper); background: var(--umber); font-weight: 600; }
+.sc-pill.remote { color: var(--diff-blue); background: color-mix(in srgb, var(--diff-blue) 14%, transparent); }
+.sc-pill.tag { color: var(--warn); background: color-mix(in srgb, var(--warn) 15%, transparent); }
+/* A commit's files, indented under it past the graph's rail. */
+.sc-files { padding: 0 0 6px 26px; }
 .sc-files[hidden] { display: none; }
 .sc-files .diff-note { padding: 10px 6px; text-align: left; }
 .sc-files-note {
