@@ -135,6 +135,52 @@ def unit_of(out):
 
 
 # ---------------------------------------------------------------------------
+# (0) preflight: a tmux older than 3.2 counts as missing
+# ---------------------------------------------------------------------------
+
+TMUX_PREFLIGHT = ("# Succeeds for MIN_TMUX and later (\"3.5a\", \"next-3.6\") and for a version it",
+                  "# The backend only needs to be reachable from the phone; Tailscale is the")
+
+
+def preflight(tmp_path, version, own_copy=False):
+    inst = install_dir(tmp_path)
+    if own_copy:
+        make_exe(inst / ".micromamba/bin/tmux",
+                 '#!/bin/bash\necho "tmux 3.5a"\n')
+    d = tmp_path / "tmuxbin"
+    make_exe(d / "tmux", f'#!/bin/bash\necho "tmux {version}"\n')
+    body = (
+        f'INSTALL_DIR="{inst}"\n'
+        'MAMBA_PREFIX="$INSTALL_DIR/.micromamba"\n'
+        'MIN_TMUX="3.2"\nMISSING=""\n'
+        + slice_sh(*TMUX_PREFLIGHT)
+        + 'printf "HAVE_TMUX=%s\\nMISSING=%s\\n" "$HAVE_TMUX" "$MISSING"\n'
+    )
+    r = run_bash(tmp_path, body, env={
+        "PATH": f"{d}:{os.environ['PATH']}", "VERBOSE": "1"})
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def test_old_system_tmux_is_missing(tmp_path):
+    out = preflight(tmp_path, "3.0a")
+    assert "HAVE_TMUX=0\nMISSING=tmux\n" in out
+    assert "tmux 3.0a is too old (3.2 needed)" in out
+
+
+@pytest.mark.parametrize("version", ["3.2", "3.5a", "next-3.6"])
+def test_new_system_tmux_is_not_missing(tmp_path, version):
+    out = preflight(tmp_path, version)
+    assert "HAVE_TMUX=1\nMISSING=\n" in out
+
+
+def test_old_system_tmux_reuses_this_installs_own_copy(tmp_path):
+    out = preflight(tmp_path, "3.0a", own_copy=True)
+    assert "HAVE_TMUX=1\nMISSING=\n" in out
+    assert "this install's own copy, reused" in out
+
+
+# ---------------------------------------------------------------------------
 # (a) an update keeps the environment the install already has
 # ---------------------------------------------------------------------------
 

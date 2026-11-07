@@ -616,6 +616,18 @@ def test_post_restores_with_the_old_folder_options_and_scrollback(
     assert not A.restore_hist("a", "lost").exists()
 
 
+def test_post_restores_without_the_zdotdir_pin_on_tmux_before_3_2(
+        monkeypatch, client, tmp_path):
+    # tmux 3.0a has no new-session -e and rejects the whole command over it.
+    monkeypatch.setattr(A, "_TMUX_VERSION", {tuple(A.TMUX_BIN): (3, 0)})
+    t = lose(monkeypatch, [{"name": "b", "cwd": str(tmp_path / "gone"),
+                            "cmd": "python3"}])
+    assert client.post("/api/restore", json={"names": ["b"]}).status_code == 200
+    home = os.path.expanduser("~")
+    assert [c for c in t.calls if c[0] == "new-session"] == [
+        ("new-session", "-d", "-s", "b", "-c", home)]
+
+
 def test_post_runs_the_recorded_exact_command(monkeypatch, client, tmp_path):
     monkeypatch.setenv("HOME", str(claude_home(tmp_path, 110)))
     monkeypatch.setattr(A, "restore_process_tree", lambda: TREE)

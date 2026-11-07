@@ -251,6 +251,79 @@ def test_create_makes_a_detached_session(client, monkeypatch):
     assert "-d" in made and "fresh" in made
 
 
+class VersionedTmux(FakeTmux):
+    """A FakeTmux that answers `tmux -V`, and fails new-session with a stderr
+    line when told to, the way tmux 3.0a fails `new-session -e`."""
+
+    def __init__(self, version, fail_err=""):
+        super().__init__()
+        self.version, self.fail_err = version, fail_err
+
+    def __call__(self, *args):
+        if args == ("-V",):
+            self.calls.append(args)
+            return 0, f"tmux {self.version}\n"
+        if args[0] == "new-session" and self.fail_err:
+            self.calls.append(args)
+            A._TMUX_ERR.text = self.fail_err
+            return 1, ""
+        return super().__call__(*args)
+
+
+def versioned(monkeypatch, version, fail_err=""):
+    tmux = VersionedTmux(version, fail_err)
+    monkeypatch.setattr(A, "tmux", tmux)
+    monkeypatch.setattr(A, "_TMUX_VERSION", {})
+    return tmux
+
+
+def test_create_pins_zdotdir_on_tmux_3_2_and_later(client, monkeypatch):
+    tmux = versioned(monkeypatch, "3.5a")
+    assert client.post("/api/session", json={"name": "fresh"}).status_code == 200
+    made = next(c for c in tmux.calls if c[0] == "new-session")
+    home = A.os.path.expanduser("~")
+    assert made == ("new-session", "-d", "-e", f"ZDOTDIR={home}",
+                    "-s", "fresh", "-c", home)
+
+
+def test_create_skips_the_pin_on_tmux_before_3_2(client, monkeypatch):
+    tmux = versioned(monkeypatch, "3.0a")
+    assert client.post("/api/session", json={"name": "fresh"}).status_code == 200
+    made = next(c for c in tmux.calls if c[0] == "new-session")
+    home = A.os.path.expanduser("~")
+    assert made == ("new-session", "-d", "-s", "fresh", "-c", home)
+    # One probe per tmux invocation, however many sessions follow.
+    client.post("/api/session", json={"name": "again"})
+    assert tmux.calls.count(("-V",)) == 1
+
+
+@pytest.mark.parametrize("out,want", [
+    ("tmux 3.0a", (3, 0)), ("tmux 3.5a", (3, 5)), ("tmux next-3.6", (3, 6)),
+    ("tmux 3.2", (3, 2)), ("tmux master", (99, 0)), ("", (99, 0)),
+])
+def test_tmux_version_parse(monkeypatch, out, want):
+    monkeypatch.setattr(A, "tmux", lambda *a: (0, out))
+    monkeypatch.setattr(A, "_TMUX_VERSION", {})
+    assert A.tmux_version() == want
+
+
+def test_create_failure_carries_tmux_stderr(client, monkeypatch):
+    versioned(monkeypatch, "3.5a",
+              fail_err="tmux: unknown option -- e\nusage: tmux [-2CluvV]\n")
+    r = client.post("/api/session", json={"name": "fresh"})
+    assert r.status_code == 500
+    assert r.json() == {
+        "error": "tmux could not create 'fresh': tmux: unknown option -- e"}
+
+
+def test_create_failure_without_stderr_keeps_the_plain_text(client, monkeypatch):
+    tmux = versioned(monkeypatch, "3.5a", fail_err=" ")
+    r = client.post("/api/session", json={"name": "fresh"})
+    assert r.status_code == 500
+    assert r.json() == {"error": "tmux could not create 'fresh'."}
+    assert tmux.calls[-1][0] == "new-session"
+
+
 # ---------------------------------------------------------------------------
 # The start-up sweep
 # ---------------------------------------------------------------------------

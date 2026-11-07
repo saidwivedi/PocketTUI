@@ -45,6 +45,8 @@ PORT="${PORT:-5560}"
 # than fighting the first one for the name.
 SERVICE_NAME="${POCKETTUI_SERVICE_NAME:-pockettui}"
 MIN_PY_MINOR=10
+# app.py creates sessions with `new-session -e`, which tmux only has from 3.2.
+MIN_TMUX="3.2"
 
 # Run from a clone (./install.sh) the sources are already here, so use them and
 # leave the network alone; piped from curl there is nothing next to the script
@@ -356,10 +358,29 @@ else
     MISSING="python"
 fi
 
+# Succeeds for MIN_TMUX and later ("3.5a", "next-3.6") and for a version it
+# cannot read ("master"), which is a development build; Ubuntu 20.04's 3.0a
+# fails. awk rather than sort -V, which macOS's sort does not have.
+tmux_new_enough() {
+    printf '%s\n' "$1" | awk -F. -v min="$MIN_TMUX" '{
+        split(min, m, ".")
+        maj = $1; sub(/^[^0-9]*/, "", maj)
+        if (maj == "") exit 0
+        exit !((maj + 0) > m[1] + 0 || ((maj + 0) == m[1] + 0 && ($2 + 0) >= m[2] + 0))
+    }'
+}
+
 HAVE_TMUX=0
+SYS_TMUX_VER=""
 if command -v tmux >/dev/null 2>&1; then
-    HAVE_TMUX=1
-    vsay "  tmux $(tmux -V | awk '{print $2}')"
+    SYS_TMUX_VER="$(tmux -V 2>/dev/null | awk '{print $2}')"
+    if tmux_new_enough "$SYS_TMUX_VER"; then
+        HAVE_TMUX=1
+        vsay "  tmux $SYS_TMUX_VER"
+    fi
+fi
+if [[ "$HAVE_TMUX" == "1" ]]; then
+    :
 elif [[ -x "$MAMBA_PREFIX/bin/tmux" ]]; then
     # An earlier run already put tmux inside this install's own environment.
     # It is not on this shell's PATH and does not need to be — it is the tmux
@@ -367,6 +388,12 @@ elif [[ -x "$MAMBA_PREFIX/bin/tmux" ]]; then
     # provided a second time.
     HAVE_TMUX=1
     vsay "  tmux $("$MAMBA_PREFIX/bin/tmux" -V 2>/dev/null | awk '{print $2}') — this install's own copy, reused"
+elif [[ -n "$SYS_TMUX_VER" ]]; then
+    # Too old counts as missing: the system copy stays untouched, and the
+    # install's own environment supplies one the service runs instead.
+    vsay "  tmux $SYS_TMUX_VER is too old ($MIN_TMUX needed) — a newer one will be"
+    vsay "    installed into this install's own environment (see below); no system packages are touched."
+    MISSING="${MISSING:+$MISSING, }tmux"
 else
     vsay "  tmux not found — it will be installed into this install's own"
     vsay "    environment (see below); no system packages are touched."
@@ -691,7 +718,7 @@ create_mamba_env() {
     local want_tmux="$1" specs
     specs="python>=3.${MIN_PY_MINOR}"
     if [[ "$want_tmux" == "1" ]]; then
-        say "  no system tmux — providing tmux from conda-forge inside this install"
+        say "  no usable system tmux — providing tmux from conda-forge inside this install"
     fi
     # -p (an explicit prefix) rather than -n (a name): where a *named* env lands
     # depends on the root prefix and on how micromamba was set up, so the path to
@@ -703,7 +730,7 @@ create_mamba_env() {
     # no default channel, and the solve then fails with "python >=3.9 does not
     # exist" on exactly the machines that need this path.
     if [[ "$want_tmux" == "1" ]]; then
-        micromamba create -y -p "$MAMBA_PREFIX" -c conda-forge "$specs" tmux >/dev/null 2>&1
+        micromamba create -y -p "$MAMBA_PREFIX" -c conda-forge "$specs" "tmux>=${MIN_TMUX}" >/dev/null 2>&1
     else
         micromamba create -y -p "$MAMBA_PREFIX" -c conda-forge "$specs" >/dev/null 2>&1
     fi
@@ -786,7 +813,7 @@ if [[ "$ENV_ADOPTED" == "1" ]]; then
 elif [[ "$HAVE_TMUX" != "1" ]]; then
     # Said out loud because it overrides the uv preference: with no system tmux,
     # a venv cannot help — only a conda env supplies tmux without root.
-    vsay "  no system tmux — using micromamba, which can provide both tmux and python"
+    vsay "  no usable system tmux — using micromamba, which can provide both tmux and python"
     if ! command -v micromamba >/dev/null 2>&1; then
         install_micromamba \
             || die "tmux is missing and micromamba could not be installed. Install tmux yourself and re-run:  $(pkg_install_cmd tmux)"
@@ -2624,7 +2651,7 @@ if [[ "$VERBOSE" == "1" ]]; then
         "venv (uv)") say "  - created $INSTALL_DIR/.venv with uv (fastapi, uvicorn)" ;;
         *)           say "  - created the $ENV_KIND (fastapi, uvicorn)" ;;
     esac
-    [[ -n "$ENV_BIN" ]] && say "  - tmux is provided by that environment (no system tmux was found)"
+    [[ -n "$ENV_BIN" ]] && say "  - tmux is provided by that environment (no usable system tmux was found)"
     say "  - wrote $INSTALL_DIR/start.sh"
     say "  - wrote $NOTES_PATH"
     if [[ "$TOKEN_KEPT" == "1" ]]; then

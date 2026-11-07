@@ -591,15 +591,59 @@ async def private_network(request: Request, call_next):
 TMUX_BIN: list[str] = ["tmux"]
 
 
+# The stderr of this thread's last tmux() call, errno-style, so the few callers
+# that show tmux's own complaint can read it without every caller (and every
+# test fake of tmux()) taking a third return value.
+_TMUX_ERR = threading.local()
+
+
 def tmux(*args: str) -> tuple[int, str]:
     """Run a tmux command, returning (returncode, stdout). Never raises."""
+    _TMUX_ERR.text = ""
     try:
         p = subprocess.run(
             [*TMUX_BIN, *args], capture_output=True, text=True, timeout=5
         )
+        _TMUX_ERR.text = p.stderr
         return p.returncode, p.stdout
     except (OSError, subprocess.SubprocessError):
         return 1, ""
+
+
+def tmux_stderr() -> str:
+    """The first stderr line of this thread's last tmux() call, or ""."""
+    lines = getattr(_TMUX_ERR, "text", "").strip().splitlines()
+    return lines[0].strip() if lines else ""
+
+
+# (major, minor) per TMUX_BIN, filled by the first successful `tmux -V`.
+_TMUX_VERSION: dict[tuple[str, ...], tuple[int, int]] = {}
+
+
+def tmux_version() -> tuple[int, int]:
+    """The tmux version as (major, minor): "tmux 3.0a" -> (3, 0).
+
+    Probed once per tmux invocation and cached. An answer that does not parse
+    ("tmux master", a failed run) counts as new and is not cached, so a
+    development build is not held to the limits of a release.
+    """
+    key = tuple(TMUX_BIN)
+    if key in _TMUX_VERSION:
+        return _TMUX_VERSION[key]
+    m = re.search(r"(\d+)\.(\d+)", tmux("-V")[1])
+    if not m:
+        return (99, 0)
+    _TMUX_VERSION[key] = (int(m.group(1)), int(m.group(2)))
+    return _TMUX_VERSION[key]
+
+
+def tmux_zdotdir_env(home: str) -> tuple[str, ...]:
+    """`-e ZDOTDIR=<home>` for new-session, where this tmux has it.
+
+    new-session -e arrived in tmux 3.2; 3.0a (Ubuntu 20.04) rejects the whole
+    command with "unknown option -- e", so older servers go without the pin.
+    """
+    return ("-e", f"ZDOTDIR={home}") if tmux_version() >= (3, 2) else ()
 
 
 def session_exists(name: str) -> bool:
@@ -3262,12 +3306,17 @@ def api_new_session(request: Request, body: dict = Body(...)) -> Response:
     # somewhere that does not exist, and the pane comes up with none of the
     # user's config. Pin it to $HOME — where zsh looks when ZDOTDIR is unset.
     # Setting it empty does NOT work: zsh then resolves .zshrc against "", and
-    # new-session has no -u to drop a variable outright.
-    rc, _ = tmux("new-session", "-d", "-e", f"ZDOTDIR={os.path.expanduser('~')}",
+    # new-session has no -u to drop a variable outright. tmux before 3.2 has no
+    # new-session -e at all, so there the pin is skipped (tmux_zdotdir_env).
+    rc, _ = tmux("new-session", "-d",
+                 *tmux_zdotdir_env(os.path.expanduser("~")),
                  "-s", name, "-c", start_dir)
     if rc != 0:
-        return JSONResponse({"error": f"tmux could not create '{name}'."},
-                            status_code=500)
+        why = tmux_stderr()
+        return JSONResponse(
+            {"error": f"tmux could not create '{name}': {why}" if why
+             else f"tmux could not create '{name}'."},
+            status_code=500)
     # This may be the command that started the tmux server, and a global hook
     # dies with the server it was set on.
     install_title_hook()
@@ -13006,8 +13055,9 @@ def api_restore(request: Request, body: dict = Body(...)) -> Response:
         printed = restore_print_file(name)
         start = (("--", "/bin/sh", "-c", RESTORE_PRINT_SH, "sh", str(printed),
                   restore_default_shell()) if printed else ())
-        # The same ZDOTDIR pin as api_new_session, for the same reason.
-        rc, _ = tmux("new-session", "-d", "-e", f"ZDOTDIR={home}",
+        # The same ZDOTDIR pin as api_new_session, for the same reason, and
+        # skipped on tmux before 3.2 the same way.
+        rc, _ = tmux("new-session", "-d", *tmux_zdotdir_env(home),
                      "-s", name, "-c", cwd, *start)
         if rc != 0:
             if printed:

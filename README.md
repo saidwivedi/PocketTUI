@@ -43,7 +43,7 @@ Three steps, once.
 curl -fsSL https://pockettui.com/install.sh | bash
 ```
 
-It fetches the source, builds a venv from `requirements.txt`, and offers to keep the backend running in the background — a systemd user service on Linux, a launchd agent on macOS. Requires Python ≥ 3.10 and tmux — and if either is missing it provisions them into the install's own environment (via uv or micromamba), without sudo and without touching system packages.
+It fetches the source, builds a venv from `requirements.txt`, and offers to keep the backend running in the background — a systemd user service on Linux, a launchd agent on macOS. Requires Python ≥ 3.10 and tmux ≥ 3.2 — and if either is missing it provisions them into the install's own environment (via uv or micromamba), without sudo and without touching system packages.
 
 **From a clone**, if you'd rather see the source first — the installer uses the files next to it instead of downloading anything:
 
