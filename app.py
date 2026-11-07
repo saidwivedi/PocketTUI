@@ -12268,9 +12268,11 @@ async def watcher_loop() -> None:
 
 RESTORE_DIR = Path.home() / ".pockettui" / "restore"
 
-# While a session keeps producing output, its scrollback is saved at most this
-# often; the busy->idle edge saves it regardless. One capture is ~20 ms and a
-# few dozen KB, so never per tick.
+# A session's scrollback is saved once its #{window_activity} stamp has moved
+# since the last save and then held still for a whole tick, so a burst of
+# output is captured once, after it ends; while the stamp keeps moving it is
+# saved at most this often. One capture is ~20 ms and a few dozen KB, so never
+# on a tick where nothing changed.
 RESTORE_SAVE_EVERY_S = 60.0
 
 # Ticks in a row that must find no server before the record counts as lost.
@@ -12327,9 +12329,12 @@ RESTORE_CODEX_LINE_MAX = 256 * 1024
 
 # The two files as last read or written, keyed by the directory they belong
 # to so a test that moves RESTORE_DIR gets its own. "gone" counts the
-# consecutive ticks that found no server; "busy" and "tried" are the save
-# schedule (busy last tick, last capture attempt), per session, this process.
+# consecutive ticks that found no server; RESTORE_SCHEDULE are the save
+# schedule, per session, this process: "seen" the activity stamp the last tick
+# found, "covered" the newest stamp the last save is sure to hold, "tried" the
+# time of the last capture attempt.
 _RESTORE: dict = {"dir": None}
+RESTORE_SCHEDULE = ("seen", "covered", "tried")
 
 
 def restore_state() -> dict:
@@ -12345,7 +12350,7 @@ def restore_state() -> dict:
                                   if isinstance(r, dict) and r.get("name")]},
             "pending": [r for r in pending.get("sessions", [])
                         if isinstance(r, dict) and r.get("name")],
-            "gone": 0, "busy": {}, "tried": {},
+            "gone": 0, **{key: {} for key in RESTORE_SCHEDULE},
         })
     return _RESTORE
 
@@ -12625,8 +12630,10 @@ def restore_rows(rows: list[dict], panes: list[dict]) -> list[dict]:
             "name": row["name"], "sid": row["sid"], "alias": row["alias"],
             "notify": row["notify"], "order": row["order"],
             "cwd": pane.get("cwd", ""), "command": pane.get("cmd", ""),
-            # The shell's pid, for restore_resume_for; not recorded.
+            # The shell's pid, for restore_resume_for, and the window's
+            # activity stamp, for the save schedule; neither is recorded.
             "pid": pane.get("pid", ""),
+            "activity": pane.get("activity") if pane else None,
         })
     return out
 
@@ -12647,8 +12654,8 @@ def _restore_lose(st: dict, now: float) -> None:
             _restore_unlink(r["name"], "lost")
         st["pending"].append({**r, "lost": int(now)})
         # A session of the same name on the new server is new to the saves.
-        st["busy"].pop(r["name"], None)
-        st["tried"].pop(r["name"], None)
+        for key in RESTORE_SCHEDULE:
+            st[key].pop(r["name"], None)
     _restore_save_pending(st)
     log(f"restore: tmux server {st['live']['server']} is gone; "
         f"{len(lost)} session(s) offered for restore: "
@@ -12683,10 +12690,11 @@ def restore_track(rows: list[dict], panes: list[dict],
         st["gone"] = 0
         before = {r["name"]: r for r in live["sessions"]}
         fresh = []
-        pids, cwds, changed = {}, {}, []
+        pids, cwds, stamps, changed = {}, {}, {}, []
         for row in current:
             old = before.get(row["name"], {})
             pids[row["name"]] = row.pop("pid", "")
+            stamps[row["name"]] = row.pop("activity", None)
             # A tick whose pane listing failed keeps the folder and command
             # it had rather than blanking them.
             if not row["cwd"] and not row["command"]:
@@ -12703,24 +12711,36 @@ def restore_track(rows: list[dict], panes: list[dict],
             if name not in names:
                 # Gone while the same server lives: ended on purpose.
                 _restore_unlink(name, "ansi", "restored")
-                st["busy"].pop(name, None)
-                st["tried"].pop(name, None)
+                for key in RESTORE_SCHEDULE:
+                    st[key].pop(name, None)
         live["server"] = ident
         live["sessions"] = fresh
         _restore_save_live(st)
         due = []
         for row in fresh:
             name = row["name"]
-            w = WATCHER.get(name)
-            busy = w is not None and w.state == "active"
-            was = st["busy"].get(name, False)
+            stamp = stamps.get(name)
             tried = st["tried"].get(name)
-            st["busy"][name] = busy
-            # First sight in this process, the busy->idle edge, and a busy
-            # session every RESTORE_SAVE_EVERY_S.
-            if (tried is None or (was and not busy)
-                    or (busy and now - tried >= RESTORE_SAVE_EVERY_S)):
+            if stamp is None:
+                # No pane listed this tick: nothing is known to have moved.
+                if tried is None:
+                    st["tried"][name] = now
+                    due.append(name)
+                continue
+            seen = st["seen"].get(name)
+            st["seen"][name] = stamp
+            moving = seen is not None and stamp != seen
+            # First sight in this process; a stamp past what the last save
+            # covers that held still since the last tick (a burst that has
+            # ended); and a stamp still moving every RESTORE_SAVE_EVERY_S.
+            if (tried is None
+                    or (not moving and stamp > st["covered"].get(name, -1))
+                    or (moving and now - tried >= RESTORE_SAVE_EVERY_S)):
                 st["tried"][name] = now
+                # The stamp is in whole seconds: output in the second the
+                # capture runs may not be in it, so only stamps before that
+                # second count as covered.
+                st["covered"][name] = int(now) - 1
                 due.append(name)
     # The resume command is looked up again at every save point and when a
     # session's program changes: one ps for the whole tick that needs it.
@@ -12807,7 +12827,7 @@ def restore_rename(old: str, new: str) -> None:
                 os.replace(restore_hist(old, kind), restore_hist(new, kind))
             except OSError:
                 pass
-        for key in ("busy", "tried"):
+        for key in RESTORE_SCHEDULE:
             if old in st[key]:
                 st[key][new] = st[key].pop(old)
 

@@ -48,7 +48,8 @@ class RestoreTmux(FakeTmux):
         if cmd == "list-panes" and "-a" in args:
             self.calls.append(args)
             return 0, "".join(
-                f"1\t1\t{s['name']}\t0\t0\t0\t{s.get('cmd', 'zsh')}"
+                f"1\t1\t{s['name']}\t{s.get('activity', 0)}\t0\t0"
+                f"\t{s.get('cmd', 'zsh')}"
                 f"\t%{s['sid']}\t{s.get('cwd', '/tmp')}\t{s.get('pid', '')}\n"
                 for s in self.sessions)
         if cmd == "list-panes":
@@ -417,28 +418,73 @@ def captures(t):
     return sum(1 for c in t.calls if c[0] == "capture-pane")
 
 
-def test_scrollback_is_saved_on_first_sight_busy_to_idle_and_every_minute_busy(
-        monkeypatch):
-    t = fake(monkeypatch, [{"name": "a", "hist": "one\n"}])
-    tick(1000)                                  # first sight
+def test_scrollback_is_saved_on_first_sight(monkeypatch):
+    t = fake(monkeypatch, [{"name": "a", "hist": "one\n", "activity": 500}])
+    tick(1000)
     assert captures(t) == 1
     assert live()["sessions"][0]["saved"] == 1000
-    A.WATCHER["a"] = A.WatchState(state="active")
-    tick(1002)                                  # busy, saved 2 s ago
-    tick(1030)
-    assert captures(t) == 1
-    tick(1061)                                  # busy for a minute
-    assert captures(t) == 2
-    t.sessions[0]["hist"] = "one\ntwo\n"
-    A.WATCHER["a"].state = "ready"
-    tick(1063)                                  # the busy->idle edge
-    assert captures(t) == 3
-    assert A.restore_hist("a").read_text() == "one\ntwo"
-    tick(1200)                                  # idle: nothing more
-    assert captures(t) == 3
+    assert A.restore_hist("a").read_text() == "one"
     # The capture keeps the screen: no -E -1.
     cap = [c for c in t.calls if c[0] == "capture-pane"][-1]
     assert "-E" not in cap and "-e" in cap and "-J" in cap
+
+
+def test_no_save_on_ticks_where_the_activity_stamp_did_not_move(monkeypatch):
+    t = fake(monkeypatch, [{"name": "a", "hist": "one\n", "activity": 500}])
+    tick(1000)
+    for now in range(1002, 1300, 2):
+        tick(now)
+    assert captures(t) == 1
+
+
+def test_a_burst_is_saved_on_the_first_quiet_tick_after_it(monkeypatch):
+    t = fake(monkeypatch, [{"name": "a", "hist": "one\n", "activity": 500}])
+    tick(1000)
+    t.sessions[0].update(activity=1001, hist="one\ngit log\n")
+    tick(1002)                                  # still moving: no capture
+    assert captures(t) == 1
+    t.sessions[0].update(activity=1003, hist="one\ngit log\npage\n")
+    tick(1004)                                  # moved again
+    assert captures(t) == 1
+    tick(1006)                                  # held still for a tick
+    assert captures(t) == 2
+    assert A.restore_hist("a").read_text() == "one\ngit log\npage"
+    assert live()["sessions"][0]["saved"] == 1006
+    tick(1008)                                  # nothing new since the save
+    tick(1010)
+    assert captures(t) == 2
+    # The watcher's state plays no part in the schedule.
+    A.WATCHER["a"] = A.WatchState(state="active")
+    tick(1012)
+    assert captures(t) == 2
+
+
+def test_output_in_the_second_of_a_save_is_saved_again(monkeypatch):
+    t = fake(monkeypatch, [{"name": "a", "hist": "one\n", "activity": 1000}])
+    tick(1000.2)                                # first sight, same second
+    t.sessions[0]["hist"] = "one\ntwo\n"         # later in second 1000
+    tick(1002.2)                                # stamp unchanged, not covered
+    assert captures(t) == 2
+    assert A.restore_hist("a").read_text() == "one\ntwo"
+    tick(1004.2)                                # covered now
+    assert captures(t) == 2
+
+
+def test_a_stamp_that_keeps_moving_is_saved_every_minute(monkeypatch):
+    t = fake(monkeypatch, [{"name": "a", "hist": "x\n", "activity": 500}])
+    tick(1000)
+    for now in range(1002, 1060, 2):
+        t.sessions[0]["activity"] = now - 1
+        tick(now)
+    assert captures(t) == 1
+    t.sessions[0]["activity"] = 1059
+    tick(1060)                                  # moving for a minute
+    assert captures(t) == 2
+    t.sessions[0]["activity"] = 1061
+    tick(1062)                                  # still moving, saved 2 s ago
+    assert captures(t) == 2
+    tick(1064)                                  # the stream ended
+    assert captures(t) == 3
 
 
 def test_an_empty_capture_never_overwrites_saved_scrollback(monkeypatch):
