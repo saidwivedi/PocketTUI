@@ -575,7 +575,11 @@ function restoreByline(s) {
   if (cwd) parts.push(["where", cwd.slice(cwd.lastIndexOf("/") + 1) || "/"]);
   // A program the restore resumes is named for what will happen to it.
   if (s.resumes) parts.push(["cmd", "resumes " + s.resumes]);
-  else if (s.command) parts.push(["cmd", s.command]);
+  // Any other program's command line is typed back, not run.
+  else if (s.last_cmd) {
+    parts.push(["cmd", "types " + (s.last_cmd.length > 40
+      ? s.last_cmd.slice(0, 39) + "…" : s.last_cmd)]);
+  } else if (s.command) parts.push(["cmd", s.command]);
   if (s.lines > 0) parts.push(["", s.lines + (s.lines === 1 ? " line" : " lines") + " of output"]);
   if (!s.cwd_exists) parts.push(["missing", "folder missing"]);
   return parts;
