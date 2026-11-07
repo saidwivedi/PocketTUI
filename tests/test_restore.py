@@ -49,7 +49,7 @@ class RestoreTmux(FakeTmux):
             self.calls.append(args)
             return 0, "".join(
                 f"1\t1\t{s['name']}\t0\t0\t0\t{s.get('cmd', 'zsh')}"
-                f"\t%{s['sid']}\t{s.get('cwd', '/tmp')}\n"
+                f"\t%{s['sid']}\t{s.get('cwd', '/tmp')}\t{s.get('pid', '')}\n"
                 for s in self.sessions)
         if cmd == "list-panes":
             self.calls.append(args)
@@ -120,7 +120,92 @@ def test_the_live_set_is_recorded_without_views_or_the_update_session(monkeypatc
     assert rec["server"] == "100:1700000000"
     assert rec["sessions"] == [{
         "name": "work", "sid": 0, "alias": "Work", "notify": "quiet",
-        "order": 2, "cwd": "/srv/work", "command": "claude", "saved": 0}]
+        "order": 2, "cwd": "/srv/work", "command": "claude", "resume": "",
+        "saved": 0}]
+
+
+CLAUDE_ID = "c9f76818-0000-4000-8000-00000000abcd"
+CODEX_ID = "019a1b2c-3d4e-7f00-8a9b-0c1d2e3f4a5b"
+
+
+def claude_home(tmp_path, pid, sid=CLAUDE_ID):
+    d = tmp_path / ".claude" / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{pid}.json").write_text(json.dumps(
+        {"pid": pid, "sessionId": sid, "cwd": "/srv/work"}))
+    return tmp_path
+
+
+def codex_files(pid):
+    return {610: ["/dev/pts/3", "/home/u/.codex/log/codex-tui.log",
+                  f"/home/u/.codex/sessions/2026/11/07/"
+                  f"rollout-2026-11-07T10-11-12-{CODEX_ID}.jsonl"]}.get(pid, [])
+
+
+# zsh 100 -> claude 110; zsh 200 -> node 210 (npm's wrapper) -> codex 610;
+# zsh 300 -> python3 310.
+TREE = {100: [(110, "claude")], 200: [(210, "MainThread")], 210: [(610, "codex")],
+        300: [(310, "python3")]}
+
+
+def test_resume_is_the_exact_conversation_under_the_pane(tmp_path):
+    home = claude_home(tmp_path, 110)
+    assert A.restore_resume_for("100", TREE, home, codex_files) == \
+        f"claude --resume {CLAUDE_ID}"
+    assert A.restore_resume_for("200", TREE, home, codex_files) == \
+        f"codex resume {CODEX_ID}"
+    assert A.restore_resume_for("300", TREE, home, codex_files) == ""
+    assert A.restore_resume_for("", TREE, home, codex_files) == ""
+
+
+def test_codex_with_several_rollouts_open_takes_the_one_written_last(tmp_path):
+    old, new = (tmp_path / f"rollout-2026-11-07T10-00-0{i}-{CODEX_ID[:-1]}{i}.jsonl"
+                for i in (1, 2))
+    old.write_text("")
+    new.write_text("")
+    os.utime(old, (2000, 2000))
+    os.utime(new, (1000, 1000))
+    files = lambda pid: [str(new), str(old)]
+    assert A.restore_session_id("codex", 610, tmp_path, files) == CODEX_ID[:-1] + "1"
+
+
+def test_resume_falls_back_to_the_latest_when_no_id_is_found(tmp_path):
+    assert A.restore_resume_for("100", TREE, tmp_path, lambda pid: []) == \
+        "claude --continue"
+    assert A.restore_resume_for("200", TREE, tmp_path, lambda pid: []) == \
+        "codex resume --last"
+    # An id that is not a uuid is never typed at a prompt.
+    home = claude_home(tmp_path, 110, sid="x; rm -rf ~")
+    assert A.restore_resume_for("100", TREE, home, lambda pid: []) == \
+        "claude --continue"
+
+
+def test_the_process_tree_parses_ps(monkeypatch):
+    out = "  1     0 systemd\n 100     1 /bin/zsh\n 110   100 claude\nbad line\n"
+    monkeypatch.setattr(A.subprocess, "run", lambda *a, **k:
+                        subprocess.CompletedProcess(a, 0, out, ""))
+    assert A.restore_process_tree() == {
+        0: [(1, "systemd")], 1: [(100, "zsh")], 100: [(110, "claude")]}
+
+
+def test_the_record_carries_the_resume_command(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(claude_home(tmp_path, 110)))
+    t = fake(monkeypatch, [{"name": "cc", "cmd": "claude", "pid": "100"},
+                           {"name": "sh", "sid": 1, "pid": "300"}])
+    trees = []
+    monkeypatch.setattr(A, "restore_process_tree",
+                        lambda: trees.append(1) or TREE)
+    tick(1000)
+    assert {r["name"]: r["resume"] for r in live()["sessions"]} == {
+        "cc": f"claude --resume {CLAUDE_ID}", "sh": ""}
+    # One ps for the tick, and none on a tick with nothing due or changed.
+    assert trees == [1]
+    tick(1002)
+    assert trees == [1]
+    # A program change is looked up again at once.
+    t.sessions[1]["cmd"] = "python3"
+    tick(1004)
+    assert trees == [1, 1]
 
 
 def test_a_new_server_moves_every_live_row_to_the_offers(monkeypatch):
@@ -321,9 +406,11 @@ def test_get_lists_the_offers_with_lines_and_folder(monkeypatch, client, tmp_pat
     assert r.status_code == 200
     assert r.json() == {"sessions": [
         {"name": "a", "alias": "Alpha", "cwd": str(here), "cwd_exists": True,
-         "command": "claude", "lost": 2000, "lines": 3},
+         "command": "claude", "resume": "claude --continue",
+         "resumes": "Claude Code", "lost": 2000, "lines": 3},
         {"name": "b", "alias": "", "cwd": str(tmp_path / "gone"),
-         "cwd_exists": False, "command": "zsh", "lost": 2000, "lines": 0},
+         "cwd_exists": False, "command": "zsh", "resume": "", "resumes": "",
+         "lost": 2000, "lines": 0},
     ]}
 
 
@@ -355,12 +442,42 @@ def test_post_restores_with_the_old_folder_options_and_scrollback(
     assert opts == [("set-option", "-t", "a", "@alias", "Alpha"),
                     ("set-option", "-t", "a", "@notify", "on"),
                     ("set-option", "-t", "a", "@ptui_order", "4")]
+    # Typed, then run; b's python3 resumes nothing.
     typed = [c for c in t.calls if c[0] == "send-keys"]
-    assert typed == [("send-keys", "-t", "=a:", "-l", "--", "claude --continue")]
+    assert typed == [("send-keys", "-t", "=a:", "-l", "--", "claude --continue"),
+                     ("send-keys", "-t", "=a:", "Enter")]
     assert A.restore_count() == 0
     assert pending() == {"sessions": []}
     assert A.restore_hist("a", "restored").read_text() == "saved"
     assert not A.restore_hist("a", "lost").exists()
+
+
+def test_post_runs_the_recorded_exact_command(monkeypatch, client, tmp_path):
+    monkeypatch.setenv("HOME", str(claude_home(tmp_path, 110)))
+    monkeypatch.setattr(A, "restore_process_tree", lambda: TREE)
+    t = lose(monkeypatch, [{"name": "cc", "cmd": "claude", "pid": "100"}])
+    offer = client.get("/api/restore").json()["sessions"][0]
+    assert (offer["resume"], offer["resumes"]) == (
+        f"claude --resume {CLAUDE_ID}", "Claude Code")
+    client.post("/api/restore", json={"names": ["cc"]})
+    typed = [c for c in t.calls if c[0] == "send-keys"]
+    assert typed == [
+        ("send-keys", "-t", "=cc:", "-l", "--", f"claude --resume {CLAUDE_ID}"),
+        ("send-keys", "-t", "=cc:", "Enter")]
+
+
+def test_post_resumes_codex_and_runs_nothing_in_a_plain_shell(
+        monkeypatch, client, tmp_path):
+    t = lose(monkeypatch, [{"name": "cx", "cmd": "codex"},
+                           {"name": "sh", "sid": 1, "cmd": "zsh"}])
+    offers = client.get("/api/restore").json()["sessions"]
+    assert [(o["resume"], o["resumes"]) for o in offers] == [
+        ("codex resume --last", "Codex"), ("", "")]
+    r = client.post("/api/restore", json={"names": ["cx", "sh"]})
+    assert [x["name"] for x in r.json()["restored"]] == ["cx", "sh"]
+    typed = [c for c in t.calls if c[0] == "send-keys"]
+    assert typed == [("send-keys", "-t", "=cx:", "-l", "--", "codex resume --last"),
+                     ("send-keys", "-t", "=cx:", "Enter")]
 
 
 def test_post_refuses_a_name_in_use_and_keeps_the_offer(monkeypatch, client, tmp_path):
@@ -520,7 +637,7 @@ console.log(JSON.stringify({ hidden: $("restore-card").hidden,
     assert out["note"].endswith(". These sessions were open.")
     assert out["rows"] == [
         {"ticked": True, "name": "a",
-         "text": "Alphaaproj·claude·3 lines of output"},
+         "text": "Alphaaproj·resumes Claude Code·3 lines of output"},
         {"ticked": True, "name": "b",
          "text": "bgone·zsh·folder missingname in use"},
     ]
