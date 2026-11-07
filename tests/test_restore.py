@@ -180,6 +180,111 @@ def test_resume_falls_back_to_the_latest_when_no_id_is_found(tmp_path):
         "claude --continue"
 
 
+REAL_PROC_INFO = A.restore_proc_info
+
+
+@pytest.fixture(autouse=True)
+def no_real_processes(monkeypatch):
+    """The fake pids in TREE are never looked up on this machine."""
+    monkeypatch.setattr(A, "restore_proc_info", lambda pid: ("", None))
+
+
+CODEX_NODE = "node /home/u/.nvm/versions/node/v24/bin/codex"
+CODEX_BIN = "/home/u/.nvm/lib/node_modules/@openai/codex/bin/codex"
+
+
+def procs(table):
+    return lambda pid: table.get(pid, ("", None))
+
+
+def test_codex_started_on_a_conversation_is_read_from_its_arguments(tmp_path):
+    # The wrapper carries `resume <id>` as our restore types it.
+    info = procs({210: (f"{CODEX_NODE} resume {CODEX_ID}", None),
+                  610: (CODEX_BIN, None)})
+    assert A.restore_resume_for("200", TREE, tmp_path, lambda pid: [],
+                                "/srv/work", info) == f"codex resume {CODEX_ID}"
+    info = procs({610: (f"{CODEX_BIN} --session-id={CODEX_ID} -m o3", None)})
+    assert A.restore_session_id("codex", 610, tmp_path, lambda pid: [],
+                                proc_info=info) == CODEX_ID
+    # Not a uuid: no id from the arguments, and no rollout to fall back to.
+    info = procs({210: (f"{CODEX_NODE} resume --last", None),
+                  610: (f"{CODEX_BIN} resume x;rm", None)})
+    assert A.restore_resume_for("200", TREE, tmp_path, lambda pid: [],
+                                "/srv/work", info) == "codex resume --last"
+
+
+def rollout(home, local_ts, sid, cwd, meta_utc):
+    day = home / ".codex" / "sessions" / local_ts[:10].replace("-", "/")
+    day.mkdir(parents=True, exist_ok=True)
+    f = day / f"rollout-{local_ts}-{sid}.jsonl"
+    f.write_text(json.dumps({"timestamp": meta_utc, "type": "session_meta",
+                             "payload": {"id": sid, "timestamp": meta_utc,
+                                         "cwd": cwd, "originator": "codex-tui",
+                                         "base_instructions": "x" * 30000}})
+                 + "\n" + json.dumps({"type": "event"}) + "\n")
+    return f
+
+
+def epoch(utc):
+    import calendar
+    return calendar.timegm(time.strptime(utc, "%Y-%m-%dT%H:%M:%S"))
+
+
+def test_codex_tui_is_matched_to_the_rollout_it_began(monkeypatch, tmp_path):
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    try:
+        first = CODEX_ID[:-1] + "1"
+        second = CODEX_ID[:-1] + "2"
+        other = CODEX_ID[:-1] + "3"
+        rollout(tmp_path, "2026-11-07T08-10-13", first, "/srv/work",
+                "2026-11-07T08:10:13.612Z")
+        rollout(tmp_path, "2026-11-07T08-15-14", second, "/srv/work/",
+                "2026-11-07T08:15:14.100Z")
+        # Another folder, a second after the start: never this pane's.
+        rollout(tmp_path, "2026-11-07T08-15-13", other, "/srv/else",
+                "2026-11-07T08:15:13.000Z")
+        start = epoch("2026-11-07T08:15:12")
+        info = procs({610: (CODEX_BIN, start), 210: (CODEX_NODE, start)})
+        assert A.restore_resume_for("200", TREE, tmp_path, lambda pid: [],
+                                    "/srv/work", info) == f"codex resume {second}"
+        assert A.restore_codex_meta_id(tmp_path, "/srv/work",
+                                       epoch("2026-11-07T08:10:12")) == first
+        # A conversation begun two minutes after the start is not this one.
+        assert A.restore_codex_meta_id(tmp_path, "/srv/work",
+                                       epoch("2026-11-07T08:13:14")) == ""
+        assert A.restore_codex_meta_id(tmp_path, "/srv/else",
+                                       epoch("2026-11-07T08:10:12")) == ""
+        # No match: the open rollout, then the folder's latest.
+        info = procs({610: (CODEX_BIN, epoch("2026-11-07T09:00:00"))})
+        assert A.restore_resume_for("200", TREE, tmp_path, codex_files,
+                                    "/srv/work", info) == f"codex resume {CODEX_ID}"
+        assert A.restore_resume_for("200", TREE, tmp_path, lambda pid: [],
+                                    "/srv/work", info) == "codex resume --last"
+        # Without a folder or a start time no rollout is matched.
+        info = procs({610: (CODEX_BIN, start)})
+        assert A.restore_resume_for("200", TREE, tmp_path, lambda pid: [],
+                                    "", info) == "codex resume --last"
+        info = procs({610: (CODEX_BIN, None)})
+        assert A.restore_resume_for("200", TREE, tmp_path, lambda pid: [],
+                                    "/srv/work", info) == "codex resume --last"
+    finally:
+        monkeypatch.delenv("TZ")
+        time.tzset()
+
+
+def test_the_process_start_parses_etimes_and_etime(monkeypatch):
+    assert A._restore_etime("05:07") == 307
+    assert A._restore_etime("01:05:07") == 3907
+    assert A._restore_etime("2-01:05:07") == 2 * 86400 + 3907
+    assert A._restore_etime("") is None
+    answers = {"etimes": "", "etime": "1-00:00:10", "args": "codex"}
+    monkeypatch.setattr(A, "_restore_ps", lambda pid, f: answers[f])
+    args, started = REAL_PROC_INFO(999999999)
+    assert args == "codex"
+    assert abs(time.time() - 86410 - started) < 2
+
+
 def test_the_process_tree_parses_ps(monkeypatch):
     out = "  1     0 systemd\n 100     1 /bin/zsh\n 110   100 claude\nbad line\n"
     monkeypatch.setattr(A.subprocess, "run", lambda *a, **k:

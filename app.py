@@ -20,6 +20,7 @@ import argparse
 import array
 import asyncio
 import base64
+import calendar
 import concurrent.futures
 import dataclasses
 import errno
@@ -12305,6 +12306,21 @@ RESTORE_ID_RE = re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12
 RESTORE_CODEX_ROLLOUT_RE = re.compile(
     r"/rollout-[^/]*-(" + RESTORE_ID_RE.pattern + r")\.jsonl$")
 
+# A Codex started on a given conversation names it on its command line: our
+# own restore types `codex resume <id>`.
+RESTORE_CODEX_ARG_RE = re.compile(
+    r"(?:^|\s)(?:resume|--session-id)[\s=]+(" + RESTORE_ID_RE.pattern + r")(?:\s|$)")
+
+# Codex 0.159+ keeps its rollouts open in a shared app-server daemon, not in
+# the TUI, so a TUI's conversation is found by its rollout's first line: the
+# session_meta whose cwd is the pane's and whose timestamp falls this soon
+# after the process started (seconds; 2 s of slack before, for ps's
+# whole-second start time).
+RESTORE_CODEX_META_WINDOW_S = 30
+RESTORE_CODEX_META_SLACK_S = 2
+RESTORE_CODEX_SCAN_MAX = 300
+RESTORE_CODEX_LINE_MAX = 256 * 1024
+
 # The two files as last read or written, keyed by the directory they belong
 # to so a test that moves RESTORE_DIR gets its own. "gone" counts the
 # consecutive ticks that found no server; "busy" and "tried" are the save
@@ -12436,11 +12452,97 @@ def restore_open_files(pid: int) -> list[str]:
     return [line[1:] for line in out.splitlines() if line.startswith("n")]
 
 
+def _restore_ps(pid: int, field: str) -> str:
+    try:
+        return subprocess.run(["ps", "-o", f"{field}=", "-p", str(pid)],
+                              capture_output=True, text=True,
+                              timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _restore_etime(text: str) -> int | None:
+    """Seconds from ps etime's [[dd-]hh:]mm:ss, or None."""
+    m = re.fullmatch(r"(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)", text.strip())
+    if not m:
+        return None
+    d, h, mi, sec = (int(g or 0) for g in m.groups())
+    return ((d * 24 + h) * 60 + mi) * 60 + sec
+
+
+def restore_proc_info(pid: int) -> tuple[str, float | None]:
+    """A process's command line and its start time (epoch seconds, to the
+    second), or ("", None). /proc on Linux, ps elsewhere; etimes is Linux's,
+    etime the portable spelling macOS has."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        args = raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
+    except OSError:
+        args = _restore_ps(pid, "args")
+    age = _restore_ps(pid, "etimes")
+    secs = int(age) if age.isdigit() else _restore_etime(_restore_ps(pid, "etime"))
+    return args, (time.time() - secs if secs is not None else None)
+
+
+def _restore_iso_utc(text) -> float | None:
+    """Epoch seconds from session_meta's "2026-11-07T07:10:13.612Z"."""
+    m = re.fullmatch(r"(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(\.\d+)?Z",
+                     text if isinstance(text, str) else "")
+    if not m:
+        return None
+    whole = calendar.timegm(tuple(int(g) for g in m.groups()[:6]))
+    return whole + float(m.group(7) or 0)
+
+
+def restore_codex_meta_id(home: Path, cwd: str, started: float) -> str:
+    """The Codex conversation that began in `cwd` just after `started`: the
+    rollout whose first line, its session_meta, has that cwd and the timestamp
+    closest after the start within RESTORE_CODEX_META_WINDOW_S. Only the day
+    folders around the start are listed, and only first lines read."""
+    root = home / ".codex" / "sessions"
+    days = sorted({time.strftime("%Y/%m/%d", conv(t))
+                   for t in (started - 86400, started,
+                             started + RESTORE_CODEX_META_WINDOW_S)
+                   for conv in (time.localtime, time.gmtime)}, reverse=True)
+    files = []
+    for day in days:
+        try:
+            files += sorted((root / day).glob("rollout-*.jsonl"), reverse=True)
+        except OSError:
+            pass
+    want = cwd.rstrip("/") or "/"
+    best, best_dt = "", None
+    for f in files[:RESTORE_CODEX_SCAN_MAX]:
+        try:
+            with open(f, "rb") as fh:
+                line = fh.readline(RESTORE_CODEX_LINE_MAX)
+            meta = json.loads(line)
+        except (OSError, ValueError):
+            continue
+        payload = meta.get("payload") if isinstance(meta, dict) else None
+        if meta.get("type") != "session_meta" or not isinstance(payload, dict):
+            continue
+        sid, at = payload.get("id"), _restore_iso_utc(payload.get("timestamp"))
+        mcwd = payload.get("cwd")
+        if (not isinstance(sid, str) or not RESTORE_ID_RE.fullmatch(sid)
+                or at is None or not isinstance(mcwd, str)
+                or (mcwd.rstrip("/") or "/") != want):
+            continue
+        dt = at - started
+        if (-RESTORE_CODEX_META_SLACK_S <= dt <= RESTORE_CODEX_META_WINDOW_S
+                and (best_dt is None or abs(dt) < abs(best_dt))):
+            best, best_dt = sid, dt
+    return best
+
+
 def restore_session_id(agent: str, pid: int, home: Path | None = None,
-                       open_files=restore_open_files) -> str:
+                       open_files=restore_open_files, cwd: str = "",
+                       parent: int | None = None, proc_info=None) -> str:
     """The conversation id the agent process `pid` is in, or "". Claude Code
-    writes ~/.claude/sessions/<pid>.json with its sessionId; Codex holds its
-    rollout file open, the id ending the file's name."""
+    writes ~/.claude/sessions/<pid>.json with its sessionId. Codex is asked,
+    in order: its command line (or its `parent` wrapper's) naming the id, the
+    rollout that began in the pane's `cwd` just after it started, and the
+    rollout it holds open, the id ending the file's name."""
     if agent == "claude":
         home = Path.home() if home is None else home
         try:
@@ -12451,6 +12553,19 @@ def restore_session_id(agent: str, pid: int, home: Path | None = None,
         sid = data.get("sessionId") if isinstance(data, dict) else None
         return sid if isinstance(sid, str) and RESTORE_ID_RE.fullmatch(sid) else ""
     if agent == "codex":
+        started = None
+        for i, p in enumerate([pid] + ([parent] if parent else [])):
+            args, at = (proc_info or restore_proc_info)(p)
+            m = RESTORE_CODEX_ARG_RE.search(args)
+            if m:
+                return m.group(1)
+            if i == 0:
+                started = at
+        if cwd and started is not None:
+            sid = restore_codex_meta_id(
+                Path.home() if home is None else home, cwd, started)
+            if sid:
+                return sid
         found = [(path, m.group(1)) for path in open_files(pid)
                  for m in [RESTORE_CODEX_ROLLOUT_RE.search(path)] if m]
         if found:
@@ -12466,7 +12581,8 @@ def restore_session_id(agent: str, pid: int, home: Path | None = None,
 
 
 def restore_resume_for(pane_pid: str, tree: dict, home: Path | None = None,
-                       open_files=restore_open_files) -> str:
+                       open_files=restore_open_files, cwd: str = "",
+                       proc_info=None) -> str:
     """The command that resumes the agent running under a pane's shell: the
     nearest descendant named in RESTORE_RESUME, resumed by its conversation
     id, or by the folder's latest conversation when no id was found; "" when
@@ -12483,7 +12599,8 @@ def restore_resume_for(pane_pid: str, tree: dict, home: Path | None = None,
             seen.add(child)
             if name in RESTORE_RESUME:
                 _, exact, latest = RESTORE_RESUME[name]
-                sid = restore_session_id(name, child, home, open_files)
+                sid = restore_session_id(name, child, home, open_files,
+                                         cwd, pid, proc_info)
                 return exact.format(id=sid) if sid else latest
             queue.append(child)
     return ""
@@ -12562,7 +12679,7 @@ def restore_track(rows: list[dict], panes: list[dict],
         st["gone"] = 0
         before = {r["name"]: r for r in live["sessions"]}
         fresh = []
-        pids, changed = {}, []
+        pids, cwds, changed = {}, {}, []
         for row in current:
             old = before.get(row["name"], {})
             pids[row["name"]] = row.pop("pid", "")
@@ -12575,6 +12692,7 @@ def restore_track(rows: list[dict], panes: list[dict],
                 changed.append(row["name"])
             row["resume"] = old.get("resume", "")
             row["saved"] = old.get("saved", 0)
+            cwds[row["name"]] = row["cwd"]
             fresh.append(row)
         names = {r["name"] for r in fresh}
         for name in before:
@@ -12605,7 +12723,8 @@ def restore_track(rows: list[dict], panes: list[dict],
     look = [n for n in dict.fromkeys(changed + due) if pids.get(n)]
     if look:
         tree = restore_process_tree()
-        found = {n: restore_resume_for(pids[n], tree) for n in look}
+        found = {n: restore_resume_for(pids[n], tree, cwd=cwds.get(n, ""))
+                 for n in look}
         with RESTORE_LOCK:
             st = restore_state()
             for row in st["live"]["sessions"]:
