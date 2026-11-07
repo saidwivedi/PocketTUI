@@ -10943,11 +10943,6 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         # A real attach: tmux re-initialises the client, so the terminal is
         # about to be rewritten anyway and history goes out first for the
         # repaint to land on top of.
-        # A restored session's attaches put the output saved before the
-        # server was lost above the live history, behind a dim line saying so.
-        restored = await asyncio.to_thread(restore_preface, session_name)
-        if restored:
-            history = restored + ("\n" + history if history else "")
         if history:
             await ws.send_text(json.dumps(
                 {"type": "replay", "data": history.replace("\n", "\r\n")}))
@@ -12283,13 +12278,23 @@ RESTORE_GONE_TICKS = 2
 # that is itself going down.
 RESTORE_SHUTDOWN_S = 3.0
 
-# How long a restored session's saved output is replayed on its fresh
-# attaches, from the restore.
-RESTORE_REPLAY_KEEP_S = 30 * 60
-
 # Fields a record row carries, in the order the files hold them.
 RESTORE_FIELDS = ("name", "sid", "alias", "notify", "order", "cwd", "command",
-                  "resume")
+                  "resume", "last_cmd")
+
+# Shells: a pane whose foreground program is one of them has no command line
+# worth typing back after a restore.
+RESTORE_SHELLS = frozenset({"zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh"})
+
+# The longest command line recorded to be typed back at a restore; a longer
+# one is not recorded rather than typed cut short.
+RESTORE_CMD_MAX = 2000
+
+# The start command of a restored session that had output saved: print the
+# saved frame (and the separator Python appended to it) into the pane, so it
+# lands in tmux's own history where scrolling and search reach it, delete the
+# file, then become the login shell a plain new-session would have started.
+RESTORE_PRINT_SH = 'cat -- "$1"; rm -f -- "$1"; exec "$2" -l'
 
 RESTORE_LOCK = threading.RLock()
 
@@ -12389,9 +12394,9 @@ def _restore_save_pending(st: dict) -> None:
 
 def restore_hist(name: str, kind: str = "ansi") -> Path:
     """The scrollback file for a session name: .ansi while it is live, .lost
-    while it is a restore offer, .restored for RESTORE_REPLAY_KEEP_S after a
-    restore. A hash keeps any two names apart; the readable prefix is only for
-    whoever lists the folder."""
+    while it is a restore offer, .print from a restore until the restored
+    pane's start command has printed it. A hash keeps any two names apart; the
+    readable prefix is only for whoever lists the folder."""
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", name)[:40]
     digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
     return RESTORE_DIR / "hist" / f"{digest}-{safe}.{kind}"
@@ -12615,6 +12620,41 @@ def restore_resume_for(pane_pid: str, tree: dict, home: Path | None = None,
     return ""
 
 
+def restore_cmdline(pid: int) -> str:
+    """A process's command line, quoted so the shell reads back the same
+    arguments: /proc on Linux, ps's args (already one string) elsewhere."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return _restore_ps(pid, "args")
+    argv = [a.decode("utf-8", "replace") for a in raw.split(b"\0")]
+    while argv and argv[-1] == "":
+        argv.pop()
+    return shlex.join(argv)
+
+
+def restore_last_cmd(pane_pid: str, tree: dict, command: str,
+                     cmdline=None) -> str:
+    """The command line of the program in front of a pane's shell, to be
+    typed back (never run) at a restore, or "": the shell's child named as
+    tmux names the pane's program, or its only child. Nothing for a shell in
+    front, for a line holding a control character (a newline would run it)
+    and for one longer than RESTORE_CMD_MAX."""
+    if not pane_pid.isdigit() or not command or command in RESTORE_SHELLS:
+        return ""
+    kids = tree.get(int(pane_pid), [])
+    pick = [pid for pid, name in kids if name == command]
+    if not pick and len(kids) == 1:
+        pick = [kids[0][0]]
+    if not pick:
+        return ""
+    line = (cmdline or restore_cmdline)(pick[0]).strip()
+    if (not line or len(line) > RESTORE_CMD_MAX
+            or any(ord(c) < 32 or ord(c) == 127 for c in line)):
+        return ""
+    return line
+
+
 def restore_rows(rows: list[dict], panes: list[dict]) -> list[dict]:
     """The record rows for the sessions the list shows: no device views, no
     update session (it ends itself), each with its active window's folder and
@@ -12690,7 +12730,7 @@ def restore_track(rows: list[dict], panes: list[dict],
         st["gone"] = 0
         before = {r["name"]: r for r in live["sessions"]}
         fresh = []
-        pids, cwds, stamps, changed = {}, {}, {}, []
+        pids, cwds, cmds, stamps, changed = {}, {}, {}, {}, []
         for row in current:
             old = before.get(row["name"], {})
             pids[row["name"]] = row.pop("pid", "")
@@ -12703,14 +12743,16 @@ def restore_track(rows: list[dict], panes: list[dict],
             elif row["command"] != old.get("command"):
                 changed.append(row["name"])
             row["resume"] = old.get("resume", "")
+            row["last_cmd"] = old.get("last_cmd", "")
             row["saved"] = old.get("saved", 0)
             cwds[row["name"]] = row["cwd"]
+            cmds[row["name"]] = row["command"]
             fresh.append(row)
         names = {r["name"] for r in fresh}
         for name in before:
             if name not in names:
                 # Gone while the same server lives: ended on purpose.
-                _restore_unlink(name, "ansi", "restored")
+                _restore_unlink(name, "ansi")
                 for key in RESTORE_SCHEDULE:
                     st[key].pop(name, None)
         live["server"] = ident
@@ -12742,18 +12784,20 @@ def restore_track(rows: list[dict], panes: list[dict],
                 # second count as covered.
                 st["covered"][name] = int(now) - 1
                 due.append(name)
-    # The resume command is looked up again at every save point and when a
-    # session's program changes: one ps for the whole tick that needs it.
+    # The resume command and the program's command line are looked up again
+    # at every save point and when a session's program changes: one ps for
+    # the whole tick that needs it.
     look = [n for n in dict.fromkeys(changed + due) if pids.get(n)]
     if look:
         tree = restore_process_tree()
-        found = {n: restore_resume_for(pids[n], tree, cwd=cwds.get(n, ""))
+        found = {n: (restore_resume_for(pids[n], tree, cwd=cwds.get(n, "")),
+                     restore_last_cmd(pids[n], tree, cmds.get(n, "")))
                  for n in look}
         with RESTORE_LOCK:
             st = restore_state()
             for row in st["live"]["sessions"]:
                 if row["name"] in found:
-                    row["resume"] = found[row["name"]]
+                    row["resume"], row["last_cmd"] = found[row["name"]]
             _restore_save_live(st)
     for name in due:
         restore_save(name, now)
@@ -12811,7 +12855,7 @@ def restore_forget(name: str) -> None:
         st["live"]["sessions"] = [r for r in st["live"]["sessions"]
                                   if r["name"] != name]
         _restore_save_live(st)
-        _restore_unlink(name, "ansi", "restored")
+        _restore_unlink(name, "ansi")
 
 
 def restore_rename(old: str, new: str) -> None:
@@ -12822,36 +12866,45 @@ def restore_rename(old: str, new: str) -> None:
             if r["name"] == old:
                 r["name"] = new
         _restore_save_live(st)
-        for kind in ("ansi", "restored"):
-            try:
-                os.replace(restore_hist(old, kind), restore_hist(new, kind))
-            except OSError:
-                pass
+        try:
+            os.replace(restore_hist(old, "ansi"), restore_hist(new, "ansi"))
+        except OSError:
+            pass
         for key in RESTORE_SCHEDULE:
             if old in st[key]:
                 st[key][new] = st[key].pop(old)
 
 
-def restore_preface(name: str, now: float | None = None) -> str:
-    """A restored session's saved scrollback with the dim line that closes it,
-    for every fresh attach of the session, or "". The file stays, since a
-    phone's first attach can live two seconds and reconnect, until it is
-    older than RESTORE_REPLAY_KEEP_S at an attach, which deletes it."""
-    p = restore_hist(name, "restored")
+def restore_print_file(name: str) -> Path | None:
+    """Write an offer's saved output, closed by a dim line saying when it was
+    restored, to the .print file its restored pane prints at start
+    (RESTORE_PRINT_SH), and return that path; None when nothing was saved."""
     try:
-        mtime = p.stat().st_mtime
-        if (time.time() if now is None else now) - mtime > RESTORE_REPLAY_KEEP_S:
-            p.unlink()
-            return ""
-        text = p.read_text(encoding="utf-8", errors="replace")
+        text = restore_hist(name, "lost").read_text(encoding="utf-8",
+                                                    errors="replace")
     except OSError:
-        return ""
+        return None
     text = text.rstrip("\n")
-    if not text:
-        return ""
-    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-    return (text + "\n\x1b[0m\x1b[2m── restored " + when
-            + ", earlier output above ──\x1b[0m")
+    if not text.strip():
+        return None
+    when = time.strftime("%Y-%m-%d %H:%M")
+    p = restore_hist(name, "print")
+    try:
+        atomic_write(p, (text + "\n\x1b[0m\x1b[2m── restored " + when
+                         + ", earlier output above ──\x1b[0m\n").encode("utf-8"),
+                     None)
+    except OSError as e:
+        log(f"restore: could not write the saved output of {name}: {e}")
+        return None
+    return p
+
+
+def restore_default_shell() -> str:
+    """The shell tmux starts in a new pane: its default-shell, else $SHELL,
+    else /bin/sh."""
+    rc, out = tmux("show-option", "-gv", "default-shell")
+    shell = out.strip() if rc == 0 else ""
+    return shell or os.environ.get("SHELL") or "/bin/sh"
 
 
 def _restore_lines(name: str) -> int:
@@ -12862,6 +12915,12 @@ def _restore_lines(name: str) -> int:
         return 0
     text = text.rstrip("\n")
     return text.count("\n") + 1 if text else 0
+
+
+def restore_typed(row: dict) -> str:
+    """The command line a restore types at the prompt without running it:
+    the program's recorded one, for a session with nothing to resume."""
+    return "" if restore_resume(row)[1] else (row.get("last_cmd") or "")
 
 
 def restore_resume(row: dict) -> tuple[str, str]:
@@ -12889,8 +12948,9 @@ def api_restore_list() -> Response:
     """The restore offers, newest loss first, each with what the card says
     about it: its folder and whether that still exists, the command it was
     running, what the restore will run there to resume it (`resume`, the
-    command line, and `resumes`, the program's name, both "" for none), and
-    how many lines of output were saved."""
+    command line, and `resumes`, the program's name, both "" for none), the
+    command line it will type there without running for any other program
+    (`last_cmd`, "" for none), and how many lines of output were saved."""
     with RESTORE_LOCK:
         pending = [dict(r) for r in restore_state()["pending"]]
     pending.sort(key=lambda r: r.get("lost", 0), reverse=True)
@@ -12903,6 +12963,7 @@ def api_restore_list() -> Response:
             "command": r.get("command", ""),
             "resume": restore_resume(r)[1],
             "resumes": restore_resume(r)[0],
+            "last_cmd": restore_typed(r),
             "lost": r.get("lost", 0),
             "lines": _restore_lines(r["name"]),
         })
@@ -12914,8 +12975,12 @@ def api_restore(request: Request, body: dict = Body(...)) -> Response:
     """Bring back the named offers, in order, each exactly as api_new_session
     would make it, then give it back its alias, notify mode and place, and,
     for a session that was running Claude Code or Codex, run the command
-    recorded to resume its conversation at the prompt. Its saved output is
-    replayed on the session's fresh attaches (restore_preface)."""
+    recorded to resume its conversation at the prompt; for any other program,
+    type its recorded command line without running it, since running a
+    training job or a delete again is the user's call. Its saved output is
+    printed into the pane before the shell starts (RESTORE_PRINT_SH), so it
+    is in tmux's history, where scrolling, search and the reconnect replay
+    reach it."""
     refusal = throttled("session_mutate", RATE_SESSION_MUTATE, request)
     if refusal is not None:
         return refusal
@@ -12938,10 +13003,15 @@ def api_restore(request: Request, body: dict = Body(...)) -> Response:
         cwd = row.get("cwd", "")
         if not cwd or not os.path.isdir(cwd):
             cwd = home
+        printed = restore_print_file(name)
+        start = (("--", "/bin/sh", "-c", RESTORE_PRINT_SH, "sh", str(printed),
+                  restore_default_shell()) if printed else ())
         # The same ZDOTDIR pin as api_new_session, for the same reason.
         rc, _ = tmux("new-session", "-d", "-e", f"ZDOTDIR={home}",
-                     "-s", name, "-c", cwd)
+                     "-s", name, "-c", cwd, *start)
         if rc != 0:
+            if printed:
+                _restore_unlink(name, "print")
             errors.append({"name": name, "error": "tmux could not create it"})
             continue
         # No "=" exact-match prefix: set-option rejects it, as noted in enable_mouse.
@@ -12954,19 +13024,15 @@ def api_restore(request: Request, body: dict = Body(...)) -> Response:
         install_title_hook()
         with RESTORE_LOCK:
             st = restore_state()
-            try:
-                dest = restore_hist(name, "restored")
-                os.replace(restore_hist(name, "lost"), dest)
-                # The separator's time is when the session came back.
-                os.utime(dest)
-            except OSError:
-                pass
+            _restore_unlink(name, "lost")
             st["pending"] = [r for r in st["pending"] if r["name"] != name]
             _restore_save_pending(st)
         resume = restore_resume(row)[1]
         if resume:
             tmux("send-keys", "-t", f"={name}:", "-l", "--", resume)
             tmux("send-keys", "-t", f"={name}:", "Enter")
+        elif restore_typed(row):
+            tmux("send-keys", "-t", f"={name}:", "-l", "--", restore_typed(row))
         restored.append({"name": name, "cwd": cwd})
     return no_store(JSONResponse({"restored": restored, "errors": errors}))
 

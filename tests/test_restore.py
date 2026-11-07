@@ -1,6 +1,6 @@
 """Session restore: the record the watcher keeps of what is open under which
 tmux server, the offers a lost server leaves behind, the routes that restore
-or dismiss them, and the attaches that replay their saved output.
+or dismiss them, and the restored pane that prints its saved output.
 
 Runs against a scripted tmux (FakeTmux from test_sessions, grown the commands
 restore issues) with RESTORE_DIR in a temp dir (conftest), so it proves the
@@ -58,6 +58,9 @@ class RestoreTmux(FakeTmux):
             if s is None:
                 return 1, ""
             return 0, f"1\t%{s['sid']}\t{'1' if s.get('alt') else '0'}\n"
+        if cmd == "show-option" and args[1:] == ("-gv", "default-shell"):
+            self.calls.append(args)
+            return 0, "/usr/bin/zsh\n"
         if cmd == "capture-pane":
             self.calls.append(args)
             pane = args[args.index("-t") + 1]
@@ -122,7 +125,7 @@ def test_the_live_set_is_recorded_without_views_or_the_update_session(monkeypatc
     assert rec["sessions"] == [{
         "name": "work", "sid": 0, "alias": "Work", "notify": "quiet",
         "order": 2, "cwd": "/srv/work", "command": "claude", "resume": "",
-        "saved": 0}]
+        "last_cmd": "", "saved": 0}]
 
 
 CLAUDE_ID = "c9f76818-0000-4000-8000-00000000abcd"
@@ -188,6 +191,7 @@ REAL_PROC_INFO = A.restore_proc_info
 def no_real_processes(monkeypatch):
     """The fake pids in TREE are never looked up on this machine."""
     monkeypatch.setattr(A, "restore_proc_info", lambda pid: ("", None))
+    monkeypatch.setattr(A, "restore_cmdline", lambda pid: "")
 
 
 CODEX_NODE = "node /home/u/.nvm/versions/node/v24/bin/codex"
@@ -558,10 +562,10 @@ def test_get_lists_the_offers_with_lines_and_folder(monkeypatch, client, tmp_pat
     assert r.json() == {"sessions": [
         {"name": "a", "alias": "Alpha", "cwd": str(here), "cwd_exists": True,
          "command": "claude", "resume": "claude --continue",
-         "resumes": "Claude Code", "lost": 2000, "lines": 3},
+         "resumes": "Claude Code", "last_cmd": "", "lost": 2000, "lines": 3},
         {"name": "b", "alias": "", "cwd": str(tmp_path / "gone"),
          "cwd_exists": False, "command": "zsh", "resume": "", "resumes": "",
-         "lost": 2000, "lines": 0},
+         "last_cmd": "", "lost": 2000, "lines": 0},
     ]}
 
 
@@ -586,9 +590,19 @@ def test_post_restores_with_the_old_folder_options_and_scrollback(
                                      {"name": "b", "cwd": home}],
                         "errors": []}
     made = [c for c in t.calls if c[0] == "new-session"]
+    # a had output saved: its pane prints it, then becomes tmux's
+    # default-shell as a login shell. b had none and starts as before.
+    printed = A.restore_hist("a", "print")
     assert made == [
-        ("new-session", "-d", "-e", f"ZDOTDIR={home}", "-s", "a", "-c", str(here)),
+        ("new-session", "-d", "-e", f"ZDOTDIR={home}", "-s", "a", "-c", str(here),
+         "--", "/bin/sh", "-c", 'cat -- "$1"; rm -f -- "$1"; exec "$2" -l',
+         "sh", str(printed), "/usr/bin/zsh"),
         ("new-session", "-d", "-e", f"ZDOTDIR={home}", "-s", "b", "-c", home)]
+    # The saved output closed by the dim separator, for the pane to print.
+    text = printed.read_text()
+    assert text.startswith("saved\n\x1b[0m\x1b[2m── restored ")
+    assert text.endswith(", earlier output above ──\x1b[0m\n")
+    assert not A.restore_hist("b", "print").exists()
     opts = [c for c in t.calls if c[0] == "set-option"]
     assert opts == [("set-option", "-t", "a", "@alias", "Alpha"),
                     ("set-option", "-t", "a", "@notify", "on"),
@@ -599,7 +613,6 @@ def test_post_restores_with_the_old_folder_options_and_scrollback(
                      ("send-keys", "-t", "=a:", "Enter")]
     assert A.restore_count() == 0
     assert pending() == {"sessions": []}
-    assert A.restore_hist("a", "restored").read_text() == "saved"
     assert not A.restore_hist("a", "lost").exists()
 
 
@@ -629,6 +642,55 @@ def test_post_resumes_codex_and_runs_nothing_in_a_plain_shell(
     typed = [c for c in t.calls if c[0] == "send-keys"]
     assert typed == [("send-keys", "-t", "=cx:", "-l", "--", "codex resume --last"),
                      ("send-keys", "-t", "=cx:", "Enter")]
+
+
+def test_post_types_the_last_command_line_without_running_it(
+        monkeypatch, client, tmp_path):
+    # zsh 400 -> git 410 (`git log`, its pager below it); zsh 500 at the prompt.
+    tree = {400: [(410, "git")], 410: [(420, "less")]}
+    lines = {410: "git log --oneline 'a b'"}
+    monkeypatch.setattr(A, "restore_process_tree", lambda: tree)
+    monkeypatch.setattr(A, "restore_cmdline", lambda pid: lines.get(pid, ""))
+    t = lose(monkeypatch, [{"name": "lg", "cmd": "git", "pid": "400"},
+                           {"name": "sh", "sid": 1, "cmd": "zsh", "pid": "500"}])
+    offers = client.get("/api/restore").json()["sessions"]
+    assert [(o["resume"], o["last_cmd"]) for o in offers] == [
+        ("", "git log --oneline 'a b'"), ("", "")]
+    client.post("/api/restore", json={"names": ["lg", "sh"]})
+    # Typed at the prompt, no Enter: running it again is the user's call.
+    typed = [c for c in t.calls if c[0] == "send-keys"]
+    assert typed == [("send-keys", "-t", "=lg:", "-l", "--",
+                      "git log --oneline 'a b'")]
+
+
+def test_the_last_command_line_is_the_program_in_front_of_the_shell():
+    tree = {100: [(110, "git")], 200: [(210, "sleep"), (220, "vim")],
+            300: [(310, "sleep"), (320, "make")], 400: [(410, "bash")]}
+    lines = {110: "git log", 220: "vim notes.md", 410: "bash",
+             320: "make\nrm -rf x"}.get
+    assert A.restore_last_cmd("100", tree, "git", lines) == "git log"
+    # Named as tmux names the pane's program, past a background job.
+    assert A.restore_last_cmd("200", tree, "vim", lines) == "vim notes.md"
+    # Two children and none named so: nothing rather than a guess.
+    assert A.restore_last_cmd("300", tree, "python3", lines) == ""
+    # A control character would run the line when typed.
+    assert A.restore_last_cmd("300", tree, "make", lines) == ""
+    # A shell in front records nothing.
+    for shell in ("zsh", "bash", "fish", "sh"):
+        assert A.restore_last_cmd("400", tree, shell, lines) == ""
+    assert A.restore_last_cmd("", tree, "git", lines) == ""
+
+
+def test_the_record_carries_the_last_command_line(monkeypatch):
+    monkeypatch.setattr(A, "restore_process_tree", lambda: {400: [(410, "git")]})
+    monkeypatch.setattr(A, "restore_cmdline", lambda pid: "git log")
+    t = fake(monkeypatch, [{"name": "lg", "cmd": "git", "pid": "400"}])
+    tick(1000)
+    assert live()["sessions"][0]["last_cmd"] == "git log"
+    # Back at the prompt: the program changed, and a shell records nothing.
+    t.sessions[0]["cmd"] = "zsh"
+    tick(1002)
+    assert live()["sessions"][0]["last_cmd"] == ""
 
 
 def test_post_refuses_a_name_in_use_and_keeps_the_offer(monkeypatch, client, tmp_path):
@@ -686,63 +748,18 @@ def hello(ws):
                              "token": TOKEN, "dev": "phone"}))
 
 
-def test_every_fresh_attach_replays_the_saved_output_then_the_live_history(bridge):
-    p = A.restore_hist("work", "restored")
-    p.parent.mkdir(parents=True)
-    p.write_text("before\n\x1b[31mred\x1b[0m\n")
-    at = time.time() - 60
-    os.utime(p, (at, at))
-    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(at))
-    want = {"type": "replay", "data": (
-        "before\r\n\x1b[31mred\x1b[0m\r\n\x1b[0m\x1b[2m── restored "
-        + when + ", earlier output above ──\x1b[0m\r\nlive1\r\nlive2")}
-    with TestClient(A.app) as c:
-        with c.websocket_connect("/ws/attach/work") as ws:
-            hello(ws)
-            msg = ws.receive()
-            assert msg.get("bytes") is None
-            assert json.loads(msg["text"]) == want
-            ws.send_bytes(b"ping\n")
-            acc = b""
-            while b"ping" not in acc:
-                m = ws.receive()
-                assert m.get("text") is None
-                acc += m.get("bytes") or b""
-        # The phone's first attach after a restore can live two seconds and
-        # reconnect: the next fresh attach replays the same saved output.
-        assert p.exists()
-        with c.websocket_connect("/ws/attach/work?fresh=1") as ws:
-            hello(ws)
-            assert json.loads(ws.receive()["text"]) == want
-        assert p.exists()
-
-
-def test_saved_output_older_than_the_keep_window_is_deleted_not_replayed(bridge):
+def test_an_attach_replays_the_live_history_only(bridge):
+    # The saved output is in the pane's own history once printed there, so
+    # the attach sends no copy of its own, even with an old .restored file
+    # left behind by an earlier version.
     p = A.restore_hist("work", "restored")
     p.parent.mkdir(parents=True)
     p.write_text("before\n")
-    at = time.time() - A.RESTORE_REPLAY_KEEP_S - 5
-    os.utime(p, (at, at))
     with TestClient(A.app) as c:
         with c.websocket_connect("/ws/attach/work?fresh=1") as ws:
             hello(ws)
             frame = json.loads(ws.receive()["text"])
             assert frame == {"type": "replay", "data": "live1\r\nlive2"}
-    assert not p.exists()
-
-
-def test_the_live_save_after_a_restore_leaves_the_saved_output(monkeypatch):
-    monkeypatch.setattr(A, "capture_history",
-                        lambda name, lines=A.REPLAY_LINES, screen=False: "$ \n")
-    with A.RESTORE_LOCK:
-        A.restore_state()["live"]["sessions"] = [{"name": "work"}]
-    p = A.restore_hist("work", "restored")
-    p.parent.mkdir(parents=True)
-    p.write_text("before\n")
-    assert A.restore_save("work", 100.0)
-    assert A.restore_hist("work", "ansi").read_text() == "$ \n"
-    assert p.read_text() == "before\n"
-    assert A.restore_preface("work").startswith("before\n")
 
 
 # ---------------------------------------------------------------------------
@@ -785,6 +802,11 @@ def test_the_card_renders_the_routes_answer(monkeypatch, client, tmp_path):
         {"name": "b", "cwd": str(tmp_path / "gone")},
     ])
     payload = client.get("/api/restore").json()
+    payload["sessions"].append({
+        "name": "c", "alias": "", "cwd": str(here), "cwd_exists": True,
+        "command": "python3", "resume": "", "resumes": "",
+        "last_cmd": "python3 train.py --config configs/long_run.yaml",
+        "lost": 2000, "lines": 0})
 
     spec = importlib.util.spec_from_file_location(
         "build_mobile", Path(__file__).resolve().parent.parent / "build_mobile.py")
@@ -821,4 +843,6 @@ console.log(JSON.stringify({ hidden: $("restore-card").hidden,
          "text": "Alphaaproj·resumes Claude Code·3 lines of output"},
         {"ticked": True, "name": "b",
          "text": "bgone·zsh·folder missingname in use"},
+        {"ticked": True, "name": "c",
+         "text": "cproj·types python3 train.py --config configs/long_…"},
     ]
