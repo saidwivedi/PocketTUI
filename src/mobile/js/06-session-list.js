@@ -573,7 +573,9 @@ function restoreByline(s) {
   const parts = [];
   const cwd = (s.cwd || "").replace(/\/+$/, "");
   if (cwd) parts.push(["where", cwd.slice(cwd.lastIndexOf("/") + 1) || "/"]);
-  if (s.command) parts.push(["cmd", s.command]);
+  // A program the restore resumes is named for what will happen to it.
+  if (s.resumes) parts.push(["cmd", "resumes " + s.resumes]);
+  else if (s.command) parts.push(["cmd", s.command]);
   if (s.lines > 0) parts.push(["", s.lines + (s.lines === 1 ? " line" : " lines") + " of output"]);
   if (!s.cwd_exists) parts.push(["missing", "folder missing"]);
   return parts;

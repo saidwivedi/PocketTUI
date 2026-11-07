@@ -11917,7 +11917,8 @@ def watch_panes() -> list[dict]:
         "list-panes", "-a", "-F",
         "#{pane_active}\t#{window_active}\t#{session_name}"
         "\t#{window_activity}\t#{window_bell_flag}\t#{alternate_on}"
-        "\t#{pane_current_command}\t#{pane_id}\t#{pane_current_path}",
+        "\t#{pane_current_command}\t#{pane_id}\t#{pane_current_path}"
+        "\t#{pane_pid}",
     )
     if rc != 0:
         return []
@@ -11940,6 +11941,8 @@ def watch_panes() -> list[dict]:
             "pane": parts[7] if len(parts) > 7 else "",
             # The folder session restore records (restore_rows).
             "cwd": parts[8] if len(parts) > 8 else "",
+            # The shell's pid, for the restore record's resume lookup.
+            "pid": parts[9] if len(parts) > 9 else "",
         })
     return panes
 
@@ -12278,9 +12281,29 @@ RESTORE_GONE_TICKS = 2
 RESTORE_SHUTDOWN_S = 3.0
 
 # Fields a record row carries, in the order the files hold them.
-RESTORE_FIELDS = ("name", "sid", "alias", "notify", "order", "cwd", "command")
+RESTORE_FIELDS = ("name", "sid", "alias", "notify", "order", "cwd", "command",
+                  "resume")
 
 RESTORE_LOCK = threading.RLock()
+
+# The agents a restored session resumes, by process name: the name the card
+# gives it, the command that resumes one conversation by its id, and the
+# fallback, the latest conversation in the folder, for when no id was found.
+# Two panes in one repo would both get the same latest conversation, so the
+# id is what the record aims for (restore_resume_for).
+RESTORE_RESUME = {
+    "claude": ("Claude Code", "claude --resume {id}", "claude --continue"),
+    "codex": ("Codex", "codex resume {id}", "codex resume --last"),
+}
+
+# Session ids as both agents write them; anything else in a file we read is
+# never typed at a prompt.
+RESTORE_ID_RE = re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
+
+# Codex keeps its rollout file open while it runs:
+# ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl.
+RESTORE_CODEX_ROLLOUT_RE = re.compile(
+    r"/rollout-[^/]*-(" + RESTORE_ID_RE.pattern + r")\.jsonl$")
 
 # The two files as last read or written, keyed by the directory they belong
 # to so a test that moves RESTORE_DIR gets its own. "gone" counts the
@@ -12373,6 +12396,99 @@ def tmux_server_identity() -> str | None:
     return f"{pid}:{started.strip()}" if started.strip() else pid
 
 
+def restore_process_tree() -> dict[int, list[tuple[int, str]]]:
+    """Every process's children as (pid, name), from one portable ps. The
+    name is comm's basename: macOS prints the full path there."""
+    try:
+        out = subprocess.run(["ps", "-eo", "pid=,ppid=,comm="],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    kids: dict[int, list[tuple[int, str]]] = {}
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        kids.setdefault(int(parts[1]), []).append(
+            (int(parts[0]), os.path.basename(parts[2].strip())))
+    return kids
+
+
+def restore_open_files(pid: int) -> list[str]:
+    """The paths a process holds open: /proc on Linux, lsof elsewhere."""
+    fd_dir = Path(f"/proc/{pid}/fd")
+    if fd_dir.is_dir():
+        paths = []
+        try:
+            for fd in fd_dir.iterdir():
+                try:
+                    paths.append(os.readlink(fd))
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        return paths
+    try:
+        out = subprocess.run(["lsof", "-p", str(pid), "-Fn"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line[1:] for line in out.splitlines() if line.startswith("n")]
+
+
+def restore_session_id(agent: str, pid: int, home: Path | None = None,
+                       open_files=restore_open_files) -> str:
+    """The conversation id the agent process `pid` is in, or "". Claude Code
+    writes ~/.claude/sessions/<pid>.json with its sessionId; Codex holds its
+    rollout file open, the id ending the file's name."""
+    if agent == "claude":
+        home = Path.home() if home is None else home
+        try:
+            data = json.loads((home / ".claude" / "sessions" / f"{pid}.json")
+                              .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        sid = data.get("sessionId") if isinstance(data, dict) else None
+        return sid if isinstance(sid, str) and RESTORE_ID_RE.fullmatch(sid) else ""
+    if agent == "codex":
+        found = [(path, m.group(1)) for path in open_files(pid)
+                 for m in [RESTORE_CODEX_ROLLOUT_RE.search(path)] if m]
+        if found:
+            # More than one open is a process serving several threads; the
+            # one written last is the conversation on show.
+            def written(item):
+                try:
+                    return os.stat(item[0]).st_mtime
+                except OSError:
+                    return 0.0
+            return max(found, key=written)[1]
+    return ""
+
+
+def restore_resume_for(pane_pid: str, tree: dict, home: Path | None = None,
+                       open_files=restore_open_files) -> str:
+    """The command that resumes the agent running under a pane's shell: the
+    nearest descendant named in RESTORE_RESUME, resumed by its conversation
+    id, or by the folder's latest conversation when no id was found; "" when
+    no agent runs there."""
+    if not pane_pid.isdigit():
+        return ""
+    queue = [int(pane_pid)]
+    seen = set(queue)
+    while queue:
+        pid = queue.pop(0)
+        for child, name in tree.get(pid, []):
+            if child in seen:
+                continue
+            seen.add(child)
+            if name in RESTORE_RESUME:
+                _, exact, latest = RESTORE_RESUME[name]
+                sid = restore_session_id(name, child, home, open_files)
+                return exact.format(id=sid) if sid else latest
+            queue.append(child)
+    return ""
+
+
 def restore_rows(rows: list[dict], panes: list[dict]) -> list[dict]:
     """The record rows for the sessions the list shows: no device views, no
     update session (it ends itself), each with its active window's folder and
@@ -12388,6 +12504,8 @@ def restore_rows(rows: list[dict], panes: list[dict]) -> list[dict]:
             "name": row["name"], "sid": row["sid"], "alias": row["alias"],
             "notify": row["notify"], "order": row["order"],
             "cwd": pane.get("cwd", ""), "command": pane.get("cmd", ""),
+            # The shell's pid, for restore_resume_for; not recorded.
+            "pid": pane.get("pid", ""),
         })
     return out
 
@@ -12444,13 +12562,18 @@ def restore_track(rows: list[dict], panes: list[dict],
         st["gone"] = 0
         before = {r["name"]: r for r in live["sessions"]}
         fresh = []
+        pids, changed = {}, []
         for row in current:
             old = before.get(row["name"], {})
+            pids[row["name"]] = row.pop("pid", "")
             # A tick whose pane listing failed keeps the folder and command
             # it had rather than blanking them.
             if not row["cwd"] and not row["command"]:
                 row["cwd"] = old.get("cwd", "")
                 row["command"] = old.get("command", "")
+            elif row["command"] != old.get("command"):
+                changed.append(row["name"])
+            row["resume"] = old.get("resume", "")
             row["saved"] = old.get("saved", 0)
             fresh.append(row)
         names = {r["name"] for r in fresh}
@@ -12477,6 +12600,18 @@ def restore_track(rows: list[dict], panes: list[dict],
                     or (busy and now - tried >= RESTORE_SAVE_EVERY_S)):
                 st["tried"][name] = now
                 due.append(name)
+    # The resume command is looked up again at every save point and when a
+    # session's program changes: one ps for the whole tick that needs it.
+    look = [n for n in dict.fromkeys(changed + due) if pids.get(n)]
+    if look:
+        tree = restore_process_tree()
+        found = {n: restore_resume_for(pids[n], tree) for n in look}
+        with RESTORE_LOCK:
+            st = restore_state()
+            for row in st["live"]["sessions"]:
+                if row["name"] in found:
+                    row["resume"] = found[row["name"]]
+            _restore_save_live(st)
     for name in due:
         restore_save(name, now)
 
@@ -12582,6 +12717,19 @@ def _restore_lines(name: str) -> int:
     return text.count("\n") + 1 if text else 0
 
 
+def restore_resume(row: dict) -> tuple[str, str]:
+    """The (program, command line) a restored session resumes, or ("", ""):
+    the command recorded for it, or, where none was recorded (a row older
+    than the lookup, a lookup that missed) but tmux named the pane's program
+    claude or codex, the folder's latest conversation of that program."""
+    line = row.get("resume") or ""
+    if not line:
+        entry = RESTORE_RESUME.get(os.path.basename(row.get("command", "")))
+        line = entry[2] if entry else ""
+    entry = RESTORE_RESUME.get(line.split(" ", 1)[0]) if line else None
+    return (entry[0], line) if entry else ("", "")
+
+
 def _restore_names(body: dict) -> list[str] | None:
     names = body.get("names")
     if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
@@ -12593,7 +12741,9 @@ def _restore_names(body: dict) -> list[str] | None:
 def api_restore_list() -> Response:
     """The restore offers, newest loss first, each with what the card says
     about it: its folder and whether that still exists, the command it was
-    running, and how many lines of output were saved."""
+    running, what the restore will run there to resume it (`resume`, the
+    command line, and `resumes`, the program's name, both "" for none), and
+    how many lines of output were saved."""
     with RESTORE_LOCK:
         pending = [dict(r) for r in restore_state()["pending"]]
     pending.sort(key=lambda r: r.get("lost", 0), reverse=True)
@@ -12603,7 +12753,10 @@ def api_restore_list() -> Response:
         out.append({
             "name": r["name"], "alias": r.get("alias", ""), "cwd": cwd,
             "cwd_exists": bool(cwd) and os.path.isdir(cwd),
-            "command": r.get("command", ""), "lost": r.get("lost", 0),
+            "command": r.get("command", ""),
+            "resume": restore_resume(r)[1],
+            "resumes": restore_resume(r)[0],
+            "lost": r.get("lost", 0),
             "lines": _restore_lines(r["name"]),
         })
     return no_store(JSONResponse({"sessions": out}))
@@ -12613,8 +12766,8 @@ def api_restore_list() -> Response:
 def api_restore(request: Request, body: dict = Body(...)) -> Response:
     """Bring back the named offers, in order, each exactly as api_new_session
     would make it, then give it back its alias, notify mode and place, and,
-    for a session that was running Claude Code, put `claude --continue` at
-    its prompt (typed, not run, as /api/session/type does). Its saved output
+    for a session that was running Claude Code or Codex, run the command
+    recorded to resume its conversation at the prompt. Its saved output
     waits for the first attach (restore_take)."""
     refusal = throttled("session_mutate", RATE_SESSION_MUTATE, request)
     if refusal is not None:
@@ -12663,8 +12816,10 @@ def api_restore(request: Request, body: dict = Body(...)) -> Response:
                 pass
             st["pending"] = [r for r in st["pending"] if r["name"] != name]
             _restore_save_pending(st)
-        if os.path.basename(row.get("command", "")) == "claude":
-            tmux("send-keys", "-t", f"={name}:", "-l", "--", "claude --continue")
+        resume = restore_resume(row)[1]
+        if resume:
+            tmux("send-keys", "-t", f"={name}:", "-l", "--", resume)
+            tmux("send-keys", "-t", f"={name}:", "Enter")
         restored.append({"name": name, "cwd": cwd})
     return no_store(JSONResponse({"restored": restored, "errors": errors}))
 
