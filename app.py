@@ -10943,9 +10943,9 @@ async def ws_attach(ws: WebSocket, session_name: str) -> None:
         # A real attach: tmux re-initialises the client, so the terminal is
         # about to be rewritten anyway and history goes out first for the
         # repaint to land on top of.
-        # A restored session's first attach puts the output saved before the
+        # A restored session's attaches put the output saved before the
         # server was lost above the live history, behind a dim line saying so.
-        restored = await asyncio.to_thread(restore_take, session_name)
+        restored = await asyncio.to_thread(restore_preface, session_name)
         if restored:
             history = restored + ("\n" + history if history else "")
         if history:
@@ -12281,6 +12281,10 @@ RESTORE_GONE_TICKS = 2
 # that is itself going down.
 RESTORE_SHUTDOWN_S = 3.0
 
+# How long a restored session's saved output is replayed on its fresh
+# attaches, from the restore.
+RESTORE_REPLAY_KEEP_S = 30 * 60
+
 # Fields a record row carries, in the order the files hold them.
 RESTORE_FIELDS = ("name", "sid", "alias", "notify", "order", "cwd", "command",
                   "resume")
@@ -12380,8 +12384,8 @@ def _restore_save_pending(st: dict) -> None:
 
 def restore_hist(name: str, kind: str = "ansi") -> Path:
     """The scrollback file for a session name: .ansi while it is live, .lost
-    while it is a restore offer, .restored between a restore and its first
-    attach. A hash keeps any two names apart; the readable prefix is only for
+    while it is a restore offer, .restored for RESTORE_REPLAY_KEEP_S after a
+    restore. A hash keeps any two names apart; the readable prefix is only for
     whoever lists the folder."""
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", name)[:40]
     digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
@@ -12808,20 +12812,24 @@ def restore_rename(old: str, new: str) -> None:
                 st[key][new] = st[key].pop(old)
 
 
-def restore_take(name: str) -> str:
+def restore_preface(name: str, now: float | None = None) -> str:
     """A restored session's saved scrollback with the dim line that closes it,
-    for its first attach, or "". The file goes as it is read: the first
-    device to attach is the one that sees it."""
+    for every fresh attach of the session, or "". The file stays, since a
+    phone's first attach can live two seconds and reconnect, until it is
+    older than RESTORE_REPLAY_KEEP_S at an attach, which deletes it."""
     p = restore_hist(name, "restored")
     try:
+        mtime = p.stat().st_mtime
+        if (time.time() if now is None else now) - mtime > RESTORE_REPLAY_KEEP_S:
+            p.unlink()
+            return ""
         text = p.read_text(encoding="utf-8", errors="replace")
-        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(p.stat().st_mtime))
-        p.unlink()
     except OSError:
         return ""
     text = text.rstrip("\n")
     if not text:
         return ""
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
     return (text + "\n\x1b[0m\x1b[2m── restored " + when
             + ", earlier output above ──\x1b[0m")
 
@@ -12886,8 +12894,8 @@ def api_restore(request: Request, body: dict = Body(...)) -> Response:
     """Bring back the named offers, in order, each exactly as api_new_session
     would make it, then give it back its alias, notify mode and place, and,
     for a session that was running Claude Code or Codex, run the command
-    recorded to resume its conversation at the prompt. Its saved output
-    waits for the first attach (restore_take)."""
+    recorded to resume its conversation at the prompt. Its saved output is
+    replayed on the session's fresh attaches (restore_preface)."""
     refusal = throttled("session_mutate", RATE_SESSION_MUTATE, request)
     if refusal is not None:
         return refusal
