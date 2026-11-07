@@ -1,6 +1,6 @@
 """Session restore: the record the watcher keeps of what is open under which
 tmux server, the offers a lost server leaves behind, the routes that restore
-or dismiss them, and the first attach that replays their saved output.
+or dismiss them, and the attaches that replay their saved output.
 
 Runs against a scripted tmux (FakeTmux from test_sessions, grown the commands
 restore issues) with RESTORE_DIR in a temp dir (conftest), so it proves the
@@ -617,7 +617,7 @@ def test_the_capability_is_reported():
 
 
 # ---------------------------------------------------------------------------
-# The first attach
+# The attaches after a restore
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -640,33 +640,63 @@ def hello(ws):
                              "token": TOKEN, "dev": "phone"}))
 
 
-def test_the_first_attach_replays_the_saved_output_then_the_live_history(bridge):
+def test_every_fresh_attach_replays_the_saved_output_then_the_live_history(bridge):
     p = A.restore_hist("work", "restored")
     p.parent.mkdir(parents=True)
     p.write_text("before\n\x1b[31mred\x1b[0m\n")
-    os.utime(p, (1762430520, 1762430520))
-    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(1762430520))
+    at = time.time() - 60
+    os.utime(p, (at, at))
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(at))
+    want = {"type": "replay", "data": (
+        "before\r\n\x1b[31mred\x1b[0m\r\n\x1b[0m\x1b[2m── restored "
+        + when + ", earlier output above ──\x1b[0m\r\nlive1\r\nlive2")}
     with TestClient(A.app) as c:
         with c.websocket_connect("/ws/attach/work") as ws:
             hello(ws)
             msg = ws.receive()
             assert msg.get("bytes") is None
-            frame = json.loads(msg["text"])
-            assert frame == {"type": "replay", "data": (
-                "before\r\n\x1b[31mred\x1b[0m\r\n\x1b[0m\x1b[2m── restored "
-                + when + ", earlier output above ──\x1b[0m\r\nlive1\r\nlive2")}
+            assert json.loads(msg["text"]) == want
             ws.send_bytes(b"ping\n")
             acc = b""
             while b"ping" not in acc:
                 m = ws.receive()
                 assert m.get("text") is None
                 acc += m.get("bytes") or b""
-        assert not p.exists()
-        # The second attach is an ordinary one.
+        # The phone's first attach after a restore can live two seconds and
+        # reconnect: the next fresh attach replays the same saved output.
+        assert p.exists()
+        with c.websocket_connect("/ws/attach/work?fresh=1") as ws:
+            hello(ws)
+            assert json.loads(ws.receive()["text"]) == want
+        assert p.exists()
+
+
+def test_saved_output_older_than_the_keep_window_is_deleted_not_replayed(bridge):
+    p = A.restore_hist("work", "restored")
+    p.parent.mkdir(parents=True)
+    p.write_text("before\n")
+    at = time.time() - A.RESTORE_REPLAY_KEEP_S - 5
+    os.utime(p, (at, at))
+    with TestClient(A.app) as c:
         with c.websocket_connect("/ws/attach/work?fresh=1") as ws:
             hello(ws)
             frame = json.loads(ws.receive()["text"])
             assert frame == {"type": "replay", "data": "live1\r\nlive2"}
+    assert not p.exists()
+
+
+def test_the_live_save_after_a_restore_leaves_the_saved_output(monkeypatch):
+    monkeypatch.setattr(A, "capture_history",
+                        lambda name, lines=A.REPLAY_LINES, screen=False: "$ \n")
+    with A.RESTORE_LOCK:
+        A.restore_state()["live"]["sessions"] = [{"name": "work"}]
+    p = A.restore_hist("work", "restored")
+    p.parent.mkdir(parents=True)
+    p.write_text("before\n")
+    assert A.restore_save("work", 100.0)
+    assert A.restore_hist("work", "ansi").read_text() == "$ \n"
+    assert p.read_text() == "before\n"
+    assert A.restore_preface("work").startswith("before\n")
 
 
 # ---------------------------------------------------------------------------
