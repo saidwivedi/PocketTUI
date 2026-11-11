@@ -102,6 +102,22 @@ function scRefPills(refs) {
   });
 }
 
+// What a failed history, commit or diff read says. A 200's `error` is git's own
+// sentence ("git timed out after 20 s"); a refusal's is a code, never shown bare.
+function scReadError(r, fallback) {
+  const d = r.data || {};
+  if (r.ok && d.error) return d.error;
+  return d.detail || {
+    bad_root: "Not a git repository",
+    bad_ref: "That branch or commit isn't in this repository",
+  }[d.error] || fallback;
+}
+
+// The way to ask again after one of those, in Load more's face.
+function scRetry(onclick) {
+  return el("button", { type: "button", class: "sc-more", onclick: onclick }, "Try again");
+}
+
 // ---- the commit list ---------------------------------------------------------
 // One page at a time, PAGE commits a page, and a Load more row while the
 // server says there is more. Every load names the root and ref it was asked
@@ -125,9 +141,14 @@ function scHistory(ctx) {
 
   function note(text) { foot.textContent = ""; foot.appendChild(diffNote(text)); }
 
-  function paintFoot(errorText) {
+  function paintFoot(text, failed) {
     foot.textContent = "";
-    if (errorText) { note(errorText); return; }
+    if (text) {
+      note(text);
+      // The page that failed is asked again: count only moves on a success.
+      if (failed) foot.appendChild(scRetry(() => { if (!busy) fetchPage(); }));
+      return;
+    }
     if (busy) { note(count ? "Loading…" : "Loading commits…"); return; }
     if (more) {
       foot.appendChild(el("button", {
@@ -145,11 +166,10 @@ function scHistory(ctx) {
     if (mine !== seq) return;
     busy = false;
     const d = r.data;
-    if (!r.ok) {
-      paintFoot((d && (d.detail || d.error)) || "Couldn't read the history");
+    if (!r.ok || d.error) {
+      paintFoot(scReadError(r, "Couldn't read the history"), true);
       return;
     }
-    if (d.error) { paintFoot(d.error); return; }
     const commits = d.commits || [];
     if (!count && !commits.length) {
       paintFoot(d.unborn ? "No commits yet" : "No commits");
@@ -185,7 +205,7 @@ function scHistory(ctx) {
       files.hidden = !open;
       row.setAttribute("aria-expanded", open ? "true" : "false");
       row.parentNode.classList.toggle("open", open);
-      if (open && !files.firstChild) fillFiles(files, c, root);
+      if (open && (!files.firstChild || files.dataset.failed)) fillFiles(files, c, root);
     });
     const isRoot = Array.isArray(c.parents) && !c.parents.length;
     return el("div", { class: "sc-commit" + (tip ? " tip" : "") + (isRoot ? " root" : "") },
@@ -193,6 +213,8 @@ function scHistory(ctx) {
   }
 
   async function fillFiles(files, c, root) {
+    files.textContent = "";
+    delete files.dataset.failed;
     files.appendChild(diffNote("Loading…"));
     const key = root + "\n" + c.sha;
     if (!records.has(key)) {
@@ -202,8 +224,9 @@ function scHistory(ctx) {
     files.textContent = "";
     if (!r.ok || !r.data || r.data.error) {
       records.delete(key);         // a failure is worth asking again next time
-      files.appendChild(diffNote((r.data && (r.data.detail || r.data.error))
-                                 || "Couldn't read this commit"));
+      files.dataset.failed = "1";
+      files.appendChild(diffNote(scReadError(r, "Couldn't read this commit")));
+      files.appendChild(scRetry(() => fillFiles(files, c, root)));
       return;
     }
     const rec = r.data;
@@ -304,9 +327,10 @@ function scCommitDiffView(ctx, info) {
       : { root: ctx.root(), path: info.path, sha: info.sha, old: info.old || "" });
     if (mine !== seq) return;
     const data = r.ok ? r.data
-      : { diff: "", error: (r.data && (r.data.detail || r.data.error)) || "Couldn't read the diff" };
+      : { diff: "", error: scReadError(r, "Couldn't read the diff") };
     if (staged) diffRender(body, data, "staged", info.path, ctx.h);
     else diffRender(body, data, "commit", info.path, null);
+    if (data.error) body.appendChild(scRetry(() => load()));
   }
 
   return { el: box, info: info, load: load };

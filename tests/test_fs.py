@@ -6,7 +6,9 @@ bare import of app, which is exactly the middleware's --no-auth short-circuit â€
 the auth path itself is covered by the transcribe suite's server-level tests.
 """
 
+import importlib.util
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -2290,6 +2292,244 @@ def test_diff_at_a_sha_refuses_a_bad_sha_and_a_bad_old(client, history_repo):
     assert r.status_code == 400 and r.json()["error"] == "bad_ref"
     r = git_diff_at(client, history_repo, "HEAD", "moved.txt", old="../x")
     assert r.status_code == 400 and r.json()["error"] == "bad_path"
+
+
+# A git that could not answer (a timeout while a status walk loads a network
+# mount) is not a root or a ref that is wrong: each route answers it as it
+# answers a git that fails mid-read, with git()'s reason, never bad_ref.
+
+GIT_TIMEOUT_WHY = "git timed out after 20 s"
+
+
+def git_timing_out(monkeypatch, *prefix):
+    """A.git as itself, except that a call whose arguments start with `prefix`
+    comes back the way git() reports a timeout."""
+    real = A.git
+
+    def fake(cwd, *args, **kw):
+        if args[:len(prefix)] == prefix:
+            return 1, b"", GIT_TIMEOUT_WHY
+        return real(cwd, *args, **kw)
+    monkeypatch.setattr(A, "git", fake)
+
+
+@needs_git
+def test_log_answers_a_timed_out_ref_check_as_an_error_not_bad_ref(
+        client, history_repo, monkeypatch):
+    git_timing_out(monkeypatch, "rev-parse", "--verify")
+    r = git_log(client, history_repo, skip=0, n=50)
+    assert r.status_code == 200
+    assert r.json() == {"root": str(history_repo), "ref": "HEAD", "commits": [],
+                        "more": False, "error": GIT_TIMEOUT_WHY}
+
+
+@needs_git
+def test_log_answers_a_timed_out_root_check_as_an_error_not_bad_root(
+        client, history_repo, monkeypatch):
+    git_timing_out(monkeypatch, "rev-parse", "--show-toplevel")
+    r = git_log(client, history_repo)
+    assert r.status_code == 200 and r.json()["error"] == GIT_TIMEOUT_WHY
+
+
+@needs_git
+def test_log_answers_a_timed_out_unborn_probe_as_an_error(client, tmp_path, monkeypatch):
+    root = tmp_path / "empty"
+    root.mkdir()
+    run_git(root, "init", "-q", ".")
+    git_timing_out(monkeypatch, "symbolic-ref")
+    r = git_log(client, root)
+    assert r.status_code == 200 and r.json()["error"] == GIT_TIMEOUT_WHY
+
+
+@needs_git
+def test_a_ref_that_names_nothing_is_still_bad_ref_with_git_answering(
+        client, history_repo, monkeypatch):
+    git_timing_out(monkeypatch, "status")       # a slow call elsewhere changes nothing
+    r = git_log(client, history_repo, ref="nope")
+    assert r.status_code == 400 and r.json()["error"] == "bad_ref"
+    r = git_commit_record(client, history_repo, "0" * 40)
+    assert r.status_code == 400 and r.json()["error"] == "bad_ref"
+    r = git_diff_at(client, history_repo, "0" * 40, "moved.txt")
+    assert r.status_code == 400 and r.json()["error"] == "bad_ref"
+
+
+@needs_git
+def test_commit_record_and_diff_answer_a_timed_out_check_as_an_error(
+        client, history_repo, monkeypatch):
+    git_timing_out(monkeypatch, "rev-parse", "--verify")
+    r = git_commit_record(client, history_repo, "HEAD")
+    assert r.status_code == 200
+    assert r.json() == {"sha": "HEAD", "files": [], "error": GIT_TIMEOUT_WHY}
+    r = git_diff_at(client, history_repo, "HEAD", "moved.txt")
+    assert r.status_code == 200
+    assert r.json() == {"diff": "", "error": GIT_TIMEOUT_WHY}
+    monkeypatch.undo()
+    git_timing_out(monkeypatch, "rev-parse", "--show-toplevel")
+    r = git_commit_record(client, history_repo, "HEAD")
+    assert r.status_code == 200 and r.json()["error"] == GIT_TIMEOUT_WHY
+
+
+@needs_git
+def test_ref_reads_answer_a_timed_out_check_as_not_readable_with_the_reason(
+        client, branched, monkeypatch):
+    """Not bad_ref, which the editor reads as a commit gone and falls back to
+    the working tree on."""
+    for prefix in (("rev-parse", "--show-toplevel"), ("rev-parse", "--verify")):
+        monkeypatch.undo()
+        git_timing_out(monkeypatch, *prefix)
+        for route, path in (("/api/fs/list", branched),
+                            ("/api/fs/read", branched / "common.txt")):
+            r = client.get(route, params={"path": str(path), "ref": "side",
+                                          "root": str(branched)})
+            assert r.status_code == 403, (prefix, route)
+            assert r.json() == {"error": "not_readable", "detail": GIT_TIMEOUT_WHY}
+
+
+@needs_git
+def test_hunks_answer_a_timed_out_check_as_an_error_not_a_missing_base(
+        client, pinned, monkeypatch):
+    root, sha = pinned
+    git_timing_out(monkeypatch, "rev-parse", "--verify")
+    d = hunks(client, root, sha, ["a.py"]).json()
+    assert d["error"] == GIT_TIMEOUT_WHY and "base_found" not in d
+    monkeypatch.undo()
+    git_timing_out(monkeypatch, "rev-parse", "--show-toplevel")
+    assert hunks(client, root, sha, ["a.py"]).json()["error"] == GIT_TIMEOUT_WHY
+
+
+@needs_git
+def test_commit_box_answers_a_timed_out_root_check_as_a_failed_commit(
+        client, repo, monkeypatch):
+    git_timing_out(monkeypatch, "rev-parse", "--show-toplevel")
+    r = client.post("/api/git/commit", json={"root": str(repo), "message": "m"})
+    assert r.status_code == 409
+    assert r.json() == {"error": "commit_failed", "detail": GIT_TIMEOUT_WHY}
+
+
+# Just enough DOM for el(): children, text, attributes (hidden among them),
+# dataset and listeners; click() fires the listener as a tap would.
+FAKE_DOM = """
+class Node {
+  constructor(tag) { this.tag = tag; this.kids = []; this.attrs = {}; this.on = {};
+                     this.dataset = {}; this.hidden = false; this.parentNode = null;
+                     this.classList = { toggle() {}, add() {}, remove() {} }; }
+  appendChild(k) { this.kids.push(k); k.parentNode = this; return k; }
+  get firstChild() { return this.kids[0] || null; }
+  get textContent() { return this.kids.map((k) => k.textContent).join(""); }
+  set textContent(t) { this.kids = []; if (t) this.appendChild(document.createTextNode(t)); }
+  setAttribute(k, v) { this.attrs[k] = v; if (k === "hidden") this.hidden = true; }
+  addEventListener(ev, fn) { this.on[ev] = fn; }
+  remove() {}
+  click() { this.on.click(); }
+  find(cls) { if ((this.className || "").split(" ").includes(cls)) return this;
+              for (const k of this.kids) { const f = k.find && k.find(cls); if (f) return f; }
+              return null; }
+}
+const document = {
+  createElement: (t) => new Node(t),
+  createTextNode: (t) => { const n = new Node("#text"); Object.defineProperty(n, "textContent",
+    { get: () => t }); return n; },
+};
+"""
+
+
+def test_history_commit_and_diff_views_say_a_sentence_and_offer_try_again(
+        client, history_repo, monkeypatch, tmp_path):
+    """The client half of the bad_ref bug, driven by the routes' own replies:
+    a timed-out read shows git's sentence, a 400 shows words rather than its
+    code, and each view can be asked again."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    good_log = git_log(client, history_repo).json()
+    good_rec = git_commit_record(client, history_repo, "HEAD").json()
+    bad_ref = git_log(client, history_repo, ref="nope")
+    bad_diff = git_diff_at(client, history_repo, "0" * 40, "moved.txt")
+    git_timing_out(monkeypatch, "rev-parse", "--verify")
+    slow_log = git_log(client, history_repo)
+    slow_rec = git_commit_record(client, history_repo, "HEAD")
+    assert {slow_log.status_code, slow_rec.status_code} == {200}
+    assert bad_ref.status_code == bad_diff.status_code == 400
+    # In the order the harness asks: the history, its Try again, the 400, the
+    # history again, a commit's files, their Try again, the diff, its Try again.
+    replies = [[200, slow_log.json()], [200, good_log], [400, bad_ref.json()],
+               [200, good_log], [200, slow_rec.json()], [200, good_rec],
+               [400, bad_diff.json()], [200, {"diff": "", "error": GIT_TIMEOUT_WHY}]]
+
+    spec = importlib.util.spec_from_file_location(
+        "build_mobile", Path(__file__).resolve().parent.parent / "build_mobile.py")
+    bm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bm)
+    doc = bm.assemble()
+
+    def chunk(head):
+        at = doc.index("\n" + head) + 1
+        return doc[at:doc.index("\n}\n", at) + 3]
+
+    js = "\n".join([FAKE_DOM, chunk("function el("), chunk("function diffNote("),
+                    chunk("function diffRender("), chunk("async function scGet("),
+                    chunk("function scReadError("), chunk("function scRetry("),
+                    chunk("function scHistory("), chunk("function scCommitDiffView("),
+                    "const replies = %s;" % json.dumps(replies), """
+const asked = [];
+function apiURL(p) { return p; }
+function authHeaders() { return {}; }
+function rejectToken() {}
+function relTime() { return ""; }
+function scRefPills() { return []; }
+function scBadge() { return null; }
+function scPathEl() { return null; }
+function svgIcon() { return null; }
+async function fetch(url) {
+  asked.push(url.split("?")[0]);
+  const [status, data] = replies.shift();
+  return { status, ok: status < 300, json: async () => data };
+}
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const say = (n) => n.textContent;
+
+const h = scHistory({ root: () => "/work/repo", openCommitDiff() {} });
+await h.load("HEAD");
+const slow = { foot: say(h.el.find("sc-foot")), retry: !!h.el.find("sc-more") };
+h.el.find("sc-more").click();
+await tick();
+const rows = h.el.find("sc-list").kids.length;
+await h.load("nope");
+const bad = { foot: say(h.el.find("sc-foot")), retry: !!h.el.find("sc-more") };
+
+await h.load("HEAD");
+const commit = h.el.find("sc-list").kids[0];
+const row = commit.find("sc-row"), files = commit.find("sc-files");
+row.click(); await tick();
+const recSlow = { text: say(files), retry: !!files.find("sc-more") };
+files.find("sc-more").click(); await tick();
+const recGood = files.kids.filter((k) => k.className === "sc-file").length;
+
+const view = scCommitDiffView({ root: () => "/work/repo" },
+  { sha: "0".repeat(40), path: "moved.txt", status: "M" });
+const body = view.el.find("sc-diff-body");
+await view.load();
+const diffBad = { text: say(body), retry: !!body.find("sc-more") };
+body.find("sc-more").click(); await tick();
+const diffSlow = say(body);
+console.log(JSON.stringify({ slow, rows, bad, recSlow, recGood, diffBad, diffSlow, asked,
+                             left: replies.length }));
+"""])
+    f = tmp_path / "history.mjs"
+    f.write_text(js, encoding="utf-8")
+    out = json.loads(subprocess.run([node, str(f)], check=True,
+                                    capture_output=True).stdout.decode())
+    assert out["slow"] == {"foot": GIT_TIMEOUT_WHY + "Try again", "retry": True}
+    assert out["rows"] == 3
+    assert out["bad"] == {"foot": "That branch or commit isn't in this repository"
+                                  "Try again", "retry": True}
+    assert out["recSlow"] == {"text": GIT_TIMEOUT_WHY + "Try again", "retry": True}
+    assert out["recGood"] == 3
+    assert out["diffBad"] == {"text": "That branch or commit isn't in this repository"
+                                      "Try again", "retry": True}
+    assert out["diffSlow"] == GIT_TIMEOUT_WHY + "Try again"
+    assert "bad_ref" not in json.dumps(out)
+    assert out["left"] == 0
 
 
 @pytest.fixture

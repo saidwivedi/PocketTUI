@@ -3672,24 +3672,31 @@ def atomic_write(p: Path, data: bytes, mode: int | None) -> None:
 # here because the routes they serve are the explorer's, not the diff pane's.
 
 
-def git_ref_root(root: str) -> str:
-    """`root` back, if it really is a repository's top level, else "".
+def git_ref_root(root: str) -> tuple[str, str]:
+    """(`root` back, "") if it really is a repository's top level, else ("", why).
 
     Asked of git rather than of the filesystem: a .git directory is not the
     question, "is this the toplevel the ref's paths are relative to" is. git
     answers with the resolved path, so a root reached through a symlink is
     compared against its real path too — and what comes back is the client's
     own spelling, which is what the paths it sends are relative to.
+
+    `why` is git()'s reason when git could not answer at all (a timeout on a
+    loaded network mount, no git), and "" when it answered that this is not a
+    toplevel. The first is a read that failed and the second a client wrong
+    about the repo, and the routes answer the two differently.
     """
     if not root.startswith("/") or not os.path.isdir(root):
-        return ""
-    rc, out, _ = git(root, "rev-parse", "--show-toplevel")
+        return "", ""
+    rc, out, why = git(root, "rev-parse", "--show-toplevel")
+    if why:
+        return "", why
     top = out.decode("utf-8", "replace").strip()
     if rc != 0 or not top:
-        return ""
+        return "", ""
     if os.path.normpath(top) not in (os.path.normpath(root), os.path.realpath(root)):
-        return ""
-    return root
+        return "", ""
+    return root, ""
 
 
 def git_ref_rel(root: str, raw: str) -> str | None:
@@ -3727,41 +3734,49 @@ def git_ref_obj(ref: str, rel: str) -> str:
     return (":" if ref == GIT_INDEX_REF else ref + ":") + rel
 
 
-def git_ref_ok(root: str, ref: str) -> bool:
-    """Whether `ref` names a commit in the repository at `root`.
+def git_ref_ok(root: str, ref: str) -> tuple[bool, str]:
+    """(whether `ref` names a commit in the repository at `root`, why not).
 
     The leading-dash refusal is not about a ref that could exist — `git
     rev-parse` would read "--all" as its own flag long before it read it as a
     name, and every caller passes the ref in that same position. ^{commit}
     rather than a bare verify: a tag pointing at a tree or a blob resolves, and
     nothing that reads a ref here can do anything with one.
+
+    `why` is git_ref_root's: git()'s reason when git could not answer, so a
+    timeout is never read as a ref that is not there, and "" otherwise.
     """
     if not ref or ref.startswith("-"):
-        return False
-    return git(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}")[0] == 0
+        return False, ""
+    rc, _, why = git(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}")
+    return rc == 0, why
 
 
 def git_ref_at(root: str, path: str, ref: str,
-               index_ok: bool = False) -> tuple[str, str]:
-    """(the repo-relative path, "") for a triple that checks out, else ("", why).
+               index_ok: bool = False) -> tuple[str, str, str]:
+    """(the repo-relative path, "", "") for a triple that checks out, else
+    ("", the error code, git's reason when git itself failed).
 
     One place, because the two read routes have to agree exactly on what a ref
     request means: a `root` that is a repository, a `path` inside it, and a
     `ref` git can resolve to a commit. Anything else is a client that has lost
     track of which repo it is browsing, and earns the same 400 git_target's
     callers do. What makes a ref acceptable is git_ref_ok's, which the history
-    routes share.
+    routes share. A git that could not answer is neither: it is the
+    not_readable a failed `git show` earns, with git's reason as the detail.
     """
-    if not git_ref_root(root):
-        return "", "bad_root"
+    ok, why = git_ref_root(root)
+    if not ok:
+        return ("", "not_readable", why) if why else ("", "bad_root", "")
     rel = git_ref_rel(root, path)
     if rel is None:
-        return "", "bad_path"
+        return "", "bad_path", ""
     if index_ok and ref == GIT_INDEX_REF:
-        return rel, ""
-    if not git_ref_ok(root, ref):
-        return "", "bad_ref"
-    return rel, ""
+        return rel, "", ""
+    ok, why = git_ref_ok(root, ref)
+    if not ok:
+        return ("", "not_readable", why) if why else ("", "bad_ref", "")
+    return rel, "", ""
 
 
 def git_ref_kind(root: str, ref: str, rel: str) -> str:
@@ -3821,7 +3836,9 @@ def git_ref_abs(root: str, rel: str) -> str:
 
 def api_fs_list_at_ref(path: str, ref: str, root: str) -> Response:
     """api_fs_list's answer for a folder as it stands on another branch."""
-    rel, bad = git_ref_at(root, path or root, ref)
+    rel, bad, why = git_ref_at(root, path or root, ref)
+    if why:
+        return fs_error(bad, 403, detail=why)
     if bad:
         return fs_error(bad, 400)
     if git_ref_kind(root, ref, rel) != "tree":
@@ -3839,7 +3856,9 @@ def api_fs_read_at_ref(path: str, ref: str, root: str) -> Response:
     and the lossy-decode fallback are the disk route's, applied to the blob, so
     the editor cannot tell the two answers apart except by `readonly`.
     """
-    rel, bad = git_ref_at(root, path, ref, index_ok=True)
+    rel, bad, why = git_ref_at(root, path, ref, index_ok=True)
+    if why:
+        return fs_error(bad, 403, detail=why)
     if bad:
         return fs_error(bad, 400)
     if not rel or git_ref_kind(root, ref, rel) != "blob":
@@ -5274,7 +5293,10 @@ def api_git_diff(root: str = "", path: str = "", scope: str = "unstaged",
             _, bad = git_target(root, old)
             if bad:
                 return fs_error(bad, 400)
-        if not git_ref_ok(root, sha):
+        ok, err = git_ref_ok(root, sha)
+        if err:
+            return no_store(JSONResponse({"diff": "", "error": err}))
+        if not ok:
             return fs_error("bad_ref", 400)
         parents, err = git_parents(root, sha)
         if err:
@@ -5370,24 +5392,39 @@ def api_git_log(root: str = "", ref: str = "HEAD", skip: int = 0,
     as an empty history, so it answers 200 with `unborn` — while any other ref
     that names no commit is a client asking about a branch that is not there,
     and earns the 400 the ref read routes give. A git that fails mid-read is
-    an answer, as on /api/git/status: 200 with `error` and no commits.
+    an answer, as on /api/git/status: 200 with `error` and no commits, and so
+    is a git that could not answer whether the root or the ref is good — a
+    timeout while a status walk loads the mount is not a missing branch.
     """
-    if not git_ref_root(root):
-        return fs_error("bad_root", 400)
     ref = ref or "HEAD"
+
+    def failed(err: str) -> Response:
+        return no_store(JSONResponse({"root": root, "ref": ref, "commits": [],
+                                      "more": False, "error": err}))
+
+    ok, err = git_ref_root(root)
+    if err:
+        return failed(err)
+    if not ok:
+        return fs_error("bad_root", 400)
     skip = max(0, skip)
     n = min(GIT_LOG_MAX, max(1, n))
-    if not git_ref_ok(root, ref):
-        if ref == "HEAD" and git(root, "symbolic-ref", "-q", "HEAD")[0] == 0:
-            return no_store(JSONResponse({"root": root, "ref": ref, "commits": [],
-                                          "more": False, "unborn": True}))
+    ok, err = git_ref_ok(root, ref)
+    if err:
+        return failed(err)
+    if not ok:
+        if ref == "HEAD":
+            rc, _, err = git(root, "symbolic-ref", "-q", "HEAD")
+            if err:
+                return failed(err)
+            if rc == 0:
+                return no_store(JSONResponse({"root": root, "ref": ref, "commits": [],
+                                              "more": False, "unborn": True}))
         return fs_error("bad_ref", 400)
     rc, out, err = git(root, "log", "--no-color", "--skip=%d" % skip,
                        "-n", str(n + 1), "--format=" + GIT_LOG_FORMAT, ref, "--")
     if rc != 0:
-        return no_store(JSONResponse({"root": root, "ref": ref, "commits": [],
-                                      "more": False,
-                                      "error": err or "git log failed"}))
+        return failed(err or "git log failed")
     commits = git_log_records(out)
     return no_store(JSONResponse({"root": root, "ref": ref,
                                   "commits": commits[:n],
@@ -5466,12 +5503,18 @@ def api_git_commit_record(root: str = "", sha: str = "") -> Response:
     this merge bring in" means on a branch's history, and says `merge` so the
     pane can say it too; /api/git/diff?sha= diffs the same way, so the list and
     the per-file diffs agree. A root commit's files are all additions, against
-    the empty tree.
+    the empty tree. A git that could not say whether the root or the commit
+    is good answers like one that fails on the read: 200 with `error`.
     """
-    if not git_ref_root(root):
+    ok, err = git_ref_root(root)
+    if not ok and not err:
         return fs_error("bad_root", 400)
-    if not git_ref_ok(root, sha):
-        return fs_error("bad_ref", 400)
+    if not err:
+        ok, err = git_ref_ok(root, sha)
+        if not ok and not err:
+            return fs_error("bad_ref", 400)
+    if err:
+        return no_store(JSONResponse({"sha": sha, "files": [], "error": err}))
     rc, out, err = git(root, "log", "-1", "--no-color",
                        "--format=" + GIT_LOG_FORMAT, sha, "--")
     recs = git_log_records(out) if rc == 0 else []
@@ -5637,8 +5680,9 @@ def api_git_hunks(body: dict = Body(...)) -> Response:
         out["elapsed_ms"] = int((time.monotonic() - began) * 1000)
         return no_store(JSONResponse(out))
 
-    if not git_ref_root(root):
-        return answer({"error": "Not a git repository"})
+    ok, why = git_ref_root(root)
+    if not ok:
+        return answer({"error": why or "Not a git repository"})
 
     rc, out, _ = git(root, "rev-parse", "--short", "HEAD")
     reply: dict = {"head": out.decode("utf-8", "replace").strip() if rc == 0 else "",
@@ -5650,7 +5694,10 @@ def api_git_hunks(body: dict = Body(...)) -> Response:
         reply["dirty"] = git(root, "--literal-pathspecs", "diff", "--quiet",
                              "HEAD", "--", *rels)[0] == 1
 
-    rc, out, _ = git(root, "rev-parse", "--verify", "--quiet", base + "^{commit}")
+    rc, out, why = git(root, "rev-parse", "--verify", "--quiet", base + "^{commit}")
+    if why:
+        # Not base_found: false, which the caller reads as a commit gone.
+        return answer({"error": why})
     sha = out.decode("ascii", "replace").strip()
     if rc != 0 or not sha:
         return answer(reply)
@@ -5898,7 +5945,10 @@ def api_git_commit(body: dict = Body(...)) -> Response:
     """
     root = str(body.get("root", ""))
     message = str(body.get("message", ""))
-    if not git_ref_root(root):
+    ok, why = git_ref_root(root)
+    if why:
+        return fs_error("commit_failed", 409, detail=why)
+    if not ok:
         return fs_error("bad_root", 400)
     if not message.strip():
         return fs_error("empty_message", 400)
