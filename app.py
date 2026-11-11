@@ -4966,23 +4966,30 @@ COMMIT_TIMEOUT = 120
 # one an ordinary answer trips over. The pane's poll stretches itself to match
 # (see the client's elapsed_ms), so a long read is waited for, not repeated.
 GIT_STATUS_TIMEOUT = 60
+# The history page gets the same minute, for the same reason: on a mount that
+# stalls, a log that answers in 0.1 s from a shell can wait 40 s in the
+# service, and a page that arrives late is the answer the pane asked for where
+# an error at 20 s is not. The route's root and ref checks keep GIT_TIMEOUT.
+GIT_LOG_TIMEOUT = 60
 # The diff of a generated file can run to megabytes the pane could not render
 # anyway; past this the answer is truncated and says so.
 GIT_DIFF_MAX = 1024 * 1024
 
 
-def git(cwd: str, *args: str, timeout: float = GIT_TIMEOUT) -> tuple[int, bytes, str]:
+def git(cwd: str, *args: str, timeout: float = GIT_TIMEOUT,
+        env: dict | None = None) -> tuple[int, bytes, str]:
     """Run git in `cwd`, returning (returncode, stdout, a reason on failure).
 
     Bytes rather than text: paths are whatever the filesystem holds and
     `status -z` is NUL-separated, so decoding is the caller's, done once and
     with replacement. Never raises — a missing git or a hung one is an answer,
-    not a 500.
+    not a 500. `env` adds to the service's environment rather than replacing it.
     """
     try:
         p = subprocess.run(
             ["git", "--no-optional-locks", "-C", cwd, *args],
             capture_output=True, timeout=timeout,
+            env={**os.environ, **env} if env else None,
         )
         return p.returncode, p.stdout, ""
     except FileNotFoundError:
@@ -5111,6 +5118,37 @@ def git_status_files(root: str, scope: str) -> tuple[list[dict], str]:
         return [], err or "git status failed"
     return (untracked_files(out) if scope == "untracked"
             else porcelain_files(out)), ""
+
+
+# The history page's log, one per (root, ref, skip, n, ceiling) at a time, the
+# way the status walks are collapsed above: the route is a plain def on the
+# request threadpool, and with a minute's ceiling a client asking again and
+# again while the mount stalls would otherwise park a thread per request.
+_git_log_runs: dict[tuple, GitStatusRun] = {}
+
+
+def git_log_shared(key: tuple, root: str, *args: str,
+                   env: dict | None = None) -> tuple[int, bytes, str]:
+    """git(root, *args) under GIT_LOG_TIMEOUT, or the answer of the identical
+    run already in flight for `key`."""
+    with _git_status_lock:
+        run = _git_log_runs.get(key)
+        mine = run is None
+        if mine:
+            run = GitStatusRun()
+            _git_log_runs[key] = run
+    if not mine:
+        # A margin past the owner's own ceiling, so a waiter does not give up
+        # a moment before the timeout sentence it would have shared lands.
+        run.done.wait(GIT_LOG_TIMEOUT + 5)
+        return run.result
+    try:
+        run.result = git(root, *args, timeout=GIT_LOG_TIMEOUT, env=env)
+    finally:
+        with _git_status_lock:
+            _git_log_runs.pop(key, None)
+        run.done.set()
+    return run.result
 
 
 @app.get("/api/git/changes")
@@ -5395,20 +5433,47 @@ def api_git_log(root: str = "", ref: str = "HEAD", skip: int = 0,
     an answer, as on /api/git/status: 200 with `error` and no commits, and so
     is a git that could not answer whether the root or the ref is good — a
     timeout while a status walk loads the mount is not a missing branch.
+
+    The ordinary page is one git call: `git log` runs first, and the root and
+    ref checks run only to say why it failed. Each call waits on the same
+    mount, so on a loaded one three in a row were three chances at the
+    timeout. Taking that path needs `root` to hold a .git and `ref` to be a
+    single revision. GIT_CEILING_DIRECTORIES at root's real parent keeps git
+    from walking up to a repository above, so a subfolder (or a broken .git
+    inside one) fails and earns its bad_root from the checks, as before. A
+    range or a ^-form, which git log reads as more than one revision, skips
+    straight to the checks, so it is answered exactly as before.
     """
     ref = ref or "HEAD"
+    skip = max(0, skip)
+    n = min(GIT_LOG_MAX, max(1, n))
 
     def failed(err: str) -> Response:
         return no_store(JSONResponse({"root": root, "ref": ref, "commits": [],
                                       "more": False, "error": err}))
+
+    def page(env: dict | None = None) -> tuple[int, bytes, str]:
+        return git_log_shared((root, ref, skip, n, bool(env)), root,
+                              "log", "--no-color", "--skip=%d" % skip,
+                              "-n", str(n + 1), "--format=" + GIT_LOG_FORMAT,
+                              ref, "--", env=env)
+
+    one_rev = (ref[:1] not in ("-", "^") and ".." not in ref
+               and not re.search(r"\^[@!-]", ref))
+    if (one_rev and root.startswith("/")
+            and os.path.lexists(os.path.join(root, ".git"))):
+        rc, out, err = page({"GIT_CEILING_DIRECTORIES":
+                             os.path.dirname(os.path.realpath(root))})
+        if err:
+            return failed(err)
+        if rc == 0:
+            return git_log_reply(root, ref, out, n)
 
     ok, err = git_ref_root(root)
     if err:
         return failed(err)
     if not ok:
         return fs_error("bad_root", 400)
-    skip = max(0, skip)
-    n = min(GIT_LOG_MAX, max(1, n))
     ok, err = git_ref_ok(root, ref)
     if err:
         return failed(err)
@@ -5421,10 +5486,14 @@ def api_git_log(root: str = "", ref: str = "HEAD", skip: int = 0,
                 return no_store(JSONResponse({"root": root, "ref": ref, "commits": [],
                                               "more": False, "unborn": True}))
         return fs_error("bad_ref", 400)
-    rc, out, err = git(root, "log", "--no-color", "--skip=%d" % skip,
-                       "-n", str(n + 1), "--format=" + GIT_LOG_FORMAT, ref, "--")
+    rc, out, err = page()
     if rc != 0:
         return failed(err or "git log failed")
+    return git_log_reply(root, ref, out, n)
+
+
+def git_log_reply(root: str, ref: str, out: bytes, n: int) -> Response:
+    """The page api_git_log answers for `git log` output asked for n + 1."""
     commits = git_log_records(out)
     return no_store(JSONResponse({"root": root, "ref": ref,
                                   "commits": commits[:n],

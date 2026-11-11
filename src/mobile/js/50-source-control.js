@@ -118,6 +118,41 @@ function scRetry(onclick) {
   return el("button", { type: "button", class: "sc-more", onclick: onclick }, "Try again");
 }
 
+// A 200 whose `error` is git's: git did not answer in time (a network mount
+// that stalls) or could not be run. Asking again is what fixes that, so these
+// replies are never shown as a failure. A missing git is the one sentence of
+// git()'s that asking again cannot change; a 400 (a wrong root or a ref not in
+// the repository) and a backend that cannot be reached are not git's either.
+function scGitSlow(r) {
+  return !!(r && r.ok && r.data && r.data.error && r.data.error !== "git is not installed");
+}
+
+// The still-working line a slow read shows under its Loading.
+function scSlowNote() {
+  return diffNote("Still loading. This folder is slow to read, still working on it.");
+}
+
+// ask() until its reply is not scGitSlow, a fixed 3 s apart, for as long as
+// alive() holds; there is no attempt limit. slow() runs once when the whole
+// wait passes 5 s, for the caller's still-working note. The final reply, or
+// null once alive() fails (the user left the repo or branch, the list was
+// reloaded or torn down), when nothing must be painted.
+async function scPatient(ask, alive, slow) {
+  const NOTE_MS = 5000, RETRY_MS = 3000;
+  const timer = setTimeout(() => { if (alive()) slow(); }, NOTE_MS);
+  try {
+    for (;;) {
+      const r = await ask();
+      if (!alive()) return null;
+      if (!scGitSlow(r)) return r;
+      await new Promise((res) => setTimeout(res, RETRY_MS));
+      if (!alive()) return null;
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---- the commit list ---------------------------------------------------------
 // One page at a time, PAGE commits a page, and a Load more row while the
 // server says there is more. Every load names the root and ref it was asked
@@ -133,6 +168,7 @@ function scHistory(ctx) {
   let count = 0;           // commits drawn, which is where the next page skips to
   let more = false;
   let seq = 0;
+  let epoch = 0;           // bumped by reset: a commit's files loop stops with it
   let busy = false;
   // A commit's files are the same answer every time it is opened, so each is
   // asked once per repo; the promise is kept, so a second tap while the first
@@ -157,13 +193,19 @@ function scHistory(ctx) {
     }
   }
 
+  // A slow git is asked again until it answers (scPatient). Any load, reload
+  // or reset bumps seq, which ends the loop, so a late page never lands in
+  // another repo's or branch's list and never stacks with a refresh.
   async function fetchPage() {
     const mine = ++seq;
     const root = ctx.root();
     busy = true;
     paintFoot();
-    const r = await scGet("api/git/log", { root: root, ref: ref, skip: count, n: PAGE });
-    if (mine !== seq) return;
+    const r = await scPatient(
+      () => scGet("api/git/log", { root: root, ref: ref, skip: count, n: PAGE }),
+      () => mine === seq && ctx.root() === root,
+      () => foot.appendChild(scSlowNote()));
+    if (!r) return;
     busy = false;
     const d = r.data;
     if (!r.ok || d.error) {
@@ -217,10 +259,14 @@ function scHistory(ctx) {
     delete files.dataset.failed;
     files.appendChild(diffNote("Loading…"));
     const key = root + "\n" + c.sha;
-    if (!records.has(key)) {
-      records.set(key, scGet("api/git/commit", { root: root, sha: c.sha }));
-    }
-    const r = await records.get(key);
+    const gen = epoch;
+    const r = await scPatient(() => {
+      if (!records.has(key)) {
+        records.set(key, scGet("api/git/commit", { root: root, sha: c.sha }));
+      }
+      return records.get(key).then((r) => { if (scGitSlow(r)) records.delete(key); return r; });
+    }, () => gen === epoch, () => files.appendChild(scSlowNote()));
+    if (!r) return;
     files.textContent = "";
     if (!r.ok || !r.data || r.data.error) {
       records.delete(key);         // a failure is worth asking again next time
@@ -258,6 +304,7 @@ function scHistory(ctx) {
 
   function reset() {
     seq++;
+    epoch++;
     busy = false;
     count = 0;
     more = false;
@@ -322,10 +369,14 @@ function scCommitDiffView(ctx, info) {
       body.textContent = "";
       body.appendChild(diffNote("Loading…"));
     }
-    const r = await scGet("api/git/diff", staged
+    // Asked until a slow git answers, while this is the view's latest load
+    // and the view has not been stopped (its tab or the history closed).
+    const r = await scPatient(() => scGet("api/git/diff", staged
       ? { root: ctx.root(), path: info.path, scope: "staged" }
-      : { root: ctx.root(), path: info.path, sha: info.sha, old: info.old || "" });
-    if (mine !== seq) return;
+      : { root: ctx.root(), path: info.path, sha: info.sha, old: info.old || "" }),
+      () => mine === seq,
+      () => body.appendChild(scSlowNote()));
+    if (!r) return;
     const data = r.ok ? r.data
       : { diff: "", error: scReadError(r, "Couldn't read the diff") };
     if (staged) diffRender(body, data, "staged", info.path, ctx.h);
@@ -333,7 +384,7 @@ function scCommitDiffView(ctx, info) {
     if (data.error) body.appendChild(scRetry(() => load()));
   }
 
-  return { el: box, info: info, load: load };
+  return { el: box, info: info, load: load, stop() { seq++; } };
 }
 
 // ---- the workspace's Source control view ---------------------------------------

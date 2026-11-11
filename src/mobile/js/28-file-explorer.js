@@ -2258,7 +2258,7 @@ function filesShowHistory(on) {
 function filesHistoryEnd() {
   if (!filesHistoryOn && !filesHistory) return;
   filesHistoryOn = false;
-  if (filesHistoryDiff) { filesHistoryDiff.el.remove(); filesHistoryDiff = null; }
+  if (filesHistoryDiff) { filesHistoryDiff.stop(); filesHistoryDiff.el.remove(); filesHistoryDiff = null; }
   if (filesHistory) { filesHistory.destroy(); filesHistory = null; }
   filesHistoryRoot = "";
   syncHistoryView();
@@ -2292,7 +2292,7 @@ function syncFilesTitle() {
 function filesOpenCommitDiff(info) {
   if (!filesHistoryOn) return;
   filesHistoryY = filesScrollY();
-  if (filesHistoryDiff) filesHistoryDiff.el.remove();
+  if (filesHistoryDiff) { filesHistoryDiff.stop(); filesHistoryDiff.el.remove(); }
   filesHistoryDiff = scCommitDiffView(filesHistoryCtx(), info);
   q("files-history").appendChild(filesHistoryDiff.el);
   syncHistoryView();
@@ -2302,6 +2302,7 @@ function filesOpenCommitDiff(info) {
 
 function filesCloseCommitDiff() {
   if (!filesHistoryDiff) return;
+  filesHistoryDiff.stop();
   filesHistoryDiff.el.remove();
   filesHistoryDiff = null;
   syncHistoryView();

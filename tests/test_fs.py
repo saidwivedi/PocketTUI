@@ -2316,10 +2316,11 @@ def git_timing_out(monkeypatch, *prefix):
 @needs_git
 def test_log_answers_a_timed_out_ref_check_as_an_error_not_bad_ref(
         client, history_repo, monkeypatch):
+    # The checks run only once git log has failed, here on a ref it cannot find.
     git_timing_out(monkeypatch, "rev-parse", "--verify")
-    r = git_log(client, history_repo, skip=0, n=50)
+    r = git_log(client, history_repo, ref="nope", skip=0, n=50)
     assert r.status_code == 200
-    assert r.json() == {"root": str(history_repo), "ref": "HEAD", "commits": [],
+    assert r.json() == {"root": str(history_repo), "ref": "nope", "commits": [],
                         "more": False, "error": GIT_TIMEOUT_WHY}
 
 
@@ -2327,8 +2328,101 @@ def test_log_answers_a_timed_out_ref_check_as_an_error_not_bad_ref(
 def test_log_answers_a_timed_out_root_check_as_an_error_not_bad_root(
         client, history_repo, monkeypatch):
     git_timing_out(monkeypatch, "rev-parse", "--show-toplevel")
-    r = git_log(client, history_repo)
+    r = git_log(client, history_repo / "sub")
     assert r.status_code == 200 and r.json()["error"] == GIT_TIMEOUT_WHY
+
+
+@needs_git
+def test_log_answers_a_timed_out_log_as_an_error(client, history_repo, monkeypatch):
+    git_timing_out(monkeypatch, "log")
+    r = git_log(client, history_repo)
+    assert r.status_code == 200
+    assert r.json() == {"root": str(history_repo), "ref": "HEAD", "commits": [],
+                        "more": False, "error": GIT_TIMEOUT_WHY}
+
+
+@needs_git
+def test_log_collapses_identical_requests_onto_one_run_with_a_minute_ceiling(
+        history_repo, monkeypatch):
+    real, gate, seen = A.git, threading.Event(), []
+
+    def slow(cwd, *args, **kw):
+        if args[0] == "log":
+            seen.append(kw.get("timeout"))
+            gate.wait(10)
+        return real(cwd, *args, **kw)
+    monkeypatch.setattr(A, "git", slow)
+    out = []
+    ask = lambda: out.append(A.api_git_log(root=str(history_repo), ref="HEAD", n=50))
+    threads = [threading.Thread(target=ask) for _ in range(4)]
+    for t in threads:
+        t.start()
+    deadline = time.time() + 5
+    while not seen and time.time() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.2)                     # the other three are waiting on the run
+    gate.set()
+    for t in threads:
+        t.join(10)
+    assert seen == [A.GIT_LOG_TIMEOUT] == [60]
+    bodies = [json.loads(r.body) for r in out]
+    assert len(bodies) == 4 and all(b == bodies[0] for b in bodies)
+    assert len(bodies[0]["commits"]) == 3
+    assert A._git_log_runs == {}
+
+
+def git_calls(monkeypatch):
+    """A.git as itself, recording each call's arguments in the list returned."""
+    real, calls = A.git, []
+
+    def spy(cwd, *args, **kw):
+        calls.append(args)
+        return real(cwd, *args, **kw)
+    monkeypatch.setattr(A, "git", spy)
+    return calls
+
+
+@needs_git
+def test_log_page_is_one_git_call(client, history_repo, monkeypatch):
+    calls = git_calls(monkeypatch)
+    r = git_log(client, history_repo, n=2)
+    assert r.status_code == 200 and len(r.json()["commits"]) == 2
+    assert [a[0] for a in calls] == ["log"]
+    run_git(history_repo, "branch", "old", "HEAD~2")
+    calls.clear()
+    assert git_log(client, history_repo, ref="old").json()["commits"][0]["subject"] == "init"
+    assert [a[0] for a in calls] == ["log"]
+
+
+@needs_git
+def test_log_classifies_only_after_git_log_fails(client, history_repo, tmp_path,
+                                                 monkeypatch):
+    calls = git_calls(monkeypatch)
+    r = git_log(client, history_repo, ref="nope")
+    assert r.status_code == 400 and r.json()["error"] == "bad_ref"
+    assert calls[0][0] == "log"
+
+    # A subfolder fails git log under the ceiling, not as its parent's history;
+    # so does one with a .git of its own that is not a repository.
+    assert git_log(client, history_repo / "sub").json()["error"] == "bad_root"
+    (history_repo / "sub" / ".git").mkdir()
+    r = git_log(client, history_repo / "sub")
+    assert r.status_code == 400 and r.json()["error"] == "bad_root"
+
+    # A range git log would read goes through the checks first, as before:
+    # refused, or for ^HEAD (which rev-parse --verify accepts) an empty page.
+    calls.clear()
+    for bad in ("HEAD~1..HEAD", "HEAD^@", "HEAD^!"):
+        r = git_log(client, history_repo, ref=bad)
+        assert r.status_code == 400 and r.json()["error"] == "bad_ref"
+    assert all(a[0] != "log" for a in calls)
+    assert git_log(client, history_repo, ref="^HEAD").json()["commits"] == []
+
+    root = tmp_path / "empty"
+    root.mkdir()
+    run_git(root, "init", "-q", ".")
+    r = git_log(client, root)
+    assert r.status_code == 200 and r.json()["unborn"] is True
 
 
 @needs_git
@@ -2433,45 +2527,11 @@ const document = {
 """
 
 
-def test_history_commit_and_diff_views_say_a_sentence_and_offer_try_again(
-        client, history_repo, monkeypatch, tmp_path):
-    """The client half of the bad_ref bug, driven by the routes' own replies:
-    a timed-out read shows git's sentence, a 400 shows words rather than its
-    code, and each view can be asked again."""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node is not on PATH")
-    good_log = git_log(client, history_repo).json()
-    good_rec = git_commit_record(client, history_repo, "HEAD").json()
-    bad_ref = git_log(client, history_repo, ref="nope")
-    bad_diff = git_diff_at(client, history_repo, "0" * 40, "moved.txt")
-    git_timing_out(monkeypatch, "rev-parse", "--verify")
-    slow_log = git_log(client, history_repo)
-    slow_rec = git_commit_record(client, history_repo, "HEAD")
-    assert {slow_log.status_code, slow_rec.status_code} == {200}
-    assert bad_ref.status_code == bad_diff.status_code == 400
-    # In the order the harness asks: the history, its Try again, the 400, the
-    # history again, a commit's files, their Try again, the diff, its Try again.
-    replies = [[200, slow_log.json()], [200, good_log], [400, bad_ref.json()],
-               [200, good_log], [200, slow_rec.json()], [200, good_rec],
-               [400, bad_diff.json()], [200, {"diff": "", "error": GIT_TIMEOUT_WHY}]]
-
-    spec = importlib.util.spec_from_file_location(
-        "build_mobile", Path(__file__).resolve().parent.parent / "build_mobile.py")
-    bm = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(bm)
-    doc = bm.assemble()
-
-    def chunk(head):
-        at = doc.index("\n" + head) + 1
-        return doc[at:doc.index("\n}\n", at) + 3]
-
-    js = "\n".join([FAKE_DOM, chunk("function el("), chunk("function diffNote("),
-                    chunk("function diffRender("), chunk("async function scGet("),
-                    chunk("function scReadError("), chunk("function scRetry("),
-                    chunk("function scHistory("), chunk("function scCommitDiffView("),
-                    "const replies = %s;" % json.dumps(replies), """
+# The client half, run in node on the assembled shell's own functions with a
+# fake clock: timers fire only when the test moves the clock on.
+SC_HARNESS = """
 const asked = [];
+let rootNow = "/work/repo";
 function apiURL(p) { return p; }
 function authHeaders() { return {}; }
 function rejectToken() {}
@@ -2482,53 +2542,174 @@ function scPathEl() { return null; }
 function svgIcon() { return null; }
 async function fetch(url) {
   asked.push(url.split("?")[0]);
+  if (!replies.length) throw new Error("asked once too often");
   const [status, data] = replies.shift();
   return { status, ok: status < 300, json: async () => data };
 }
-const tick = () => new Promise((r) => setTimeout(r, 0));
+let now = 0, tid = 0;
+const timers = [];
+globalThis.setTimeout = (f, ms) => { timers.push({ id: ++tid, f, at: now + (ms || 0) }); return tid; };
+globalThis.clearTimeout = (id) => { const i = timers.findIndex((t) => t.id === id);
+                                    if (i >= 0) timers.splice(i, 1); };
+const flush = () => new Promise((r) => setImmediate(r));
+async function advance(ms) {
+  const end = now + ms;
+  for (;;) {
+    await flush();
+    timers.sort((a, b) => a.at - b.at);
+    const t = timers[0];
+    if (!t || t.at > end) break;
+    timers.shift(); now = t.at; t.f();
+  }
+  now = end;
+  await flush();
+}
 const say = (n) => n.textContent;
+"""
 
-const h = scHistory({ root: () => "/work/repo", openCommitDiff() {} });
-await h.load("HEAD");
-const slow = { foot: say(h.el.find("sc-foot")), retry: !!h.el.find("sc-more") };
-h.el.find("sc-more").click();
-await tick();
-const rows = h.el.find("sc-list").kids.length;
+SC_SLOW = "Still loading. This folder is slow to read, still working on it."
+
+
+def run_sc_client(tmp_path, replies, script, chunks):
+    """`script` after the harness, with the shell's functions named in
+    `chunks`; the JSON it prints, parsed."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    spec = importlib.util.spec_from_file_location(
+        "build_mobile", Path(__file__).resolve().parent.parent / "build_mobile.py")
+    bm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bm)
+    doc = bm.assemble()
+
+    def chunk(head):
+        at = doc.index("\n" + head) + 1
+        return doc[at:doc.index("\n}\n", at) + 3]
+
+    js = "\n".join([FAKE_DOM, *(chunk(h) for h in chunks),
+                    "const replies = %s;" % json.dumps(replies), SC_HARNESS, script])
+    f = tmp_path / "sc.mjs"
+    f.write_text(js, encoding="utf-8")
+    return json.loads(subprocess.run([node, str(f)], check=True,
+                                     capture_output=True).stdout.decode())
+
+
+SC_CHUNKS = ("function el(", "function diffNote(", "function diffRender(",
+             "async function scGet(", "function scReadError(", "function scRetry(",
+             "function scGitSlow(", "function scSlowNote(", "async function scPatient(",
+             "function scHistory(", "function scCommitDiffView(")
+
+
+def test_history_commit_and_diff_views_ask_a_slow_git_again_and_offer_try_again_otherwise(
+        client, history_repo, monkeypatch, tmp_path):
+    """Driven by the routes' own replies: a timed-out history, commit record
+    and diff are asked again by themselves and land without an error or a
+    Try again; a 400 shows words rather than its code, and a missing git its
+    sentence, each with a Try again that asks again."""
+    good_log = git_log(client, history_repo).json()
+    good_rec = git_commit_record(client, history_repo, "HEAD").json()
+    bad_ref = git_log(client, history_repo, ref="nope")
+    bad_diff = git_diff_at(client, history_repo, "0" * 40, "moved.txt")
+    good_diff = git_diff_at(client, history_repo, "HEAD~1", "added.txt").json()
+    git_timing_out(monkeypatch, "log")
+    slow_log = git_log(client, history_repo).json()
+    monkeypatch.undo()
+    git_timing_out(monkeypatch, "rev-parse", "--verify")
+    slow_rec = git_commit_record(client, history_repo, "HEAD").json()
+    slow_diff = git_diff_at(client, history_repo, "HEAD", "moved.txt").json()
+    assert slow_log["error"] == slow_rec["error"] == slow_diff["error"] == GIT_TIMEOUT_WHY
+    assert bad_ref.status_code == bad_diff.status_code == 400
+    no_git = dict(slow_log, error="git is not installed")
+    replies = [[200, slow_log], [200, good_log],        # history, asked again
+               [400, bad_ref.json()], [200, good_log],  # a 400, its Try again
+               [200, no_git], [200, good_log],          # no git, its Try again
+               [200, slow_rec], [200, good_rec],        # a commit's files
+               [400, bad_diff.json()], [200, slow_diff], [200, good_diff]]
+    out = run_sc_client(tmp_path, replies, """
+const h = scHistory({ root: () => rootNow, openCommitDiff() {} });
+h.load("HEAD"); await advance(3000);
+const slow = { rows: h.el.find("sc-list").kids.length, foot: say(h.el.find("sc-foot")) };
 await h.load("nope");
-const bad = { foot: say(h.el.find("sc-foot")), retry: !!h.el.find("sc-more") };
-
+const bad = say(h.el.find("sc-foot"));
+h.el.find("sc-more").click(); await advance(0);
+const badRetried = h.el.find("sc-list").kids.length;
 await h.load("HEAD");
+const noGit = say(h.el.find("sc-foot"));
+h.el.find("sc-more").click(); await advance(0);
+
 const commit = h.el.find("sc-list").kids[0];
 const row = commit.find("sc-row"), files = commit.find("sc-files");
-row.click(); await tick();
-const recSlow = { text: say(files), retry: !!files.find("sc-more") };
-files.find("sc-more").click(); await tick();
-const recGood = files.kids.filter((k) => k.className === "sc-file").length;
+row.click(); await advance(3000);
+const rec = { files: files.kids.filter((k) => k.className === "sc-file").length,
+              retry: !!files.find("sc-more") };
 
-const view = scCommitDiffView({ root: () => "/work/repo" },
+const view = scCommitDiffView({ root: () => rootNow },
   { sha: "0".repeat(40), path: "moved.txt", status: "M" });
 const body = view.el.find("sc-diff-body");
 await view.load();
 const diffBad = { text: say(body), retry: !!body.find("sc-more") };
-body.find("sc-more").click(); await tick();
-const diffSlow = say(body);
-console.log(JSON.stringify({ slow, rows, bad, recSlow, recGood, diffBad, diffSlow, asked,
-                             left: replies.length }));
-"""])
-    f = tmp_path / "history.mjs"
-    f.write_text(js, encoding="utf-8")
-    out = json.loads(subprocess.run([node, str(f)], check=True,
-                                    capture_output=True).stdout.decode())
-    assert out["slow"] == {"foot": GIT_TIMEOUT_WHY + "Try again", "retry": True}
-    assert out["rows"] == 3
-    assert out["bad"] == {"foot": "That branch or commit isn't in this repository"
-                                  "Try again", "retry": True}
-    assert out["recSlow"] == {"text": GIT_TIMEOUT_WHY + "Try again", "retry": True}
-    assert out["recGood"] == 3
+body.find("sc-more").click(); await advance(3000);
+console.log(JSON.stringify({ slow, bad, badRetried, noGit, rec, diffBad, diff: say(body),
+                             diffRetry: !!body.find("sc-more"), asked, left: replies.length }));
+""", SC_CHUNKS)
+    assert out["slow"] == {"rows": 3, "foot": ""}
+    assert out["bad"] == "That branch or commit isn't in this repositoryTry again"
+    assert out["badRetried"] == 3
+    assert out["noGit"] == "git is not installedTry again"
+    assert out["rec"] == {"files": 3, "retry": False}
     assert out["diffBad"] == {"text": "That branch or commit isn't in this repository"
                                       "Try again", "retry": True}
-    assert out["diffSlow"] == GIT_TIMEOUT_WHY + "Try again"
-    assert "bad_ref" not in json.dumps(out)
+    assert out["diff"] == "No diff for this file" and out["diffRetry"] is False
+    assert "bad_ref" not in json.dumps(out) and GIT_TIMEOUT_WHY not in json.dumps(out)
+    assert out["left"] == 0
+
+
+def test_history_keeps_asking_a_slow_git_with_a_note_and_stops_when_the_repo_is_left(
+        client, history_repo, monkeypatch, tmp_path):
+    """Twelve timed-out pages in a row: no error and no Try again, the
+    still-working note from 5 s on, then the real page fills the list and the
+    note goes. A loop whose repo is left asks nothing more, and a reload
+    replaces a loop rather than running beside it."""
+    good_log = git_log(client, history_repo).json()
+    git_timing_out(monkeypatch, "log")
+    slow_log = git_log(client, history_repo).json()
+    assert slow_log["error"] == GIT_TIMEOUT_WHY
+    replies = [[200, slow_log]] * 12 + [[200, good_log]] + [[200, slow_log]] * 3
+    out = run_sc_client(tmp_path, replies, """
+const h = scHistory({ root: () => rootNow, openCommitDiff() {} });
+const foot = () => say(h.el.find("sc-foot"));
+h.load("HEAD");
+await advance(4900);
+const early = foot();
+await advance(200);
+const noted = foot();
+const during = [];
+for (let i = 0; i < 10; i++) {
+  await advance(3000);
+  during.push({ foot: foot(), retry: !!h.el.find("sc-more"),
+                rows: h.el.find("sc-list").kids.length });
+}
+await advance(3000);
+const landed = { foot: foot(), rows: h.el.find("sc-list").kids.length };
+
+h.load("HEAD"); await advance(0);      // slow again
+h.reload(); await advance(0);          // a refresh: one loop, not two
+const askedBefore = asked.length;
+await advance(3000);
+const oneLoop = asked.length - askedBefore;
+rootNow = "/work/other";               // the user went to another repo
+await advance(60000);
+console.log(JSON.stringify({ early, noted, during, landed, oneLoop,
+                             afterLeave: asked.length - askedBefore - oneLoop,
+                             left: replies.length }));
+""", SC_CHUNKS)
+    assert out["early"] == "Loading commits…"
+    assert out["noted"] == "Loading commits…" + SC_SLOW
+    for d in out["during"]:
+        assert d == {"foot": "Loading commits…" + SC_SLOW, "retry": False, "rows": 0}
+    assert out["landed"] == {"foot": "", "rows": 3}
+    assert out["oneLoop"] == 1
+    assert out["afterLeave"] == 0
     assert out["left"] == 0
 
 

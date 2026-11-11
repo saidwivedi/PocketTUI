@@ -1528,6 +1528,7 @@ function makeWorkspace(ctx) {
     if (tab.marks) clearTimeout(tab.marks.timer);
     if (tab.rec) { edDropView(tab.rec); tab.rec = null; }
     if (tab.mesh) { tab.mesh.destroy(); tab.mesh = null; }
+    if (tab.gitView) tab.gitView.stop();
     if (tab.hc) {
       clearInterval(tab.hc.timer);
       tab.hc.b.dead = true;
