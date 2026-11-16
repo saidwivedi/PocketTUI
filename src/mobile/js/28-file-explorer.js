@@ -197,9 +197,9 @@ async function readWithProgress(r, label, size) {
     // A percentage where the size is known, and how much has landed where it is
     // not. 100% is kept back for the save itself — the last chunk read is not
     // the same moment as a file the browser has taken.
-    holdToast("Downloading " + label + "… " + (total
-      ? Math.min(99, Math.floor(got * 100 / total)) + "%"
-      : fmtSize(got)));
+    const frac = total ? Math.min(0.99, got / total) : null;
+    holdToast("Downloading " + label + "… "
+              + (total ? Math.floor(frac * 100) + "%" : fmtSize(got)), frac);
   }
   return new Blob(chunks, { type: r.headers.get("Content-Type") || "" });
 }
@@ -2654,8 +2654,11 @@ async function uploadFiles(items, empty = [], unreadable = 0) {
     return uploadTree(items, empty, unreadable);
   }
   let done = 0, failed = 0;
-  for (const it of items) {
-    const err = await uploadFile(it, false);
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const label = items.length === 1 ? it.file.name : (i + 1) + "/" + items.length;
+    holdToast("Uploading " + label + "…", 0);
+    const err = await uploadFile(it, false, label);
     if (err === null) { done++; continue; }
     // "" is a declined replace or an expired token — both already said their
     // piece, or deliberately say nothing.
@@ -2678,8 +2681,9 @@ async function uploadTree(items, empty, unreadable = 0) {
   const dir = filesPath;
   let done = 0, skipped = 0, failed = unreadable, made = 0, replace = null;
   for (let i = 0; i < items.length; i++) {
-    holdToast("Uploading " + (i + 1) + "/" + items.length);
-    let got = await uploadTreeFile(dir, items[i], replace === true);
+    const label = (i + 1) + "/" + items.length;
+    holdToast("Uploading " + label + "…", 0);
+    let got = await uploadTreeFile(dir, items[i], replace === true, label);
     if (got === "exists") {
       if (replace === null) {
         replace = await appConfirm(
@@ -2687,7 +2691,7 @@ async function uploadTree(items, empty, unreadable = 0) {
           + "already here, or keep them all and skip those?",
           { title: "Some of these files already exist", confirmLabel: "Replace all" });
       }
-      got = replace ? await uploadTreeFile(dir, items[i], true) : "skipped";
+      got = replace ? await uploadTreeFile(dir, items[i], true, label) : "skipped";
     }
     if (got === "auth") { hideToast(); return; }
     if (got === "ok") done++;
@@ -2723,22 +2727,78 @@ async function uploadTree(items, empty, unreadable = 0) {
   if (done || made) { loadDir(filesPath); filesRefreshPeers(id); wsWrote(dir); }
 }
 
+// What /api/fs/upload takes. A server that streams the body to disk takes up
+// to 2 GB; an older one reads it whole into memory and stops at 50 MB.
+function uploadCap() {
+  return hasCapStrict("upload_stream")
+    ? { bytes: 2 * 1024 * 1024 * 1024, text: "2 GB" }
+    : { bytes: 50 * 1024 * 1024, text: "50 MB" };
+}
+
+// Past this size the server is asked whether the name is free before the
+// body goes. A 409 answered while a big body is still going out is not one a
+// browser is bound to read until it has sent the lot, and on some links it
+// arrives as a dropped connection instead. Below it the body is gone before
+// the answer is.
+const UPLOAD_CHECK_BYTES = 8 * 1024 * 1024;
+
+// The refusals the server can give without the body, asked with none: null
+// when the name is free to take, else the real upload's {status, data}.
+async function uploadCheck(qs, file) {
+  if (file.size < UPLOAD_CHECK_BYTES || !hasCapStrict("upload_stream")) return null;
+  const r = await fetch(apiURL("api/fs/upload" + qs + "&check=1&size=" + file.size),
+                        { method: "POST", headers: authHeaders() });
+  if (r.ok) return null;
+  return { status: r.status, data: await r.json().catch(() => null) };
+}
+
+// The file as the request body, with how much of it has gone out on the held
+// line. XMLHttpRequest because fetch reports nothing about an upload's
+// progress. {status, data}, data being the JSON answer or null; throws when
+// the connection drops. No timeout: a 2 GB file on a phone link takes as long
+// as it takes.
+function sendUpload(qs, file, label) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", apiURL("api/fs/upload" + qs));
+    const h = authHeaders();
+    for (const k in h) xhr.setRequestHeader(k, h[k]);
+    let painted = 0;
+    xhr.upload.onprogress = (ev) => {
+      if (Date.now() - painted < DOWNLOAD_TICK_MS) return;
+      painted = Date.now();
+      const total = ev.lengthComputable && ev.total ? ev.total : file.size;
+      // 100% is kept back for the server's answer, as a download keeps it
+      // back for the save: the last byte sent is not a file that has landed.
+      const frac = total ? Math.min(0.99, ev.loaded / total) : 0;
+      holdToast("Uploading " + label + "… " + Math.floor(frac * 100) + "%", frac);
+    };
+    xhr.onload = () => {
+      let data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (e) {}
+      resolve({ status: xhr.status, data });
+    };
+    xhr.onerror = xhr.onabort = () => reject(new Error("network"));
+    xhr.send(file);
+  });
+}
+
 // One file of a tree: "ok", "exists" for the batch to decide on, "auth" when
 // the token is gone and the batch has to stop, otherwise "failed". mkdirs=1 is
 // what has the server make the file's folders on the way; a file sitting where
 // one of them has to go comes back as a 409 of its own, which is a failure
 // rather than a file to replace.
-async function uploadTreeFile(dir, it, overwrite) {
+async function uploadTreeFile(dir, it, overwrite, label) {
+  if (it.file.size > uploadCap().bytes) return "failed";
   const qs = "?path=" + encodeURIComponent(joinPath(dir, it.relPath))
              + "&mkdirs=1" + (overwrite ? "&overwrite=1" : "");
   try {
-    const r = await fetch(apiURL("api/fs/upload" + qs),
-                          { method: "POST", headers: authHeaders(), body: it.file });
+    const r = (!overwrite && await uploadCheck(qs, it.file))
+              || await sendUpload(qs, it.file, label);
     if (r.status === 401) { rejectToken(); return "auth"; }
-    if (r.ok) return "ok";
-    if (r.status === 409 && !overwrite) {
-      const data = await r.json().catch(() => null);
-      if (data && data.error === "exists") return "exists";
+    if (r.status >= 200 && r.status < 300) return "ok";
+    if (r.status === 409 && !overwrite && r.data && r.data.error === "exists") {
+      return "exists";
     }
     return "failed";
   } catch (e) {
@@ -2749,22 +2809,28 @@ async function uploadTreeFile(dir, it, overwrite) {
 // Returns null when the file landed, "" when nothing more should be said, and
 // otherwise the message for whatever went wrong — the batch decides whether
 // that surfaces per file or as one summary.
-async function uploadFile(it, overwrite) {
+async function uploadFile(it, overwrite, label) {
   const f = it.file;
   const target = joinPath(filesPath, it.relPath);
+  const cap = uploadCap();
+  const tooLarge = "Too large to upload (" + cap.text + " max)";
+  if (f.size > cap.bytes) return tooLarge;
   try {
     const qs = "?path=" + encodeURIComponent(target) + (overwrite ? "&overwrite=1" : "");
     // The body is the file itself — the raw-body shape /api/fs/upload shares
     // with /api/transcribe.
-    const r = await fetch(apiURL("api/fs/upload" + qs),
-                          { method: "POST", headers: authHeaders(), body: f });
-    if (r.status === 401) { rejectToken(); return ""; }
+    const r = (!overwrite && await uploadCheck(qs, f)) || await sendUpload(qs, f, label);
+    // The held line comes down by hand wherever nothing is toasted over it.
+    if (r.status === 401) { hideToast(); rejectToken(); return ""; }
     if (r.status === 409 && !overwrite) {
-      if (confirm(f.name + " already exists here. Replace it?")) return uploadFile(it, true);
-      return "";
+      hideToast();
+      if (!confirm(f.name + " already exists here. Replace it?")) return "";
+      holdToast("Uploading " + label + "…", 0);
+      return uploadFile(it, true, label);
     }
-    if (r.status === 413) return "Too large to upload (50 MB max)";
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (r.status === 413) return tooLarge;
+    if (r.status === 507) return "No space left on the computer";
+    if (r.status < 200 || r.status >= 300) throw new Error("HTTP " + r.status);
     return null;
   } catch (e) {
     return "Couldn't upload";

@@ -34,7 +34,8 @@ function touchOnly() {
 }
 function toast(msg, ms=1800) {
   dbg("toast:", msg);
-  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  const t = $("toast"); t.textContent = msg; t.classList.remove("progress");
+  t.classList.add("show");
   clearTimeout(toast._t); toast._t = setTimeout(()=>t.classList.remove("show"), ms);
 }
 // The same line with no clock on it: it stays until something replaces it.
@@ -42,10 +43,13 @@ function toast(msg, ms=1800) {
 // transfer takes and is over the moment its outcome is toasted — one element
 // and one timer, so a held line can neither stack with the outcome nor outlive
 // it. Off dbg() on purpose: a line per repaint would flush the debug tail with
-// a download nobody is debugging.
-function holdToast(msg) {
+// a download nobody is debugging. `frac` (0..1) draws a bar under the line, for
+// a transfer whose size is known.
+function holdToast(msg, frac) {
   clearTimeout(toast._t);
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  t.classList.toggle("progress", typeof frac === "number");
+  if (typeof frac === "number") t.style.setProperty("--toast-progress", frac);
 }
 // For the way out that ends a held line without a word of its own.
 function hideToast() {

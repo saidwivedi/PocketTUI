@@ -505,7 +505,7 @@ def test_upload_no_clobber_without_overwrite(client, tree):
 
 
 def test_upload_size_cap(client, tree, monkeypatch):
-    monkeypatch.setattr(A, "MAX_UPLOAD_BYTES", 8)
+    monkeypatch.setattr(A, "MAX_FS_UPLOAD_BYTES", 8)
     r = client.post(f"/api/fs/upload?path={tree / 'cap.bin'}",
                     content=b"123456789")
     assert r.status_code == 413
@@ -565,7 +565,7 @@ def test_upload_mkdirs_keeps_the_clobber_rules(client, tree):
 
 
 def test_upload_mkdirs_over_the_cap_creates_nothing(client, tree, monkeypatch):
-    monkeypatch.setattr(A, "MAX_UPLOAD_BYTES", 8)
+    monkeypatch.setattr(A, "MAX_FS_UPLOAD_BYTES", 8)
     r = up(client, tree / "big" / "cap.bin", b"123456789", mkdirs=True)
     assert r.status_code == 413
     assert not (tree / "big").exists()
@@ -573,6 +573,100 @@ def test_upload_mkdirs_over_the_cap_creates_nothing(client, tree, monkeypatch):
 
 def test_the_capabilities_map_offers_folder_uploads():
     assert A.server_capabilities()["upload_dirs"] is True
+
+
+def leftovers(d):
+    return [n for n in os.listdir(d) if n.startswith(".") and n != ".dotfile"]
+
+
+def chunks(*parts):
+    # A generator body goes out chunked, with no Content-Length to refuse on.
+    yield from parts
+
+
+def test_upload_streams_a_body_bigger_than_one_write(client, tree, monkeypatch):
+    monkeypatch.setattr(A, "FS_UPLOAD_WRITE_BYTES", 4)
+    body = bytes(range(256)) * 40
+    r = client.post("/api/fs/upload", params={"path": str(tree / "big.bin")},
+                    content=chunks(body[:1000], body[1000:]))
+    assert r.status_code == 200
+    assert r.json()["size"] == len(body)
+    assert (tree / "big.bin").read_bytes() == body
+    assert oct((tree / "big.bin").stat().st_mode & 0o777) == oct(0o644)
+    assert leftovers(tree) == []
+
+
+def test_upload_cap_holds_without_a_content_length(client, tree, monkeypatch):
+    monkeypatch.setattr(A, "MAX_FS_UPLOAD_BYTES", 8)
+    r = client.post("/api/fs/upload",
+                    params={"path": str(tree / "new" / "deep" / "cap.bin"),
+                            "mkdirs": "1"},
+                    content=chunks(b"12345", b"6789"))
+    assert r.status_code == 413
+    assert r.json()["error"] == "too_large"
+    assert not (tree / "new").exists()
+    assert leftovers(tree) == []
+
+
+def test_upload_cap_is_the_explorers_own(client, tree, monkeypatch):
+    # The composer's 50 MB cap is not the explorer's.
+    monkeypatch.setattr(A, "MAX_UPLOAD_BYTES", 4)
+    assert up(client, tree / "fine.bin", b"123456789").status_code == 200
+
+
+def test_upload_overwrite_keeps_the_existing_mode(client, tree):
+    target = tree / "beta.txt"
+    target.chmod(0o600)
+    assert up(client, target, b"new", overwrite=True).status_code == 200
+    assert target.read_bytes() == b"new"
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_upload_that_lost_its_name_mid_stream_is_refused(client, tree):
+    target = tree / "race.txt"
+
+    def body():
+        yield b"mine"
+        target.write_text("theirs")
+        yield b"!"
+
+    r = client.post("/api/fs/upload", params={"path": str(target)}, content=body())
+    assert r.status_code == 409
+    assert target.read_text() == "theirs"
+    assert leftovers(tree) == []
+
+
+def test_upload_disk_full_is_its_own_error(client, tree, monkeypatch):
+    import errno as E
+
+    def full(*a):
+        raise OSError(E.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(A, "fs_upload_land", full)
+    r = up(client, tree / "full.bin", b"data")
+    assert r.status_code == 507
+    assert r.json()["error"] == "disk_full"
+    assert not (tree / "full.bin").exists()
+    assert leftovers(tree) == []
+
+
+def test_upload_check_answers_without_a_body(client, tree, monkeypatch):
+    def check(path, **q):
+        return client.post("/api/fs/upload",
+                           params={"path": str(path), "check": "1", **q})
+    assert check(tree / "free.bin", size="5").json() == {"ok": True}
+    assert check(tree / "beta.txt", size="5").json()["error"] == "exists"
+    assert check(tree / "beta.txt", size="5", overwrite="1").status_code == 200
+    assert check(tree / "nope" / "a.bin").status_code == 404
+    assert check(tree / "nope" / "a.bin", mkdirs="1").status_code == 200
+    monkeypatch.setattr(A, "MAX_FS_UPLOAD_BYTES", 8)
+    assert check(tree / "free.bin", size="9").status_code == 413
+    assert not (tree / "free.bin").exists() and not (tree / "nope").exists()
+    assert leftovers(tree) == []
+
+
+def test_the_capabilities_map_offers_streamed_uploads():
+    assert A.server_capabilities()["upload_stream"] is True
 
 
 def test_download_any_file_as_attachment(client, tree):

@@ -67,6 +67,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (FileResponse, JSONResponse, Response,
                                StreamingResponse)
+from starlette.requests import ClientDisconnect
 import uvicorn
 
 import qrcodegen
@@ -1572,6 +1573,11 @@ def server_capabilities() -> dict:
         # by the shell: an older server 404s every file of the tree, so the
         # explorer skips folders there as it always has.
         "upload_dirs": True,
+        # /api/fs/upload streamed to disk with a 2 GB cap (MAX_FS_UPLOAD_BYTES)
+        # and ?check=1, the body-less dry run the shell asks before sending a
+        # big file. Strictly checked by the shell: a server without it holds
+        # the body whole and refuses past 50 MB, and has no dry run to ask.
+        "upload_stream": True,
         # /api/session/order — rows dragged into place on the list, the order
         # kept on the sessions themselves so every device shows the same one.
         # Strictly checked by the shell: an older server 404s the POST, and a
@@ -3579,9 +3585,18 @@ def fs_read_cap(path: str) -> int:
     return MAX_BRIEF_BYTES if path.lower().endswith(".humancode") else MAX_TEXT_BYTES
 
 
-# An upload is a file the user picked from the phone, not a stream: capped
-# where a phone's patience runs out rather than where the disk does.
+# The composer's attachment and the browser pane's file input read their body
+# whole into memory before storing it, so they stay capped where a phone's
+# patience runs out rather than where the disk does.
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+# The explorer's upload is streamed to disk and never held in memory, so its
+# cap is not about this machine at all. It is about the link: there is no
+# resume, and past 2 GB a connection dropped near the end costs too much to
+# send again.
+MAX_FS_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+# The streamed body is gathered into writes of this size, so a slow mount gets
+# one thread hop per MiB rather than one per network chunk.
+FS_UPLOAD_WRITE_BYTES = 1024 * 1024
 
 
 def fs_path(raw: str) -> Path | None:
@@ -4225,16 +4240,73 @@ async def api_fs_upload(request: Request) -> Response:
     ?mkdirs=1 is a folder upload's: the file's own subfolders are created on
     the way down rather than a 404, since a dropped tree is one file per POST
     and the folders between them have no bytes of their own to send.
+
+    The body is streamed into a temp file beside the target and renamed over
+    it once whole, so memory stays flat at any size and nothing partial ever
+    carries the real name. Every refusal that does not need the body comes
+    before the first byte is read. ?check=1 is only those refusals, answered
+    without a body: what the shell asks before sending a big file, so a taken
+    name is known before the file has been spent on learning it.
     """
-    raw = await request.body()
     path = str(request.query_params.get("path", ""))
     overwrite = request.query_params.get("overwrite", "") == "1"
     mkdirs = request.query_params.get("mkdirs", "") == "1"
-    return await run_in_threadpool(fs_store_upload, raw, path, overwrite, mkdirs)
+    check = request.query_params.get("check", "") == "1"
+    try:
+        length = int(request.headers.get("content-length", ""))
+    except ValueError:
+        length = None
+    if check:
+        try:
+            length = int(request.query_params.get("size", ""))
+        except ValueError:
+            length = None
+    plan = await run_in_threadpool(fs_upload_plan, path, overwrite, mkdirs,
+                                   length, check)
+    if isinstance(plan, Response):
+        return plan
+    if check:
+        return no_store(JSONResponse({"ok": True}))
+    p, fh, tmp, made = plan
+    size, buf, landed = 0, bytearray(), False
+    try:
+        async for chunk in request.stream():
+            size += len(chunk)
+            # Content-Length can be absent (a chunked body) or wrong, so the
+            # cap is enforced on what actually arrives too.
+            if size > MAX_FS_UPLOAD_BYTES:
+                return fs_error("too_large", 413)
+            buf += chunk
+            if len(buf) >= FS_UPLOAD_WRITE_BYTES:
+                await run_in_threadpool(fh.write, bytes(buf))
+                buf.clear()
+        if buf:
+            await run_in_threadpool(fh.write, bytes(buf))
+        result = await run_in_threadpool(fs_upload_land, p, fh, tmp, overwrite)
+        if result is None:
+            landed = True
+            return no_store(JSONResponse({"path": str(p), "size": size}))
+        return result
+    except ClientDisconnect:
+        return fs_error("disconnected", 400)
+    except OSError as err:
+        return fs_upload_write_error(err)
+    finally:
+        if not landed:
+            # Synchronous on purpose: this also runs when the request task is
+            # cancelled, where a thread hop could be cancelled with it.
+            fs_upload_discard(fh, tmp, made, p)
 
 
-def fs_store_upload(raw: bytes, path: str, overwrite: bool,
-                    mkdirs: bool = False) -> Response:
+def fs_upload_plan(path: str, overwrite: bool, mkdirs: bool,
+                   length: int | None, dry: bool = False):
+    """Every refusal that does not need the body, then the open temp file.
+
+    Returns a Response to send instead, or (target, open temp file, temp path,
+    the topmost folder this call created or None). With `dry`, only the
+    refusals: no folder is made and no temp file opened, and a folder that
+    does not exist yet under mkdirs holds nothing to clash with.
+    """
     p = fs_path(path)
     if p is None:
         return fs_error("bad_path", 400)
@@ -4244,9 +4316,16 @@ def fs_store_upload(raw: bytes, path: str, overwrite: bool,
     # doubled slashes; ".." it keeps, because it cannot know about symlinks.
     if mkdirs and ".." in p.parts:
         return fs_error("bad_path", 400)
-    if len(raw) > MAX_UPLOAD_BYTES:
+    if length is not None and length > MAX_FS_UPLOAD_BYTES:
         return fs_error("too_large", 413)
-    if mkdirs:
+    made = None
+    if mkdirs and not dry:
+        # The topmost folder this upload creates, so a failed one can take
+        # back the empty folders it made on the way down.
+        top = p.parent
+        while not os.path.lexists(top.parent) and top.parent != top:
+            top = top.parent
+        made = None if os.path.lexists(top) else top
         try:
             os.makedirs(p.parent, exist_ok=True)
         except (FileExistsError, NotADirectoryError):
@@ -4256,7 +4335,35 @@ def fs_store_upload(raw: bytes, path: str, overwrite: bool,
         except OSError:
             return fs_error("not_writable", 403)
     if not p.parent.is_dir():
+        if dry and mkdirs:
+            return None
         return fs_error("not_found", 404)
+    if os.path.lexists(p):
+        if not overwrite:
+            return fs_error("exists", 409)
+        if not p.is_file():
+            return fs_error("not_a_file", 400)
+    if dry:
+        return None
+    # Named the way atomic_write names its temp files, for the same reason:
+    # a dotfile beside the target, so the rename is atomic and a crash leaves
+    # only a hidden leftover, never a half file under the real name.
+    try:
+        fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix="." + p.name + ".")
+    except OSError:
+        fs_upload_discard(None, None, made, p)
+        return fs_error("not_writable", 403)
+    return p, os.fdopen(fd, "wb"), tmp, made
+
+
+def fs_upload_land(p: Path, fh, tmp: str, overwrite: bool):
+    """The whole body is in `tmp`: give it its name. None once it has one.
+
+    The existence check is asked again because an upload can take minutes,
+    and a file that arrived under the name meanwhile is still not ours to
+    replace. An existing file keeps its mode; a new one gets atomic_write's
+    plain 0o644.
+    """
     mode = None
     if os.path.lexists(p):
         if not overwrite:
@@ -4264,11 +4371,42 @@ def fs_store_upload(raw: bytes, path: str, overwrite: bool,
         if not p.is_file():
             return fs_error("not_a_file", 400)
         mode = os.stat(p).st_mode
-    try:
-        atomic_write(p, raw, mode)
-    except OSError:
-        return fs_error("not_writable", 403)
-    return no_store(JSONResponse({"path": str(p), "size": len(raw)}))
+    os.fchmod(fh.fileno(), stat.S_IMODE(mode) if mode is not None else 0o644)
+    fh.close()
+    os.replace(tmp, p)
+    return None
+
+
+def fs_upload_write_error(err: OSError) -> Response:
+    if err.errno in (errno.ENOSPC, errno.EDQUOT):
+        return fs_error("disk_full", 507)
+    return fs_error("not_writable", 403)
+
+
+def fs_upload_discard(fh, tmp: str | None, made: Path | None, p: Path) -> None:
+    """Remove what a failed upload left: its temp file, and the folders it
+    made on the way down while they are still empty."""
+    if fh is not None:
+        try:
+            fh.close()
+        except OSError:
+            pass
+    if tmp is not None:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    if made is None:
+        return
+    d = p.parent
+    while True:
+        try:
+            os.rmdir(d)
+        except OSError:
+            return
+        if d == made:
+            return
+        d = d.parent
 
 
 # A folder comes down as a zip of itself, built while it is being sent.

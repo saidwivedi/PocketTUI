@@ -2386,7 +2386,8 @@ def test_a_tree_upload_asks_about_existing_files_once(doc, tmp_path):
     """The first file already there raises one question and its answer holds
     for the batch; a file in the way of a folder is a failure, not a replace;
     empty folders are made level by level; one summary at the end."""
-    code = _js_chunk(doc, "async function uploadTree(") + _js_chunk(doc, "async function uploadTreeFile(")
+    code = UPLOAD_SENDER(doc) + _js_chunk(doc, "async function uploadTree(") \
+        + _js_chunk(doc, "async function uploadTreeFile(")
     out = {}
     for answer in (True, False):
         out[answer] = _node_json(tmp_path, f"tree{answer}.mjs", f"""
@@ -2405,16 +2406,18 @@ function filesRefreshPeers() {{}}
 function wsWrote() {{}}
 async function appConfirm(msg, opts) {{ asked.push(opts.title); return {json.dumps(answer)}; }}
 async function fsPost(route, body) {{ mkdirs.push(body.path); return {{ ok: true, status: 200 }}; }}
-async function fetch(url) {{
+function hasCapStrict(name) {{ return name === "upload_stream"; }}
+function answer(url) {{
   const q = new URLSearchParams(url.split("?")[1]);
   const path = q.get("path");
   posts.push(path + (q.get("overwrite") ? " !" : "") + (q.get("mkdirs") ? "" : " NO-MKDIRS"));
-  if (path.startsWith("/x/p/blocked")) return {{ ok: false, status: 409, json: async () => ({{ error: "not_a_directory" }}) }};
-  if (disk.has(path) && !q.get("overwrite")) return {{ ok: false, status: 409, json: async () => ({{ error: "exists" }}) }};
-  return {{ ok: true, status: 200 }};
+  if (path.startsWith("/x/p/blocked")) return {{ status: 409, body: {{ error: "not_a_directory" }} }};
+  if (disk.has(path) && !q.get("overwrite")) return {{ status: 409, body: {{ error: "exists" }} }};
+  return {{ status: 200, body: {{}} }};
 }}
+{FAKE_XHR}
 {code}
-const it = (relPath) => ({{ file: {{}}, relPath }});
+const it = (relPath) => ({{ file: {{ size: 3 }}, relPath }});
 await uploadTree([it("p/a.txt"), it("p/new.txt"), it("p/b.txt"), it("p/blocked/c.txt")],
                  ["p/e1/e2"]);
 console.log(JSON.stringify({{ posts, mkdirs, asked, toasts, held }}));
@@ -2428,7 +2431,90 @@ console.log(JSON.stringify({{ posts, mkdirs, asked, toasts, held }}));
     assert no["posts"] == ["/x/p/a.txt", "/x/p/new.txt", "/x/p/b.txt", "/x/p/blocked/c.txt"]
     assert no["toasts"] == ["Uploaded 1 file, 2 skipped, 1 failed"]
     assert yes["mkdirs"] == ["/x/p", "/x/p/e1", "/x/p/e1/e2"]
-    assert yes["held"] == ["Uploading 1/4", "Uploading 2/4", "Uploading 3/4", "Uploading 4/4"]
+    assert [m for m in yes["held"] if "%" not in m] == [
+        "Uploading 1/4…", "Uploading 2/4…", "Uploading 3/4…", "Uploading 4/4…"]
+    # Each file's bytes count on the same held line, under its i/n.
+    assert "Uploading 1/4… 50%" in yes["held"]
+
+
+# What the explorer's uploads go out through: the cap, the body-less check
+# and the XMLHttpRequest sender, as the shell has them.
+def UPLOAD_SENDER(doc):
+    return "".join(_js_chunk(doc, head) for head in (
+        "const DOWNLOAD_TICK_MS", "function uploadCap(", "const UPLOAD_CHECK_BYTES",
+        "async function uploadCheck(", "function sendUpload("))
+
+
+# An XMLHttpRequest that answers through answer(url) -> {status, body} and
+# records the body it was handed; fetch (the check) answers the same way.
+FAKE_XHR = """
+const sent = [];
+class XMLHttpRequest {
+  constructor() { this.upload = {}; }
+  open(method, url) { this.url = url; }
+  setRequestHeader() {}
+  send(body) {
+    sent.push(body);
+    if (this.upload.onprogress) this.upload.onprogress({ lengthComputable: true, loaded: 1, total: 2 });
+    const a = answer(this.url);
+    this.status = a.status; this.responseText = JSON.stringify(a.body);
+    setTimeout(() => this.onload(), 0);
+  }
+}
+async function fetch(url, opts) {
+  const a = answer(url);
+  return { ok: a.status < 300, status: a.status, json: async () => a.body };
+}
+"""
+
+
+def test_a_big_upload_asks_before_it_sends_and_a_small_one_just_sends(doc, tmp_path):
+    """Past UPLOAD_CHECK_BYTES the name is checked with no body, so a taken
+    name costs no bytes and the Replace? question still comes; below it, and
+    on a server without upload_stream, the body goes straight out. Over the
+    cap, nothing is sent and the message names the real limit."""
+    code = UPLOAD_SENDER(doc) + _js_chunk(doc, "async function uploadFile(")
+    out = _node_json(tmp_path, "single.mjs", f"""
+const filesPath = "/x";
+const posts = [], asked = [], held = [];
+let stream = true, replace = false;
+function joinPath(d, n) {{ return d + "/" + n; }}
+function apiURL(p) {{ return p; }}
+function authHeaders() {{ return {{}}; }}
+function rejectToken() {{}}
+function holdToast(m, frac) {{ held.push([m, frac]); }}
+function hideToast() {{}}
+function confirm(m) {{ asked.push(m); return replace; }}
+function hasCapStrict(name) {{ return name === "upload_stream" && stream; }}
+function answer(url) {{
+  const q = new URLSearchParams(url.split("?")[1]);
+  posts.push([q.get("path"), q.get("check") ? "check" : "body", q.get("overwrite") ? "!" : ""]);
+  if (q.get("path") === "/x/taken" && !q.get("overwrite")) return {{ status: 409, body: {{ error: "exists" }} }};
+  return {{ status: 200, body: {{}} }};
+}}
+{FAKE_XHR}
+{code}
+const MB = 1024 * 1024;
+const res = {{}};
+res.bigTakenDeclined = [await uploadFile({{ file: {{ name: "taken", size: 100 * MB }}, relPath: "taken" }}, false, "taken"), posts.splice(0), sent.splice(0).length];
+replace = true;
+res.bigTakenReplaced = [await uploadFile({{ file: {{ name: "taken", size: 100 * MB }}, relPath: "taken" }}, false, "taken"), posts.splice(0), sent.splice(0).length];
+res.smallTaken = [await uploadFile({{ file: {{ name: "taken", size: 10 }}, relPath: "taken" }}, false, "taken"), posts.splice(0)];
+res.overCap = [await uploadFile({{ file: {{ name: "huge", size: 3 * 1024 * MB }}, relPath: "huge" }}, false, "huge"), posts.splice(0)];
+stream = false;
+res.oldServerBig = [await uploadFile({{ file: {{ name: "big", size: 60 * MB }}, relPath: "big" }}, false, "big"), posts.splice(0)];
+res.oldServerFits = [await uploadFile({{ file: {{ name: "fits", size: 40 * MB }}, relPath: "fits" }}, false, "fits"), posts.splice(0)];
+console.log(JSON.stringify({{ res, asked, held }}));
+""")
+    r = out["res"]
+    assert r["bigTakenDeclined"] == ["", [["/x/taken", "check", ""]], 0]
+    assert r["bigTakenReplaced"] == [None, [["/x/taken", "check", ""], ["/x/taken", "body", "!"]], 1]
+    assert r["smallTaken"] == [None, [["/x/taken", "body", ""], ["/x/taken", "body", "!"]]]
+    assert r["overCap"] == ["Too large to upload (2 GB max)", []]
+    assert r["oldServerBig"] == ["Too large to upload (50 MB max)", []]
+    assert r["oldServerFits"] == [None, [["/x/fits", "body", ""]]]
+    assert out["asked"] == ["taken already exists here. Replace it?"] * 3
+    assert ["Uploading taken… 50%", 0.5] in out["held"]
 
 
 def test_plain_files_keep_the_flat_upload_and_a_ref_is_read_only(doc):
@@ -2437,7 +2523,7 @@ def test_plain_files_keep_the_flat_upload_and_a_ref_is_read_only(doc):
     assert 'if (refFor(filesPath)) { toast("Read-only on " + refFor(filesPath)); return; }' in fn
     assert 'if (empty.length || items.some((it) => it.relPath.includes("/"))) {' in fn
     assert 'if (items.length === 1) { if (done) toast("Uploaded " + items[0].file.name); }' in fn
-    assert 'if (confirm(f.name + " already exists here. Replace it?")) return uploadFile(it, true);' in doc
+    assert 'if (!confirm(f.name + " already exists here. Replace it?")) return "";' in doc
 
 
 def test_the_explorer_head_has_a_refresh_key(doc):

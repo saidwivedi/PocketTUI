@@ -29,6 +29,9 @@ CAPS_WITHOUT_RECORD = {
     # PDF page-one thumbnails are part of the grid previews record
     # (files.thumbnails, needs thumbs); the flag only says which tool draws them.
     "pdf_thumbs",
+    # The streamed 2 GB explorer upload is the files.upload record (needs fs);
+    # the flag only says which size cap and pre-send check the shell uses.
+    "upload_stream",
 }
 
 

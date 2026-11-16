@@ -3066,6 +3066,27 @@ html.term-open, body.term-open {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+/* A transfer's bar, under the line it counts: the track in the toast's own
+   ink at low strength, the fill at full. */
+/* max-content: centred by left:50%, the toast would otherwise shrink to half
+   the screen and wrap the percentage onto a line of its own. */
+.toast.progress {
+  width: max-content;
+  min-width: 200px;
+  padding-bottom: 17px;
+}
+.toast.progress::before,
+.toast.progress::after {
+  content: "";
+  position: absolute;
+  left: 18px;
+  bottom: 9px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--paper);
+}
+.toast.progress::before { right: 18px; opacity: 0.25; }
+.toast.progress::after { width: calc((100% - 36px) * var(--toast-progress, 0)); }
 
 /* ============================================================
    DEBUG PANEL
