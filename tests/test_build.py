@@ -4250,6 +4250,66 @@ console.log(JSON.stringify(res));
     assert out["fuzzBad"] == []
 
 
+def test_word_diff_highlights_only_the_words_a_line_changed(doc, tmp_path):
+    """A removed line paired with the added line that replaced it highlights
+    only the words that differ (wsWordPairs), in both the diff pane's rows and
+    the editor's marks. Tokens are words, whitespace runs and single other
+    characters; changed tokens with whitespace between are one span; a pair
+    sharing less than half its words, or a line past the token cap, keeps the
+    whole-line colour; unequal runs pair by similarity, in order; the diff
+    rows compare the text after the +/-."""
+    heads = ("const WS_DIFF_MAX_EDITS", "function wsLineDiff(", "const WS_WORD_MAX_TOKENS",
+             "const WS_WORD_MIN_SHARED", "const WS_WORD_MAX_PAIRS", "const WS_WORD_MEMO_MAX",
+             "const wsWordMemo", "function wsWordTokens(", "function wsWordBag(",
+             "function wsWordDice(", "function wsWordRanges(", "function wsWordRangesOf(",
+             "function wsWordPairs(", "function diffLineClass(", "function diffWordMarks(")
+    out = _node_json(tmp_path, "worddiff.js", "\n".join(_js_chunk(doc, h) for h in heads) + r"""
+const said = (a, b) => {
+  const r = wsWordRanges(a, b);
+  return r && [r.a.map(([s, e]) => a.slice(s, e)), r.b.map(([s, e]) => b.slice(s, e))];
+};
+const para = "We train the model on real-world video with careful labels and report "
+  + "results on three public benchmarks, where it improves accuracy over prior work.";
+const long = Array.from({ length: 800 }, (_, i) => "w" + i).join(" ");
+const m = diffWordMarks({ lines: ["@@ -1,3 +1,3 @@", " same", "-a red cat sat",
+                                  "\\ No newline at end of file", "+a blue cat sat"] });
+console.log(JSON.stringify({
+  tokens: wsWordTokens("\\textcolor{red}{née x_1}  ok"),
+  oneWord: said(para, para.replace("real-world", "everyday")),
+  insert: said(para, para.replace("careful labels", "careful labels data")),
+  both: said(para, para.replace("real-world", "everyday").replace("labels", "labels data")),
+  indent: said("  x = 1", "    x = 1"),
+  rewritten: said("the quick brown fox jumps", "a slow red dog naps today"),
+  identical: said(para, para),
+  tooLong: said(long, long.replace("w5 ", "v5 ")),
+  pairs: wsWordPairs(
+    ["first line about apples and pears", "second line about plums"],
+    ["totally new line", "first line about apples and green pears", "another one",
+     "second line about ripe plums"]),
+  equal: wsWordPairs(["one two three four", "alpha beta"], ["one two 3 four", "gamma delta"]),
+  rows: [...m].map(([k, r]) => [k, r]),
+}));
+""")
+    assert out["tokens"] == ["\\", "textcolor", "{", "red", "}", "{", "née", " ",
+                             "x_1", "}", "  ", "ok"]
+    assert out["oneWord"] == [["real-world"], ["everyday"]]
+    assert out["insert"] == [[], ["data"]]
+    assert out["both"] == [["real-world"], ["everyday", "data"]]
+    assert out["indent"] == [["  "], ["    "]]
+    assert out["rewritten"] is None
+    assert out["identical"] is None
+    assert out["tooLong"] is None
+    # Each removed line finds its look-alike past an unrelated added line; the
+    # added lines with no partner keep the whole-line colour.
+    pairs = out["pairs"]
+    assert pairs["del"] == [[], []]
+    assert pairs["add"] == [None, [[28, 33]], None, [[18, 22]]]
+    eq = out["equal"]
+    assert eq["del"] == [[[8, 13]], None] and eq["add"] == [[[8, 9]], None]
+    # The mark is not part of the text: "red" sits at 2..5 after the "-".
+    assert out["rows"] == [[2, [[2, 5]]], [4, [[2, 6]]]]
+
+
 def _git(cwd, *args, stdin=None):
     return subprocess.run(["git", "-C", str(cwd), *args], input=stdin,
                           capture_output=True, check=False)

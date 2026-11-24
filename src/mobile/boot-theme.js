@@ -120,6 +120,27 @@ function chromeTokensFor(theme) {
   // tint is the surface it is actually read on.
   var addBg = mixHex(bg, theme.green, 0.15);
   var delBg = mixHex(bg, theme.red, 0.15);
+  // The words that differ inside a changed line, at 0.40, strong enough to
+  // find in a paragraph at a glance; their inks are their own, held at 4.5:1
+  // on that surface rather than the line's 3.
+  var addWordBg = mixHex(bg, theme.green, 0.40);
+  var delWordBg = mixHex(bg, theme.red, 0.40);
+  // A word's ink is its hue pulled toward the page's ink, which sits on the far
+  // side of the tint from the page, or toward black or white, whichever is
+  // further from the tint, when even the page's ink is too close to it.
+  // ensureContrast picks black or white by the tint's own lightness, which a
+  // mid-tone tint on a light page gets wrong.
+  var wordInk = function(c, surf) {
+    if (contrastOf(c, surf) >= 4.5) return c;
+    var to = contrastOf(ink, surf) >= 4.5 ? ink
+      : contrastOf("#000000", surf) >= contrastOf("#ffffff", surf) ? "#000000" : "#ffffff";
+    var lo = 0, hi = 1;
+    for (var i = 0; i < 12; i++) {
+      var mid = (lo + hi) / 2;
+      if (contrastOf(mixHex(c, to, mid), surf) >= 4.5) hi = mid; else lo = mid;
+    }
+    return mixHex(c, to, hi);
+  };
   var hunkBg = mixHex(bg, theme.blue, 0.15);
 
   return {
@@ -144,6 +165,10 @@ function chromeTokensFor(theme) {
     "--diff-add-ink": ensureContrast(good, addBg, 3),
     "--diff-del-bg": delBg,
     "--diff-del-ink": ensureContrast(bad, delBg, 3),
+    "--diff-add-word-bg": addWordBg,
+    "--diff-add-word-ink": wordInk(good, addWordBg),
+    "--diff-del-word-bg": delWordBg,
+    "--diff-del-word-ink": wordInk(bad, delWordBg),
     "--diff-hunk-bg": hunkBg,
     "--diff-hunk-ink": ensureContrast(blue, hunkBg, 3),
     "--diff-blue": ensureContrast(blue, hunkBg, 3),

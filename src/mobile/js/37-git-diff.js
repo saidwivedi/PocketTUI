@@ -286,13 +286,50 @@ async function diffDiscard(f, h) {
   if (ok) await h.apply({ path: f.path, action: "discard_file" });
 }
 
+// `text` into `node`, with each of `spans` ([from, to] in characters of
+// text, shifted by `off`) as a .diff-word inside it: the words a changed line
+// changed (wsWordPairs, 47-workspace.js). Inline, so a highlight wraps with the
+// line it is in.
+function diffWordSpans(node, text, spans, off) {
+  if (!spans || !spans.length) { node.textContent = text || " "; return node; }
+  let at = 0;
+  for (const [s, e] of spans) {
+    if (s + off > at) node.appendChild(document.createTextNode(text.slice(at, s + off)));
+    node.appendChild(el("span", { class: "diff-word" }, text.slice(s + off, e + off)));
+    at = e + off;
+  }
+  if (at < text.length) node.appendChild(document.createTextNode(text.slice(at)));
+  return node;
+}
+
+// A hunk's changed spans by line index: each run of removed lines and the run
+// of added lines after it, paired by wsWordPairs on the text after the +/-,
+// which is never itself highlighted. A "\ No newline" note between the two
+// runs is skipped rather than ending them.
+function diffWordMarks(hunk) {
+  const marks = new Map();
+  const lines = hunk.lines;
+  for (let i = 1; i < lines.length;) {
+    if (diffLineClass(lines[i]) !== "del") { i++; continue; }
+    const dels = [], adds = [];
+    while (i < lines.length && diffLineClass(lines[i]) === "del") dels.push(i++);
+    while (i < lines.length && lines[i].startsWith("\\ ")) i++;
+    while (i < lines.length && diffLineClass(lines[i]) === "add") adds.push(i++);
+    if (!adds.length) continue;
+    const w = wsWordPairs(dels.map((k) => lines[k].slice(1)), adds.map((k) => lines[k].slice(1)));
+    dels.forEach((k, n) => { if (w.del[n]) marks.set(k, w.del[n]); });
+    adds.forEach((k, n) => { if (w.add[n]) marks.set(k, w.add[n]); });
+  }
+  return marks;
+}
+
 // One row of the diff: the two gutter numbers, then the text. A blank context
 // line comes over as "" rather than " "; without a character the row would
-// collapse to nothing at all.
-function diffLineEl(line, a, b) {
+// collapse to nothing at all. `words` are the row's changed spans, if any.
+function diffLineEl(line, a, b, words) {
   return el("div", { class: "diff-line " + diffLineClass(line) },
     el("span", { class: "nos" }, el("span", {}, a), el("span", {}, b)),
-    el("span", { class: "tx" }, line || " "));
+    diffWordSpans(el("span", { class: "tx" }), line, words, 1));
 }
 
 // One /api/git/diff answer into `body`, which it replaces. `scope` and `path`
@@ -333,6 +370,7 @@ function diffRender(body, data, scope, path, h) {
     if (m) { oldNo = +m[1]; newNo = +m[2]; }
     frag.appendChild(diffLineEl(hunk.lines[0], "", ""));
     const blocks = data.truncated ? [] : diffBlocks(hunk);
+    const words = diffWordMarks(hunk);
     let bi = 0, box = null;   // the block being filled, or null between blocks
     for (let i = 1; i < hunk.lines.length; i++) {
       const line = hunk.lines[i];
@@ -354,7 +392,7 @@ function diffRender(body, data, scope, path, h) {
         a = oldNo ? String(oldNo++) : "";
         b = newNo ? String(newNo++) : "";
       }
-      (box || frag).appendChild(diffLineEl(line, a, b));
+      (box || frag).appendChild(diffLineEl(line, a, b, words.get(i)));
       if (block && i === block.to) { box = null; bi++; }
     }
   }

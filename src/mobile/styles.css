@@ -38,6 +38,13 @@
   --diff-add-ink: #4a6b39;
   --diff-del-bg: #F7E5E0;
   --diff-del-ink: #9c4439;
+  /* The words that differ inside a changed line: the same hues, strong
+     enough to find in a paragraph at a glance, with inks of their own that
+     hold 4.5:1 on them. */
+  --diff-add-word-bg: #B9DCA0;
+  --diff-add-word-ink: #2f4a22;
+  --diff-del-word-bg: #F4B6A6;
+  --diff-del-word-ink: #7a2a20;
   --diff-hunk-bg: #E7ECF1;
   --diff-hunk-ink: #4f6478;
   --diff-blue: #4f6478;
@@ -92,6 +99,10 @@
   --diff-add-ink: #9dc286;
   --diff-del-bg: #2a1b18;
   --diff-del-ink: #d9877c;
+  --diff-add-word-bg: #3d5f30;
+  --diff-add-word-ink: #d7f0c6;
+  --diff-del-word-bg: #6e3529;
+  --diff-del-word-ink: #ffd2ca;
   --diff-hunk-bg: #1a2027;
   --diff-hunk-ink: #94aec5;
   --diff-blue: #94aec5;
@@ -4848,6 +4859,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
      they were, a 3px bar in the gutter, and each change's tick and cross in a
      pill at the right of its first line, as the pane floats them over a block. */
   .ws-pane .cm-ws-add { background-color: var(--diff-add-bg); }
+  /* The words a paired line changed, in the stronger tint (.diff-word). */
+  .ws-pane .cm-ws-add .cm-ws-word { background-color: var(--diff-add-word-bg); }
+  .ws-pane .cm-ws-del .diff-word { background: var(--diff-del-word-bg); color: var(--diff-del-word-ink); }
   .ws-pane .cm-ws-head { position: relative; }
   .ws-pane .cm-ws-del {
     position: relative;
@@ -7040,6 +7054,17 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 .diff-line.add { background: var(--diff-add-bg); color: var(--diff-add-ink); }
 .diff-line.del { background: var(--diff-del-bg); color: var(--diff-del-ink); }
+/* The words a paired line changed (diffWordSpans). Inline inside the wrapping
+   text, and cloned at each break so a highlight that wraps keeps its edges.
+   The editor's added lines draw theirs as .cm-ws-word marks. */
+.diff-word,
+.cm-ws-word {
+  border-radius: 2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.diff-line.add .diff-word { background: var(--diff-add-word-bg); color: var(--diff-add-word-ink); }
+.diff-line.del .diff-word { background: var(--diff-del-word-bg); color: var(--diff-del-word-ink); }
 .diff-line.hunk {
   background: var(--diff-hunk-bg);
   color: var(--diff-hunk-ink);

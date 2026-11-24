@@ -342,6 +342,151 @@ function wsLineDiff(a, b) {
   return hunks;
 }
 
+// The words that differ inside a changed line, VS Code's and GitHub's inline
+// diff: a removed line paired with the added line that replaced it keeps its
+// faint tint, and only what differs between the two gets the stronger one.
+// The diff pane's rows (diffRender, 37-git-diff.js) and the editor's marks
+// (build, below) both draw from these.
+//
+// Past this many tokens on either line the pair keeps its whole-line colour.
+// A paragraph of prose, one source line in LaTeX or Markdown, is a few hundred.
+const WS_WORD_MAX_TOKENS = 1500;
+// The share of words two lines must have in common (2 * shared / both counts,
+// whitespace not counted) before they are read as one line edited rather than
+// one line replaced by another. Below it, highlighting the "differences" would
+// paint most of both lines in scattered pieces, which says less than the
+// whole-line colour already does.
+const WS_WORD_MIN_SHARED = 0.5;
+// A block with unequal runs pairs its lines by similarity, which compares
+// every removed line with every added one; past this many comparisons none of
+// its lines are paired.
+const WS_WORD_MAX_PAIRS = 2500;
+// The last pairs worked out, by their two texts: build runs as the user
+// types, and every pair but the one being typed in comes out the same.
+const WS_WORD_MEMO_MAX = 500;
+const wsWordMemo = new Map();
+
+// A line as tokens: a run of letters, digits and underscores is one, a run of
+// whitespace is one, and every other character is one on its own, so a
+// `\macro{arg}` changes by its name or its argument rather than as a whole.
+function wsWordTokens(s) {
+  return String(s).match(/[\p{L}\p{M}\p{N}_]+|\s+|[^]/gu) || [];
+}
+
+// Tokens that are not whitespace, counted by text.
+function wsWordBag(toks) {
+  const bag = new Map();
+  for (const t of toks) if (!/^\s/.test(t)) bag.set(t, (bag.get(t) || 0) + 1);
+  return bag;
+}
+
+// How much of two bags is shared, as 2 * shared / both sizes: 1 for the same
+// words in any order, 0 for none in common. It ignores order, so it is never
+// below what the in-order diff then finds, which makes it the cheap test that
+// rules a pair out before the diff is run.
+function wsWordDice(p, q) {
+  let n = 0, m = 0, both = 0;
+  for (const v of p.values()) n += v;
+  for (const [t, v] of q) { m += v; both += Math.min(v, p.get(t) || 0); }
+  return n + m ? 2 * both / (n + m) : 0;
+}
+
+// The spans of removed line `a` and added line `b` that differ, as
+// {a: [[from, to], ...], b: [...]} in characters; null when the pair is
+// identical, too long, or too different to be one line edited. Changed tokens
+// with only whitespace between them are one span, and a span does not start or
+// end on whitespace unless whitespace is all it is (an indent that changed).
+function wsWordRanges(a, b) {
+  if (a === b) return null;
+  const key = a + "\u0000" + b;
+  if (wsWordMemo.has(key)) return wsWordMemo.get(key);
+  const res = wsWordRangesOf(a, b);
+  if (wsWordMemo.size >= WS_WORD_MEMO_MAX) wsWordMemo.clear();
+  wsWordMemo.set(key, res);
+  return res;
+}
+
+function wsWordRangesOf(a, b) {
+  const ta = wsWordTokens(a), tb = wsWordTokens(b);
+  if (ta.length > WS_WORD_MAX_TOKENS || tb.length > WS_WORD_MAX_TOKENS) return null;
+  const ba = wsWordBag(ta), bb = wsWordBag(tb);
+  if (wsWordDice(ba, bb) < WS_WORD_MIN_SHARED) return null;
+  const ws = (t) => /^\s/.test(t);
+  const hunks = wsLineDiff(ta, tb);
+  // The in-order share: every word outside the changed tokens is shared.
+  let n = 0, m = 0, gone = 0, come = 0;
+  for (const t of ta) if (!ws(t)) n++;
+  for (const t of tb) if (!ws(t)) m++;
+  for (const h of hunks) {
+    for (let i = h.a; i < h.a + h.al; i++) if (!ws(ta[i])) gone++;
+    for (let i = h.b; i < h.b + h.bl; i++) if (!ws(tb[i])) come++;
+  }
+  if (!(n + m) || 2 * (n - gone) / (n + m) < WS_WORD_MIN_SHARED) return null;
+  const merged = [];
+  for (const h of hunks) {
+    const last = merged[merged.length - 1];
+    let gap = !!last;
+    if (last) for (let i = last.a + last.al; i < h.a && gap; i++) gap = ws(ta[i]);
+    if (gap) { last.al = h.a + h.al - last.a; last.bl = h.b + h.bl - last.b; }
+    else merged.push({ a: h.a, al: h.al, b: h.b, bl: h.bl });
+  }
+  const spans = (toks, from, len, out) => {
+    let s = from, e = from + len;
+    if (toks.slice(s, e).some((t) => !ws(t))) {
+      while (ws(toks[s])) s++;
+      while (ws(toks[e - 1])) e--;
+    }
+    if (s >= e) return;
+    let at = 0;
+    for (let i = 0; i < s; i++) at += toks[i].length;
+    let to = at;
+    for (let i = s; i < e; i++) to += toks[i].length;
+    out.push([at, to]);
+  };
+  const out = { a: [], b: [] };
+  for (const h of merged) { spans(ta, h.a, h.al, out.a); spans(tb, h.b, h.bl, out.b); }
+  return out.a.length || out.b.length ? out : null;
+}
+
+// One block's removed lines `dels` against its added lines `adds`: the spans
+// each line highlights, as {del, add} with one entry per line, null for a line
+// that keeps its whole-line colour. Runs of equal length pair in order; others
+// pair by similarity, in order, each line at most once, picking the pairs whose
+// shares add up to the most.
+function wsWordPairs(dels, adds) {
+  const del = dels.map(() => null), add = adds.map(() => null);
+  const pair = (i, j) => {
+    const r = wsWordRanges(dels[i], adds[j]);
+    if (r) { del[i] = r.a; add[j] = r.b; }
+  };
+  const R = dels.length, A = adds.length;
+  if (R === A) {
+    for (let i = 0; i < R; i++) pair(i, i);
+    return { del, add };
+  }
+  if (!R || !A || R * A > WS_WORD_MAX_PAIRS) return { del, add };
+  const bDel = dels.map((l) => wsWordBag(wsWordTokens(l)));
+  const bAdd = adds.map((l) => wsWordBag(wsWordTokens(l)));
+  // best[i][j]: the most share the first i removed and first j added lines
+  // can pair for; then back from the end to the pairs that made it.
+  const best = Array.from({ length: R + 1 }, () => new Float64Array(A + 1));
+  const sim = Array.from({ length: R }, () => new Float64Array(A));
+  for (let i = 1; i <= R; i++) {
+    for (let j = 1; j <= A; j++) {
+      const d = wsWordDice(bDel[i - 1], bAdd[j - 1]);
+      sim[i - 1][j - 1] = d >= WS_WORD_MIN_SHARED ? d : 0;
+      best[i][j] = Math.max(best[i - 1][j], best[i][j - 1],
+                            sim[i - 1][j - 1] ? best[i - 1][j - 1] + sim[i - 1][j - 1] : 0);
+    }
+  }
+  for (let i = R, j = A; i && j;) {
+    if (best[i][j] === best[i - 1][j]) i--;
+    else if (best[i][j] === best[i][j - 1]) j--;
+    else { pair(i - 1, j - 1); i--; j--; }
+  }
+  return { del, add };
+}
+
 // One hunk as the patch /api/git/apply stages with `git apply --cached`:
 // the base's lines with WS_PATCH_CONTEXT of context, in diffBlockPatch's
 // header and layout (37-git-diff.js). It applies to the base alone, which is
@@ -462,16 +607,21 @@ function wsMarksKit() {
   }
   const bars = { add: new Bar("add"), mod: new Bar("mod"), del: new Bar("del") };
   // Removed lines, as a block where they were: read, not edited. `acts` makes
-  // the hunk's tick and cross, or is null on a read-only view.
+  // the hunk's tick and cross, or is null on a read-only view. `words` holds
+  // each line's changed spans (wsWordPairs), null for a line that has none.
   class Gone extends CM.WidgetType {
-    constructor(lines, acts) { super(); this.lines = lines; this.acts = acts; }
+    constructor(lines, acts, words) {
+      super(); this.lines = lines; this.acts = acts; this.words = words;
+      this.wordsKey = JSON.stringify(words);
+    }
     eq(o) {
       return o.acts === this.acts && o.lines.length === this.lines.length
-             && o.lines.every((l, i) => l === this.lines[i]);
+             && o.lines.every((l, i) => l === this.lines[i]) && o.wordsKey === this.wordsKey;
     }
     toDOM() {
       const box = el("div", { class: "cm-ws-del" });
-      for (const l of this.lines) box.appendChild(el("div", { class: "cm-ws-del-line" }, l || " "));
+      this.lines.forEach((l, i) => box.appendChild(
+        diffWordSpans(el("div", { class: "cm-ws-del-line" }), l, this.words[i], 0)));
       if (this.acts) box.appendChild(this.acts());
       return box;
     }
@@ -491,12 +641,16 @@ function wsMarksKit() {
     const ranges = [];
     const gb = new CM.RangeSetBuilder();
     for (const h of hunks) {
+      const gone = base.lines.slice(h.a, h.a + h.al);
+      const words = h.al && h.bl
+        ? wsWordPairs(gone, Array.from({ length: h.bl }, (_, i) => doc.line(h.b + i + 1).text))
+        : { del: gone.map(() => null), add: [] };
       if (h.al) {
         // Above the line that now follows the removed ones; past the last line
         // of a file with no newline after it, under that line.
         const above = h.b < doc.lines;
         ranges.push(CM.Decoration.widget({
-          widget: new Gone(base.lines.slice(h.a, h.a + h.al), acts),
+          widget: new Gone(gone, acts, words.del),
           block: true, side: above ? -1 : 1,
         }).range(above ? doc.line(h.b + 1).from : doc.length));
       }
@@ -506,6 +660,9 @@ function wsMarksKit() {
         const head = i === h.b && !h.al && !!acts;
         ranges.push(CM.Decoration.line({ class: "cm-ws-add" + (head ? " cm-ws-head" : "") })
                       .range(from));
+        for (const [s, e] of words.add[i - h.b] || []) {
+          ranges.push(CM.Decoration.mark({ class: "cm-ws-word" }).range(from + s, from + e));
+        }
         if (head) ranges.push(CM.Decoration.widget({ widget: new Acts(acts), side: 1 }).range(from));
         gb.add(from, from, bars[kind]);
       }
