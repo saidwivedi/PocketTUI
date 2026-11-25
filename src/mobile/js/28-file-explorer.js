@@ -2596,6 +2596,7 @@ async function sheetDelete() {
   loadDir(filesPath);
   filesRefreshPeers(id);
   wsWrote(dir);
+  if (ws) ws.closePath(joinPath(dir, e.name));
 }
 
 // Whether the header download in a file view has anything to offer — the action
@@ -3510,10 +3511,17 @@ window.addEventListener("keydown", (e) => {
   e.stopImmediatePropagation();
   filesHideMenu();
 }, true);
-for (const type of ["scroll", "wheel", "resize", "blur"]) {
+for (const type of ["scroll", "wheel", "resize"]) {
   window.addEventListener(type, () => { if (filesMenuOpen()) filesHideMenu(); },
                           { capture: true, passive: true });
 }
+// The window's own blur only: in capture this also hears every element losing
+// focus, and pressing a row of the menu blurs whatever held focus (the
+// workspace, after a right-click on its tree) — which put the menu away before
+// the press became a click, so none of its rows did anything there.
+window.addEventListener("blur", (e) => {
+  if (e.target === window && filesMenuOpen()) filesHideMenu();
+});
 $("btn-files-newfolder").addEventListener("click", () => filesSheetPane().add.folder());
 $("btn-files-upload").addEventListener("click", () => {
   showSheet(false);

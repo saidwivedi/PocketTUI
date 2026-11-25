@@ -2581,10 +2581,17 @@ function makeWorkspace(ctx) {
     return false;
   }
 
+  // A file deleted from under its tab takes the tab with it; one holding
+  // unsaved edits asks first (close). A tab of it at a commit stays.
+  function closePath(path) {
+    const tab = byPath.get(path);
+    if (tab) close(tab);
+  }
+
   const api = {
     get on() { return on; },
     groups,
-    setOn, onListing, refreshDir, kickStatus, open, close,
+    setOn, onListing, refreshDir, kickStatus, open, close, closePath,
     attach, detach, destroy, dirtyCount, askDiscardAll, saveAt, relayout,
     syncCaps, syncRef,
     get view() { return wsView; },
