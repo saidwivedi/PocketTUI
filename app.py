@@ -5112,6 +5112,14 @@ GIT_LOG_TIMEOUT = 60
 # The diff of a generated file can run to megabytes the pane could not render
 # anyway; past this the answer is truncated and says so.
 GIT_DIFF_MAX = 1024 * 1024
+# A worktree file's permission bits are not a change this app reports or
+# records. On a network mount every file can read as executable, and with git's
+# default each tracked file is then "modified" by its mode alone, while a stage
+# or `commit -a` from the pane would commit that flip without it ever being
+# shown. Passed per call, never written to the repo's config. It only changes
+# how the worktree is compared: a mode change already in the index or in a
+# commit is still listed and diffed.
+GIT_NO_FILEMODE = ("-c", "core.fileMode=false")
 
 
 def git(cwd: str, *args: str, timeout: float = GIT_TIMEOUT,
@@ -5125,7 +5133,7 @@ def git(cwd: str, *args: str, timeout: float = GIT_TIMEOUT,
     """
     try:
         p = subprocess.run(
-            ["git", "--no-optional-locks", "-C", cwd, *args],
+            ["git", "--no-optional-locks", *GIT_NO_FILEMODE, "-C", cwd, *args],
             capture_output=True, timeout=timeout,
             env={**os.environ, **env} if env else None,
         )
@@ -5975,7 +5983,8 @@ GIT_APPLY_FLAGS = {
 }
 
 
-def git_write(cwd: str, stdin: bytes, *args: str) -> str:
+def git_write(cwd: str, stdin: bytes, *args: str,
+              trust_mode: bool = False) -> str:
     """Run one writing git call; "" when it worked, why it refused when not.
 
     git()'s counterpart for the half of this section that changes a repo.
@@ -5983,10 +5992,14 @@ def git_write(cwd: str, stdin: bytes, *args: str) -> str:
     what comes back is git's own stderr — "patch does not apply" is the
     sentence the user needs — with a git that could not be run at all
     answering in the same slot. Same timeout and same never-raises stance.
+    Under GIT_NO_FILEMODE like the reads, so a write records no mode change
+    the pane never showed; `trust_mode` is for a path git has never seen,
+    whose mode comes from the disk or a new script is recorded 100644.
     """
     try:
         p = subprocess.run(
-            ["git", "--no-optional-locks", "-C", cwd, *args],
+            ["git", "--no-optional-locks",
+             *(() if trust_mode else GIT_NO_FILEMODE), "-C", cwd, *args],
             input=stdin, capture_output=True, timeout=GIT_TIMEOUT,
         )
     except FileNotFoundError:
@@ -6040,7 +6053,8 @@ def api_git_apply(body: dict = Body(...)) -> Response:
         # A pathspec is enough for every case the list can show: since git 2.0
         # `git add <path>` records a removal as readily as a change, so a
         # deleted file stages without a second spelling.
-        why = git_write(root, b"", "add", "--", path)
+        new = git(root, "ls-files", "--error-unmatch", "--", path)[0] != 0
+        why = git_write(root, b"", "add", "--", path, trust_mode=new)
     elif action == "unstage_file":
         why = git_write(root, b"", "restore", "--staged", "--", path)
         if why:
@@ -6098,7 +6112,8 @@ def git_commit_run(root: str, message: str, all_: bool) -> tuple[str, str]:
     """
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": "true",
            "GIT_ASKPASS": "/bin/true"}
-    args = ["git", "-C", root, "commit", *(["-a"] if all_ else []), "-F", "-"]
+    args = ["git", *GIT_NO_FILEMODE, "-C", root, "commit",
+            *(["-a"] if all_ else []), "-F", "-"]
     try:
         p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, env=env,

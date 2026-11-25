@@ -1651,6 +1651,60 @@ def test_stage_file_records_a_deletion_too(client, in_repo):
     assert git_row(client, "tracked.txt")["status"] == "D "
 
 
+@pytest.fixture
+def mode_repo(in_repo):
+    """in_repo with git trusting the exec bit, as it does on a local disk, and
+    two more committed files: mode.txt, whose bit is flipped, and plain.txt."""
+    run_git(in_repo, "config", "core.fileMode", "true")
+    (in_repo / "mode.txt").write_text("m\n")
+    (in_repo / "plain.txt").write_text("p\n")
+    run_git(in_repo, "add", "mode.txt", "plain.txt")
+    commit_as_t(in_repo, "-m", "two more", "mode.txt", "plain.txt")
+    (in_repo / "mode.txt").chmod(0o755)          # mode only
+    (in_repo / "plain.txt").write_text("P\n")    # content only
+    (in_repo / "tracked.txt").chmod(0o755)       # content (fixture) and mode
+    return in_repo
+
+
+@needs_git
+def test_a_mode_only_change_is_no_change_and_content_beside_one_still_is(
+        client, mode_repo):
+    """A network mount reads every file as executable, so the bit alone must
+    not make a file modified on any list or diff; a content change keeps its
+    row and its diff, with no mode header where the bit flipped too."""
+    assert git_row(client, "mode.txt") is None
+    assert git_diff(client, mode_repo, "mode.txt") == ""
+    badges = {f["path"]: f["status"] for f in git_status(client, mode_repo)["files"]}
+    assert "mode.txt" not in badges
+    assert badges["plain.txt"] == badges["tracked.txt"] == " M"
+    assert git_row(client, "plain.txt")["status"] == " M"
+    assert git_row(client, "tracked.txt")["status"] == " M"
+    d = git_diff(client, mode_repo, "tracked.txt")
+    assert "+TWO" in d and "old mode" not in d
+
+
+@needs_git
+def test_stage_and_commit_never_record_a_mode_flip_the_list_did_not_show(
+        client, mode_repo, monkeypatch):
+    """A stage or `commit -a` of a file whose bit flipped takes its content
+    only, while a new executable file keeps its bit as a plain `git add`
+    would give it."""
+    (mode_repo / "sub" / "run.sh").write_text("#!/bin/sh\n")
+    (mode_repo / "sub" / "run.sh").chmod(0o755)
+    for path in ("tracked.txt", "sub/run.sh"):
+        assert git_apply(client, mode_repo, path, "stage_file").status_code == 200
+    staged = git_out(mode_repo, "ls-files", "-s", "tracked.txt", "sub/run.sh")
+    assert [ln.split()[0] for ln in staged.splitlines()] == ["100755", "100644"]
+    for k in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(k, "T")
+    for k in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(k, "t@example.com")
+    assert client.post("/api/git/commit", json={
+        "root": str(mode_repo), "message": "all", "all": True}).status_code == 200
+    tree = git_out(mode_repo, "ls-tree", "HEAD", "mode.txt", "plain.txt", "tracked.txt")
+    assert [ln.split()[0] for ln in tree.splitlines()] == ["100644"] * 3
+
+
 @needs_git
 def test_discard_file_restores_a_tracked_file_from_the_index(client, in_repo):
     assert git_apply(client, in_repo, "tracked.txt",
