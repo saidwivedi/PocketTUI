@@ -759,6 +759,49 @@ function wsMarksKit() {
       this.dom.remove();
     }
   });
+  // The added lines' tint and their changed words', drawn as boxes in a layer
+  // under the one drawSelection paints a selection in, as VS Code lays its
+  // selection over a diff's tints: a background on the line or the word
+  // itself would sit over that layer and hide a selection there. The boxes
+  // are read off the decorated elements, a wrapped word's one per row.
+  const tints = CM.ViewPlugin.fromClass(class {
+    constructor(view) {
+      this.view = view;
+      this.dom = el("div", { class: "cm-ws-tints", "aria-hidden": "true" });
+      view.scrollDOM.appendChild(this.dom);
+      this.measure = { read: () => this.read(), write: (boxes) => this.write(boxes) };
+      view.requestMeasure(this.measure);
+    }
+    update(u) {
+      if (u.docChanged || u.viewportChanged || u.geometryChanged
+          || u.state.field(field) !== u.startState.field(field)) {
+        u.view.requestMeasure(this.measure);
+      }
+    }
+    read() {
+      const s = this.view.scrollDOM, o = s.getBoundingClientRect();
+      const x0 = o.left + s.clientLeft - s.scrollLeft, y0 = o.top + s.clientTop - s.scrollTop;
+      const boxes = [];
+      const add = (kind, r) => boxes.push({ kind, x: r.left - x0, y: r.top - y0,
+                                            w: r.width, h: r.height });
+      const content = this.view.contentDOM;
+      for (const n of content.querySelectorAll(".cm-ws-add")) add("", n.getBoundingClientRect());
+      for (const n of content.querySelectorAll(".cm-ws-word")) {
+        for (const r of n.getClientRects()) add("word", r);
+      }
+      return boxes;
+    }
+    write(boxes) {
+      this.dom.textContent = "";
+      for (const b of boxes) {
+        const n = el("div", { class: "cm-ws-tint" + (b.kind ? " " + b.kind : "") });
+        n.style.cssText = "left:" + b.x + "px;top:" + b.y + "px;width:" + b.w + "px;height:"
+                          + b.h + "px";
+        this.dom.appendChild(n);
+      }
+    }
+    destroy() { this.dom.remove(); }
+  });
   // A view's extension: the field, its gutter, the ruler and the jump keys,
   // and `onDoc` told of each edit. The keys are VS Code's Alt+F5 and
   // Shift+Alt+F5: Alt+Up and Alt+Down are the default keymap's move-line.
@@ -768,6 +811,7 @@ function wsMarksKit() {
     CM.EditorView.updateListener.of((u) => { if (u.docChanged) onDoc(); }),
     CM.EditorView.editorAttributes.of({ class: "cm-ws-ruled" }),
     ruler,
+    tints,
     CM.keymap.of([{ key: "Alt-F5", run: step(1), shift: step(-1), preventDefault: true }]),
   ];
   wsMarksKitMemo = { set, build, ext };

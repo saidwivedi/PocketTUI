@@ -4858,9 +4858,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
      colours (GIT DIFF PANE): added lines tinted, removed lines as a block where
      they were, a 3px bar in the gutter, and each change's tick and cross in a
      pill at the right of its first line, as the pane floats them over a block. */
-  .ws-pane .cm-ws-add { background-color: var(--diff-add-bg); }
-  /* The words a paired line changed, in the stronger tint (.diff-word). */
-  .ws-pane .cm-ws-add .cm-ws-word { background-color: var(--diff-add-word-bg); }
+  /* The added lines' tint and the stronger one of the words a paired line
+     changed (.diff-word) are boxes in a layer of their own (wsMarksKit's
+     tints), under the one the editor draws a selection in: a background on
+     the line or the word would cover that selection. */
+  .ws-pane .cm-ws-tints { position: absolute; top: 0; left: 0; z-index: -3; pointer-events: none; }
+  .ws-pane .cm-ws-tint { position: absolute; background-color: var(--diff-add-bg); }
+  .ws-pane .cm-ws-tint.word { background-color: var(--diff-add-word-bg); border-radius: 2px; }
   .ws-pane .cm-ws-del .diff-word { background: var(--diff-del-word-bg); color: var(--diff-del-word-ink); }
   .ws-pane .cm-ws-head { position: relative; }
   .ws-pane .cm-ws-del {
