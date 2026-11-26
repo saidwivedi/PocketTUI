@@ -4,7 +4,7 @@
 // One scrim serves every sheet, so closing means closing whichever is open.
 const SHEET_IDS = ["sheet-settings", "sheet-new", "sheet-session",
                    "sheet-file-actions", "sheet-files-add", "sheet-confirm",
-                   "sheet-prompt", "sheet-report", "sheet-usage"];
+                   "sheet-prompt", "sheet-report", "sheet-usage", "sheet-conflict"];
 function showSheet(on, id="sheet-settings") {
   // The session list's computer switcher is a dropdown under this layer: a
   // sheet coming up over it has to take it down, or closing the sheet uncovers

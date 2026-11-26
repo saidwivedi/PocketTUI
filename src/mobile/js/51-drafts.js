@@ -13,7 +13,8 @@
 //     memory only) and is sent again, one file at a time, when the computer
 //     answers. Never as an overwrite.
 //   - A save the computer refuses because the file moved on is a conflict:
-//     marked, never overwritten unless the user says so.
+//     marked, and resolved in a dialog that shows both sides and has exactly
+//     one button that drops this device's text.
 //
 // Module state is `var`, not `let`: removeProfile (02-debug-log.js) and the
 // sheet code in earlier fragments call into here, and a `let` read before this
@@ -28,6 +29,9 @@ var DRAFT_DEBOUNCE_MS = 300;
 var SAVE_TIMEOUT_MS = 15000;
 var DRAFT_PROBE_MS = 5000;
 var DRAFT_RETRY_MS = 10000;
+// The diff the conflict dialog draws is capped: past this many rows it says
+// so rather than building a page nobody scrolls through.
+var DRAFT_DIFF_MAX_ROWS = 4000;
 
 var draftDbP = null;          // Promise<IDBDatabase|null>, opened on first use
 var draftSaidBroken = false;  // the "not kept" line, once per page load
@@ -343,6 +347,7 @@ function edLanded(rec, sent, hash) {
   rec.unanswered = [];
   rec.conflict = null;
   rec.restored = null;
+  rec.merged = false;
   const key = draftKeyOf(rec);
   if (key) draftFlags.delete(key);
   if (edText(rec) === sent) {
@@ -543,27 +548,245 @@ function draftKick() {
   if (draftQueued().length) draftFlush();
 }
 
-// ---- a conflict ----------------------------------------------------------------
+// ---- the conflict dialog -----------------------------------------------------
 
-// A rec marked in conflict, asked about: overwrite the computer's version with
-// this device's text, against the hash it has now, or leave both as they are.
-var conflictAsking = false;
-async function draftResolve(rec) {
-  rec = edCurrent(rec);
-  if (!rec.conflict || rec.closed || conflictAsking) return;
-  conflictAsking = true;
-  let ok;
-  try {
-    ok = await appConfirm(baseName(rec.path) + " changed on your computer since you "
-      + "opened it. Keep mine replaces it with your version; Cancel leaves both as "
-      + "they are.", { title: "File changed on your computer", confirmLabel: "Keep mine" });
-  } finally {
-    conflictAsking = false;
+// A three-way merge of whole lines: the edits from base to mine and from base
+// to theirs, applied together, or null when any two of them touch (overlap,
+// abut, or insert at the same place) unless they are the same edit.
+function draftMerge3(base, mine, theirs) {
+  if (base == null || mine == null || theirs == null) return null;
+  const B = wsLineKeys(wsSplitLines(base));
+  const M = wsLineKeys(wsSplitLines(mine));
+  const T = wsLineKeys(wsSplitLines(theirs));
+  const edits = wsLineDiff(B, M).map((h) => ({ a: h.a, al: h.al, lines: M.slice(h.b, h.b + h.bl) }))
+    .concat(wsLineDiff(B, T).map((h) => ({ a: h.a, al: h.al, lines: T.slice(h.b, h.b + h.bl) })));
+  edits.sort((x, y) => x.a - y.a || x.al - y.al);
+  const same = (x, y) => x.a === y.a && x.al === y.al
+    && x.lines.length === y.lines.length && x.lines.every((l, i) => l === y.lines[i]);
+  const keep = [];
+  for (const e of edits) {
+    const last = keep[keep.length - 1];
+    if (last && e.a <= last.a + last.al) {
+      if (same(last, e)) continue;
+      return null;
+    }
+    keep.push(e);
   }
-  rec = edCurrent(rec);
-  if (!ok || !rec.conflict || rec.closed) return;
-  await edSaveOnce(rec, "manual", rec.conflict.hash);
+  const out = [];
+  let i = 0;
+  for (const e of keep) {
+    for (; i < e.a; i++) out.push(B[i]);
+    for (const l of e.lines) out.push(l);
+    i = e.a + e.al;
+  }
+  for (; i < B.length; i++) out.push(B[i]);
+  // The no-newline mark wsLineKeys puts on a last line may only end the text.
+  for (let k = 0; k < out.length - 1; k++) if (out[k].endsWith("\u0000")) return null;
+  if (!out.length) return "";
+  const last = out[out.length - 1];
+  if (last.endsWith("\u0000")) {
+    out[out.length - 1] = last.slice(0, -1);
+    return out.join("\n");
+  }
+  return out.join("\n") + "\n";
 }
+
+// The computer's text against this device's as a unified diff the diff pane
+// draws (diffRender, 37-git-diff.js): theirs as the old side, mine as the new.
+function draftUnified(theirs, mine) {
+  const A = wsSplitLines(theirs), B = wsSplitLines(mine);
+  const hunks = wsLineDiff(wsLineKeys(A), wsLineKeys(B));
+  const ctx = WS_PATCH_CONTEXT;
+  const groups = [];
+  for (const h of hunks) {
+    const g = groups[groups.length - 1];
+    if (g && h.a - (g.a + g.al) <= 2 * ctx) {
+      g.al = h.a + h.al - g.a;
+      g.bl = h.b + h.bl - g.b;
+      g.hunks.push(h);
+    } else {
+      groups.push({ a: h.a, al: h.al, b: h.b, bl: h.bl, hunks: [h] });
+    }
+  }
+  const out = [];
+  let rows = 0;
+  for (const g of groups) {
+    const pre = Math.min(ctx, g.a);
+    const post = Math.min(ctx, A.lines.length - (g.a + g.al));
+    const lines = [];
+    let i = g.a - pre;
+    for (const h of g.hunks) {
+      for (; i < h.a; i++) lines.push(" " + A.lines[i]);
+      for (let k = h.a; k < h.a + h.al; k++) lines.push("-" + A.lines[k]);
+      for (let k = h.b; k < h.b + h.bl; k++) lines.push("+" + B.lines[k]);
+      i = h.a + h.al;
+    }
+    for (; i < g.a + g.al + post; i++) lines.push(" " + A.lines[i]);
+    const olds = pre + g.al + post, news = pre + g.bl + post;
+    const at = (start, n) => (n ? start + 1 : start) + "," + n;
+    out.push("@@ -" + at(g.a - pre, olds) + " +" + at(g.b - pre, news) + " @@");
+    out.push(...lines);
+    rows += lines.length + 1;
+    if (rows > DRAFT_DIFF_MAX_ROWS) return { text: out.join("\n") + "\n", cut: true };
+  }
+  return { text: out.length ? out.join("\n") + "\n" : "", cut: false };
+}
+
+// The sibling a copy of this device's text is written to: "name (mine).ext",
+// then "(mine 2)" and on while the name is taken.
+function draftCopyPath(path, n) {
+  const slash = path.lastIndexOf("/");
+  const dir = path.slice(0, slash + 1), name = path.slice(slash + 1);
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  return dir + stem + (n > 1 ? " (mine " + n + ")" : " (mine)") + ext;
+}
+
+var conflictRec = null;
+
+// The dialog for a rec marked in conflict. One at a time: asked again while it
+// is up, it stays as it is.
+function draftResolve(rec) {
+  rec = edCurrent(rec);
+  if (!rec.conflict || rec.closed) return;
+  if ($("sheet-conflict").classList.contains("show")) return;
+  conflictRec = rec;
+  // A toast left over from the flush would sit over the dialog's buttons.
+  hideToast();
+  const c = rec.conflict;
+  const mine = edText(rec);
+  const name = baseName(rec.path);
+  $("conflict-title").textContent = name + " changed on your computer";
+  $("conflict-msg").textContent = c.missing
+    ? "The file was deleted or moved on your computer after you started editing. Your text is still here."
+    : "Someone or something saved a different version while you were editing. Nothing has been overwritten.";
+  const body = $("conflict-diff");
+  body.textContent = "";
+  if (c.text == null) {
+    body.appendChild(diffNote("The computer's version can't be shown here."));
+  } else {
+    const d = draftUnified(c.text, mine);
+    if (d.text) diffRender(body, { diff: d.text }, "conflict", rec.path, null);
+    else body.appendChild(diffNote("The two versions are the same."));
+    if (d.cut) body.appendChild(el("div", { class: "diff-notice" }, "Diff cut short; the rest is in the file."));
+  }
+  const merged = c.missing ? null : draftMerge3(rec.baseText, mine, c.text);
+  $("btn-conflict-merge").hidden = merged == null;
+  // Nothing to load when the computer's version could not be read.
+  $("btn-conflict-theirs").hidden = c.text == null;
+  $("btn-conflict-theirs").textContent = c.missing ? "Discard mine" : "Keep the computer's (discard mine)";
+  for (const b of $("sheet-conflict").querySelectorAll(".actions button")) b.disabled = false;
+  showSheet(true, "sheet-conflict");
+  $("btn-conflict-cancel").focus();
+}
+
+function conflictBusy(on) {
+  for (const b of $("sheet-conflict").querySelectorAll(".actions button")) b.disabled = on;
+}
+
+// The rec the dialog was opened for, still in conflict; null otherwise, and
+// the sheet put away.
+function conflictTarget() {
+  const rec = conflictRec && edCurrent(conflictRec);
+  if (!rec || !rec.conflict || rec.closed) { showSheet(false); return null; }
+  return rec;
+}
+
+async function conflictKeepMine() {
+  const rec = conflictTarget();
+  if (!rec) return;
+  conflictBusy(true);
+  showSheet(false);
+  // The overwrite, against the version the dialog showed: a file that moved
+  // again since is refused once more and comes back here.
+  const hash = rec.conflict.hash;
+  await edSaveOnce(rec, "manual", hash);
+}
+
+function conflictKeepTheirs() {
+  const rec = conflictTarget();
+  if (!rec || rec.conflict.text == null) return;
+  const c = rec.conflict;
+  showSheet(false);
+  draftDiscard(rec);
+  rec.discarded = false;
+  edReplaceClean(rec, c.text, c.hash);
+  edPaintState(rec);
+  draftsPaintSoon();
+  toast(c.missing ? "Discarded your edits" : "Loaded the computer's version");
+}
+
+async function conflictSaveCopy() {
+  const rec = conflictTarget();
+  if (!rec) return;
+  conflictBusy(true);
+  const mine = edText(rec);
+  let landed = null;
+  for (let n = 1; n <= 50 && !landed; n++) {
+    const path = draftCopyPath(rec.path, n);
+    const res = await edWrite(path, "", mine);
+    if (res.kind === "ok") landed = path;
+    else if (res.kind === "auth") { conflictBusy(false); showSheet(false); rejectToken(); return; }
+    else if (res.kind !== "conflict") break;
+  }
+  if (!landed) {
+    conflictBusy(false);
+    toast("Couldn't save a copy");
+    return;
+  }
+  const now = conflictTarget();
+  if (!now) return;
+  const c = now.conflict;
+  showSheet(false);
+  // The text is on the computer under the new name, so the record holding it
+  // is done with; the tab takes the computer's version of its own file.
+  if (now.owner) draftDel(now.owner, now.path, mine);
+  const key = draftKeyOf(now);
+  if (key) draftFlags.delete(key);
+  now.conflict = null;
+  now.restored = null;
+  if (c.missing) {
+    edReplaceClean(now, "", "");
+  } else if (c.text != null) {
+    edReplaceClean(now, c.text, c.hash);
+  }
+  edPaintState(now);
+  draftsPaintSoon();
+  toast("Saved yours as " + baseName(landed), 3500);
+  const dir = typeof filesActivePath === "function" ? filesActivePath() : "";
+  if (dir) loadDir(dir);
+}
+
+function conflictMerge() {
+  const rec = conflictTarget();
+  if (!rec) return;
+  const c = rec.conflict;
+  const merged = draftMerge3(rec.baseText, edText(rec), c.text);
+  if (merged == null) { $("btn-conflict-merge").hidden = true; return; }
+  showSheet(false);
+  // An edit like any other, based on the computer's version now: nothing is
+  // written until the user has read it and pressed Save.
+  rec.hash = c.hash;
+  rec.baseText = c.text;
+  rec.loaded = { content: c.text, hash: c.hash };
+  rec.conflict = null;
+  rec.restored = null;
+  rec.merged = true;
+  const key = draftKeyOf(rec);
+  if (key) draftFlags.delete(key);
+  rec.view.dispatch({ changes: { from: 0, to: rec.view.state.doc.length, insert: merged } });
+  if (!rec.dirty) { rec.dirty = true; rec.onDirty(rec, true); }
+  draftWrite(rec);
+  edPaintState(rec);
+  draftsPaintSoon();
+}
+
+$("btn-conflict-cancel").addEventListener("click", () => showSheet(false));
+$("btn-conflict-mine").addEventListener("click", conflictKeepMine);
+$("btn-conflict-theirs").addEventListener("click", conflictKeepTheirs);
+$("btn-conflict-copy").addEventListener("click", conflictSaveCopy);
+$("btn-conflict-merge").addEventListener("click", conflictMerge);
 
 // ---- buffers put away with their session ------------------------------------
 
@@ -580,6 +803,7 @@ function draftAdopt(old, rec) {
   rec.conflict = old.conflict;
   rec.unanswered = old.unanswered;
   rec.restored = old.restored;
+  rec.merged = old.merged;
   rec.draftBig = old.draftBig;
   if (old.dirty !== rec.dirty) { rec.dirty = old.dirty; rec.onDirty(rec, old.dirty); }
   // Its draft was discarded from the pill while it was away.
@@ -614,7 +838,7 @@ function draftUnflag(rec) {
 // ---- the strip over a buffer ---------------------------------------------------
 
 // One line above the text saying what is true of this buffer beyond "edited":
-// in conflict, waiting to save, or restored from this device. Painted
+// in conflict, waiting to save, restored from this device, or merged. Painted
 // into the rec's own host, so it rides with the view on every surface.
 function edPaintState(rec) {
   rec = edCurrent(rec);
@@ -634,6 +858,9 @@ function edPaintState(rec) {
     acts = [["Resolve", "primary", () => draftResolve(rec)]];
   } else if (flag === "queued") {
     msg = "Can't reach your computer. This file will save when it is back.";
+  } else if (rec.merged) {
+    msg = "Merged with your computer's version. Read it over, then save.";
+    acts = [["OK", "", () => { rec.merged = false; edPaintState(rec); }]];
   } else if (rec.restored && rec.dirty) {
     msg = rec.restored.stale
       ? "Restored unsaved changes. The file has changed on your computer since; saving will ask which to keep."

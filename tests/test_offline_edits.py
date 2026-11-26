@@ -10,8 +10,8 @@ complete after their requests, a get-then-delete in one transaction).
 
 Pinned here: a write never goes out without the hash it is based on, a draft
 is only dropped for a write of its own text, text typed during a save stays
-an edit, a lost answer is not a conflict, and a moved file is a conflict and
-is never overwritten by a waiting save.
+an edit, a lost answer is not a conflict, a moved file is a conflict and is
+never overwritten by a waiting save, and the line merge refuses touching edits.
 """
 
 import importlib.util
@@ -478,3 +478,42 @@ def test_forgetting_a_computer_drops_only_its_drafts(run):
 
 def test_another_computers_draft_is_not_applied(run):
     assert run["otherOwner"] is None
+
+
+MERGE = r"""
+(0, eval)(PURE);
+(0, eval)(MERGE_SRC);
+const T = (n, f) => Array.from({ length: n }, (_, i) => f(i + 1)).join("\n") + "\n";
+const base = T(10, (i) => "l" + i);
+const edit = (t, n, s) => t.replace("l" + n + "\n", s + "\n");
+console.log(JSON.stringify({
+  apart: draftMerge3(base, edit(base, 2, "M2"), edit(base, 8, "T8")),
+  same: draftMerge3(base, edit(base, 5, "X"), edit(base, 5, "X")),
+  overlap: draftMerge3(base, edit(base, 5, "M"), edit(base, 5, "T")),
+  touching: draftMerge3(base, edit(base, 5, "M"), edit(base, 6, "T")),
+  bothInsertAtEnd: draftMerge3(base, base + "m\n", base + "t\n"),
+  noEol: draftMerge3("a\nb\nc", "A\nb\nc", "a\nb\nC"),
+  unified: draftUnified("a\nb\nc\n", "a\nB\nc\n").text,
+  copies: [draftCopyPath("/d/f.txt", 1), draftCopyPath("/d/f.txt", 3), draftCopyPath("/d/.bashrc", 1),
+           draftCopyPath("/d/Makefile", 2)],
+}));
+"""
+
+
+def test_the_line_merge_takes_apart_edits_and_refuses_touching_ones(doc, tmp_path):
+    frag = _fragment(doc)
+    src = re.search(r"^var DRAFT_DIFF_MAX_ROWS = .*;$", frag, re.M).group(0) + "\n"
+    src += "\n".join(_js_chunk(frag, h) for h in
+                     ["function draftMerge3(", "function draftUnified(", "function draftCopyPath("])
+    code = ("const PURE = %s;\nconst MERGE_SRC = %s;\n" % (json.dumps(_pure(doc)), json.dumps(src))) + MERGE
+    out = _node(tmp_path, "merge.cjs", code)
+    base = "".join("l%d\n" % i for i in range(1, 11))
+    assert out["apart"] == base.replace("l2\n", "M2\n").replace("l8\n", "T8\n")
+    assert out["same"] == base.replace("l5\n", "X\n")
+    assert out["overlap"] is None
+    assert out["touching"] is None
+    assert out["bothInsertAtEnd"] is None
+    assert out["noEol"] == "A\nb\nC"
+    assert out["unified"] == "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"
+    assert out["copies"] == ["/d/f (mine).txt", "/d/f (mine 3).txt", "/d/.bashrc (mine)",
+                             "/d/Makefile (mine 2)"]

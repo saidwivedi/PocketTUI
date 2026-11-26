@@ -1771,6 +1771,26 @@
   </div>
 </div>
 
+<!-- A save the computer refused because the file moved on (51-drafts.js): both
+     versions as a diff, the computer's as the removed side and this device's
+     as the added one, and one button per way out. Only "Keep the computer's"
+     drops this device's text, and its label says so; dismissing the sheet
+     changes nothing. -->
+<div class="sheet centered" id="sheet-conflict" role="dialog" aria-modal="true"
+     aria-labelledby="conflict-title" aria-describedby="conflict-msg">
+  <h2 id="conflict-title"></h2>
+  <p class="sheet-note" id="conflict-msg"></p>
+  <div class="conflict-legend"><span class="del">Your computer</span><span class="add">This device (yours)</span></div>
+  <div id="conflict-diff"></div>
+  <div class="actions">
+    <button type="button" id="btn-conflict-cancel">Cancel</button>
+    <button type="button" id="btn-conflict-theirs"></button>
+    <button type="button" id="btn-conflict-copy">Save mine as a copy</button>
+    <button type="button" id="btn-conflict-merge">Merge both</button>
+    <button type="button" class="primary" id="btn-conflict-mine">Keep mine</button>
+  </div>
+</div>
+
 <!-- appPrompt()'s dialog, the confirm's twin: the same centered sheet, with a
      field between the question and the actions. The question labels the field
      rather than sitting above it unattached, and the yes is the plain action

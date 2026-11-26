@@ -5782,7 +5782,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .editor-dirty[data-state="conflict"] { display: inline-block; background: var(--bad); }
 
 /* The line over a buffer saying what is true of it beyond "edited": restored
-   from this device, waiting for the computer, or refused by it. In the
+   from this device, waiting for the computer, refused by it, or merged. In the
    flow above the text, never over it, on every surface the editor is on. */
 .ed-strip {
   flex: 0 0 auto;
@@ -5814,6 +5814,47 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 .ed-strip-btn.primary { background: var(--umber); border-color: var(--umber); color: var(--paper); }
 .ed-strip-btn:active { transform: scale(0.96); }
+
+/* The conflict dialog: the confirm sheet, wider, with the two versions as a
+   diff between the note and the actions. The actions wrap, the way out first
+   in reading order and the keep-mine yes last. */
+#sheet-conflict { max-width: 760px; display: flex; flex-direction: column; max-height: 88vh; }
+#sheet-conflict .sheet-note { margin-bottom: 10px; }
+#conflict-title { overflow-wrap: anywhere; }
+.conflict-legend {
+  display: flex; gap: 14px;
+  margin-bottom: 6px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--secondary);
+}
+.conflict-legend span::before {
+  content: "";
+  display: inline-block;
+  width: 10px; height: 10px;
+  margin-right: 6px;
+  border-radius: 2px;
+  vertical-align: -1px;
+}
+.conflict-legend .del::before { background: var(--diff-del-bg); box-shadow: inset 0 0 0 1px var(--diff-del-ink); }
+.conflict-legend .add::before { background: var(--diff-add-bg); box-shadow: inset 0 0 0 1px var(--diff-add-ink); }
+#conflict-diff {
+  flex: 1 1 auto;
+  min-height: 80px;
+  max-height: 46vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--paper);
+  font-family: Menlo, ui-monospace, "SF Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+#sheet-conflict .actions { flex-wrap: wrap; flex: 0 0 auto; }
+#sheet-conflict .actions button { flex: 1 1 auto; padding: 10px 14px; }
+#sheet-conflict .actions button[hidden] { display: none; }
 /* The reader's Edit is the same pill in the same slot of the same bar, so it
    shares Save's rule rather than restating it. */
 #btn-editor-save, #btn-reader-edit {
