@@ -10,7 +10,9 @@
 //     line): a page writes only a record whose latest text it wrote or
 //     restored itself, and one that finds its record rewritten by another
 //     page of the app starts a record of its own (draftWrite), so two pages
-//     with different text keep both. Opening the file puts the newest back,
+//     with different text keep both; a page opening the file takes a record
+//     over only once the page that wrote it is gone (draftLookup). Opening
+//     the file puts the newest back,
 //     still based on its version, so the save after a reload goes through the
 //     same hash check as any other.
 //   - A save that cannot reach the computer waits (a mark on the draft, in
@@ -22,7 +24,8 @@
 //     stops where it is, changing nothing (draftAway).
 //   - A save the computer refuses because the file moved on is a conflict:
 //     marked, and resolved in a dialog that shows both sides and has exactly
-//     one button that drops this device's text.
+//     one button that drops this device's text. A refusal ends automatic
+//     sending at once, even before the read that tells why (edRefused).
 //
 // Module state is `var`, not `let`: removeProfile (02-debug-log.js) and the
 // sheet code in earlier fragments call into here, and a `let` read before this
@@ -44,7 +47,11 @@ var DRAFT_DIFF_MAX_ROWS = 4000;
 var draftDbP = null;          // Promise<IDBDatabase|null>, opened on first use
 var draftSaidBroken = false;  // the "not kept" line, once per page load
 var draftPending = new Set(); // recs with a debounced write not yet made
-var draftFlags = new Map();   // draft record key -> "queued" | "conflict"
+var draftFlags = new Map();   // draft record key -> "queued" | "recheck" | "conflict"
+// draft record key -> {text, hash, retried}: a write the computer refused (409)
+// whose follow-up read got no answer. "recheck" sends nothing; the read alone
+// is made again when the computer is back (edRefused, draftCheckRecord).
+var draftRefused = new Map();
 var draftInflight = new Map();// save key -> the promise of the write in flight
 var draftFlushing = false;
 var draftRetryTimer = 0;
@@ -63,6 +70,40 @@ function draftOwner() {
 }
 
 function draftRandom() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 10); }
+
+// This page, as the writer of the records it writes (record.page), and its
+// claim to be alive: a Web Lock named after it, held for the life of the page
+// and let go by the browser when the page goes, however it goes. Another page
+// opening the file takes over a record in place only once its writer's lock is
+// free (draftLookup). Without Web Locks (an http LAN address, an older
+// browser) no page can tell, and a record is taken over in place as before.
+var DRAFT_LOCK = "ptui-draft-page-";
+var draftPageId = draftRandom();
+function draftLocks() {
+  try { return typeof navigator !== "undefined" && navigator.locks ? navigator.locks : null; }
+  catch (e) { return null; }
+}
+(function draftHoldPageLock() {
+  const locks = draftLocks();
+  if (!locks) return;
+  try {
+    const p = locks.request(DRAFT_LOCK + draftPageId, () => new Promise(() => {}));
+    if (p && p.catch) p.catch(() => {});
+  } catch (e) { /* an opaque origin refuses locks: as if there were none */ }
+})();
+
+// Whether the page that wrote a record is still open somewhere. False when
+// that cannot be known (no Web Locks, or none recorded).
+async function draftWriterAlive(page) {
+  if (!page) return false;
+  if (page === draftPageId) return true;
+  const locks = draftLocks();
+  if (!locks) return false;
+  try {
+    const q = await locks.query();
+    return (q.held || []).some((l) => l.name === DRAFT_LOCK + page);
+  } catch (e) { return false; }
+}
 
 // A record's key: the computer, the path, and the editing line it belongs to.
 // A record from before lines existed is keyed by the first two alone and is
@@ -167,12 +208,14 @@ async function draftList(owner) {
 // only while the record still carries `cond.stamp` (this page's own latest
 // text, so another page's text is never taken) and, given `cond.text`, still
 // holds that text (a save answered for an older text must not take a newer
-// draft with it).
+// draft with it) and, given `cond.updatedAt`, was last written then. Answers
+// whether it deleted the record.
 async function draftDrop(key, cond) {
-  if (!key) return;
+  if (!key) return false;
+  let gone = false;
   try {
     await draftTx("readwrite", (st) => {
-      if (!cond) { st.delete(key); return; }
+      if (!cond) { st.delete(key); gone = true; return; }
       const r = st.get(key);
       r.onsuccess = () => {
         const cur = r.result;
@@ -182,11 +225,32 @@ async function draftDrop(key, cond) {
           if (cur.stamp !== stamp) return;
         }
         if (cond.text !== undefined && cur.text !== cond.text) return;
+        if (cond.updatedAt !== undefined && cur.updatedAt !== cond.updatedAt) return;
         st.delete(key);
+        gone = true;
+      };
+    });
+  } catch (e) { draftFail(e); gone = false; }
+  draftsPaintSoon();
+  return gone;
+}
+
+// A record whose text is now based on another version of the computer's (a
+// refused write found landed after all, with newer text kept since): its
+// base moves there, while it still carries `stamp`.
+async function draftRebase(key, stamp, hash, baseText) {
+  try {
+    await draftTx("readwrite", (st) => {
+      const r = st.get(key);
+      r.onsuccess = () => {
+        const cur = r.result;
+        if (!cur || cur.stamp !== stamp) return;
+        cur.baseHash = hash;
+        cur.baseText = baseText;
+        st.put(cur);
       };
     });
   } catch (e) { draftFail(e); }
-  draftsPaintSoon();
 }
 
 // A forgotten computer's drafts go with it (removeProfile, 02-debug-log.js).
@@ -205,6 +269,9 @@ async function draftDropProfile(id) {
   } catch (e) { dbg("drafts: drop profile failed", e); }
   for (const key of [...draftFlags.keys()]) {
     if (key.startsWith(id + "|")) draftFlags.delete(key);
+  }
+  for (const key of [...draftRefused.keys()]) {
+    if (key.startsWith(id + "|")) draftRefused.delete(key);
   }
   draftsPaintSoon();
 }
@@ -227,7 +294,9 @@ function draftBytes(text) {
 }
 
 // The rec's buffer into its record, now. A clean buffer has nothing to keep,
-// and a closed or discarded one is not this device's to keep any more.
+// and a closed or discarded one is not this device's to keep any more. Once
+// the store has answered, rec.draftHeld is the text the record holds for it
+// (null when the write failed): what draftKept compares the buffer with.
 async function draftWrite(rec) {
   clearTimeout(rec.draftTimer);
   draftPending.delete(rec);
@@ -246,8 +315,9 @@ async function draftWrite(rec) {
   const record = {
     key: "", owner: rec.owner, profile: draftProfileOf(rec.owner),
     path: rec.path, baseHash: rec.hash, baseText: rec.baseText == null ? null : rec.baseText,
-    text: text, updatedAt: Date.now(), stamp: stamp,
+    text: text, updatedAt: Date.now(), stamp: stamp, page: draftPageId,
   };
+  let held = null;
   try {
     await draftTx("readwrite", (st) => {
       const key = draftKeyOf(rec);
@@ -260,13 +330,15 @@ async function draftWrite(rec) {
         if (cur && cur.stamp !== rec.draftStamp) draftFork(rec, key);
         // Already there as this page left it (a hide or pagehide writing
         // every dirty buffer): rewriting would only make it look newer.
-        else if (cur && cur.text === text && cur.baseHash === record.baseHash) return;
+        else if (cur && cur.text === text && cur.baseHash === record.baseHash) { held = text; return; }
         record.key = rec.draftKey;
         st.put(record);
         rec.draftStamp = stamp;
+        held = text;
       };
     });
-  } catch (e) { draftFail(e); return; }
+  } catch (e) { rec.draftHeld = null; draftFail(e); return; }
+  rec.draftHeld = held;
   draftsPaintSoon();
 }
 
@@ -277,9 +349,12 @@ function draftFork(rec, old) {
   const flag = draftFlags.get(old);
   if (!flag) return;
   draftFlags.set(rec.draftKey, flag);
+  const refused = draftRefused.get(old);
+  if (refused) draftRefused.set(rec.draftKey, refused);
   for (const r of edLive) if (r !== rec && r.draftKey === old) return;
   for (const r of edParked) if (r !== rec && r.draftKey === old) return;
   draftFlags.delete(old);
+  draftRefused.delete(old);
 }
 
 // Every buffer with edits, written now. On the way out (hidden, pagehide) the
@@ -299,9 +374,11 @@ function draftDiscard(rec) {
   draftPending.delete(rec);
   rec.conflict = null;
   rec.restored = null;
+  rec.draftHeld = null;
   const key = draftKeyOf(rec);
   if (key) {
     draftFlags.delete(key);
+    draftRefused.delete(key);
     draftDrop(key, draftOwnCond(rec));
   }
 }
@@ -310,6 +387,10 @@ function draftDiscard(rec) {
 // file's records on `owner` (the computer in force when the open started), or
 // the one keyed `key`. Asked before the view is built, so nothing typed into
 // it can race the answer. `others` on it counts the file's other records.
+// `shared` says the record is still another live view's: its writer is a page
+// that is still open, or a view of this page holds it; the opener then puts
+// the text back under a record of its own (draftApply), since writing into
+// that one would replace text whose only copy may be that record.
 async function draftLookup(path, owner, key) {
   if (owner === undefined) owner = draftOwner();
   const all = (await draftList(owner)).filter((d) => d.path === path);
@@ -317,14 +398,16 @@ async function draftLookup(path, owner, key) {
   all.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   const d = (key && all.find((x) => x.key === key)) || all[0];
   d.others = all.length - 1;
+  d.shared = d.page === draftPageId ? !!draftRecOf(d.key) : await draftWriterAlive(d.page);
   return d;
 }
 
 // A freshly built rec gets its file's draft, if there is one: the draft's
 // text in the buffer as an edit (undo goes back to the computer's version),
 // still based on the version it was made from. `loaded` is what the computer
-// sent just now, {content, hash}. The rec adopts the record: its later
-// writes go there for as long as no other page rewrites it.
+// sent just now, {content, hash}. The rec adopts the record (its later
+// writes go there for as long as no other page rewrites it) unless the record
+// is still another live view's, when it starts one of its own.
 function draftApply(rec, loaded, d) {
   rec.loaded = { content: loaded.content, hash: loaded.hash };
   rec.baseText = loaded.content;
@@ -337,8 +420,13 @@ function draftApply(rec, loaded, d) {
     draftDrop(d.key, { stamp: d.stamp, text: d.text });
     return;
   }
-  rec.draftKey = d.key;
-  rec.draftStamp = d.stamp;
+  if (d.shared) {
+    rec.draftKey = draftNewKey(rec.owner, rec.path);
+    rec.draftStamp = null;
+  } else {
+    rec.draftKey = d.key;
+    rec.draftStamp = d.stamp;
+  }
   rec.hash = d.baseHash || "";
   rec.baseText = d.baseText;
   rec.view.dispatch({ changes: { from: 0, to: rec.view.state.doc.length, insert: d.text } });
@@ -455,7 +543,7 @@ function edLanded(rec, sent, hash) {
   rec.restored = null;
   rec.merged = false;
   const key = draftKeyOf(rec);
-  if (key) draftFlags.delete(key);
+  if (key) { draftFlags.delete(key); draftRefused.delete(key); }
   if (edText(rec) === sent) {
     clearTimeout(rec.draftTimer);
     draftPending.delete(rec);
@@ -516,9 +604,16 @@ async function edSaveOnce(rec, mode, hash) {
     draftResolve(rec);
     return "conflict";
   }
+  // Refused, and not yet known why: no write, only the read that decides.
+  const key = rec.owner ? draftKeyOf(rec) : null;
+  const refused = hash === undefined && key && draftFlags.get(key) === "recheck";
   let done;
   draftInflight.set(skey, new Promise((r) => { done = r; }));
   try {
+    if (refused) {
+      const ref = draftRefused.get(key) || { text: null, hash: rec.hash, retried: true };
+      return await edRefused(rec, mode, ref.text, ref.hash, ref.retried);
+    }
     return await edSaveRun(rec, mode, hash, false);
   } finally {
     draftInflight.delete(skey);
@@ -560,25 +655,53 @@ async function edSaveRun(rec, mode, hash, retried) {
     toast("Couldn't save " + name);
     return "error";
   }
-  // 409: what is there now decides what the refusal means.
+  return edRefused(rec, mode, text, res.hash, retried);
+}
+
+// A write of `sent` refused with 409 (the computer had `refusedHash`). The
+// refusal ends automatic sending: a waiting save becomes "recheck", which
+// sends nothing more, and a read that gets no answer leaves it there to be
+// made again when the computer is back. What the read finds decides: the
+// computer holding `sent` is an earlier write of it landed unanswered;
+// anything else is a conflict, but for the one resend below.
+async function edRefused(rec, mode, sent, refusedHash, retried) {
+  const owner = rec.owner;
+  const name = baseName(rec.path);
+  const refusal = { text: sent, hash: refusedHash, retried: !!retried };
+  const k0 = owner ? draftKeyOf(rec) : null;
+  if (k0 && draftFlags.get(k0) === "queued") {
+    draftFlags.set(k0, "recheck");
+    draftRefused.set(k0, refusal);
+  }
   const cur = await edReadCurrent(rec.path, owner);
   rec = edCurrent(rec);
   if (cur && cur.away) return "away";
+  const key = draftKeyOf(rec);
   if (!cur) {
     if (!rec.owner) { toast("Couldn't save"); return "error"; }
-    edQueue(rec, mode === "manual");
+    if (rec.discarded) return "offline";
+    draftFlags.set(key, "recheck");
+    draftRefused.set(key, refusal);
+    if (!(rec.closed && !rec.parked)) { draftWrite(rec); edPaintState(rec); }
+    draftsPaintSoon();
+    toast("Your computer refused " + name + " and then stopped answering; it is checked again when it is back", 4000);
+    draftRetrySoon();
     return "offline";
   }
-  if (draftHolds(cur, text)) {
+  if (key && draftFlags.get(key) === "recheck") draftFlags.delete(key);
+  if (key) draftRefused.delete(key);
+  if (sent != null && draftHolds(cur, sent)) {
     // The write landed before, and its answer was lost.
-    edLanded(rec, text, cur.hash);
+    edLanded(rec, sent, cur.hash);
     toast(mode === "manual" ? "Saved" : "Saved " + name);
     return "ok";
   }
+  // The computer holds, exactly and readably, a text this same buffer sent
+  // and never heard back about: the version there is this buffer's own, so its
+  // newer text may go once against that hash. Never a second time for the
+  // same refusal (`retried`), and never for a lossy or foreign text.
   if (!retried && !cur.unreadable && !cur.missing && !cur.lossy
       && (rec.unanswered || []).includes(cur.content)) {
-    // An earlier write of this buffer's landed unanswered: the computer's
-    // version is ours, and the buffer is a later edit of it.
     rec.hash = cur.hash;
     rec.baseText = cur.content;
     rec.loaded = { content: cur.content, hash: cur.hash };
@@ -586,7 +709,6 @@ async function edSaveRun(rec, mode, hash, retried) {
     draftWrite(rec);
     return edSaveRun(rec, mode, undefined, true);
   }
-  const key = draftKeyOf(rec);
   if (rec.closed && !rec.parked) {
     // Closed while the write was out: the mark is the draft's.
     if (key && !rec.discarded) {
@@ -596,7 +718,7 @@ async function edSaveRun(rec, mode, hash, retried) {
     }
     return "conflict";
   }
-  rec.conflict = draftConflictOf(cur, res.hash);
+  rec.conflict = draftConflictOf(cur, refusedHash);
   if (key) draftFlags.set(key, "conflict");
   draftWrite(rec);
   edPaintState(rec);
@@ -608,13 +730,14 @@ async function edSaveRun(rec, mode, hash, retried) {
 
 // ---- waiting saves -----------------------------------------------------------
 
-// The keys of the drafts whose save waits, on the computer in force.
+// The keys of the drafts with something to do when the computer is back, on
+// the computer in force: a save that waits, or a refusal still to be read.
 function draftQueued() {
   const owner = draftOwner();
   if (!owner) return [];
   const out = [];
   for (const [key, flag] of draftFlags) {
-    if (flag === "queued" && key.startsWith(owner + "\n")) out.push(key);
+    if ((flag === "queued" || flag === "recheck") && key.startsWith(owner + "\n")) out.push(key);
   }
   return out;
 }
@@ -626,11 +749,29 @@ function draftRecOf(key) {
   return null;
 }
 
-// Whether leaving this buffer can skip the discard question: its save waits
-// for the computer, and its text is in the store to be sent from.
+// Whether this buffer's save waits for the computer. Whether the store holds
+// its current text is draftKept's question, not this one's.
 function draftIsQueued(rec) {
-  if (!rec || !rec.owner || draftSaidBroken || rec.draftBig) return false;
+  if (!rec || !rec.owner || draftSaidBroken) return false;
   return draftFlags.get(draftKeyOf(rec)) === "queued";
+}
+
+// Whether leaving this buffer can skip the discard question now: its save
+// waits for the computer, and the store has answered that it holds exactly
+// the text the buffer has (not just been asked to: a write can still fail, or
+// be refused for size, and the text typed last would go with the view).
+function draftKept(rec) {
+  if (!draftIsQueued(rec) || !rec.view) return false;
+  return !draftPending.has(rec) && rec.draftHeld != null && rec.draftHeld === edText(rec);
+}
+
+// draftKept, after writing the buffer's current text if the store does not
+// hold it yet. A close that would skip its question waits for this, and asks
+// after all when it answers false.
+async function draftKeep(rec) {
+  if (!draftIsQueued(rec)) return false;
+  if (!draftKept(rec)) await draftWrite(rec);
+  return draftKept(rec);
 }
 
 function draftRetrySoon() {
@@ -700,11 +841,12 @@ async function draftSendStored(key) {
   // Opened meanwhile: the view sends its own buffer.
   const rec = draftRecOf(key);
   if (rec) return edSaveOnce(rec, "flush");
-  if (draftFlags.get(key) !== "queued") return "gone";
+  const flag = draftFlags.get(key);
+  if (flag !== "queued" && flag !== "recheck") return "gone";
   let done;
   draftInflight.set(skey, new Promise((r) => { done = r; }));
   try {
-    return await draftSendRecord(key, d);
+    return flag === "recheck" ? await draftCheckRecord(key, d) : await draftSendRecord(key, d);
   } finally {
     draftInflight.delete(skey);
     done();
@@ -735,15 +877,42 @@ async function draftSendRecord(key, d) {
     toast("Couldn't save " + name);
     return "error";
   }
-  const cur = await edReadCurrent(d.path, owner);
-  if (cur && cur.away) return "away";
-  if (!cur) return "offline";
-  if (draftHolds(cur, d.text)) return landed(cur.hash);
+  // Refused: no more writes from this record on their own (edRefused).
   if (draftFlags.get(key) !== "queued") return "conflict";
-  draftFlags.set(key, "conflict");
+  draftFlags.set(key, "recheck");
+  draftRefused.set(key, { text: d.text, hash: res.hash, retried: true });
+  return draftCheckRecord(key, d);
+}
+
+// A refused write from the store (draftRefused), read for what it meant: the
+// computer holding the text sent is that write landed unanswered, anything
+// else a conflict. No answer leaves it to be read again; nothing is written.
+async function draftCheckRecord(key, d) {
+  const name = baseName(d.path);
+  const ref = draftRefused.get(key) || { text: null, hash: d.baseHash || "" };
+  const cur = await edReadCurrent(d.path, d.owner);
+  if (cur && cur.away) return "away";
+  if (draftFlags.get(key) !== "recheck") return "gone";
+  if (!cur) {
+    draftsPaintSoon();
+    return "offline";
+  }
+  draftRefused.delete(key);
   const rec = draftRecOf(key);
+  if (ref.text != null && draftHolds(cur, ref.text)) {
+    draftFlags.delete(key);
+    if (rec) edLanded(rec, ref.text, cur.hash);
+    else if (d.text === ref.text) draftDrop(key, { stamp: d.stamp, text: d.text });
+    // Newer text was kept after the refused write went out: it stays,
+    // based on the version that landed.
+    else await draftRebase(key, d.stamp, cur.hash, ref.text);
+    draftsPaintSoon();
+    toast("Saved " + name);
+    return "ok";
+  }
+  draftFlags.set(key, "conflict");
   if (rec && !rec.conflict) {
-    rec.conflict = draftConflictOf(cur, res.hash);
+    rec.conflict = draftConflictOf(cur, ref.hash);
     edPaintState(rec);
   }
   draftsPaintSoon();
@@ -786,8 +955,10 @@ function draftSlide(B, e) {
 // A three-way merge of whole lines: the edits from base to mine and from base
 // to theirs, applied together, or null when an edit of one side touches one
 // of the other (overlap, abut, or insert at the same place, anywhere either
-// could slide to) unless they are the same edit. Refusing is always safe;
-// a merge that guessed where an edit went is not.
+// could slide to), even when the two are the same edit: two equal hunks over
+// repeated lines may be two different lines (each side deleting "one of the
+// a's"), and keeping one copy would guess. Refusing is always safe; a merge
+// that guessed where an edit went is not.
 function draftMerge3(base, mine, theirs) {
   if (base == null || mine == null || theirs == null) return null;
   const B = wsLineKeys(wsSplitLines(base));
@@ -799,17 +970,12 @@ function draftMerge3(base, mine, theirs) {
     return e;
   });
   const mineEdits = side(M, 0), theirEdits = side(T, 1);
-  const same = (x, y) => x.a === y.a && x.al === y.al
-    && x.lines.length === y.lines.length && x.lines.every((l, i) => l === y.lines[i]);
-  const dup = new Set();
   for (const x of mineEdits) {
     for (const y of theirEdits) {
-      if (x.lo > y.hi || y.lo > x.hi) continue;
-      if (!same(x, y)) return null;
-      dup.add(y);
+      if (!(x.lo > y.hi || y.lo > x.hi)) return null;
     }
   }
-  const keep = mineEdits.concat(theirEdits.filter((y) => !dup.has(y)));
+  const keep = mineEdits.concat(theirEdits);
   keep.sort((x, y) => x.a - y.a || x.al - y.al);
   const out = [];
   let i = 0;
@@ -1071,6 +1237,7 @@ function draftAdopt(old, rec) {
   rec.draftBig = old.draftBig;
   rec.draftKey = old.draftKey;
   rec.draftStamp = old.draftStamp;
+  rec.draftHeld = old.draftHeld;
   if (old.dirty !== rec.dirty) { rec.dirty = old.dirty; rec.onDirty(rec, old.dirty); }
   // Its draft was discarded from the pill while it was away.
   if (old.revert && rec.loaded) edReplaceClean(rec, rec.loaded.content, rec.loaded.hash);
@@ -1106,7 +1273,7 @@ function edPaintState(rec) {
   if (rec.closed && !rec.parked) return;
   const key = draftKeyOf(rec);
   const flag = key ? draftFlags.get(key) : null;
-  rec.state = rec.conflict ? "conflict" : flag === "queued" ? "queued" : null;
+  rec.state = rec.conflict ? "conflict" : flag === "queued" || flag === "recheck" ? flag : null;
   if (rec.onMark) rec.onMark(rec);
   if (!rec.view || !rec.view.dom.parentNode) return;
   let strip = rec.strip;
@@ -1119,6 +1286,8 @@ function edPaintState(rec) {
     acts = [["Resolve", "primary", () => draftResolve(rec)]];
   } else if (flag === "queued") {
     msg = "Can't reach your computer. This file will save when it is back.";
+  } else if (flag === "recheck") {
+    msg = "Not saved: your computer refused it. What it has is checked when it is back.";
   } else if (rec.merged) {
     msg = "Merged with your computer's version. Read it over, then save.";
     acts = [["OK", "", () => { rec.merged = false; edPaintState(rec); }]];
@@ -1142,7 +1311,7 @@ function edPaintState(rec) {
   if (!strip) {
     strip = rec.strip = el("div", { class: "ed-strip", role: "status" });
   }
-  strip.className = "ed-strip" + (rec.conflict ? " bad" : flag === "queued" ? " warn" : "");
+  strip.className = "ed-strip" + (rec.conflict ? " bad" : flag === "queued" || flag === "recheck" ? " warn" : "");
   strip.textContent = "";
   strip.appendChild(el("span", { class: "ed-strip-msg" }, msg));
   for (const [label, cls, run] of acts) {
@@ -1194,6 +1363,7 @@ function draftStateWord(d) {
   const f = draftFlags.get(d.key);
   if (f === "conflict") return ["Changed on your computer", "bad"];
   if (f === "queued") return ["Will save when back", "warn"];
+  if (f === "recheck") return ["Refused; checked when back", "warn"];
   return ["Unsaved", ""];
 }
 
@@ -1263,23 +1433,39 @@ function draftLiveRecs(d) {
   return [...edLive].filter((r) => draftKeyOf(r) === d.key);
 }
 
+// The row's text, and only that: the record goes if it still holds what the
+// row was drawn from (another page may have taken it over and rewritten it
+// since), and a view here goes back to the computer's version only if what it
+// holds is that same text. Anything else is left alone, and the list redrawn.
 async function draftDiscardFromMenu(d) {
   showDraftsMenu(false);
   const ok = await appConfirm("Your edits to " + baseName(d.path)
     + " that were kept on this device will be lost.",
     { title: "Discard unsaved changes?", confirmLabel: "Discard" });
   if (!ok) return;
+  const same = (rec) => !rec.view || edText(rec) === d.text;
+  const live = draftLiveRecs(d);
+  const parked = [...edParked].filter((rec) => draftKeyOf(rec) === d.key);
+  const gone = live.every(same) && parked.every((rec) => rec.draftStamp === d.stamp)
+    && await draftDrop(d.key, { stamp: d.stamp, text: d.text, updatedAt: d.updatedAt });
+  if (!gone) {
+    toast("Not discarded: " + baseName(d.path) + " changed since the list was shown", 4000);
+    showDraftsMenu(true);
+    return;
+  }
   draftFlags.delete(d.key);
-  await draftDrop(d.key);
+  draftRefused.delete(d.key);
   // A view of it that is open goes back to the computer's version it last
-  // knew; one put away with its session does so when it comes back.
-  for (const rec of draftLiveRecs(d)) {
+  // knew; one put away with its session does so when it comes back. Text
+  // typed into a view while the record went is not the row's, and stays.
+  for (const rec of live) {
+    if (rec.closed || !same(rec)) continue;
     draftDiscard(rec);
     rec.discarded = false;
     if (rec.loaded) edReplaceClean(rec, rec.loaded.content, rec.loaded.hash);
     edPaintState(rec);
   }
-  for (const rec of edParked) if (draftKeyOf(rec) === d.key) rec.revert = true;
+  for (const rec of parked) rec.revert = true;
   draftsPaintSoon();
 }
 

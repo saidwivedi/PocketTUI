@@ -472,6 +472,9 @@ async function openEditor(path, opts) {
   if (!create) {
     let data = ref ? await fsReadTextAt(path, ref, opts.root || "")
                    : await fsReadText(path);
+    // Another computer came into force while the ref was read: its answer is
+    // not this file's, and no fallback read goes out on that one's address.
+    if (draftAway(owner)) return;
     if (data && data.error) {
       toast(edShortRef(ref) + " is not in this repo, so this is the file as it is now");
       data = await fsReadTextAt(path, "", "");
@@ -766,19 +769,41 @@ async function editorSave() {
   }
 }
 
+// The editor's discard question for its buffer: true when the user says
+// discard, and the buffer's stored draft goes with the answer.
+function edAskDiscard(rec) {
+  if (!confirm("Discard your unsaved changes?")) return false;
+  if (rec) draftDiscard(rec);
+  return true;
+}
+
+// Whether a dirty editor buffer may go, `then(ok)` told the answer. A buffer
+// whose save waits for the computer is not asked about once the store holds
+// its current text (51-drafts.js: kept and sent when the computer is back);
+// one whose last text is not in the store yet waits for that write first, and
+// is asked after all if it fails. Answers synchronously (true/false) when it
+// can; undefined when `then` will be called later, after the wait, and only
+// if the editor still holds that buffer.
+function edMayLeave(then) {
+  const rec = edRec;
+  if (!edDirty || draftKept(rec)) return true;
+  if (!draftIsQueued(rec)) return edAskDiscard(rec);
+  draftKeep(rec).then((kept) => {
+    if (edRec !== rec) return;
+    then(kept || edAskDiscard(rec));
+  });
+  return undefined;
+}
+
 // The pop has already happened by the time a dirty buffer gets its say, so
-// "stay" means pushing the entry back rather than cancelling anything. A
-// buffer whose save waits for the computer is not asked about: its text is
-// kept and sent when the computer is back (51-drafts.js).
+// "stay" means pushing the entry back rather than cancelling anything.
 function editorPopped() {
-  if (edDirty && !draftIsQueued(edRec)) {
-    if (!confirm("Discard your unsaved changes?")) {
-      history.pushState({ editor: true }, "", location.href);
-      return;
-    }
-    if (edRec) draftDiscard(edRec);
-  }
-  closeEditor();
+  const done = (ok) => {
+    if (ok) closeEditor();
+    else history.pushState({ editor: true }, "", location.href);
+  };
+  const ok = edMayLeave(done);
+  if (ok !== undefined) done(ok);
 }
 
 function closeEditor() {
@@ -805,12 +830,11 @@ function closeEditor() {
 // Docked, the view pushed no entry, so there is no pop to answer: the question
 // about unsaved work is asked here instead and a "stay" is the whole of what
 // the press does. False says the editor is staying, which every caller has to
-// stand down for.
+// stand down for: also while a waiting save's text is still going into the
+// store, after which the editor alone closes (edMayLeave).
 function editorCloseDocked() {
-  if (edDirty && !draftIsQueued(edRec)) {
-    if (!confirm("Discard your unsaved changes?")) return false;
-    if (edRec) draftDiscard(edRec);
-  }
+  const ok = edMayLeave((yes) => { if (yes) closeEditor(); });
+  if (!ok) return false;
   closeEditor();
   return true;
 }

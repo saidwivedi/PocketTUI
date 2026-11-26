@@ -616,7 +616,14 @@ function openTerminal(name, resumed) {
     if (!docked) {
       if (kind === "reader") closeReader();
       if ($("screen-editor").classList.contains("active")) {
-        if (edDirty && !draftIsQueued(edRec) && !confirm("Discard your unsaved changes?")) return;
+        // A waiting save still going into the store: the switch is made
+        // again once the editor may go (edMayLeave).
+        const ok = edMayLeave((yes) => {
+          if (!yes || !$("screen-editor").classList.contains("active")) return;
+          closeEditor();
+          openTerminal(name, resumed);
+        });
+        if (!ok) return;
         closeEditor();
       }
       // After the editor, which brings back a brief it was opened over.

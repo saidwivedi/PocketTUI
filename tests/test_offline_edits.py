@@ -524,6 +524,9 @@ console.log(JSON.stringify({
   slideDelete: draftMerge3("x\nx\nx\n", "x\nx\n", "y\nx\nx\n"),
   slideInsert: draftMerge3("a\nx\nb\n", "a\nx\nx\nb\n", "a\nX\nb\n"),
   repeatsApart: draftMerge3("x\nx\na\nb\nc\nx\n", "x\na\nb\nc\nx\n", "x\nx\na\nb\nc\ny\n"),
+  // Both sides deleted "an a", maybe not the same one: the equal hunks are
+  // not taken as one edit.
+  sameDeleteOfRepeats: draftMerge3("a\na\nx\ny\nz\n", "a\nx\ny\nz\n", "a\nx\ny\nZ\n"),
   unified: draftUnified("a\nb\nc\n", "a\nB\nc\n").text,
   copies: [draftCopyPath("/d/f.txt", 1), draftCopyPath("/d/f.txt", 3), draftCopyPath("/d/.bashrc", 1),
            draftCopyPath("/d/Makefile", 2)],
@@ -541,7 +544,8 @@ def test_the_line_merge_takes_apart_edits_and_refuses_touching_ones(doc, tmp_pat
     out = _node(tmp_path, "merge.cjs", code)
     base = "".join("l%d\n" % i for i in range(1, 11))
     assert out["apart"] == base.replace("l2\n", "M2\n").replace("l8\n", "T8\n")
-    assert out["same"] == base.replace("l5\n", "X\n")
+    # The same edit on both sides touches itself: refused, like any overlap.
+    assert out["same"] is None
     assert out["overlap"] is None
     assert out["touching"] is None
     assert out["bothInsertAtEnd"] is None
@@ -549,6 +553,7 @@ def test_the_line_merge_takes_apart_edits_and_refuses_touching_ones(doc, tmp_pat
     assert out["slideDelete"] is None
     assert out["slideInsert"] is None
     assert out["repeatsApart"] == "x\na\nb\nc\ny\n"
+    assert out["sameDeleteOfRepeats"] is None
     assert out["unified"] == "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"
     assert out["copies"] == ["/d/f (mine).txt", "/d/f (mine 3).txt", "/d/.bashrc (mine)",
                              "/d/Makefile (mine 2)"]
@@ -566,7 +571,7 @@ def test_the_line_merge_takes_apart_edits_and_refuses_touching_ones(doc, tmp_pat
 
 PAGE = r"""
 var page = { toasts: [], rejected: 0, confirms: 0, confirmAnswer: false, profile: "p1", built: 0,
-             onEnsure: null };
+             onEnsure: null, appConfirms: 0, appConfirmAnswer: true };
 var els = new Map();
 function fakeEl(id) {
   const cls = new Set();
@@ -625,14 +630,20 @@ function filesActivePath() { return ""; }
 function loadDir() {}
 function isWideLayout() { return true; }
 function syncChrome() {}
-async function appConfirm() { return true; }
+async function appConfirm() { page.appConfirms++; return page.appConfirmAnswer; }
+function edShortRef(r) { return r; }
 // What openEditor needs around it (29-editor.js).
 function usageCount() {}
 async function fsReadText(path) {
   const r = await fetch(apiURL("api/fs/read?path=" + encodeURIComponent(path)));
   return r.ok ? r.json() : null;
 }
-async function fsReadTextAt() { return null; }
+// A read at a git ref; page.badRef answers it as a ref gone from the repo,
+// after running page.onRef (a switch of computer while it was out).
+async function fsReadTextAt(path, ref) {
+  if (ref && page.badRef) { if (page.onRef) await page.onRef(); return { error: "bad_ref" }; }
+  return fsReadText(path);
+}
 async function ensureCM() { if (page.onEnsure) await page.onEnsure(); }
 function canDownload() { return true; }
 function edSetDirty(on) { edDirty = on; }
@@ -702,15 +713,30 @@ globalThis.fetch = async (url, opts) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const toB = () => log.filter((x) => x.url.startsWith(SERVER_B)).length;
 
-function makePage() {
+// Web Locks, one lock manager for every page of the test: a page holds its
+// lock until killPage, which is the page going away (a closed tab, an evicted
+// one, the old page of a reload).
+const heldLocks = new Set();
+const locksApi = {
+  request(name, cb) { heldLocks.add(name); return Promise.resolve().then(() => cb({ name })); },
+  async query() { return { held: [...heldLocks].map((name) => ({ name, mode: "exclusive" })), pending: [] }; },
+};
+function killPage(P) {
+  for (const r of P.edLive) clearTimeout(r.draftTimer);
+  heldLocks.delete("ptui-draft-page-" + P.draftPageId);
+}
+
+function makePage(opts) {
   const ctx = { console, setTimeout, clearTimeout, AbortController, TextEncoder, structuredClone,
                 indexedDB, IDBKeyRange, fetch: (u, o) => globalThis.fetch(u, o) };
+  if (!(opts && opts.noLocks)) ctx.navigator = { locks: locksApi };
   vm.createContext(ctx);
   vm.runInContext("var SERVER_A = " + JSON.stringify(SERVER_A) + ";\n" + PAGE_SRC, ctx);
   vm.runInContext(PURE, ctx);
   vm.runInContext(FRAGMENT, ctx);
   vm.runInContext(EDITOR, ctx);
   vm.runInContext(HELPERS_SRC, ctx);
+  vm.runInContext(WS_SRC, ctx);
   return ctx;
 }
 // A switch to the second computer: another profile at another address.
@@ -819,9 +845,10 @@ const out = {};
     // P's view closed and discarded never takes Q's record either.
     P.draftDiscard(rp);
     await sleep(100);
+    // R restored while P was open, so it keeps a record of its own.
     out.f2 = { texts, newest: newest.text, others: newest.others, rows: rows2,
                restored: R.edText(rr), restoredOthers: rr.restored && rr.restored.others,
-               k, after: recordsFor(p).map((r) => r.text) };
+               k, after: recordsFor(p).filter((r) => r.key !== R.draftKeyOf(rr)).map((r) => r.text) };
   } catch (e) { out.errors = (out.errors || []).concat(String(e && e.stack || e).slice(0, 400)); }
   // F3. A 409 from computer A, then a switch to B before the follow-up read:
   //     nothing goes to B, the rec and its draft are as they were.
@@ -929,6 +956,7 @@ const out = {};
     P.page.confirms = 0;
     P.page.toasts.length = 0;
     P.editorPopped();
+    await sleep(50);
     const leftConfirms = P.page.confirms, leftToasts = P.page.toasts.slice(), edRecAfter = P.edRec;
     // A workspace tab of another file, queued and closed.
     const t2 = P.mkRec(p2, c2.content, c2.hash);
@@ -974,10 +1002,320 @@ const out = {};
     await P.draftFlush();
     out.f7.again = log.filter((x) => x.isWrite).length;
   } catch (e) { out.errors = (out.errors || []).concat(String(e && e.stack || e).slice(0, 400)); }
+  // G1. A page takes over a record in place only once the page that wrote it
+  //     is gone (Web Locks); while it is open, the opener keeps its own.
+  try {
+    const p = DIR + "/g1.txt";
+    const cur = await read(p);
+    const P = makePage(), Q = makePage();
+    const rp = P.mkRec(p, cur.content, cur.hash);
+    P.type(rp, "A");
+    await sleep(400);
+    // Q opens the file while P is open, and types; P never writes again.
+    const rq = Q.mkRec(p, cur.content, cur.hash);
+    Q.draftApply(rq, { content: cur.content, hash: cur.hash }, await Q.draftLookup(p));
+    Q.type(rq, "B");
+    await sleep(400);
+    killPage(P);                       // evicted, without writing again
+    const alive = recordsFor(p).map((r) => r.text).sort();
+    // The reload of one page: the old page is gone, the new one restores,
+    // types, and there is still one record.
+    const r1 = DIR + "/g1r.txt";
+    const c1 = await read(r1);
+    const S1 = makePage();
+    const s1 = S1.mkRec(r1, c1.content, c1.hash);
+    S1.type(s1, "X");
+    await sleep(400);
+    killPage(S1);
+    const S2 = makePage();
+    const s2 = S2.mkRec(r1, c1.content, c1.hash);
+    S2.draftApply(s2, { content: c1.content, hash: c1.hash }, await S2.draftLookup(r1));
+    const restored = S2.edText(s2);
+    S2.type(s2, "Y");
+    await sleep(400);
+    const reload = recordsFor(r1).map((r) => r.text);
+    // No Web Locks (an http LAN address): nothing throws at load, and the
+    // record is taken over in place, as before.
+    const r2 = DIR + "/g1n.txt";
+    const c2 = await read(r2);
+    const N1 = makePage({ noLocks: true }), N2 = makePage({ noLocks: true });
+    const n1 = N1.mkRec(r2, c2.content, c2.hash);
+    N1.type(n1, "M");
+    await sleep(400);
+    const n2 = N2.mkRec(r2, c2.content, c2.hash);
+    N2.draftApply(n2, { content: c2.content, hash: c2.hash }, await N2.draftLookup(r2));
+    N2.type(n2, "N");
+    await sleep(400);
+    out.g1 = { alive, restored, reload, noLocks: recordsFor(r2).map((r) => r.text) };
+    for (const X of [Q, S2, N1, N2]) killPage(X);
+  } catch (e) { out.errors = (out.errors || []).concat("g1 " + String(e && e.stack || e).slice(0, 400)); }
+  // G2. Leaving a waiting buffer skips the question only once the store holds
+  //     its current text: text it refuses (too large) gets the question.
+  try {
+    const P = makePage();
+    const p = DIR + "/g2.txt", p2 = DIR + "/g2b.txt", p3 = DIR + "/g2c.txt";
+    const c = await read(p), c2 = await read(p2), c3 = await read(p3);
+    const big = "x".repeat(200);
+    offline = true;
+    // The editor screen, left with back.
+    P.edRec = P.mkRec(p, c.content, c.hash);
+    P.edRec.onDirty = (r, on) => P.edSetDirty(on);
+    P.type(P.edRec, "A");
+    await P.edSaveOnce(P.edRec, "manual");
+    await sleep(400);
+    const ed = P.edRec;
+    P.DRAFT_MAX_BYTES = 100;
+    P.type(ed, big);                   // within the debounce, and too large
+    P.page.confirms = 0;
+    P.page.confirmAnswer = false;
+    P.editorPopped();
+    await sleep(100);
+    const edOut = { confirms: P.page.confirms, open: P.edRec === ed, text: P.edText(ed).length };
+    P.DRAFT_MAX_BYTES = 2 * 1024 * 1024;
+    // Small text typed just before back: written first, no question, closed.
+    P.type(ed, "C");
+    P.page.confirms = 0;
+    P.editorPopped();
+    await sleep(100);
+    edOut.smallConfirms = P.page.confirms;
+    edOut.smallClosed = P.edRec === null;
+    edOut.smallStored = (recordsFor(p)[0] || {}).text === c.content + "A" + big + "C";
+    // A workspace tab, closed with its own cross.
+    const ws = P.makeWsTabs();
+    const r2 = P.mkRec(p2, c2.content, c2.hash);
+    const t2 = ws.addTab(r2, "g2b.txt");
+    P.type(r2, "A");
+    await P.edSaveOnce(r2, "manual");
+    await sleep(400);
+    P.DRAFT_MAX_BYTES = 100;
+    P.type(r2, big);
+    P.page.appConfirms = 0;
+    P.page.appConfirmAnswer = false;
+    await ws.close(t2);
+    const wsOut = { asked: P.page.appConfirms, closed: t2.closed, text: P.edText(r2).length };
+    // The pane's close: the same tab counted and asked about.
+    P.page.appConfirms = 0;
+    wsOut.count = ws.dirtyCount();
+    wsOut.paneOk = await ws.askDiscardAll();
+    wsOut.paneAsked = P.page.appConfirms;
+    P.DRAFT_MAX_BYTES = 2 * 1024 * 1024;
+    // Small text just before the close: kept, no question.
+    const r3 = P.mkRec(p3, c3.content, c3.hash);
+    const t3 = ws.addTab(r3, "g2c.txt");
+    P.type(r3, "A");
+    await P.edSaveOnce(r3, "manual");
+    await sleep(400);
+    P.type(r3, "D");
+    P.page.appConfirms = 0;
+    wsOut.paneCountSmall = ws.dirtyCount() >= 1;
+    await ws.close(t3);
+    wsOut.smallAsked = P.page.appConfirms;
+    wsOut.smallClosed = t3.closed;
+    wsOut.smallStored = (recordsFor(p3)[0] || {}).text === c3.content + "AD";
+    P.page.appConfirmAnswer = true;
+    offline = false;
+    for (const r of P.edLive) clearTimeout(r.draftTimer);
+    P.draftFlags.clear();
+    out.g2 = { ed: edOut, ws: wsOut };
+    killPage(P);
+  } catch (e) { offline = false; out.errors = (out.errors || []).concat("g2 " + String(e && e.stack || e).slice(0, 400)); }
+  // G3. A discard from the unsaved list takes only the text the row showed.
+  try {
+    const p = DIR + "/g3.txt";
+    const cur = await read(p);
+    const P = makePage(), L = makePage();
+    const rp = P.mkRec(p, cur.content, cur.hash);
+    P.type(rp, "A");
+    await sleep(400);
+    const row = (await L.draftList(L.draftOwner())).find((d) => d.path === p);
+    killPage(P);
+    // Another page takes the record over (P is gone) and rewrites it.
+    const Q = makePage();
+    const rq = Q.mkRec(p, cur.content, cur.hash);
+    Q.draftApply(rq, { content: cur.content, hash: cur.hash }, await Q.draftLookup(p));
+    Q.type(rq, "B");
+    await sleep(400);
+    const sameKey = Q.draftKeyOf(rq) === row.key;
+    await L.draftDiscardFromMenu(row);
+    const afterStale = recordsFor(p).map((r) => r.text);
+    const told = L.page.toasts.some((t) => t.includes("changed since"));
+    out.g3 = { sameKey, afterStale, told };
+    // The view holding the record has text not yet written: not reset.
+    const row2 = (await Q.draftList(Q.draftOwner())).find((d) => d.path === p);
+    Q.type(rq, "C");
+    await Q.draftDiscardFromMenu(row2);
+    const viewKept = Q.edText(rq);
+    await sleep(400);
+    // Unchanged since drawn: discarded, and the view goes back.
+    const row3 = (await Q.draftList(Q.draftOwner())).find((d) => d.path === p);
+    await Q.draftDiscardFromMenu(row3);
+    await sleep(50);
+    Object.assign(out.g3, { viewKept, afterFresh: recordsFor(p).length, viewReset: Q.edText(rq), dirty: rq.dirty });
+    killPage(L); killPage(Q);
+  } catch (e) { out.errors = (out.errors || []).concat("g3 " + String(e && e.stack || e).slice(0, 400)); }
+  // G4. A 409 ends automatic sending even when the read after it fails: the
+  //     next reconnect only reads.
+  try {
+    let failRead = false;
+    const refusedThenDark = {
+      before: async (url) => { if (failRead && url.includes("api/fs/read")) { failRead = false; throw new TypeError("gone"); } },
+      after: async (url, r) => { if (url.includes("api/fs/write") && r.status === 409) failRead = true; },
+    };
+    const writes = () => log.filter((x) => x.isWrite).length;
+    const P = makePage();
+    // Live view, waiting save, file moved, read after the 409 fails.
+    const p = DIR + "/g4.txt";
+    const cur = await read(p);
+    const rec = P.mkRec(p, cur.content, cur.hash);
+    P.type(rec, "mine");
+    offline = true;
+    await P.edSaveOnce(rec, "manual");
+    offline = false;
+    await writeDisk(p, "theirs\n");
+    hook = refusedThenDark;
+    await P.draftFlush();
+    hook = null;
+    const flagLive = P.draftFlags.get(P.draftKeyOf(rec)) || null;
+    // The file goes back to the version the buffer was based on: a resent
+    // write would now land.
+    await writeDisk(p, cur.content);
+    log.length = 0;
+    await P.draftFlush();
+    await sleep(50);
+    const live = { flag: flagLive, writes: writes(), after: P.draftFlags.get(P.draftKeyOf(rec)) || null,
+                   conflict: !!rec.conflict, disk: (await read(p)).content, dirty: rec.dirty };
+    // Stored draft (view closed), same story.
+    const q = DIR + "/g4b.txt";
+    const cq = await read(q);
+    const rq = P.mkRec(q, cq.content, cq.hash);
+    P.type(rq, "mine");
+    offline = true;
+    await P.edSaveOnce(rq, "manual");
+    await sleep(400);
+    P.edDropView(rq);
+    offline = false;
+    await writeDisk(q, "theirs\n");
+    hook = refusedThenDark;
+    log.length = 0;
+    await P.draftFlush();
+    hook = null;
+    const kq = P.draftKeyOf(rq);
+    const flagStored = P.draftFlags.get(kq) || null;
+    const firstWrites = writes();
+    await writeDisk(q, cq.content);
+    log.length = 0;
+    await P.draftFlush();
+    await sleep(50);
+    const stored = { flag: flagStored, firstWrites, writes: writes(), after: P.draftFlags.get(kq) || null,
+                     disk: (await read(q)).content, kept: recordsFor(q).map((r) => r.text) };
+    // Refused because an earlier write of the same text landed unanswered:
+    // the reconnect's read finds it there, saved, and writes nothing.
+    const w = DIR + "/g4c.txt";
+    const cw = await read(w);
+    const rw = P.mkRec(w, cw.content, cw.hash);
+    P.type(rw, "T");
+    hook = { after: async (url) => { if (url.includes("api/fs/write")) { hook = null; throw new TypeError("lost"); } } };
+    await P.edSaveOnce(rw, "manual");      // lands, answer lost: queued
+    hook = refusedThenDark;
+    await P.draftFlush();                 // resent: 409, read fails
+    hook = null;
+    const flagLanded = P.draftFlags.get(P.draftKeyOf(rw)) || null;
+    log.length = 0;
+    await P.draftFlush();
+    await sleep(50);
+    const landed = { flag: flagLanded, writes: writes(), dirty: rw.dirty, after: P.draftFlags.get(P.draftKeyOf(rw)) || null };
+    // The kept exception: X landed unanswered, Y typed, Y refused against the
+    // old base and the read fails; at the reconnect the read finds X, this
+    // buffer's own, and Y goes once against it.
+    const x = DIR + "/g4d.txt";
+    const cx = await read(x);
+    const rx = P.mkRec(x, cx.content, cx.hash);
+    P.type(rx, "X");
+    hook = { after: async (url) => { if (url.includes("api/fs/write")) { hook = null; throw new TypeError("lost"); } } };
+    await P.edSaveOnce(rx, "manual");
+    P.type(rx, "Y");
+    hook = refusedThenDark;
+    await P.draftFlush();
+    hook = null;
+    const flagOwn = P.draftFlags.get(P.draftKeyOf(rx)) || null;
+    log.length = 0;
+    await P.draftFlush();
+    await sleep(450);
+    const own = { flag: flagOwn, writes: writes(), disk: (await read(x)).content, dirty: rx.dirty,
+                  conflict: !!rx.conflict };
+    out.g4 = { live, stored, landed, own };
+    killPage(P);
+  } catch (e) { hook = null; offline = false; out.errors = (out.errors || []).concat("g4 " + String(e && e.stack || e).slice(0, 400)); }
+  // G5. A git-ref open whose ref is gone, answered after a switch to B: no
+  //     fallback read to B, no buffer, no tab state changed.
+  try {
+    const P = makePage();
+    const p = DIR + "/g5.txt";
+    P.page.badRef = true;
+    P.page.onRef = async () => switchToB(P);
+    log.length = 0;
+    await P.openEditor(p, { ref: "abc123" });
+    const editor = { toB: toB(), built: P.page.built };
+    const Q = makePage();
+    Q.page.badRef = true;
+    Q.page.onRef = async () => switchToB(Q);
+    const ws = Q.makeWsTabs();
+    const tab = { path: p, kind: "editor", ref: "abc123", key: p + "@abc123", title: "g5.txt @abc123", closed: false };
+    ws.byPath.set(tab.key, tab);
+    log.length = 0;
+    const filled = await ws.fillTab(tab, {});
+    out.g5 = { editor, ws: { filled, toB: toB(), ref: tab.ref, key: tab.key, mapped: [...ws.byPath.keys()] } };
+    killPage(P); killPage(Q);
+  } catch (e) { out.errors = (out.errors || []).concat("g5 " + String(e && e.stack || e).slice(0, 400)); }
   console.log(JSON.stringify(out));
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });
 """
+
+
+WS = r"""
+// The workspace's tab close, its pane-close question and its file open
+// (47-workspace.js), lifted out of makeWorkspace with the little of its
+// closure they reach.
+function makeWsTabs() {
+  const groups = [{ tabs: [], active: null }];
+  const byPath = new Map();
+  const ctx = { readText: (p) => fsReadText(p) };
+  function activate() {}
+  function syncEmpty() {}
+  function unsplit() {}
+  function paintChip() {}
+CHUNKS
+  function addTab(rec, title) {
+    const tab = { path: rec.path, key: rec.path, title, rec, dirty: rec.dirty, closed: false,
+                  group: groups[0], chip: fakeEl(), body: fakeEl() };
+    rec.onDirty = (r, on) => { tab.dirty = on; };
+    groups[0].tabs.push(tab);
+    byPath.set(tab.key, tab);
+    return tab;
+  }
+  return { close, drop, dirtyCount, askDiscardAll, fileTabs, fillTab, addTab, byPath };
+}
+"""
+
+
+def _ws_src():
+    src = (REPO / "src" / "mobile" / "js" / "47-workspace.js").read_text(encoding="utf-8")
+    out = []
+    for head in ["async function close(", "function drop(", "function fileTabs(",
+                 "function dirtyCount(", "async function askDiscardAll(", "function askDiscardAll(",
+                 "async function fillTab("]:
+        at = src.find("\n  " + head)
+        if at < 0:
+            continue
+        at += 1
+        line_end = src.index("\n", at)
+        # A one-line function, or one closed by its own two-space brace.
+        if src[at:line_end].rstrip().endswith("}"):
+            out.append(src[at:line_end + 1])
+        else:
+            out.append(src[at:src.index("\n  }\n", at) + 5])
+    return WS.replace("CHUNKS", "".join(out))
 
 
 @pytest.fixture(scope="module")
@@ -1010,18 +1348,22 @@ def server_b(server):
 @pytest.fixture(scope="module")
 def fixes(doc, server, server_b, tmp_path_factory):
     tmp_path = tmp_path_factory.mktemp("fixes")
-    for n in ["f1a", "f1b", "f1c", "f1d", "f2", "f3", "f3c", "f4", "f7", "f7b", "f7c", "f7d"]:
+    for n in ["f1a", "f1b", "f1c", "f1d", "f2", "f3", "f3c", "f4", "f7", "f7b", "f7c", "f7d",
+              "g1", "g1r", "g1n", "g2", "g2b", "g2c", "g3", "g4", "g4b", "g4c", "g4d", "g5"]:
         (tmp_path / (n + ".txt")).write_text(n + "\n")
     (tmp_path / "f3c (mine).txt").write_text("taken\n")
     (tmp_path / "f5.txt").write_bytes(b"ab\xff\n")
     (tmp_path / "f6.txt").write_text("a\nb\nc\nd\ne\n")
     editor = "\n".join(_js_chunk(doc, h) for h in
-                       ["function edDropView(", "function editorPopped(", "async function openEditor("])
+                       ["function edDropView(", "function edAskDiscard(", "function edMayLeave(",
+                        "function editorPopped(", "function editorCloseDocked(", "async function openEditor("]
+                       if "\n" + h in doc)
     code = ("const SERVER_A = %s;\nconst SERVER_B = %s;\nconst DIR = %s;\nconst PURE = %s;\n"
             "const FRAGMENT = %s;\nconst EDITOR = %s;\nconst PAGE_SRC = %s;\nconst HELPERS_SRC = %s;\n"
             % (json.dumps(server), json.dumps(server_b), json.dumps(str(tmp_path)),
                json.dumps(_pure(doc)), json.dumps(_fragment(doc)), json.dumps(editor),
                json.dumps(PAGE), json.dumps(HELPERS))) + FIXES.replace("IDB_MOCK", IDB_MOCK)
+    code = "const WS_SRC = %s;\n" % json.dumps(_ws_src()) + code
     return _node(tmp_path, "fixes.cjs", code)
 
 
@@ -1114,3 +1456,56 @@ def test_a_waiting_save_belongs_to_the_draft(fixes, tmp_path_factory):
     assert f["flag2"] == ["conflict"] and f["dialog"] is False
     assert any("Changed on your computer" in r and "f7b.txt" in r for r in f["rowsAfter"])
     assert f["again"] == 0
+
+
+def test_a_record_another_open_page_wrote_is_never_taken_over(fixes):
+    f = fixes["g1"]
+    # P's text survives P going away without writing again; Q kept its own.
+    assert f["alive"] == ["g1\nA", "g1\nAB"]
+    # A reload: restored, typed into, one record.
+    assert f["restored"] == "g1r\nX" and f["reload"] == ["g1r\nXY"]
+    # Without Web Locks the record is taken over in place, as before.
+    assert f["noLocks"] == ["g1n\nMN"]
+
+
+def test_a_waiting_buffer_is_closed_unasked_only_once_its_text_is_stored(fixes):
+    e = fixes["g2"]["ed"]
+    assert e["confirms"] == 1 and e["open"] is True and e["text"] == len("g2\nA") + 200
+    assert e["smallConfirms"] == 0 and e["smallClosed"] is True and e["smallStored"] is True
+    w = fixes["g2"]["ws"]
+    assert w["asked"] == 1 and w["closed"] is False and w["text"] == len("g2b\nA") + 200
+    assert w["count"] == 1 and w["paneOk"] is False and w["paneAsked"] == 1
+    assert w["paneCountSmall"] is True
+    assert w["smallAsked"] == 0 and w["smallClosed"] is True and w["smallStored"] is True
+
+
+def test_a_discard_from_the_list_takes_only_the_text_it_showed(fixes):
+    f = fixes["g3"]
+    assert f["sameKey"] is True
+    assert f["afterStale"] == ["g3\nAB"] and f["told"] is True
+    assert f["viewKept"] == "g3\nABC"
+    assert f["afterFresh"] == 0 and f["viewReset"] == "g3\n" and f["dirty"] is False
+
+
+def test_a_refusal_ends_automatic_sending_even_when_its_read_fails(fixes):
+    g = fixes["g4"]
+    live = g["live"]
+    assert live["flag"] == "recheck" and live["writes"] == 0
+    assert live["after"] == "conflict" and live["conflict"] is True
+    assert live["disk"] == "g4\n" and live["dirty"] is True
+    st = g["stored"]
+    assert st["flag"] == "recheck" and st["firstWrites"] == 1 and st["writes"] == 0
+    assert st["after"] == "conflict" and st["disk"] == "g4b\n" and st["kept"] == ["g4b\nmine"]
+    ld = g["landed"]
+    assert ld["flag"] == "recheck" and ld["writes"] == 0 and ld["dirty"] is False and ld["after"] is None
+    own = g["own"]
+    assert own["flag"] == "recheck" and own["writes"] == 1
+    assert own["disk"] == "g4d\nXY" and own["dirty"] is False and own["conflict"] is False
+
+
+def test_a_missing_ref_fallback_never_reads_from_another_computer(fixes):
+    f = fixes["g5"]
+    assert f["editor"] == {"toB": 0, "built": 0}
+    w = f["ws"]
+    assert w["filled"] is False and w["toB"] == 0
+    assert w["ref"] == "abc123" and w["key"] == w["mapped"][0] and len(w["mapped"]) == 1

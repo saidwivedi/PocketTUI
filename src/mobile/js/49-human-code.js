@@ -414,8 +414,13 @@ function hcOpenSource(src) {
 async function hcOpenEditor(path, opts) {
   const el = $("screen-humancode");
   const edEl = $("screen-editor");
-  if (edEl.classList.contains("active") && edDirty && !draftIsQueued(edRec)
-      && !confirm("Discard your unsaved changes?")) return;
+  if (edEl.classList.contains("active")) {
+    const ok = await new Promise((resolve) => {
+      const now = edMayLeave(resolve);
+      if (now !== undefined) resolve(now);
+    });
+    if (!ok) return;
+  }
   const gen = hcGen;
   if (el.classList.contains("docked")) {
     const row = await hcOtherRow(path);

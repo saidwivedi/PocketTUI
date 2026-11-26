@@ -1323,9 +1323,10 @@ function makeWorkspace(ctx) {
     tab.chip.classList.toggle("dirty", !!tab.dirty);
     // A save waiting for the computer, or refused by it (51-drafts.js).
     const st = tab.rec ? tab.rec.state : null;
-    tab.chip.classList.toggle("queued", st === "queued");
+    tab.chip.classList.toggle("queued", st === "queued" || st === "recheck");
     tab.chip.classList.toggle("conflict", st === "conflict");
     tab.chip.firstElementChild.title = st === "queued" ? tab.path + " (will save when your computer is back)"
+      : st === "recheck" ? tab.path + " (refused by your computer: checked when it is back)"
       : st === "conflict" ? tab.path + " (changed on your computer: not saved)" : tab.path || "";
     tab.chip.firstElementChild.setAttribute("aria-selected",
                                              tab.group.active === tab ? "true" : "false");
@@ -1606,6 +1607,9 @@ function makeWorkspace(ctx) {
       if (!opts.create) {
         let data = tab.ref ? await fsReadTextAt(path, tab.ref, opts.root || "")
                            : await ctx.readText(path);
+        // Another computer came into force while the ref was read: no tab
+        // state changes, and no fallback read goes out on its address.
+        if (draftAway(owner)) return false;
         // The commit has gone from the repo since the brief was read: the
         // file on the disk instead, which is a tab of its own already if it
         // is open.
@@ -1728,12 +1732,13 @@ function makeWorkspace(ctx) {
   }
 
   // A tab's own close. A file with unsaved edits asks first, in the app's own
-  // dialog, unless its save waits for the computer (51-drafts.js: kept and
-  // sent when it is back); `force` is vim's :q!, which has already said
-  // discard.
+  // dialog, unless its save waits for the computer and the store holds its
+  // current text (51-drafts.js: kept and sent when it is back; draftKeep
+  // writes it first); `force` is vim's :q!, which has already said discard.
   async function close(tab, force) {
     if (tab.closed) return;
-    if (tab.dirty && !force && !draftIsQueued(tab.rec)) {
+    if (tab.dirty && !force && !(tab.rec && await draftKeep(tab.rec))) {
+      if (tab.closed) return;
       const ok = await appConfirm("The edits since the last save will be lost.",
         { title: "Discard your unsaved changes to " + tab.title + "?",
           confirmLabel: "Discard" });
@@ -2192,20 +2197,22 @@ function makeWorkspace(ctx) {
   }
 
   // Unsaved tabs whose closing would lose text: one whose save waits for the
-  // computer keeps it (51-drafts.js).
-  function dirtyCount() { return fileTabs().filter((t) => t.dirty && !draftIsQueued(t.rec)).length; }
+  // computer, with its current text in the store, keeps it (51-drafts.js).
+  function dirtyCount() { return fileTabs().filter((t) => t.dirty && !draftKept(t.rec)).length; }
 
-  function askDiscardAll() {
+  // Waiting saves' text goes into the store first; only the tabs still at
+  // risk after that are counted and asked about, and none asks nothing.
+  async function askDiscardAll() {
+    for (const t of fileTabs()) if (t.dirty && t.rec) await draftKeep(t.rec);
     const n = dirtyCount();
-    return appConfirm(n === 1 ? "1 unsaved file will be discarded."
-                              : n + " unsaved files will be discarded.",
-                      { title: "Close the file pane?", confirmLabel: "Discard" })
-      .then((ok) => {
-        if (ok) {
-          for (const t of fileTabs()) if (t.dirty && t.rec && !draftIsQueued(t.rec)) draftDiscard(t.rec);
-        }
-        return ok;
-      });
+    if (!n) return true;
+    const ok = await appConfirm(n === 1 ? "1 unsaved file will be discarded."
+                                        : n + " unsaved files will be discarded.",
+                                { title: "Close the file pane?", confirmLabel: "Discard" });
+    if (ok) {
+      for (const t of fileTabs()) if (t.dirty && t.rec && !draftKept(t.rec)) draftDiscard(t.rec);
+    }
+    return ok;
   }
 
   // Whatever lays itself out from its box is told the box moved: CodeMirror

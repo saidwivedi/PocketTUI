@@ -5786,7 +5786,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
 }
 .editor-dirty.show { display: inline-block; }
 /* Waiting for the computer, or refused by it (51-drafts.js). */
-.editor-dirty[data-state="queued"] { display: inline-block; background: var(--warn); }
+.editor-dirty[data-state="queued"], .editor-dirty[data-state="recheck"] { display: inline-block; background: var(--warn); }
 .editor-dirty[data-state="conflict"] { display: inline-block; background: var(--bad); }
 
 /* The line over a buffer saying what is true of it beyond "edited": restored

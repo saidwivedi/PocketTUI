@@ -5376,6 +5376,8 @@ const ed = mkTab(gE, "/r/a.py", { kind: "editor", dirty: true, rec: {} });
 async function appConfirm(text, o) { log.push("ask " + o.title); return ANSWER; }
 function draftDiscard() { log.push("draftDiscard"); }
 function draftIsQueued() { return false; }
+async function draftKeep() { return false; }
+function draftKept() { return false; }
 """.replace("ANSWER", "true" if discard else "false") + "\n".join(
         _ws_inner(doc, n) for n in ("close", "drop", "unsplit")) + """
 await close(ed);
