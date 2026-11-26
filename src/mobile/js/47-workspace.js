@@ -2580,11 +2580,13 @@ function makeWorkspace(ctx) {
 
   // Off the pane for a rail switch (filesStash, 28-file-explorer.js): the
   // workspace goes into the leaving session's record whole, views and all, and
-  // comes back with it.
+  // comes back with it. Hidden where it is rather than taken out of the page:
+  // a frame out of the document loads again on its way back in, and a PDF
+  // would come back on its first page.
   function detach() {
     setOn(false);
     attached = false;
-    wsEl.remove();
+    wsEl.style.display = "none";
     root.style.removeProperty("--ws-tree-w");
     root.style.removeProperty("--ws-split");
     root.style.removeProperty("--ws-split-l");
@@ -2594,9 +2596,7 @@ function makeWorkspace(ctx) {
   function attach() {
     if (attached) return;
     attached = true;
-    root.appendChild(wsEl);
-    // Every PDF's frame fetches its file again, as a moved tab's does (moveTab).
-    for (const g of groups) for (const t of g.tabs) if (t.pdf) t.pdf.attached();
+    wsEl.style.display = "";
     if (treeW) root.style.setProperty("--ws-tree-w", treeW + "px");
     if (splitShare) root.style.setProperty("--ws-split", String(splitShare));
     for (const side of ["l", "r"]) {
@@ -2604,13 +2604,16 @@ function makeWorkspace(ctx) {
     }
   }
 
-  // The end of it: the pane closed, or the computer it was reading switched.
-  // Nothing is asked here; the callers that need an answer ask first.
+  // The end of it: the pane closed, the computer it was reading switched, or
+  // the session whose record held it gone (releaseFileView). Nothing is asked
+  // here; the callers that need an answer ask first. One in a record is off
+  // the pane already, and the pane's settings are another workspace's by now.
   function destroy() {
     endDrag(false);
     for (const t of fileTabs()) drop(t);
     if (scp) { scp.destroy(); scp = null; }
-    detach();
+    if (attached) detach();
+    wsEl.remove();
     document.removeEventListener("visibilitychange", onVisibility);
     wsLive.delete(api);
   }

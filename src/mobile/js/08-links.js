@@ -483,7 +483,7 @@ function dropFrame() {
 // The viewer's and the workspace's alike. A signed link (api/file_link) is
 // checked on every request and runs out after an hour, and a frame fetches
 // its document again whenever it is put back into the page (a tab moved to
-// another group, the workspace attached again) or the browser reloads it by
+// another group) or the browser reloads it by
 // itself after a sleep: an hour on, that fetch is answered 403 "expired" and
 // the frame shows the answer instead of the PDF. So where it can, the frame
 // is given a copy of the file in memory: the bytes come once over the
@@ -527,7 +527,7 @@ async function pdfMint(h) {
 // gives from outside: the shell may be on another origin than the backend,
 // so what the frame is showing cannot be read.
 function pdfFrameMake(h) {
-  const f = h.make();
+  const f = h.make(h.frame);
   f.src = h.blob || h.url;
   if (!h.blob) {
     let loads = 0;
@@ -552,7 +552,7 @@ async function pdfHeal(h) {
 }
 
 // The PDF at `path` in a frame: `make` builds an empty frame, not yet in the
-// page, and `put` puts the first one where it belongs; `live` says whether
+// page, given the frame it is to replace (none for the first), and `put` puts the first one where it belongs; `live` says whether
 // the open is still wanted, asked after every wait. Answers {h} — the handle,
 // whose attached() a caller runs after putting the frame back into the page
 // and whose drop() lets go of it — or {auth} when the pairing was refused, or
@@ -673,7 +673,9 @@ async function fillViewer(path, kind) {
   // A PDF in memory where it can be, else on a link that heals (pdfFrameOpen);
   // the frame showImage left in place is the one it takes over.
   if (kind === "pdf") {
-    const got = await pdfFrameOpen(path, () => $("viewer-frame").cloneNode(false),
+    // A heal while the frame is parked (viewerStash) clones the parked one, so
+    // the new frame is parked too.
+    const got = await pdfFrameOpen(path, (old) => (old || $("viewer-frame")).cloneNode(false),
                                    (f) => $("viewer-frame").replaceWith(f),
                                    () => fill === viewerFill);
     if (got.auth) { if (fill === viewerFill) hideImage(); rejectToken(); return; }
@@ -727,17 +729,47 @@ function hideImage() {
 // The path is the whole of the state: the media itself is a signed link the
 // restore mints again, and the zoom is at rest by the time a rail switch can
 // happen. Same shape as the editor's and the reader's, so stashFileView can
-// treat the three alike.
+// treat the three alike. A PDF that has landed is the exception: its frame
+// stays in the overlay, hidden and without the id, and goes into the record
+// with its handle, since a frame taken out of the document loads again and the
+// reader would be back on the first page. An empty frame takes the id for
+// whatever the overlay shows next.
 function viewerStash() {
   const s = { path: viewerPath };
+  if (viewerPdf) {
+    const frame = viewerPdf.frame;
+    const fresh = frame.cloneNode(false);
+    fresh.removeAttribute("src");
+    frame.removeAttribute("id");
+    frame.style.display = "none";
+    frame.before(fresh);
+    s.pdf = viewerPdf;
+    viewerPdf = null;
+  }
   hideImage();
   return s;
 }
 
 function viewerRestore(s) {
+  // The parked frame takes the id back from the empty one, and showImage, on
+  // the path it is already showing, shows it as it is.
+  if (s.pdf) {
+    hideImage();
+    $("viewer-frame").remove();
+    s.pdf.frame.id = "viewer-frame";
+    viewerPdf = s.pdf;
+    viewerPath = s.path;
+  }
   // Not fed through dockFileView either: showImage asks the pane it is coming
   // back to, and filesRestore has already put that pane back up.
   showImage(s.path);
+}
+
+// A record that will never be restored lets its parked frame go.
+function viewerRelease(s) {
+  if (!s || !s.pdf) return;
+  s.pdf.drop();
+  s.pdf.frame.remove();
 }
 
 $("btn-viewer-close").addEventListener("click", hideImage);

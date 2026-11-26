@@ -390,12 +390,15 @@ function dropFileView(name) {
 }
 
 // What a view holds beyond its record: the browser's frames stay parked in the
-// document with their pages running (browserStash, 42-browser.js), so a view
-// that is dropped rather than restored lets them go.
+// document with their pages running (browserStash, 42-browser.js), and so do a
+// docked PDF's (viewerStash) and the workspace's (its detach), so a view that
+// is dropped rather than restored lets them go.
 function releaseFileView(view) {
   if (!view) return;
   browserRelease(view.browser);
   browserRelease(view.browser2);
+  viewerRelease(view.viewer);
+  for (const f of [view.files, view.files2]) if (f && f.ws) f.ws.destroy();
 }
 
 function renameFileView(from, to) {
