@@ -1646,6 +1646,12 @@ function edVimExt() { return "vim"; }
 function edWrapExt(path) { return "wrap " + path; }
 function edThemeExt() { return "theme"; }
 function edLanguage(path) { return "lang"; }
+// The drafts module (51-drafts.js), which these views report edits to.
+function draftOwner() { return null; }
+function draftTouch() {}
+function draftWrite() {}
+function draftUnflag() {}
+const edParked = new Set();
 """
 
 
@@ -1711,6 +1717,8 @@ function edSetDirty() {}
 function edSyncWrapButton() {}
 function edSyncVimButton() {}
 function dockFileView() { return false; }
+async function draftLookup() { return null; }
+function draftApply() {}
 const TEXT = "one\\ntwo\\nthree\\nfour\\nfive";
 """
 
@@ -1889,6 +1897,7 @@ async function appConfirm(msg, opts) {{
   return {json.dumps(overwrite)};
 }}
 async function edViewReload(rec) {{ calls.push("reload " + rec.path); }}
+function edLanded(rec, sent, hash) {{ rec.hash = hash; rec.dirty = false; rec.onDirty(rec, false); }}
 {save}
 const rec = {{ path: "/h/a.py", hash: "read", dirty: true, readOnly: false,
   view: {{ state: {{ doc: {{ toString: () => "text" }} }} }},
@@ -5409,6 +5418,7 @@ const rec = { b: { dead: false }, view: { destroy() { destroyed++; } }, timer: 4
 const brief = mkTab(gB, "/r/human_code/r.humancode", { kind: "humancode", hc: rec });
 const ed = mkTab(gE, "/r/a.py", { kind: "editor", dirty: true, rec: {} });
 async function appConfirm(text, o) { log.push("ask " + o.title); return ANSWER; }
+function draftDiscard() { log.push("draftDiscard"); }
 """.replace("ANSWER", "true" if discard else "false") + "\n".join(
         _ws_inner(doc, n) for n in ("close", "drop", "unsplit")) + """
 await close(ed);
@@ -5427,6 +5437,8 @@ console.log(JSON.stringify({ mid, end: { destroyed, intervals, dead: rec.b.dead,
     if discard:
         assert mid["edClosed"] is True and mid["groups"] == ["brief"]
         assert "edDropView" in mid["log"] and "rm gEl edit" in mid["log"]
+        # The yes is an explicit discard, so the file's draft goes with it.
+        assert "draftDiscard" in mid["log"]
     else:
         assert mid["edClosed"] is False and mid["groups"] == ["brief", "edit"]
     end = out["end"]

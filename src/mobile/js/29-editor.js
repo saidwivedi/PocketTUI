@@ -421,7 +421,7 @@ function edDefineVimEx() {
     // Discarding is dropping the dirty flag before the pop: editorPopped's
     // confirm is what a bare :q is meant to hit and a :q! is meant to skip.
     const discard = bang(params);
-    if (discard) { rec.dirty = false; rec.onDirty(rec, false); }
+    if (discard) { draftDiscard(rec); rec.dirty = false; rec.onDirty(rec, false); }
     edRecQuit(rec, discard);
   };
   const saveQuit = async () => {
@@ -480,6 +480,9 @@ async function openEditor(path, opts) {
     // tree. The explorer says which branch; the missing Save says the rest.
     atRef = !!data.readonly;
   }
+  // This device's unsaved text for the file, if it kept any (51-drafts.js):
+  // asked before the view exists, so nothing typed can race the answer.
+  const draft = lossy || atRef ? null : await draftLookup(path);
   try { await ensureCM(); } catch (e) { toast("Couldn't load the editor"); return; }
 
   edPath = path;
@@ -494,6 +497,7 @@ async function openEditor(path, opts) {
   edRec.hash = hash;
   edReturn = (opts && opts.returnTo) || null;
   edSetDirty(false);
+  draftApply(edRec, { content, hash }, draft);
   edSyncWrapButton();
   edSyncVimButton();
   if (cfg.editorVimOn) { edDefineVimEx(); edLoadVimrc(); }
@@ -572,11 +576,17 @@ function edShowLine(n, view) {
 // extensions already live in the state and only need bringing up to date.
 // onDirty(rec, dirty) hears every flip of rec.dirty; onSave(rec) and
 // onQuit(rec, bang) are what vim's :w and :q do in this view (edDefineVimEx).
-// `extensions` are added to a new state after the editor's own.
+// `extensions` are added to a new state after the editor's own. `owner` is
+// the computer the buffer's drafts are kept under (draftOwner), the one in
+// force unless a restore says otherwise.
 function edMakeView(opts) {
   const CM = window.CM6;
   const rec = {
     view: null, path: opts.path, hash: "", dirty: false, readOnly: !!opts.readOnly,
+    owner: opts.owner !== undefined ? opts.owner : draftOwner(),
+    // The text the buffer is based on (rec.hash's), and the computer's version
+    // last known: the merge's base and what a discard goes back to.
+    baseText: null, loaded: null,
     comps: opts.comps || {
       theme: new CM.Compartment(),   // swapped when the app theme flips
       wrap: new CM.Compartment(),    // swapped when the Wrap button is tapped
@@ -623,7 +633,9 @@ function edMakeView(opts) {
             // Found by its view rather than closed over: the listener lives in
             // the state, and a restored state comes back under a new rec.
             for (const r of edLive) {
-              if (r.view === u.view && !r.dirty) { r.dirty = true; r.onDirty(r, true); }
+              if (r.view !== u.view) continue;
+              if (!r.dirty) { r.dirty = true; r.onDirty(r, true); }
+              draftTouch(r);
             }
           }),
           // A caller's own, last: the workspace's change marks (47-workspace.js).
@@ -637,7 +649,15 @@ function edMakeView(opts) {
   return rec;
 }
 
-function edDropView(rec) {
+// `park` is a buffer put away with its session (edStash): it keeps its
+// draft and its save state, and a write answered while it is away lands in
+// it. Anything else is closed. Either way its pending draft is written first,
+// and it stops reaching the screen it was on.
+function edDropView(rec, park) {
+  if (rec.dirty) draftWrite(rec);
+  if (park) { rec.parked = true; edParked.add(rec); } else rec.closed = true;
+  rec.onDirty = () => {};
+  if (rec.strip) { rec.strip.remove(); rec.strip = null; }
   rec.view.destroy();
   edLive.delete(rec);
 }
@@ -674,9 +694,12 @@ function edStash() {
     // reconfigure these ones or they would address a compartment the rebuilt
     // view's state has never heard of.
     comps: edRec.comps,
+    // The rec itself, parked: its hash, its draft's base and its save state,
+    // which a write answered while it is away still updates (draftAdopt).
+    rec: edRec,
   };
   // Only the view goes; the state above outlives it.
-  edDropView(edRec);
+  edDropView(edRec, true);
   edRec = null;
   edView = null;
   edPath = "";
@@ -699,9 +722,11 @@ function edRestore(s) {
   $("editor-filename").textContent = baseName(edPath);
   $("btn-editor-save").style.display = edReadOnly ? "none" : "";
   $("btn-editor-download").style.display = canDownload(edPath) ? "" : "none";
-  edScreenView({ path: s.path, state: s.state, comps: s.comps, readOnly: s.readOnly });
+  edScreenView({ path: s.path, state: s.state, comps: s.comps, readOnly: s.readOnly,
+                 owner: s.rec ? s.rec.owner : undefined });
   edRec.hash = s.hash;
   edSetDirty(s.dirty);
+  if (s.rec) draftAdopt(s.rec, edRec);
   edSyncWrapButton();
   edSyncVimButton();
   dockFileView($("screen-editor"));
@@ -712,16 +737,18 @@ function edRestore(s) {
 }
 
 // Writes a rec's buffer back. True when the write landed; false on any other
-// outcome, the dirty flag then still saying what it said.
+// outcome, the dirty flag then still saying what it said. Clean only if the
+// buffer still says what was sent (edLanded, 51-drafts.js).
 async function edViewSave(rec, baseHash) {
   if (rec.readOnly) return false;
+  const text = rec.view.state.doc.toString();
   try {
     const r = await fetch(apiURL("api/fs/write"), {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         path: rec.path,
-        content: rec.view.state.doc.toString(),
+        content: text,
         hash: baseHash === undefined ? rec.hash : baseHash,
       }),
     });
@@ -740,9 +767,7 @@ async function edViewSave(rec, baseHash) {
       return false;
     }
     if (!r.ok || !data) { toast("Couldn't save"); return false; }
-    rec.hash = data.hash;
-    rec.dirty = false;
-    rec.onDirty(rec, false);
+    edLanded(rec, text, data.hash);
     toast("Saved");
     return true;
   } catch (e) {
@@ -758,6 +783,8 @@ async function edViewReload(rec) {
     const data = await r.json().catch(() => null);
     if (!r.ok || !data) throw new Error("HTTP " + r.status);
     rec.hash = data.hash;
+    rec.baseText = data.content;
+    rec.loaded = { content: data.content, hash: data.hash };
     rec.view.dispatch({
       changes: { from: 0, to: rec.view.state.doc.length, insert: data.content },
     });
@@ -784,9 +811,12 @@ async function editorSave() {
 // The pop has already happened by the time a dirty buffer gets its say, so
 // "stay" means pushing the entry back rather than cancelling anything.
 function editorPopped() {
-  if (edDirty && !confirm("Discard your unsaved changes?")) {
-    history.pushState({ editor: true }, "", location.href);
-    return;
+  if (edDirty) {
+    if (!confirm("Discard your unsaved changes?")) {
+      history.pushState({ editor: true }, "", location.href);
+      return;
+    }
+    if (edRec) draftDiscard(edRec);
   }
   closeEditor();
 }
@@ -817,7 +847,10 @@ function closeEditor() {
 // the press does. False says the editor is staying, which every caller has to
 // stand down for.
 function editorCloseDocked() {
-  if (edDirty && !confirm("Discard your unsaved changes?")) return false;
+  if (edDirty) {
+    if (!confirm("Discard your unsaved changes?")) return false;
+    if (edRec) draftDiscard(edRec);
+  }
   closeEditor();
   return true;
 }

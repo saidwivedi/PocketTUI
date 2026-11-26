@@ -1617,6 +1617,9 @@ function makeWorkspace(ctx) {
         lossy = !!data.lossy;
         readOnly = lossy || !!data.readonly;
       }
+      // This device's unsaved text for the file (51-drafts.js), before the
+      // view exists.
+      const draft = readOnly ? null : await draftLookup(path);
       try { await ensureCM(); } catch (e) { toast("Couldn't load the editor"); return false; }
       if (tab.closed) return true;
       // The marks live in a compartment of their own, so the chip's key adds
@@ -1632,6 +1635,7 @@ function makeWorkspace(ctx) {
                      edRangeExt(opts.line ? { line: opts.line, lineEnd: opts.lineEnd } : null)],
       });
       tab.rec.hash = hash;
+      draftApply(tab.rec, { content, hash }, draft);
       if (opts.line && tab.body.classList.contains("on")) edShowLine(opts.line, tab.rec.view);
       if (tab.marksOn) loadBase(tab);
       if (cfg.editorVimOn) { edDefineVimEx(); edLoadVimrc(); }
@@ -1722,6 +1726,7 @@ function makeWorkspace(ctx) {
         { title: "Discard your unsaved changes to " + tab.title + "?",
           confirmLabel: "Discard" });
       if (!ok || tab.closed) return;
+      if (tab.rec) draftDiscard(tab.rec);
     }
     drop(tab);
   }
@@ -2180,7 +2185,11 @@ function makeWorkspace(ctx) {
     const n = dirtyCount();
     return appConfirm(n === 1 ? "1 unsaved file will be discarded."
                               : n + " unsaved files will be discarded.",
-                      { title: "Close the file pane?", confirmLabel: "Discard" });
+                      { title: "Close the file pane?", confirmLabel: "Discard" })
+      .then((ok) => {
+        if (ok) for (const t of fileTabs()) if (t.dirty && t.rec) draftDiscard(t.rec);
+        return ok;
+      });
   }
 
   // Whatever lays itself out from its box is told the box moved: CodeMirror

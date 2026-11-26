@@ -508,6 +508,8 @@ function switchProfile(id, probe) {
   syncChrome();
   syncProfileUI();
   fetchServerVersion();
+  // The unsaved-files pill is about the computer in force.
+  draftsPaintSoon();
   if (probe) loadSessionsAfterProbe();
   else loadSessions();
   // The subscription this browser holds is registered with the machine being

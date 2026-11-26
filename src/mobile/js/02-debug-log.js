@@ -427,6 +427,8 @@ function removeProfile(id) {
   // about them again.
   dropProfileUnread(id);
   dropProfileFilesLast(id);
+  // So were its unsaved files (51-drafts.js).
+  draftDropProfile(id);
   if (id === activeProfileId()) localStorage.removeItem(ACTIVE_PROFILE_KEY);
   mirrorLegacyKeys();
 }

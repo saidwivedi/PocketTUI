@@ -382,6 +382,26 @@ body {
    them out. Nothing to hold when the pill is hidden, so the wrap goes too. */
 #profile-wrap { margin-right: auto; }
 #profile-wrap:has(#btn-profile[hidden]) { display: none; }
+/* Files with edits kept on this device (51-drafts.js): an outlined pill with
+   a dot.
+   Its menu hangs off its right edge, since the pill sits in the row's right
+   group, and is wide enough for a path under each name. */
+#drafts-wrap:has(#btn-drafts[hidden]) { display: none; }
+.drafts-pill::before {
+  content: "";
+  width: 6px; height: 6px; flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--warn);
+}
+#drafts-wrap { position: static; }
+.list-new:has(#drafts-wrap) { position: relative; }
+#drafts-menu { left: 0; right: 0; top: 100%; min-width: 0; max-width: none; max-height: 60vh; overflow-y: auto; }
+/* The folder a draft is in, elided from its start so the folders nearest the
+   file are the ones left showing. */
+.draft-row .profile-menu-addr { direction: rtl; text-align: left; }
+.draft-row { cursor: pointer; }
+.draft-row:hover { background: var(--umber-tint); }
+.draft-trash { min-width: 32px; min-height: 32px; }
 /* A pill like New session beside it, with the chevron a <select> would have
    drawn for itself — #btn-files-view's glyph, at this row's size. The name is
    whatever the computer is called, so it is capped rather than trusted: a long
@@ -512,7 +532,7 @@ body {
 .view-row.profile-menu-add { border-top: 1px solid var(--hair); color: var(--umber); }
 /* #files-view-scrim's recipe: dim the list under the menu, take the tap that
    closes it, and stay under the topbar so the header above is still readable. */
-#profile-scrim, #theme-scrim {
+#profile-scrim, #theme-scrim, #drafts-scrim {
   position: fixed; inset: 0;
   background: rgba(20, 16, 10, 0.16);
   opacity: 0;
@@ -520,7 +540,7 @@ body {
   transition: opacity 0.2s var(--ease-out);
   z-index: 45;
 }
-#profile-scrim.show, #theme-scrim.show { opacity: 1; pointer-events: auto; }
+#profile-scrim.show, #theme-scrim.show, #drafts-scrim.show { opacity: 1; pointer-events: auto; }
 
 .item {
   background: var(--card);
@@ -5746,6 +5766,36 @@ html.term-open #dbg-panel { opacity: 0.85; }
   background: var(--umber);
 }
 .editor-dirty.show { display: inline-block; }
+/* The line over a buffer saying what is true of it beyond "edited": restored
+   from this device. In the flow above the text, never over it, on every
+   surface the editor is on. */
+.ed-strip {
+  flex: 0 0 auto;
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 7px 10px 7px 14px;
+  border-bottom: 1px solid var(--hair);
+  background: var(--umber-tint);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.ed-strip-msg { flex: 1 1 200px; min-width: 0; }
+.ed-strip-btn {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--hair-strong);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ed-strip-btn:active { transform: scale(0.96); }
 /* The reader's Edit is the same pill in the same slot of the same bar, so it
    shares Save's rule rather than restating it. */
 #btn-editor-save, #btn-reader-edit {
@@ -5799,8 +5849,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
 @media (hover: hover) and (pointer: fine) {
   #btn-editor-vim { display: inline-block; }
 }
-#editor-host { flex: 1 1 auto; min-height: 0; }
-#editor-host .cm-editor { height: 100%; }
+#editor-host { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+#editor-host .cm-editor { flex: 1 1 0; min-height: 0; height: auto; }
 #editor-host .cm-editor.cm-focused { outline: none; }
 
 /* ============================================================
@@ -6099,7 +6149,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
      same way the file bar's dropdown scrims belong to their pane: the terminal
      beside the rail is live, and a menu over the session list has no business
      dimming it. The rail is position:fixed, so absolute is its own box. */
-  #profile-scrim, #theme-scrim { position: absolute; }
+  #profile-scrim, #theme-scrim, #drafts-scrim { position: absolute; }
 
   /* Main-pane screens start past the rail and its gutter: the fixed screens
      move their left edge, the explorer — a page-scrolling screen — shifts

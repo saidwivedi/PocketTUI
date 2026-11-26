@@ -451,7 +451,7 @@
          act on rather than being a third thing to press. Button and panel are
          the file bar's dropdown (28-file-explorer.js), since it asks the same
          shape of question. -->
-    <div class="list-new"><div class="profile-wrap" id="profile-wrap"><button class="pill-btn profile-pill" id="btn-profile" aria-haspopup="true" aria-expanded="false" hidden><span class="pill-label" id="profile-name"></span></button><div class="profile-menu" id="profile-menu" role="menu"></div></div><button class="pill-btn pill-alert" id="btn-update-rail" hidden></button><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg><span class="pill-label">New session</span></button></div>
+    <div class="list-new"><div class="profile-wrap" id="profile-wrap"><button class="pill-btn profile-pill" id="btn-profile" aria-haspopup="true" aria-expanded="false" hidden><span class="pill-label" id="profile-name"></span></button><div class="profile-menu" id="profile-menu" role="menu"></div></div><div class="profile-wrap" id="drafts-wrap"><button class="pill-btn drafts-pill" id="btn-drafts" aria-haspopup="true" aria-expanded="false" hidden><span class="pill-label" id="drafts-count"></span></button><div class="profile-menu" id="drafts-menu" role="menu"></div></div><button class="pill-btn pill-alert" id="btn-update-rail" hidden></button><button class="pill-btn" id="btn-new"><svg><use href="#i-plus"/></svg><span class="pill-label">New session</span></button></div>
     <!-- Unpaired, the list is the demo's (renderDemoSessions,
          06-session-list.js), and this says so over it, with the way back to
          the first run. -->
@@ -504,6 +504,8 @@
        a position:fixed child — the scrim has to cover the window, not the list.
        Inside #screen-list, so leaving the list takes it with it. -->
   <div id="profile-scrim"></div>
+  <!-- The unsaved-files menu's scrim (51-drafts.js), the switcher's recipe. -->
+  <div id="drafts-scrim"></div>
   <!-- The theme menu's, on the same recipe and out here for a reason of its
        own: .topbar carries a backdrop-filter, which would make that bar the
        containing block for a position:fixed child. -->

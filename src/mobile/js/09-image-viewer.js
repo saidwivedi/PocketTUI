@@ -395,6 +395,7 @@ function dropFileView(name) {
 // is dropped rather than restored lets them go.
 function releaseFileView(view) {
   if (!view) return;
+  if (view.editor) draftReleaseParked(view.editor.rec);
   browserRelease(view.browser);
   browserRelease(view.browser2);
   viewerRelease(view.viewer);
