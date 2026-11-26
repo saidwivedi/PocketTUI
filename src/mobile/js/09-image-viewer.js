@@ -914,6 +914,8 @@ function connect() {
     if (missedHidden && document.visibilityState === "visible") sendVisibility(false);
     sendVisibility(document.visibilityState === "visible");
     term.focus();
+    // The computer answers again: saves that were waiting for it go out.
+    draftKick();
   };
   ws.onmessage = (ev) => {
     if (gen !== sockGen) return;

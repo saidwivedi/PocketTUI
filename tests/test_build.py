@@ -1873,51 +1873,6 @@ console.log(JSON.stringify({{ first, second, ret: edReturn }}));
     assert "edReturn = null;" in stash
 
 
-@pytest.mark.parametrize("overwrite", [True, False])
-def test_a_save_conflict_asks_in_the_app_and_resends_or_reloads(doc, tmp_path, overwrite):
-    """A 409 on save asks through appConfirm, not the browser's confirm().
-    Overwrite resends against the hash the 409 reported and the rec takes the
-    new hash and comes clean; Cancel reloads the file and sends nothing more."""
-    save = _js_chunk(doc, "async function edViewSave(")
-    out = _node_json(tmp_path, "save.mjs", f"""
-const posts = [], calls = [];
-const replies = [[409, {{ hash: "disk" }}], [200, {{ hash: "saved" }}]];
-async function fetch(url, init) {{
-  posts.push(JSON.parse(init.body));
-  const [status, body] = replies.shift();
-  return {{ status, ok: status === 200, json: async () => body }};
-}}
-function apiURL(p) {{ return p; }}
-function authHeaders(h) {{ return h; }}
-function rejectToken() {{ calls.push("reject"); }}
-function toast(t) {{ calls.push("toast " + t); }}
-function baseName(p) {{ return p.split("/").pop(); }}
-async function appConfirm(msg, opts) {{
-  calls.push("ask " + opts.title + " / " + opts.confirmLabel);
-  return {json.dumps(overwrite)};
-}}
-async function edViewReload(rec) {{ calls.push("reload " + rec.path); }}
-function edLanded(rec, sent, hash) {{ rec.hash = hash; rec.dirty = false; rec.onDirty(rec, false); }}
-{save}
-const rec = {{ path: "/h/a.py", hash: "read", dirty: true, readOnly: false,
-  view: {{ state: {{ doc: {{ toString: () => "text" }} }} }},
-  onDirty: (r, on) => calls.push("dirty " + on) }};
-const ok = await edViewSave(rec);
-console.log(JSON.stringify({{ ok, posts, calls, hash: rec.hash, dirty: rec.dirty }}));
-""")
-    ask = "ask File changed on disk / Overwrite"
-    assert out["posts"][0] == {"path": "/h/a.py", "content": "text", "hash": "read"}
-    if overwrite:
-        assert [p["hash"] for p in out["posts"]] == ["read", "disk"]
-        assert out["calls"] == [ask, "dirty false", "toast Saved"]
-        assert out["ok"] is True and out["hash"] == "saved" and out["dirty"] is False
-    else:
-        assert len(out["posts"]) == 1
-        assert out["calls"] == [ask, "reload /h/a.py"]
-        assert out["ok"] is False and out["hash"] == "read"
-    assert "confirm(" not in save.replace("appConfirm(", "")
-
-
 # (viewer shown, stack depth) -> what the explorer's popstate does.
 POPSTATE_CASES = [
     ("viewer over a subfolder", True, 2, ["hide", 'push {"files":true,"path":"/h/a"}'], 2),

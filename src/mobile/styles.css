@@ -383,9 +383,8 @@ body {
 #profile-wrap { margin-right: auto; }
 #profile-wrap:has(#btn-profile[hidden]) { display: none; }
 /* Files with edits kept on this device (51-drafts.js): an outlined pill with
-   a dot.
-   Its menu hangs off its right edge, since the pill sits in the row's right
-   group, and is wide enough for a path under each name. */
+   the waiting dot, the conflict pair's colours while any of them is refused.
+   Its menu spans the whole pill row, so a path fits under each name. */
 #drafts-wrap:has(#btn-drafts[hidden]) { display: none; }
 .drafts-pill::before {
   content: "";
@@ -393,6 +392,12 @@ body {
   border-radius: 50%;
   background: var(--warn);
 }
+.drafts-pill.drafts-bad {
+  background: var(--diff-del-bg);
+  color: var(--diff-del-ink);
+  border-color: var(--diff-del-ink);
+}
+.drafts-pill.drafts-bad::before { background: var(--bad); }
 #drafts-wrap { position: static; }
 .list-new:has(#drafts-wrap) { position: relative; }
 #drafts-menu { left: 0; right: 0; top: 100%; min-width: 0; max-width: none; max-height: 60vh; overflow-y: auto; }
@@ -401,6 +406,7 @@ body {
 .draft-row .profile-menu-addr { direction: rtl; text-align: left; }
 .draft-row { cursor: pointer; }
 .draft-row:hover { background: var(--umber-tint); }
+.draft-row .profile-menu-status[data-tone="bad"] { color: var(--bad); }
 .draft-trash { min-width: 32px; min-height: 32px; }
 /* A pill like New session beside it, with the chevron a <select> would have
    drawn for itself — #btn-files-view's glyph, at this row's size. The name is
@@ -4755,6 +4761,11 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   .ws-tabs .tab-chip.dirty:not(:hover):not(:focus-within) .ws-dirty { display: block; }
   .ws-tabs .tab-chip.dirty:not(:hover):not(:focus-within) .tab-del { visibility: hidden; }
+  /* A save waiting for the computer, or refused by it (51-drafts.js): the same
+     dot in the state's colour, so the strip of tabs says which file needs a
+     look without opening each. */
+  .ws-tabs .tab-chip.queued .ws-dirty { background: var(--warn); }
+  .ws-tabs .tab-chip.conflict .ws-dirty { background: var(--bad); width: 8px; height: 8px; margin-top: -4px; }
 
   /* A tab being dragged: the chip stays in its place dimmed, a lifted copy of
      it follows the pointer, and where it would land is drawn in umber, a bar
@@ -5766,9 +5777,13 @@ html.term-open #dbg-panel { opacity: 0.85; }
   background: var(--umber);
 }
 .editor-dirty.show { display: inline-block; }
+/* Waiting for the computer, or refused by it (51-drafts.js). */
+.editor-dirty[data-state="queued"] { display: inline-block; background: var(--warn); }
+.editor-dirty[data-state="conflict"] { display: inline-block; background: var(--bad); }
+
 /* The line over a buffer saying what is true of it beyond "edited": restored
-   from this device. In the flow above the text, never over it, on every
-   surface the editor is on. */
+   from this device, waiting for the computer, or refused by it. In the
+   flow above the text, never over it, on every surface the editor is on. */
 .ed-strip {
   flex: 0 0 auto;
   display: flex; align-items: center; flex-wrap: wrap;
@@ -5781,6 +5796,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
   font-size: 13px;
   line-height: 1.35;
 }
+.ed-strip.warn { background: color-mix(in srgb, var(--warn) 16%, var(--paper)); }
+.ed-strip.bad { background: var(--diff-del-bg); color: var(--diff-del-ink); }
 .ed-strip-msg { flex: 1 1 200px; min-width: 0; }
 .ed-strip-btn {
   flex: 0 0 auto;
@@ -5795,6 +5812,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   font-weight: 600;
   cursor: pointer;
 }
+.ed-strip-btn.primary { background: var(--umber); border-color: var(--umber); color: var(--paper); }
 .ed-strip-btn:active { transform: scale(0.96); }
 /* The reader's Edit is the same pill in the same slot of the same bar, so it
    shares Save's rule rather than restating it. */

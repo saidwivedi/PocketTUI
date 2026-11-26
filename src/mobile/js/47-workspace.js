@@ -1321,6 +1321,12 @@ function makeWorkspace(ctx) {
     if (word.textContent !== tab.title) word.textContent = tab.title;
     tab.chip.classList.toggle("on", tab.group.active === tab);
     tab.chip.classList.toggle("dirty", !!tab.dirty);
+    // A save waiting for the computer, or refused by it (51-drafts.js).
+    const st = tab.rec ? tab.rec.state : null;
+    tab.chip.classList.toggle("queued", st === "queued");
+    tab.chip.classList.toggle("conflict", st === "conflict");
+    tab.chip.firstElementChild.title = st === "queued" ? tab.path + " (will save when your computer is back)"
+      : st === "conflict" ? tab.path + " (changed on your computer: not saved)" : tab.path || "";
     tab.chip.firstElementChild.setAttribute("aria-selected",
                                              tab.group.active === tab ? "true" : "false");
     const key = tab.chip.querySelector(".ws-marks-key");
@@ -1629,6 +1635,7 @@ function makeWorkspace(ctx) {
       tab.rec = edMakeView({
         host: tab.body, path, content, readOnly,
         onDirty: (rec, dirty) => { tab.dirty = dirty; paintChip(tab); },
+        onMark: () => paintChip(tab),
         onSave: () => save(tab),
         onQuit: (rec, bang) => close(tab, bang),
         extensions: [tab.marks.comp.of(tab.marksOn ? marksExt(tab) : []),

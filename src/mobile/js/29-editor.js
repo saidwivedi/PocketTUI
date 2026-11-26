@@ -576,9 +576,10 @@ function edShowLine(n, view) {
 // extensions already live in the state and only need bringing up to date.
 // onDirty(rec, dirty) hears every flip of rec.dirty; onSave(rec) and
 // onQuit(rec, bang) are what vim's :w and :q do in this view (edDefineVimEx).
-// `extensions` are added to a new state after the editor's own. `owner` is
-// the computer the buffer's drafts are kept under (draftOwner), the one in
-// force unless a restore says otherwise.
+// onMark(rec) hears the buffer's save state change (rec.state: "queued",
+// "conflict" or null, 51-drafts.js). `extensions` are added to a new state
+// after the editor's own. `owner` is the computer the buffer's drafts are kept
+// under (draftOwner), the one in force unless a restore says otherwise.
 function edMakeView(opts) {
   const CM = window.CM6;
   const rec = {
@@ -586,7 +587,7 @@ function edMakeView(opts) {
     owner: opts.owner !== undefined ? opts.owner : draftOwner(),
     // The text the buffer is based on (rec.hash's), and the computer's version
     // last known: the merge's base and what a discard goes back to.
-    baseText: null, loaded: null,
+    baseText: null, loaded: null, state: null, onMark: opts.onMark || null,
     comps: opts.comps || {
       theme: new CM.Compartment(),   // swapped when the app theme flips
       wrap: new CM.Compartment(),    // swapped when the Wrap button is tapped
@@ -657,9 +658,11 @@ function edDropView(rec, park) {
   if (rec.dirty) draftWrite(rec);
   if (park) { rec.parked = true; edParked.add(rec); } else rec.closed = true;
   rec.onDirty = () => {};
+  rec.onMark = null;
   if (rec.strip) { rec.strip.remove(); rec.strip = null; }
   rec.view.destroy();
   edLive.delete(rec);
+  if (!park) draftUnflag(rec);
 }
 
 // The editor screen's rec: its dirty flag drives the screen's marks, and its
@@ -670,6 +673,7 @@ function edScreenView(opts) {
     host: $("editor-host"),
     onDirty: (rec, on) => edSetDirty(on),
     onSave: () => editorSave(),
+    onMark: (rec) => { $("editor-dirty").dataset.state = rec.state || ""; },
   }, opts));
   edView = edRec.view;
 }
@@ -736,65 +740,15 @@ function edRestore(s) {
   // The caret is in the state, so it is already back where it was left.
 }
 
-// Writes a rec's buffer back. True when the write landed; false on any other
-// outcome, the dirty flag then still saying what it said. Clean only if the
-// buffer still says what was sent (edLanded, 51-drafts.js).
-async function edViewSave(rec, baseHash) {
+// Writes a rec's buffer back against the hash it was read at. True when the
+// write landed; false on any other outcome, the dirty flag then still saying
+// what it said. A computer that does not answer makes the save wait for it,
+// and one that has moved on opens the conflict dialog (51-drafts.js).
+async function edViewSave(rec) {
   if (rec.readOnly) return false;
-  const text = rec.view.state.doc.toString();
-  try {
-    const r = await fetch(apiURL("api/fs/write"), {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({
-        path: rec.path,
-        content: text,
-        hash: baseHash === undefined ? rec.hash : baseHash,
-      }),
-    });
-    if (r.status === 401) { rejectToken(); return false; }
-    const data = await r.json().catch(() => null);
-    if (r.status === 409) {
-      // The file on disk is not what this buffer was read from. Overwrite is
-      // a resend against the hash the 409 reported; reload drops the edits.
-      const overwrite = await appConfirm(
-        baseName(rec.path) + " changed on disk since you opened it. Overwrite "
-        + "replaces it with your version; Cancel reloads the file and drops "
-        + "your edits.",
-        { title: "File changed on disk", confirmLabel: "Overwrite" });
-      if (overwrite) return edViewSave(rec, (data && data.hash) || "");
-      await edViewReload(rec);
-      return false;
-    }
-    if (!r.ok || !data) { toast("Couldn't save"); return false; }
-    edLanded(rec, text, data.hash);
-    toast("Saved");
-    return true;
-  } catch (e) {
-    toast("Couldn't save");
-    return false;
-  }
-}
-
-async function edViewReload(rec) {
-  try {
-    const r = await fetch(apiURL("api/fs/read?path=" + encodeURIComponent(rec.path)),
-                          { cache: "no-store", headers: authHeaders() });
-    const data = await r.json().catch(() => null);
-    if (!r.ok || !data) throw new Error("HTTP " + r.status);
-    rec.hash = data.hash;
-    rec.baseText = data.content;
-    rec.loaded = { content: data.content, hash: data.hash };
-    rec.view.dispatch({
-      changes: { from: 0, to: rec.view.state.doc.length, insert: data.content },
-    });
-    // After the dispatch, whose docChanged just marked the buffer dirty.
-    rec.dirty = false;
-    rec.onDirty(rec, false);
-    toast("Reloaded from disk");
-  } catch (e) {
-    toast("Couldn't reload");
-  }
+  rec = edCurrent(rec);
+  if (rec.conflict) { draftResolve(rec); return false; }
+  return (await edSaveOnce(rec, "manual")) === "ok";
 }
 
 async function editorSave() {
