@@ -1616,8 +1616,20 @@ function makeWorkspace(ctx) {
       if (tab.closed && tab.mesh) { tab.mesh.destroy(); tab.mesh = null; }
       return true;
     }
-    // A picture, a film or a PDF: the tag fetches the bytes itself and carries
-    // no pairing header, so it is given the signed link the viewer is given
+    // A PDF the viewer's way (pdfFrameOpen, 08-links.js): in memory where it
+    // can be, else on a link that heals.
+    if (tab.kind === "pdf") {
+      const got = await pdfFrameOpen(path,
+                                     () => el("iframe", { class: "ws-frame", title: baseName(path) }),
+                                     (f) => tab.body.appendChild(f), () => !tab.closed);
+      if (got.auth) { rejectToken(); return false; }
+      if (got.gone) return true;
+      if (!got.h) { toast("Couldn't open " + baseName(path)); return false; }
+      tab.pdf = got.h;
+      return true;
+    }
+    // A picture or a film: the tag fetches the bytes itself and carries no
+    // pairing header, so it is given the signed link the viewer is given
     // (fillViewer, 08-links.js).
     let url;
     try {
@@ -1632,22 +1644,16 @@ function makeWorkspace(ctx) {
     }
     if (tab.closed) return true;
     let media;
-    if (tab.kind === "pdf") {
-      // The src is set before the frame is in the document: a frame's first
-      // load spends no history entry, every later navigation of it does
-      // (dropFrame, 08-links.js), so each PDF gets a frame of its own.
-      media = el("iframe", { class: "ws-frame", title: baseName(path) });
-    } else if (VIDEO_EXT_RE.test(path)) {
+    if (VIDEO_EXT_RE.test(path)) {
       media = el("video", { controls: "", playsinline: "", preload: "metadata" });
     } else {
       media = el("img", { alt: baseName(path) });
     }
     media.src = url;
-    if (tab.kind === "pdf") tab.body.appendChild(media);
     // Not "ws-media": that is the class of a media tab's own pane (addTab's
     // "ws-" + kind), and the box's display:flex on it would draw every
     // picture's pane at once, stacked, whichever tab is in front.
-    else tab.body.appendChild(el("div", { class: "ws-media-box" }, media));
+    tab.body.appendChild(el("div", { class: "ws-media-box" }, media));
     media.onerror = () => toast("Couldn't load " + baseName(path));
     return true;
   }
@@ -1686,6 +1692,7 @@ function makeWorkspace(ctx) {
     if (tab.rec) { edDropView(tab.rec); tab.rec = null; }
     if (tab.mesh) { tab.mesh.destroy(); tab.mesh = null; }
     if (tab.gitView) tab.gitView.stop();
+    if (tab.pdf) { tab.pdf.drop(); tab.pdf = null; }
     if (tab.hc) {
       clearInterval(tab.hc.timer);
       tab.hc.b.dead = true;
@@ -1883,6 +1890,8 @@ function makeWorkspace(ctx) {
     if (from !== g) {
       briefKeep(tab);
       g.bodyEl.appendChild(tab.body);
+      // Put back into the page, a PDF's frame fetches its file again.
+      if (tab.pdf) tab.pdf.attached();
       if (from.active === tab) {
         from.active = null;
         const n = from.tabs[at] || from.tabs[at - 1];
@@ -2542,6 +2551,8 @@ function makeWorkspace(ctx) {
     if (attached) return;
     attached = true;
     root.appendChild(wsEl);
+    // Every PDF's frame fetches its file again, as a moved tab's does (moveTab).
+    for (const g of groups) for (const t of g.tabs) if (t.pdf) t.pdf.attached();
     if (treeW) root.style.setProperty("--ws-tree-w", treeW + "px");
     if (splitShare) root.style.setProperty("--ws-split", String(splitShare));
     for (const side of ["l", "r"]) {

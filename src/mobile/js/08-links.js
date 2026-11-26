@@ -441,6 +441,8 @@ let viewerFill = 0;
 // which putting the overlay away abandons.
 let viewerMesh = null;
 let viewerMeshLoad = null;
+// The PDF in the frame (pdfFrameOpen's handle), which dropFrame lets go of.
+let viewerPdf = null;
 
 // A model holds a WebGL context, its buffers and its textures, none of which
 // the page gets back until they are handed back, so leaving one is a teardown
@@ -470,10 +472,129 @@ function dropSrc(el) {
 // spends nothing on its first load. Measured in Chrome: emptying the frame in
 // place cost one entry per open and one per close.
 function dropFrame() {
+  if (viewerPdf) { viewerPdf.drop(); viewerPdf = null; }
   const frame = $("viewer-frame");
   const fresh = frame.cloneNode(false);
   fresh.removeAttribute("src");
   frame.replaceWith(fresh);
+}
+
+// ---- a PDF in a frame ---------------------------------------------------------
+// The viewer's and the workspace's alike. A signed link (api/file_link) is
+// checked on every request and runs out after an hour, and a frame fetches
+// its document again whenever it is put back into the page (a tab moved to
+// another group, the workspace attached again) or the browser reloads it by
+// itself after a sleep: an hour on, that fetch is answered 403 "expired" and
+// the frame shows the answer instead of the PDF. So where it can, the frame
+// is given a copy of the file in memory: the bytes come once over the
+// header-authenticated route meshMount uses, and a blob: address of them is
+// something the backend can never expire. Two cases keep the link: a file
+// past PDF_MEMORY_MAX, which is not worth holding in the page, and WebKit,
+// where a PDF from memory in a frame has never been tried and the link is
+// what works today. A link frame heals instead (pdfHeal).
+const PDF_MEMORY_MAX = 100 * 1024 * 1024;
+
+// Safari, and every browser on iOS and iPadOS, which are all WebKit inside.
+function pdfFrameWebKit() {
+  return a2hsPlatform() === "ios"
+    || /^Safari /.test(parseUA(navigator.userAgent, navigator.maxTouchPoints).browser);
+}
+
+// A signed link for the handle's file. Its age counts from the moment the
+// request leaves, so the expiry read from it is never later than the server's.
+async function pdfMint(h) {
+  const at = Date.now();
+  try {
+    const r = await fetch(apiURL("api/file_link?path=" + encodeURIComponent(h.path)),
+                          { cache: "no-store", headers: authHeaders() });
+    if (r.status === 401) return "auth";
+    if (!r.ok) return "fail";
+    const d = await r.json();
+    h.url = apiURL(d.url);
+    h.minted = at;
+    h.ttl = d.expires_in * 1000;
+    return "ok";
+  } catch (e) {
+    return "fail";
+  }
+}
+
+// A new frame for the handle, its src set before it is in the page: a frame's
+// first load spends no history entry, every later navigation of it does
+// (dropFrame), so a frame is never pointed somewhere a second time — a
+// changed address is a frame of its own. Every load after a link frame's
+// first is a fetch the link has to answer again, and the one sign a frame
+// gives from outside: the shell may be on another origin than the backend,
+// so what the frame is showing cannot be read.
+function pdfFrameMake(h) {
+  const f = h.make();
+  f.src = h.blob || h.url;
+  if (!h.blob) {
+    let loads = 0;
+    f.addEventListener("load", () => { if (++loads > 1 && f === h.frame) pdfHeal(h); });
+  }
+  h.frame = f;
+  return f;
+}
+
+// A link frame whose link has run out gets a new link in a new frame. Only
+// then: a frame still on a good link is never reloaded, and nothing reloads
+// on a timer, either of which would lose the page being read. One new link
+// per lapse, so a frame that keeps loading cannot keep the mint busy.
+async function pdfHeal(h) {
+  if (h.dead || h.blob || Date.now() < h.minted + h.ttl || h.healed === h.minted) return;
+  h.healed = h.minted;
+  const got = await pdfMint(h);
+  if (got === "auth") { rejectToken(); return; }
+  if (got !== "ok" || h.dead) return;
+  const old = h.frame;
+  old.replaceWith(pdfFrameMake(h));
+}
+
+// The PDF at `path` in a frame: `make` builds an empty frame, not yet in the
+// page, and `put` puts the first one where it belongs; `live` says whether
+// the open is still wanted, asked after every wait. Answers {h} — the handle,
+// whose attached() a caller runs after putting the frame back into the page
+// and whose drop() lets go of it — or {auth} when the pairing was refused, or
+// {gone} when the open was given up, or {} when the file could not be had.
+async function pdfFrameOpen(path, make, put, live) {
+  const h = { path, make, frame: null, blob: "", url: "", minted: 0, ttl: 0,
+              healed: -1, dead: false };
+  h.attached = () => pdfHeal(h);
+  h.drop = () => {
+    h.dead = true;
+    if (h.blob) URL.revokeObjectURL(h.blob);
+  };
+  if (!pdfFrameWebKit()) {
+    // The size from the answer's head, before the body is read: too large,
+    // or not said, and the body is left unread for the link. Any failure but
+    // the pairing's tries the link as well.
+    const stop = new AbortController();
+    let r = null;
+    try {
+      r = await fetch(apiURL("api/fs/download?path=" + encodeURIComponent(path)),
+                      { cache: "no-store", headers: authHeaders(), signal: stop.signal });
+    } catch (e) {}
+    if (r && r.status === 401) return { auth: true };
+    const len = r && r.ok ? r.headers.get("Content-Length") : null;
+    if (len !== null && Number(len) <= PDF_MEMORY_MAX) {
+      try {
+        const b = await r.blob();
+        h.blob = URL.createObjectURL(b.slice(0, b.size, "application/pdf"));
+      } catch (e) {}
+    } else {
+      stop.abort();
+    }
+    if (!live()) { h.drop(); return { gone: true }; }
+  }
+  if (!h.blob) {
+    const got = await pdfMint(h);
+    if (got === "auth") return { auth: true };
+    if (!live()) { h.drop(); return { gone: true }; }
+    if (got !== "ok") return {};
+  }
+  put(pdfFrameMake(h));
+  return { h };
 }
 
 function showImage(path, pane) {
@@ -549,6 +670,18 @@ async function fillViewer(path, kind) {
     toast(kind === "video" ? "Couldn't load video"
           : kind === "pdf" ? "Couldn't load PDF" : "Couldn't load image");
   };
+  // A PDF in memory where it can be, else on a link that heals (pdfFrameOpen);
+  // the frame showImage left in place is the one it takes over.
+  if (kind === "pdf") {
+    const got = await pdfFrameOpen(path, () => $("viewer-frame").cloneNode(false),
+                                   (f) => $("viewer-frame").replaceWith(f),
+                                   () => fill === viewerFill);
+    if (got.auth) { if (fill === viewerFill) hideImage(); rejectToken(); return; }
+    if (got.gone) return;
+    if (!got.h) { fail(); return; }
+    viewerPdf = got.h;
+    return;
+  }
   let url;
   try {
     const r = await fetch(apiURL("api/file_link?path=" + encodeURIComponent(path)),
@@ -562,8 +695,7 @@ async function fillViewer(path, kind) {
     return;
   }
   if (fill !== viewerFill) return;
-  const el = kind === "video" ? $("viewer-video")
-           : kind === "pdf" ? $("viewer-frame") : $("viewer-img");
+  const el = kind === "video" ? $("viewer-video") : $("viewer-img");
   el.onerror = fail;
   el.src = url;
 }
