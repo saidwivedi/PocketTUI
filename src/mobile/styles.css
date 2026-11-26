@@ -407,6 +407,14 @@ body {
 .draft-row { cursor: pointer; }
 .draft-row:hover { background: var(--umber-tint); }
 .draft-row .profile-menu-status[data-tone="bad"] { color: var(--bad); }
+/* When it was last kept, and which copy is newest when a file has two. */
+.draft-when {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--tertiary);
+  white-space: nowrap;
+}
 .draft-trash { min-width: 32px; min-height: 32px; }
 /* A pill like New session beside it, with the chevron a <select> would have
    drawn for itself — #btn-files-view's glyph, at this row's size. The name is
@@ -5855,6 +5863,17 @@ html.term-open #dbg-panel { opacity: 0.85; }
 #sheet-conflict .actions { flex-wrap: wrap; flex: 0 0 auto; }
 #sheet-conflict .actions button { flex: 1 1 auto; padding: 10px 14px; }
 #sheet-conflict .actions button[hidden] { display: none; }
+/* At phone width one column of equal buttons, the keep-mine yes on top and
+   the way out at the foot, rather than rows of uneven wraps. */
+@media (max-width: 600px) {
+  #sheet-conflict .actions { flex-direction: column; flex-wrap: nowrap; gap: 8px; }
+  #sheet-conflict .actions button { flex: 0 0 auto; width: 100%; }
+  #btn-conflict-mine { order: 1; }
+  #btn-conflict-merge { order: 2; }
+  #btn-conflict-copy { order: 3; }
+  #btn-conflict-theirs { order: 4; }
+  #btn-conflict-cancel { order: 5; }
+}
 /* The reader's Edit is the same pill in the same slot of the same bar, so it
    shares Save's rule rather than restating it. */
 #btn-editor-save, #btn-reader-edit {

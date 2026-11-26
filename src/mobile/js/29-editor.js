@@ -463,6 +463,9 @@ function edDefineVimEx() {
 // when the editor closes in place of the listing (closeEditor).
 async function openEditor(path, opts) {
   usageCount("editor");
+  // The computer the open is for: one switched to while it waits on a read
+  // gets no buffer built from this one's file or drafts (draftAway).
+  const owner = draftOwner();
   const create = !!(opts && opts.create);
   const ref = (opts && opts.ref) || "";
   let content = "", hash = "", lossy = false, atRef = false;
@@ -473,7 +476,7 @@ async function openEditor(path, opts) {
       toast(edShortRef(ref) + " is not in this repo, so this is the file as it is now");
       data = await fsReadTextAt(path, "", "");
     }
-    if (!data) return;
+    if (!data || draftAway(owner)) return;
     content = data.content; hash = data.hash; lossy = !!data.lossy;
     // Read at a git ref rather than off the disk: there is a file here to read
     // and none here to write, since /api/fs/write only ever writes the working
@@ -482,8 +485,10 @@ async function openEditor(path, opts) {
   }
   // This device's unsaved text for the file, if it kept any (51-drafts.js):
   // asked before the view exists, so nothing typed can race the answer.
-  const draft = lossy || atRef ? null : await draftLookup(path);
+  // opts.draftKey names one of the file's drafts (the unsaved list's row).
+  const draft = lossy || atRef ? null : await draftLookup(path, owner, opts && opts.draftKey);
   try { await ensureCM(); } catch (e) { toast("Couldn't load the editor"); return; }
+  if (draftAway(owner)) return;
 
   edPath = path;
   edReadOnly = lossy || atRef;
@@ -656,13 +661,12 @@ function edMakeView(opts) {
 // and it stops reaching the screen it was on.
 function edDropView(rec, park) {
   if (rec.dirty) draftWrite(rec);
-  if (park) { rec.parked = true; edParked.add(rec); } else rec.closed = true;
+  if (park) { rec.parked = true; edParked.add(rec); } else { draftClosedNote(rec); rec.closed = true; }
   rec.onDirty = () => {};
   rec.onMark = null;
   if (rec.strip) { rec.strip.remove(); rec.strip = null; }
   rec.view.destroy();
   edLive.delete(rec);
-  if (!park) draftUnflag(rec);
 }
 
 // The editor screen's rec: its dirty flag drives the screen's marks, and its
@@ -763,9 +767,11 @@ async function editorSave() {
 }
 
 // The pop has already happened by the time a dirty buffer gets its say, so
-// "stay" means pushing the entry back rather than cancelling anything.
+// "stay" means pushing the entry back rather than cancelling anything. A
+// buffer whose save waits for the computer is not asked about: its text is
+// kept and sent when the computer is back (51-drafts.js).
 function editorPopped() {
-  if (edDirty) {
+  if (edDirty && !draftIsQueued(edRec)) {
     if (!confirm("Discard your unsaved changes?")) {
       history.pushState({ editor: true }, "", location.href);
       return;
@@ -801,7 +807,7 @@ function closeEditor() {
 // the press does. False says the editor is staying, which every caller has to
 // stand down for.
 function editorCloseDocked() {
-  if (edDirty) {
+  if (edDirty && !draftIsQueued(edRec)) {
     if (!confirm("Discard your unsaved changes?")) return false;
     if (edRec) draftDiscard(edRec);
   }

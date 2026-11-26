@@ -1650,7 +1650,7 @@ function edLanguage(path) { return "lang"; }
 function draftOwner() { return null; }
 function draftTouch() {}
 function draftWrite() {}
-function draftUnflag() {}
+function draftClosedNote() {}
 const edParked = new Set();
 """
 
@@ -1719,6 +1719,7 @@ function edSyncVimButton() {}
 function dockFileView() { return false; }
 async function draftLookup() { return null; }
 function draftApply() {}
+function draftAway() { return false; }
 const TEXT = "one\\ntwo\\nthree\\nfour\\nfive";
 """
 
@@ -5374,6 +5375,7 @@ const brief = mkTab(gB, "/r/human_code/r.humancode", { kind: "humancode", hc: re
 const ed = mkTab(gE, "/r/a.py", { kind: "editor", dirty: true, rec: {} });
 async function appConfirm(text, o) { log.push("ask " + o.title); return ANSWER; }
 function draftDiscard() { log.push("draftDiscard"); }
+function draftIsQueued() { return false; }
 """.replace("ANSWER", "true" if discard else "false") + "\n".join(
         _ws_inner(doc, n) for n in ("close", "drop", "unsplit")) + """
 await close(ed);

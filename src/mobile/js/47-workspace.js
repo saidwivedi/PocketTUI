@@ -1600,6 +1600,8 @@ function makeWorkspace(ctx) {
   async function fillTab(tab, opts) {
     const path = tab.path;
     if (tab.kind === "editor") {
+      // The computer the open is for, as openEditor's (29-editor.js).
+      const owner = draftOwner();
       let content = "", hash = "", readOnly = false, lossy = false;
       if (!opts.create) {
         let data = tab.ref ? await fsReadTextAt(path, tab.ref, opts.root || "")
@@ -1618,16 +1620,17 @@ function makeWorkspace(ctx) {
           paintChip(tab);
           data = await ctx.readText(path);
         }
-        if (!data) return false;
+        if (!data || draftAway(owner)) return false;
         content = data.content; hash = data.hash;
         lossy = !!data.lossy;
         readOnly = lossy || !!data.readonly;
       }
       // This device's unsaved text for the file (51-drafts.js), before the
       // view exists.
-      const draft = readOnly ? null : await draftLookup(path);
+      const draft = readOnly ? null : await draftLookup(path, owner);
       try { await ensureCM(); } catch (e) { toast("Couldn't load the editor"); return false; }
       if (tab.closed) return true;
+      if (draftAway(owner)) return false;
       // The marks live in a compartment of their own, so the chip's key adds
       // and removes them without touching the theme, Wrap or Vim.
       tab.marks = { comp: new window.CM6.Compartment(), ext: null, acts: null,
@@ -1725,10 +1728,12 @@ function makeWorkspace(ctx) {
   }
 
   // A tab's own close. A file with unsaved edits asks first, in the app's own
-  // dialog; `force` is vim's :q!, which has already said discard.
+  // dialog, unless its save waits for the computer (51-drafts.js: kept and
+  // sent when it is back); `force` is vim's :q!, which has already said
+  // discard.
   async function close(tab, force) {
     if (tab.closed) return;
-    if (tab.dirty && !force) {
+    if (tab.dirty && !force && !draftIsQueued(tab.rec)) {
       const ok = await appConfirm("The edits since the last save will be lost.",
         { title: "Discard your unsaved changes to " + tab.title + "?",
           confirmLabel: "Discard" });
@@ -2186,7 +2191,9 @@ function makeWorkspace(ctx) {
     return out;
   }
 
-  function dirtyCount() { return fileTabs().filter((t) => t.dirty).length; }
+  // Unsaved tabs whose closing would lose text: one whose save waits for the
+  // computer keeps it (51-drafts.js).
+  function dirtyCount() { return fileTabs().filter((t) => t.dirty && !draftIsQueued(t.rec)).length; }
 
   function askDiscardAll() {
     const n = dirtyCount();
@@ -2194,7 +2201,9 @@ function makeWorkspace(ctx) {
                               : n + " unsaved files will be discarded.",
                       { title: "Close the file pane?", confirmLabel: "Discard" })
       .then((ok) => {
-        if (ok) for (const t of fileTabs()) if (t.dirty && t.rec) draftDiscard(t.rec);
+        if (ok) {
+          for (const t of fileTabs()) if (t.dirty && t.rec && !draftIsQueued(t.rec)) draftDiscard(t.rec);
+        }
         return ok;
       });
   }

@@ -616,7 +616,7 @@ function openTerminal(name, resumed) {
     if (!docked) {
       if (kind === "reader") closeReader();
       if ($("screen-editor").classList.contains("active")) {
-        if (edDirty && !confirm("Discard your unsaved changes?")) return;
+        if (edDirty && !draftIsQueued(edRec) && !confirm("Discard your unsaved changes?")) return;
         closeEditor();
       }
       // After the editor, which brings back a brief it was opened over.

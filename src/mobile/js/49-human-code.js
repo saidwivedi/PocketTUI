@@ -414,7 +414,7 @@ function hcOpenSource(src) {
 async function hcOpenEditor(path, opts) {
   const el = $("screen-humancode");
   const edEl = $("screen-editor");
-  if (edEl.classList.contains("active") && edDirty
+  if (edEl.classList.contains("active") && edDirty && !draftIsQueued(edRec)
       && !confirm("Discard your unsaved changes?")) return;
   const gen = hcGen;
   if (el.classList.contains("docked")) {
