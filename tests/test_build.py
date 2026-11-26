@@ -1650,6 +1650,7 @@ function edLanguage(path) { return "lang"; }
 function draftOwner() { return null; }
 function draftTouch() {}
 function draftWrite() {}
+function draftLetGo() {}
 function draftClosedNote() {}
 const edParked = new Set();
 """

@@ -2638,7 +2638,8 @@ function makeWorkspace(ctx) {
 
   // The end of it: the pane closed, the computer it was reading switched, or
   // the session whose record held it gone (releaseFileView). Nothing is asked
-  // here; the callers that need an answer ask first. One in a record is off
+  // here; the callers that need an answer ask first, and text the store will
+  // not hold is kept in memory (edDropView). One in a record is off
   // the pane already, and the pane's settings are another workspace's by now.
   function destroy() {
     endDrag(false);

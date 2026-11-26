@@ -643,7 +643,7 @@ function openTerminal(name, resumed) {
         if (currentSession) stashFileView(currentSession, kind);
         // No session to keep it for, so it is dropped rather than stashed —
         // and a docked editor gets its say about unsaved work first.
-        else if (closeDockedFileView()) filesTeardown();
+        else if (closeDockedFileView(null, () => openTerminal(name, resumed))) filesTeardown();
         else return;
       }
     } else if (filesFullScreen()) {

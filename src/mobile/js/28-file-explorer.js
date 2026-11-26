@@ -567,20 +567,22 @@ function fileViewOwnerOf(el) {
 // editor asking about unsaved work and being told to stay: the press that got
 // here is spent on the question, and whatever was going to close the pane has
 // to stand down with it. In the list's order, so an editor opened over the
-// brief closes first and the brief it brings back closes after it.
-function closeDockedFileView(owner) {
+// brief closes first and the brief it brings back closes after it. `again`
+// is the caller's action run anew once an editor that is only waiting for its
+// text to reach the store has closed (editorCloseDocked).
+function closeDockedFileView(owner, again) {
   for (const id of ["screen-editor", "screen-reader", "viewer", "screen-humancode"]) {
     const el = $(id);
     if (!el.classList.contains("docked")) continue;
     if (owner && fileViewOwnerOf(el) !== owner) continue;
-    if (!closeFileView(el)) return false;
+    if (!closeFileView(el, again)) return false;
   }
   return true;
 }
 
 // One of them, by its screen, with the same answer.
-function closeFileView(el) {
-  if (el.id === "screen-editor") return editorCloseDocked();
+function closeFileView(el, again) {
+  if (el.id === "screen-editor") return editorCloseDocked(again);
   if (el.id === "screen-reader") closeReader();
   else if (el.id === "screen-humancode") closeHumanCode();
   else hideImage();
@@ -909,7 +911,7 @@ function closeDockedFiles() {
   // about unsaved work that its own back gives it. Only a file of this pane's:
   // one seated over the other listing is that pane's to ask about, and a row
   // evicted from under a listing that owns nothing asks nothing.
-  if (!closeDockedFileView(id)) return;
+  if (!closeDockedFileView(id, () => closeDockedFiles())) return;
   if (ws) { ws.destroy(); ws = null; }
   filesHistoryEnd();
   closeFilesMenus();
@@ -1085,7 +1087,8 @@ function filesTeardown() {
 // is in goes away, since a folder on that machine is not a folder on this one.
 // The caller puts the session list back on screen, so nothing is restored here.
 function filesReset() {
-  // Unsaved tabs are files on the computer being left, so nothing is asked.
+  // Unsaved tabs are files on the computer being left, so nothing is asked
+  // here: their text is in the store, or was asked about (switchProfile).
   if (ws) { ws.destroy(); ws = null; }
   filesHistoryEnd();
   closeFilesMenus();
@@ -2385,7 +2388,7 @@ function openEntry(e, dir=filesPath) {
   // There is one editor, one reader and one viewer for the two listings, so a
   // file already open over the other one is put away first — with the same say
   // about unsaved work its own back gives it, and a stay stops this open here.
-  if (!filesTakeView()) return;
+  if (!filesTakeView(() => openEntry(e, dir))) return;
   const full = joinPath(dir, e.name);
   if (e.type === "dir") { navigateDir(full); return; }
   // A broken link or a special file: nothing to enter or edit, so the sheet
@@ -2413,8 +2416,9 @@ function openEntry(e, dir=filesPath) {
 }
 
 // Whether this pane may take the three views over. A stay is the editor's, and
-// it stops whatever was about to open a file here.
-function filesTakeView() {
+// it stops whatever was about to open a file here; `again` is that open run
+// anew once an editor only waiting for the store has gone (closeFileView).
+function filesTakeView(again) {
   // The three go when they are over the other listing. The brief goes when it
   // is over this one, since whatever is opened here is opened in its row; over
   // the other listing it has a row of its own and stays in it.
@@ -2423,7 +2427,7 @@ function filesTakeView() {
     if (!el.classList.contains("docked")) continue;
     const owner = fileViewOwnerOf(el);
     if (name === "screen-humancode" ? owner !== id : !owner || owner === id) continue;
-    if (!closeFileView(el)) return false;
+    if (!closeFileView(el, again)) return false;
   }
   return true;
 }
@@ -2532,8 +2536,9 @@ function sheetEdit() {
   // An entry raised from the workspace's tree carries the folder it is in.
   const dir = e.dir || filesPath;
   if (ws && ws.on) { ws.open(joinPath(dir, e.name), "editor"); return; }
-  if (!filesTakeView()) return;
-  openEditor(joinPath(dir, e.name), { pane: self() });
+  const path = joinPath(dir, e.name);
+  const go = () => { if (filesTakeView(go)) openEditor(path, { pane: self() }); };
+  go();
 }
 
 async function sheetRename() {
@@ -2622,8 +2627,9 @@ async function addNewFile() {
   // Nothing is written yet: the editor opens empty and the first Save (hash "")
   // is what creates the file, so an abandoned name leaves no husk behind.
   if (ws && ws.on) { ws.open(joinPath(filesPath, name.trim()), "editor", { create: true }); return; }
-  if (!filesTakeView()) return;
-  openEditor(joinPath(filesPath, name.trim()), { create: true, pane: self() });
+  const path = joinPath(filesPath, name.trim());
+  const go = () => { if (filesTakeView(go)) openEditor(path, { create: true, pane: self() }); };
+  go();
 }
 
 async function addNewFolder() {

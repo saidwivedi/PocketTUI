@@ -598,7 +598,7 @@ function el(tag, attrs, ...kids) {
   for (const k of kids) if (k != null) e.appendChild(typeof k === "string" ? { textContent: k } : k);
   return e;
 }
-var document = { addEventListener() {}, hidden: false };
+var document = { addEventListener() {}, removeEventListener() {}, hidden: false };
 var window = { addEventListener() {} };
 var location = { origin: "http://example.net" };
 var BASE = "/";
@@ -660,6 +660,30 @@ function closeEditor() {
   if (edRec) { edDropView(edRec); edRec = null; }
   edSetDirty(false);
 }
+// What switchProfile needs around it (40-profiles.js): the teardown is the
+// test's own (page.onTeardown), the rest records that the switch happened.
+var profileGen = 0, profileSwitchSeq = 0, currentSession = null, activeVerdict = null;
+var profileChecks = new Map();
+function readProfiles() { return [{ id: "p1" }, { id: "p2" }]; }
+function showProfileMenu() {}
+function closeTerminal() {}
+function dropAllFileViews() { if (page.onTeardown) page.onTeardown(); }
+function filesResetForProfile() {}
+function diffResetForProfile() {}
+function browserResetForProfile() {}
+function sessionsResetForProfile() {}
+function versionResetForProfile() {}
+function pairResetForProfile() {}
+function setActiveProfile(id) { page.switched = (page.switched || 0) + 1; page.profile = id; cfg.backend = SERVER_B; }
+function syncProfileUI() {}
+function fetchServerVersion() {}
+function loadSessions() {}
+function loadSessionsAfterProbe() {}
+function pushResetForProfile() {}
+// What hcOpenEditor needs around it (49-human-code.js): a brief full screen.
+var hcGen = 0, hcView = null, hcOwner = null, hcEdRow = null, filesPanes = {};
+function hcShowAgain() {}
+async function hcOtherRow() { return null; }
 """
 
 HELPERS = r"""
@@ -731,7 +755,8 @@ function makePage(opts) {
                 indexedDB, IDBKeyRange, fetch: (u, o) => globalThis.fetch(u, o) };
   if (!(opts && opts.noLocks)) ctx.navigator = { locks: locksApi };
   vm.createContext(ctx);
-  vm.runInContext("var SERVER_A = " + JSON.stringify(SERVER_A) + ";\n" + PAGE_SRC, ctx);
+  vm.runInContext("var SERVER_A = " + JSON.stringify(SERVER_A) + ", SERVER_B = " + JSON.stringify(SERVER_B)
+                 + ";\n" + PAGE_SRC, ctx);
   vm.runInContext(PURE, ctx);
   vm.runInContext(FRAGMENT, ctx);
   vm.runInContext(EDITOR, ctx);
@@ -1267,6 +1292,168 @@ const out = {};
     out.g5 = { editor, ws: { filled, toB: toB(), ref: tab.ref, key: tab.key, mapped: [...ws.byPath.keys()] } };
     killPage(P); killPage(Q);
   } catch (e) { out.errors = (out.errors || []).concat("g5 " + String(e && e.stack || e).slice(0, 400)); }
+  // H1. An adopted record is claimed at once: a reloaded page that restored
+  //     text and typed nothing owns it, and a page opening the file after it
+  //     starts its own; two pages opening at the same moment never both take it.
+  try {
+    const p = DIR + "/h1.txt", q = DIR + "/h1b.txt";
+    const cur = await read(p), cq = await read(q);
+    const open = async (X, path, c) => {
+      const r = X.mkRec(path, c.content, c.hash);
+      X.draftApply(r, { content: c.content, hash: c.hash }, await X.draftLookup(path));
+      return r;
+    };
+    const replace = (X, r, t) => r.view.dispatch({ changes: { from: 0, to: r.view.state.doc.length, insert: t } });
+    const S1 = makePage();
+    const s1 = S1.mkRec(p, cur.content, cur.hash);
+    S1.type(s1, "X");
+    await sleep(400);
+    killPage(S1);                         // the reload: the old page goes
+    const S2 = makePage();
+    const s2 = await open(S2, p, cur);    // restored, nothing typed
+    await sleep(400);
+    const Q = makePage();
+    const rq = await open(Q, p, cur);
+    replace(Q, rq, "Q only\n");
+    await sleep(400);
+    const reload = { restored: S2.edText(s2), forked: Q.draftKeyOf(rq) !== S2.draftKeyOf(s2),
+                     texts: recordsFor(p).map((r) => r.text).sort() };
+    // Two pages opening the file at the same moment.
+    const T1 = makePage();
+    const t1 = T1.mkRec(q, cq.content, cq.hash);
+    T1.type(t1, "X");
+    await sleep(400);
+    killPage(T1);
+    const A1 = makePage(), B1 = makePage();
+    const [da, db] = await Promise.all([A1.draftLookup(q), B1.draftLookup(q)]);
+    const ra = A1.mkRec(q, cq.content, cq.hash), rb = B1.mkRec(q, cq.content, cq.hash);
+    A1.draftApply(ra, { content: cq.content, hash: cq.hash }, da);
+    B1.draftApply(rb, { content: cq.content, hash: cq.hash }, db);
+    replace(B1, rb, "B only\n");         // A types nothing
+    await sleep(400);
+    const both = { shared: [da.shared, db.shared].sort(), keys: A1.draftKeyOf(ra) !== B1.draftKeyOf(rb),
+                   texts: recordsFor(q).map((r) => r.text).sort() };
+    out.h1 = { reload, both };
+    for (const X of [S2, Q, A1, B1]) killPage(X);
+  } catch (e) { out.errors = (out.errors || []).concat("h1 " + String(e && e.stack || e).slice(0, 400)); }
+  // H2. A buffer torn down with no question whose text the store will not
+  //     hold: kept in memory and listed, said so, and still sent when the
+  //     computer is back; a switch of computer asks first.
+  try {
+    const P = makePage();
+    const p = DIR + "/h2a.txt", p2 = DIR + "/h2b.txt", p3 = DIR + "/h2c.txt";
+    const c = await read(p), c2 = await read(p2), c3 = await read(p3);
+    const big = "y".repeat(200);
+    // A workspace tab, queued, grown past the limit, its session gone.
+    const ws = P.makeWsTabs();
+    const r = P.mkRec(p, c.content, c.hash);
+    ws.addTab(r, "h2a.txt");
+    P.type(r, "A");
+    offline = true;
+    await P.edSaveOnce(r, "manual");
+    await sleep(400);
+    P.DRAFT_MAX_BYTES = 100;
+    P.type(r, big);
+    await sleep(400);
+    P.page.toasts.length = 0;
+    ws.destroy();
+    // A parked editor buffer, grown past the limit, its session gone.
+    const r2 = P.mkRec(p2, c2.content, c2.hash);
+    P.type(r2, "B" + big);
+    await sleep(400);
+    P.edDropView(r2, true);
+    P.draftReleaseParked(r2);
+    await sleep(400);
+    const rows = await P.listRows();
+    const said = P.page.toasts.filter((t) => t.includes("could not be kept")).length;
+    const listed = (await P.draftList(P.draftOwner())).filter((d) => d.path === p || d.path === p2)
+      .map((d) => d.text.length).sort((a, b) => a - b);
+    // The computer is back: the waiting one is sent from memory, its newest text.
+    offline = false;
+    await P.draftFlush();
+    await sleep(100);
+    const disk = (await read(p)).content;
+    const after = (await P.draftList(P.draftOwner())).filter((d) => d.path === p).length;
+    P.DRAFT_MAX_BYTES = 2 * 1024 * 1024;
+    // A switch of computer with a tab the store will not hold: asked; a stay
+    // switches nothing and keeps the text, a yes switches.
+    const ws3 = P.makeWsTabs();
+    const r3 = P.mkRec(p3, c3.content, c3.hash);
+    ws3.addTab(r3, "h2c.txt");
+    P.DRAFT_MAX_BYTES = 100;
+    P.type(r3, big);
+    await sleep(400);
+    P.page.onTeardown = () => ws3.destroy();
+    P.page.appConfirms = 0;
+    P.page.appConfirmAnswer = false;
+    P.switchProfile("p2");
+    await sleep(400);
+    const stay = { asked: P.page.appConfirms, switched: P.page.switched || 0, live: P.edLive.has(r3),
+                   text: P.edText(r3).length, dirty: r3.dirty };
+    P.page.appConfirmAnswer = true;
+    P.switchProfile("p2");
+    await sleep(400);
+    const go = { asked: P.page.appConfirms, switched: P.page.switched || 0, discarded: !!r3.discarded };
+    P.DRAFT_MAX_BYTES = 2 * 1024 * 1024;
+    out.h2 = { said, listed, rows: rows.filter((x) => x.includes("this page only")).length, disk, after, stay, go };
+    killPage(P);
+  } catch (e) { offline = false; out.errors = (out.errors || []).concat("h2 " + String(e && e.stack || e).slice(0, 400)); }
+  // H3. A discard from the list leaves a parked buffer holding newer text it
+  //     could not store: only the record the row showed goes.
+  try {
+    const P = makePage();
+    const p = DIR + "/h3.txt";
+    const c = await read(p);
+    const r = P.mkRec(p, c.content, c.hash);
+    P.type(r, "X");
+    await sleep(400);
+    P.DRAFT_MAX_BYTES = 100;
+    P.type(r, "y".repeat(200));
+    await sleep(400);
+    P.edDropView(r, true);
+    const row = (await P.draftList(P.draftOwner())).find((d) => d.path === p);
+    P.page.appConfirmAnswer = true;
+    await P.draftDiscardFromMenu(row);
+    await sleep(100);
+    // The session comes back: the buffer is restored as it was left.
+    const r2 = P.mkRec(p, P.edText(r), c.hash);
+    P.draftAdopt(r, r2);
+    out.h3 = { row: row.text, records: recordsFor(p).length, revert: !!r.revert, text: P.edText(r2).length,
+               dirty: r2.dirty };
+    P.DRAFT_MAX_BYTES = 2 * 1024 * 1024;
+    killPage(P);
+  } catch (e) { out.errors = (out.errors || []).concat("h3 " + String(e && e.stack || e).slice(0, 400)); }
+  // H4. A tap made on computer A while the queued editor's text goes into the
+  //     store, and a switch to B during that wait: nothing is resumed on B.
+  try {
+    const P = makePage();
+    const p = DIR + "/h4.txt", q = DIR + "/h4b.txt";
+    const c = await read(p);
+    P.edRec = P.mkRec(p, c.content, c.hash);
+    P.edRec.onDirty = (r, on) => P.edSetDirty(on);
+    P.type(P.edRec, "A");
+    offline = true;
+    await P.edSaveOnce(P.edRec, "manual");
+    offline = false;
+    P.$("screen-editor").classList.add("active");
+    P.type(P.edRec, "more");               // not in the store yet
+    log.length = 0;
+    const opening = P.hcOpenEditor(q, {});
+    switchToB(P);
+    await Promise.race([opening, sleep(500)]);
+    const brief = { toB: toB(), built: P.page.built };
+    // The same wait under any other caller (a session switch's re-run).
+    P.page.profile = "p1"; P.cfg.backend = SERVER_A;
+    P.type(P.edRec, "again");
+    let resumed = 0;
+    const now = P.edMayLeave(() => { resumed++; });
+    switchToB(P);
+    await sleep(500);
+    out.h4 = { brief, deferred: now === undefined, resumed };
+    for (const r of P.edLive) clearTimeout(r.draftTimer);
+    P.draftFlags.clear();
+    killPage(P);
+  } catch (e) { offline = false; out.errors = (out.errors || []).concat("h4 " + String(e && e.stack || e).slice(0, 400)); }
   console.log(JSON.stringify(out));
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });
@@ -1285,6 +1472,12 @@ function makeWsTabs() {
   function syncEmpty() {}
   function unsplit() {}
   function paintChip() {}
+  function endDrag() {}
+  let scp = null, attached = false;
+  function detach() {}
+  const wsEl = { remove() {} };
+  function onVisibility() {}
+  const api = {};
 CHUNKS
   function addTab(rec, title) {
     const tab = { path: rec.path, key: rec.path, title, rec, dirty: rec.dirty, closed: false,
@@ -1294,7 +1487,7 @@ CHUNKS
     byPath.set(tab.key, tab);
     return tab;
   }
-  return { close, drop, dirtyCount, askDiscardAll, fileTabs, fillTab, addTab, byPath };
+  return { close, drop, destroy, dirtyCount, askDiscardAll, fileTabs, fillTab, addTab, byPath };
 }
 """
 
@@ -1304,7 +1497,7 @@ def _ws_src():
     out = []
     for head in ["async function close(", "function drop(", "function fileTabs(",
                  "function dirtyCount(", "async function askDiscardAll(", "function askDiscardAll(",
-                 "async function fillTab("]:
+                 "async function fillTab(", "function destroy("]:
         at = src.find("\n  " + head)
         if at < 0:
             continue
@@ -1349,14 +1542,16 @@ def server_b(server):
 def fixes(doc, server, server_b, tmp_path_factory):
     tmp_path = tmp_path_factory.mktemp("fixes")
     for n in ["f1a", "f1b", "f1c", "f1d", "f2", "f3", "f3c", "f4", "f7", "f7b", "f7c", "f7d",
-              "g1", "g1r", "g1n", "g2", "g2b", "g2c", "g3", "g4", "g4b", "g4c", "g4d", "g5"]:
+              "g1", "g1r", "g1n", "g2", "g2b", "g2c", "g3", "g4", "g4b", "g4c", "g4d", "g5",
+              "h1", "h1b", "h2a", "h2b", "h2c", "h3", "h4", "h4b"]:
         (tmp_path / (n + ".txt")).write_text(n + "\n")
     (tmp_path / "f3c (mine).txt").write_text("taken\n")
     (tmp_path / "f5.txt").write_bytes(b"ab\xff\n")
     (tmp_path / "f6.txt").write_text("a\nb\nc\nd\ne\n")
     editor = "\n".join(_js_chunk(doc, h) for h in
                        ["function edDropView(", "function edAskDiscard(", "function edMayLeave(",
-                        "function editorPopped(", "function editorCloseDocked(", "async function openEditor("]
+                        "function editorPopped(", "function editorCloseDocked(", "async function openEditor(",
+                        "function switchProfile(", "async function hcOpenEditor("]
                        if "\n" + h in doc)
     code = ("const SERVER_A = %s;\nconst SERVER_B = %s;\nconst DIR = %s;\nconst PURE = %s;\n"
             "const FRAGMENT = %s;\nconst EDITOR = %s;\nconst PAGE_SRC = %s;\nconst HELPERS_SRC = %s;\n"
@@ -1509,3 +1704,44 @@ def test_a_missing_ref_fallback_never_reads_from_another_computer(fixes):
     w = f["ws"]
     assert w["filled"] is False and w["toB"] == 0
     assert w["ref"] == "abc123" and w["key"] == w["mapped"][0] and len(w["mapped"]) == 1
+
+
+def test_an_adopted_record_is_claimed_at_once(fixes):
+    f = fixes["h1"]
+    r = f["reload"]
+    # The reloaded page restored X and typed nothing: it owns the record, so
+    # the page opening the file after it starts its own, and X is still kept.
+    assert r["restored"] == "h1\nX" and r["forked"] is True
+    assert r["texts"] == ["Q only\n", "h1\nX"]
+    b = f["both"]
+    # Two openers at once: one claims, the other is refused and forks.
+    assert b["shared"] == [False, True] and b["keys"] is True
+    assert b["texts"] == ["B only\n", "h1b\nX"]
+
+
+def test_text_the_store_will_not_hold_is_never_dropped_unasked(fixes):
+    f = fixes["h2"]
+    # Session gone: a workspace tab and a parked buffer, both kept in memory
+    # with their newest text, listed as this page only, and said so.
+    assert f["said"] == 2 and f["rows"] == 2
+    assert f["listed"] == [len("h2a\nA") + 200, len("h2b\nB") + 200]
+    # The waiting one is sent from memory when the computer is back.
+    assert f["disk"] == "h2a\nA" + "y" * 200 and f["after"] == 0
+    # A switch of computer asks; a stay switches nothing and loses nothing.
+    s = f["stay"]
+    assert s["asked"] == 1 and s["switched"] == 0 and s["live"] is True and s["dirty"] is True
+    assert s["text"] == len("h2c\n") + 200
+    g = f["go"]
+    assert g["asked"] == 2 and g["switched"] == 1 and g["discarded"] is True
+
+
+def test_a_list_discard_leaves_a_parked_buffer_with_other_text(fixes):
+    f = fixes["h3"]
+    assert f["row"] == "h3\nX" and f["records"] == 0
+    assert f["revert"] is False and f["dirty"] is True and f["text"] == len("h3\nX") + 200
+
+
+def test_a_continuation_never_resumes_on_another_computer(fixes):
+    f = fixes["h4"]
+    assert f["brief"] == {"toB": 0, "built": 0}
+    assert f["deferred"] is True and f["resumed"] == 0

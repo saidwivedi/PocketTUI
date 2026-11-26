@@ -660,11 +660,19 @@ function edMakeView(opts) {
 
 // `park` is a buffer put away with its session (edStash): it keeps its
 // draft and its save state, and a write answered while it is away lands in
-// it. Anything else is closed. Either way its pending draft is written first,
-// and it stops reaching the screen it was on.
+// it. Anything else is closed, and text of it the store will not hold is kept
+// in memory instead (draftLetGo). Either way its pending draft is written
+// first, and it stops reaching the screen it was on.
 function edDropView(rec, park) {
-  if (rec.dirty) draftWrite(rec);
-  if (park) { rec.parked = true; edParked.add(rec); } else { draftClosedNote(rec); rec.closed = true; }
+  if (park) {
+    if (rec.dirty) draftWrite(rec);
+    rec.parked = true;
+    edParked.add(rec);
+  } else {
+    draftLetGo(rec);
+    draftClosedNote(rec);
+    rec.closed = true;
+  }
   rec.onDirty = () => {};
   rec.onMark = null;
   if (rec.strip) { rec.strip.remove(); rec.strip = null; }
@@ -783,13 +791,16 @@ function edAskDiscard(rec) {
 // one whose last text is not in the store yet waits for that write first, and
 // is asked after all if it fails. Answers synchronously (true/false) when it
 // can; undefined when `then` will be called later, after the wait, and only
-// if the editor still holds that buffer.
+// if the editor still holds that buffer and the computer in force is still
+// the one it was asked on: whatever `then` goes on to do was meant for that
+// computer, and is dropped rather than done on another's (draftAway).
 function edMayLeave(then) {
   const rec = edRec;
   if (!edDirty || draftKept(rec)) return true;
   if (!draftIsQueued(rec)) return edAskDiscard(rec);
+  const owner = draftOwner();
   draftKeep(rec).then((kept) => {
-    if (edRec !== rec) return;
+    if (edRec !== rec || draftAway(owner)) return;
     then(kept || edAskDiscard(rec));
   });
   return undefined;
@@ -831,9 +842,15 @@ function closeEditor() {
 // about unsaved work is asked here instead and a "stay" is the whole of what
 // the press does. False says the editor is staying, which every caller has to
 // stand down for: also while a waiting save's text is still going into the
-// store, after which the editor alone closes (edMayLeave).
-function editorCloseDocked() {
-  const ok = edMayLeave((yes) => { if (yes) closeEditor(); });
+// store, after which the editor closes and `again`, the caller's own action
+// run anew, finishes what the press started (edMayLeave, which drops it if
+// another computer came into force meanwhile).
+function editorCloseDocked(again) {
+  const ok = edMayLeave((yes) => {
+    if (!yes) return;
+    closeEditor();
+    if (again) again();
+  });
   if (!ok) return false;
   closeEditor();
   return true;

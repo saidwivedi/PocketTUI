@@ -414,17 +414,20 @@ function hcOpenSource(src) {
 async function hcOpenEditor(path, opts) {
   const el = $("screen-humancode");
   const edEl = $("screen-editor");
+  // The brief and the computer this tap was on: the wait below can outlast
+  // either, and then the open is dropped rather than made on whatever is up.
+  const gen = hcGen;
+  const owner = draftOwner();
   if (edEl.classList.contains("active")) {
     const ok = await new Promise((resolve) => {
       const now = edMayLeave(resolve);
       if (now !== undefined) resolve(now);
     });
-    if (!ok) return;
+    if (!ok || gen !== hcGen || draftAway(owner)) return;
   }
-  const gen = hcGen;
   if (el.classList.contains("docked")) {
     const row = await hcOtherRow(path);
-    if (gen !== hcGen) return;
+    if (gen !== hcGen || draftAway(owner)) return;
     if (row) {
       hcEdRow = row;
       opts.pane = filesPanes[row.id];

@@ -11,8 +11,10 @@
 //     restored itself, and one that finds its record rewritten by another
 //     page of the app starts a record of its own (draftWrite), so two pages
 //     with different text keep both; a page opening the file takes a record
-//     over only once the page that wrote it is gone (draftLookup). Opening
-//     the file puts the newest back,
+//     over only once the page that wrote it is gone, and claims it as its
+//     own writer at once (draftLookup, draftClaim). Text the store will not
+//     hold for a buffer that goes unasked is kept in memory for the life of
+//     the page (draftLetGo). Opening the file puts the newest back,
 //     still based on its version, so the save after a reload goes through the
 //     same hash check as any other.
 //   - A save that cannot reach the computer waits (a mark on the draft, in
@@ -57,6 +59,17 @@ var draftFlushing = false;
 var draftRetryTimer = 0;
 var draftPaintTimer = 0;
 var edParked = new Set();     // editor-screen recs stashed with their session
+// Recs closed without a question whose last write is still out: still this
+// page's views of their records (draftRecOf) until the store answers.
+var draftLeaving = new Set();
+// key -> record, for a buffer that went with no question asked (its session
+// gone, a pane torn down) whose text the store would not hold (too large, the
+// store failing): kept here, in the unsaved list, for the life of the page.
+// The store's functions read and write it as a record of theirs; storeStamp is
+// the stamp the store's own record under that key had, which is this buffer's
+// older text.
+var draftMem = new Map();
+var draftForgotten = new Set(); // profiles forgotten on this page
 
 // ---- whose and which -------------------------------------------------------
 
@@ -83,13 +96,18 @@ function draftLocks() {
   try { return typeof navigator !== "undefined" && navigator.locks ? navigator.locks : null; }
   catch (e) { return null; }
 }
-(function draftHoldPageLock() {
+// Settled once the lock is held (or will never be): every transaction waits
+// for it (draftTx), so no record names this page as its writer before another
+// page asking about that writer can see it alive.
+var draftLockReady = (function draftHoldPageLock() {
   const locks = draftLocks();
-  if (!locks) return;
-  try {
-    const p = locks.request(DRAFT_LOCK + draftPageId, () => new Promise(() => {}));
-    if (p && p.catch) p.catch(() => {});
-  } catch (e) { /* an opaque origin refuses locks: as if there were none */ }
+  if (!locks) return Promise.resolve();
+  return new Promise((ready) => {
+    try {
+      const p = locks.request(DRAFT_LOCK + draftPageId, () => { ready(); return new Promise(() => {}); });
+      if (p && p.catch) p.catch(() => ready());
+    } catch (e) { ready(); /* an opaque origin refuses locks: as if there were none */ }
+  });
 })();
 
 // Whether the page that wrote a record is still open somewhere. False when
@@ -173,6 +191,7 @@ function draftDb() {
 // One transaction; `body(store, set)` queues its requests and hands the
 // answer to `set`. Rejects when there is no store or the transaction fails.
 async function draftTx(mode, body) {
+  await draftLockReady;
   const db = await draftDb();
   if (!db) throw new Error("IndexedDB unavailable");
   return new Promise((resolve, reject) => {
@@ -186,6 +205,7 @@ async function draftTx(mode, body) {
 
 async function draftGet(key) {
   if (!key) return null;
+  if (draftMem.has(key)) return Object.assign({}, draftMem.get(key));
   try {
     return await draftTx("readonly", (st, set) => {
       const r = st.get(key);
@@ -194,14 +214,32 @@ async function draftGet(key) {
   } catch (e) { draftFail(e); return null; }
 }
 
+// The store's records on `owner`, with the ones kept in memory over any
+// record of the same key (they are that buffer's newer text).
 async function draftList(owner) {
   if (!owner) return [];
+  let rows = [];
   try {
-    return await draftTx("readonly", (st, set) => {
+    rows = await draftTx("readonly", (st, set) => {
       const r = st.index("owner").getAll(owner);
       r.onsuccess = () => set(r.result || []);
     });
-  } catch (e) { draftFail(e); return []; }
+  } catch (e) { draftFail(e); }
+  const mem = [...draftMem.values()].filter((m) => m.owner === owner);
+  if (!mem.length) return rows;
+  const keys = new Set(mem.map((m) => m.key));
+  return rows.filter((r) => !keys.has(r.key)).concat(mem.map((m) => Object.assign({}, m)));
+}
+
+// Whether record `cur` meets draftDrop's `cond`.
+function draftCondHolds(cur, cond) {
+  if ("stamp" in cond) {
+    const stamp = typeof cond.stamp === "function" ? cond.stamp() : cond.stamp;
+    if (cur.stamp !== stamp) return false;
+  }
+  if (cond.text !== undefined && cur.text !== cond.text) return false;
+  if (cond.updatedAt !== undefined && cur.updatedAt !== cond.updatedAt) return false;
+  return true;
 }
 
 // Deletes the record. With no `cond` that is an explicit discard of it; else
@@ -209,9 +247,18 @@ async function draftList(owner) {
 // text, so another page's text is never taken) and, given `cond.text`, still
 // holds that text (a save answered for an older text must not take a newer
 // draft with it) and, given `cond.updatedAt`, was last written then. Answers
-// whether it deleted the record.
+// whether it deleted the record. A record kept in memory goes the same way,
+// and the store's older record of the same buffer (storeStamp) with it.
 async function draftDrop(key, cond) {
   if (!key) return false;
+  const m = draftMem.get(key);
+  if (m && (!cond || draftCondHolds(m, cond))) {
+    draftMem.delete(key);
+    if (cond && m.storeStamp) draftDrop(key, { stamp: m.storeStamp });
+    else if (!cond) draftDrop(key);
+    draftsPaintSoon();
+    return true;
+  }
   let gone = false;
   try {
     await draftTx("readwrite", (st) => {
@@ -219,13 +266,7 @@ async function draftDrop(key, cond) {
       const r = st.get(key);
       r.onsuccess = () => {
         const cur = r.result;
-        if (!cur) return;
-        if ("stamp" in cond) {
-          const stamp = typeof cond.stamp === "function" ? cond.stamp() : cond.stamp;
-          if (cur.stamp !== stamp) return;
-        }
-        if (cond.text !== undefined && cur.text !== cond.text) return;
-        if (cond.updatedAt !== undefined && cur.updatedAt !== cond.updatedAt) return;
+        if (!cur || !draftCondHolds(cur, cond)) return;
         st.delete(key);
         gone = true;
       };
@@ -239,6 +280,8 @@ async function draftDrop(key, cond) {
 // refused write found landed after all, with newer text kept since): its
 // base moves there, while it still carries `stamp`.
 async function draftRebase(key, stamp, hash, baseText) {
+  const m = draftMem.get(key);
+  if (m && m.stamp === stamp) { m.baseHash = hash; m.baseText = baseText; return; }
   try {
     await draftTx("readwrite", (st) => {
       const r = st.get(key);
@@ -256,6 +299,8 @@ async function draftRebase(key, stamp, hash, baseText) {
 // A forgotten computer's drafts go with it (removeProfile, 02-debug-log.js).
 async function draftDropProfile(id) {
   if (!id) return;
+  draftForgotten.add(id);
+  for (const [key, m] of draftMem) if (m.profile === id) draftMem.delete(key);
   try {
     await draftTx("readwrite", (st) => {
       const r = st.index("profile").openCursor(IDBKeyRange.only(id));
@@ -351,8 +396,9 @@ function draftFork(rec, old) {
   draftFlags.set(rec.draftKey, flag);
   const refused = draftRefused.get(old);
   if (refused) draftRefused.set(rec.draftKey, refused);
-  for (const r of edLive) if (r !== rec && r.draftKey === old) return;
-  for (const r of edParked) if (r !== rec && r.draftKey === old) return;
+  for (const set of [edLive, edParked, draftLeaving]) {
+    for (const r of set) if (r !== rec && r.draftKey === old) return;
+  }
   draftFlags.delete(old);
   draftRefused.delete(old);
 }
@@ -364,6 +410,40 @@ function draftFork(rec, old) {
 function draftFlushAll() {
   for (const rec of edLive) if (rec.dirty) draftWrite(rec);
   for (const rec of edParked) if (rec.dirty) draftWrite(rec);
+}
+
+// A buffer going with no question asked (edDropView, a parked one whose
+// session went): its current text is written to its record, and if the store
+// does not then hold exactly that text (too large, the store failing) it is
+// kept in memory and in the unsaved list for the life of the page, and a toast
+// says so (draftOrphan). Until the store answers, it is still this page's view
+// of its record (draftLeaving), so a flush sends its text, not an older one.
+function draftLetGo(rec) {
+  if (!rec.owner || rec.readOnly || rec.discarded || !rec.dirty) return;
+  const text = edText(rec);
+  if (!draftPending.has(rec) && rec.draftHeld === text) return;
+  draftLeaving.add(rec);
+  draftWrite(rec)
+    .then(() => { if (rec.draftHeld !== text) return draftOrphan(rec, text); })
+    .catch((e) => dbg("drafts: let go", e))
+    .finally(() => draftLeaving.delete(rec));
+}
+
+async function draftOrphan(rec, text) {
+  if (rec.discarded || !rec.dirty || draftForgotten.has(draftProfileOf(rec.owner))) return;
+  let key = draftKeyOf(rec);
+  const cur = await draftGet(key);
+  // Rewritten by another page since: this text takes a key of its own.
+  if (cur && cur.stamp !== rec.draftStamp) { draftFork(rec, key); key = rec.draftKey; }
+  if (rec.discarded || !rec.dirty) return;
+  draftMem.set(key, {
+    key: key, owner: rec.owner, profile: draftProfileOf(rec.owner), path: rec.path,
+    baseHash: rec.hash, baseText: rec.baseText == null ? null : rec.baseText,
+    text: text, updatedAt: Date.now(), stamp: draftRandom(), page: draftPageId, memory: true,
+    storeStamp: cur && cur.stamp === rec.draftStamp ? cur.stamp : null,
+  });
+  toast(baseName(rec.path) + " could not be kept on this device. It is in the unsaved list until this page is closed", 6000);
+  draftsPaintSoon();
 }
 
 // An explicit discard of this buffer: its record (while it still holds this
@@ -390,7 +470,9 @@ function draftDiscard(rec) {
 // `shared` says the record is still another live view's: its writer is a page
 // that is still open, or a view of this page holds it; the opener then puts
 // the text back under a record of its own (draftApply), since writing into
-// that one would replace text whose only copy may be that record.
+// that one would replace text whose only copy may be that record. A record
+// that is not shared is claimed for this page before it is handed back
+// (draftClaim), and one another page claimed or rewrote meanwhile is shared.
 async function draftLookup(path, owner, key) {
   if (owner === undefined) owner = draftOwner();
   const all = (await draftList(owner)).filter((d) => d.path === path);
@@ -399,7 +481,35 @@ async function draftLookup(path, owner, key) {
   const d = (key && all.find((x) => x.key === key)) || all[0];
   d.others = all.length - 1;
   d.shared = d.page === draftPageId ? !!draftRecOf(d.key) : await draftWriterAlive(d.page);
+  // Kept in memory, it is this page's own and nobody else's to claim.
+  if (!d.shared && !d.memory && !(await draftClaim(d))) d.shared = true;
   return d;
+}
+
+// The record `d` made this page's, in the one transaction that checks it
+// still carries the stamp it was read with: its writer is this page and its
+// stamp a new one, whatever its text, so a page opening the file after this
+// one finds a writer that is alive. Two pages claiming at once are taken one
+// after the other by the store, and the second finds the first's stamp and
+// is refused. False when refused or the store failed.
+async function draftClaim(d) {
+  const stamp = draftRandom();
+  let ok = false;
+  try {
+    await draftTx("readwrite", (st) => {
+      const r = st.get(d.key);
+      r.onsuccess = () => {
+        const cur = r.result;
+        if (!cur || cur.stamp !== d.stamp) return;
+        cur.stamp = stamp;
+        cur.page = draftPageId;
+        st.put(cur);
+        ok = true;
+      };
+    });
+  } catch (e) { draftFail(e); return false; }
+  if (ok) { d.stamp = stamp; d.page = draftPageId; }
+  return ok;
 }
 
 // A freshly built rec gets its file's draft, if there is one: the draft's
@@ -420,9 +530,18 @@ function draftApply(rec, loaded, d) {
     draftDrop(d.key, { stamp: d.stamp, text: d.text });
     return;
   }
-  if (d.shared) {
+  // Kept in memory: the view holds the text from here on, and its writes go
+  // over the store's older record of the same buffer. Once only: a second
+  // view of this page applying the same lookup starts a record of its own.
+  const mem = d.memory ? draftMem.get(d.key) : null;
+  if (d.shared || (d.memory && (!mem || mem.stamp !== d.stamp))) {
     rec.draftKey = draftNewKey(rec.owner, rec.path);
     rec.draftStamp = null;
+  } else if (mem) {
+    draftMem.delete(d.key);
+    rec.draftKey = d.key;
+    rec.draftStamp = mem.storeStamp;
+    draftsPaintSoon();
   } else {
     rec.draftKey = d.key;
     rec.draftStamp = d.stamp;
@@ -742,10 +861,12 @@ function draftQueued() {
   return out;
 }
 
-// The view here that holds a draft record, open or put away with its session.
+// The view here that holds a draft record, open, put away with its session,
+// or closed with its last write still out (draftLetGo).
 function draftRecOf(key) {
-  for (const r of edLive) if (r.owner && draftKeyOf(r) === key) return r;
-  for (const r of edParked) if (r.owner && draftKeyOf(r) === key) return r;
+  for (const set of [edLive, edParked, draftLeaving]) {
+    for (const r of set) if (r.owner && draftKeyOf(r) === key) return r;
+  }
   return null;
 }
 
@@ -1246,13 +1367,55 @@ function draftAdopt(old, rec) {
 }
 
 // A parked buffer whose session went for good (releaseFileView,
-// 09-image-viewer.js): its draft stays in the store, and a waiting save or a
-// conflict mark stays with the draft (draftFlush sends it from the store).
+// 09-image-viewer.js): its draft stays in the store, or in memory when the
+// store will not hold its text (draftLetGo), and a waiting save or a conflict
+// mark stays with the draft (draftFlush sends it from there).
 function draftReleaseParked(rec) {
   if (!rec || !edParked.has(rec)) return;
+  draftLetGo(rec);
   edParked.delete(rec);
   rec.parked = false;
   rec.closed = true;
+}
+
+// ---- a switch to another computer ---------------------------------------------
+
+// Whether the store holds exactly this buffer's current text.
+function draftStored(rec) {
+  return !draftPending.has(rec) && rec.draftHeld != null && rec.draftHeld === edText(rec);
+}
+
+// The buffers with unsaved text that a switch of computer takes down
+// (switchProfile): the workspace tabs, the docked editor and the parked ones.
+// A full-screen editor stays where it is. Empty while this fragment has not
+// run yet: a pairing link is applied at boot (27-boot.js), before any view.
+function draftSwitchRecs() {
+  if (!edParked) return [];
+  const stays = edRec && !$("screen-editor").classList.contains("docked") ? edRec : null;
+  return [...edLive, ...edParked].filter((r) => r !== stays && r.owner && !r.readOnly
+                                                && !r.discarded && r.dirty);
+}
+
+// Whether a switch can go now, every such buffer's text in the store.
+function draftSwitchReady() {
+  return draftSwitchRecs().every(draftStored);
+}
+
+// Before a switch with buffers not yet in the store: they are written, and
+// those whose text the store then does not hold (too large, the store
+// failing) get the normal discard question. True to switch, with the buffers
+// asked about discarded; false to stay, with everything as it was.
+async function draftLeaveComputer() {
+  for (const r of draftSwitchRecs()) if (!draftStored(r)) await draftWrite(r);
+  const left = draftSwitchRecs().filter((r) => !draftStored(r));
+  if (!left.length) return true;
+  const ok = await appConfirm((left.length === 1 ? baseName(left[0].path) + " has unsaved changes that"
+                                                 : left.length + " files have unsaved changes that")
+    + " can't be kept on this device. Switching computer discards them.",
+    { title: "Discard unsaved changes?", confirmLabel: "Discard" });
+  if (!ok) return false;
+  for (const r of left) if (r.dirty && !r.discarded) draftDiscard(r);
+  return true;
 }
 
 // A view closed with its save waiting (edDropView): nothing was asked, so
@@ -1391,6 +1554,8 @@ function fillDraftsMenu(list) {
       when += first.has(d.path) ? " \u00b7 older" : " \u00b7 newest";
       first.add(d.path);
     }
+    // Not on this device's store: gone when this page closes (draftOrphan).
+    if (d.memory) when += " · this page only";
     let dir = d.path.slice(0, d.path.lastIndexOf("/") + 1) || "/";
     const home = typeof filesHome === "string" && filesHome ? filesHome.replace(/\/$/, "") + "/" : "";
     if (home && dir.startsWith(home)) dir = "~/" + dir.slice(home.length);
@@ -1446,15 +1611,21 @@ async function draftDiscardFromMenu(d) {
   const same = (rec) => !rec.view || edText(rec) === d.text;
   const live = draftLiveRecs(d);
   const parked = [...edParked].filter((rec) => draftKeyOf(rec) === d.key);
-  const gone = live.every(same) && parked.every((rec) => rec.draftStamp === d.stamp)
+  const gone = live.every(same)
     && await draftDrop(d.key, { stamp: d.stamp, text: d.text, updatedAt: d.updatedAt });
   if (!gone) {
     toast("Not discarded: " + baseName(d.path) + " changed since the list was shown", 4000);
     showDraftsMenu(true);
     return;
   }
-  draftFlags.delete(d.key);
-  draftRefused.delete(d.key);
+  // A buffer put away with its session that holds other text than the row
+  // showed (typed after it, and never stored) keeps that text, still dirty,
+  // and its waiting save with it: only the row's record went.
+  const kept = parked.filter((rec) => !same(rec));
+  if (!kept.length) {
+    draftFlags.delete(d.key);
+    draftRefused.delete(d.key);
+  }
   // A view of it that is open goes back to the computer's version it last
   // knew; one put away with its session does so when it comes back. Text
   // typed into a view while the record went is not the row's, and stays.
@@ -1465,7 +1636,11 @@ async function draftDiscardFromMenu(d) {
     if (rec.loaded) edReplaceClean(rec, rec.loaded.content, rec.loaded.hash);
     edPaintState(rec);
   }
-  for (const rec of parked) rec.revert = true;
+  for (const rec of parked) {
+    if (!same(rec)) continue;
+    rec.revert = true;
+    rec.draftHeld = null;
+  }
   draftsPaintSoon();
 }
 

@@ -478,9 +478,24 @@ function syncProfileUI() {
 // `probe` is for an address typed a moment ago: the failure of that one is
 // worth naming, which is what loadSessionsAfterProbe() does and a plain load
 // does not.
-function switchProfile(id, probe) {
+//
+// The views the switch takes down may hold unsaved text the store does not
+// have yet: that is written first, and text the store will not hold is asked
+// about (draftLeaveComputer, 51-drafts.js), a stay leaving everything as it
+// was. Only the newest press is ever carried out. `kept` skips the wait: the
+// caller has settled the unsaved text itself (forgetProfile drops it).
+var profileSwitchSeq = 0;
+function switchProfile(id, probe, kept) {
   const p = readProfiles().find((x) => x.id === id);
   if (!p) return;
+  const seq = ++profileSwitchSeq;
+  if (!kept && !draftSwitchReady()) {
+    const from = activeProfileId();
+    draftLeaveComputer().then((ok) => {
+      if (ok && seq === profileSwitchSeq && activeProfileId() === from) switchProfile(id, probe, true);
+    });
+    return;
+  }
   // First, so that every answer already in flight — a session list, a version,
   // a push status — is the old computer's and is dropped when it lands.
   profileGen++;
@@ -545,7 +560,7 @@ function forgetProfile(id) {
   // talking to that one, which is a switch like any other. With none left it is
   // back to first-run setup, which is not dismissible.
   const next = readProfiles()[0];
-  if (next) { switchProfile(next.id); return; }
+  if (next) { switchProfile(next.id, false, true); return; }
   // Nothing left to switch between, so the switcher goes with the last row.
   syncProfileSwitcher();
   openSettings(needsSetup());
