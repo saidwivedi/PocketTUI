@@ -188,6 +188,8 @@ function edThemeExt() {
   const slot = (name) => pickInk(p[name],
     p["bright" + name[0].toUpperCase() + name.slice(1)], bg, 4.5);
   const muted = ensureContrast(mixHex(text, bg, 0.45), bg, 4.5);
+  const card = chrome["--card"];
+  const mono = 'Menlo, ui-monospace, "SF Mono", monospace';
   const lineTint = rgbaHex(p.foreground, dark ? 0.05 : 0.04);
   const c = {
     keyword: slot("magenta"), string: slot("green"), literal: slot("red"),
@@ -222,7 +224,7 @@ function edThemeExt() {
     // about reading monospace on this phone; the editor honours it on open.
     "&": { color: text, backgroundColor: bg,
            fontSize: storedFontSize() + "px", height: "100%" },
-    ".cm-scroller": { fontFamily: 'Menlo, ui-monospace, "SF Mono", monospace' },
+    ".cm-scroller": { fontFamily: mono },
     ".cm-content": { caretColor: accent },
     ".cm-line": { padding: `0 2px 0 ${ED_LINE_PAD}px` },
     ".cm-cursor, .cm-dropCursor": { borderLeftColor: accent },
@@ -244,11 +246,30 @@ function edThemeExt() {
       backgroundColor: rgbaHex(accent, 0.18), outline: "1px solid " + rgbaHex(accent, 0.5),
     },
     "&.cm-focused .cm-nonmatchingBracket": { backgroundColor: rgbaHex(slot("red"), 0.2) },
+    // Vim's / and n matches. The plugin's own yellow is all but the page's
+    // lightness on a light page, and its cyan swallows light ink on a dark one;
+    // the bracket's idiom instead. &.cm-editor matches the specificity of the
+    // plugin's &light/&dark rules, which this theme then follows.
+    "&.cm-editor .cm-searchMatch": {
+      backgroundColor: rgbaHex(accent, 0.18), outline: "1px solid " + rgbaHex(accent, 0.5),
+    },
     // edPyMarksExt's two marks. The span inside is the highlighter's string
     // colour, which the docstring's has to outrank.
     ".cm-ptui-doc, .cm-ptui-doc *": { color: muted, fontStyle: "italic" },
     ".cm-ptui-deco, .cm-ptui-deco *": { color: c.op },
-    ".cm-panels": { backgroundColor: chrome["--card"], color: text },
+    ".cm-panels": { backgroundColor: card, color: text },
+    // Vim's command line (/, ?, :). Its input is a form control, which takes
+    // neither the panel's colour nor its font, so it typed in the browser's
+    // black Arial on the dark card. The dialog's spans carry inline monospace,
+    // its pcre hint an inline #888 and its messages an inline red, hence the
+    // !important on those three.
+    ".cm-vim-panel": { fontFamily: mono },
+    ".cm-vim-panel span": { fontFamily: "inherit !important" },
+    ".cm-vim-panel input": { color: "inherit", font: "inherit", caretColor: accent },
+    ".cm-vim-panel span + span": {
+      color: ensureContrast(mixHex(text, card, 0.45), card, 4.5) + " !important",
+    },
+    ".cm-vim-panel .cm-vim-message": { color: ensureContrast(slot("red"), card, 4.5) + " !important" },
   }, { dark });
   return [theme, CM.syntaxHighlighting(highlight)];
 }
