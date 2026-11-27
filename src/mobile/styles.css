@@ -6388,7 +6388,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #rail-resize:hover::after, #rail-resize.dragging::after { background: var(--umber); }
 
   /* The seam's tab, a key rather than a grip (31-wide-layout.js, bindRailTab):
-     a slim pill over the grip, 11px by 36, reaching 2px past the 7px strip on
+     a slim pill over the grip, 15px by 48, reaching 4px past the 7px strip on
      each side, with a thin chevron toward where the rail goes. With a pointer
      it is invisible at rest, so the seam looks as it always has, and fades in
      while the pointer is on the strip or on the tab's own hit box (both hover
@@ -6397,20 +6397,20 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #rail-tab {
     position: absolute;
     left: 50%; top: 50%;
-    width: 11px; height: 36px;
-    margin: -18px 0 0 -5.5px;
+    width: 15px; height: 48px;
+    margin: -24px 0 0 -7.5px;
     z-index: 1;
     padding: 0;
     display: flex; align-items: center; justify-content: center;
     border: 1px solid var(--hair-strong);
-    border-radius: 5.5px;
+    border-radius: 7.5px;
     background: color-mix(in srgb, var(--ink) 3%, var(--paper));
     color: var(--tertiary);
     cursor: pointer;
     transition: opacity 0.2s var(--ease-out), color 0.18s var(--ease-out),
                 border-color 0.18s var(--ease-out), background 0.18s var(--ease-out);
   }
-  /* The hit box, 19px by 44 (25px wide on touch), wider and taller than the
+  /* The hit box, 23px by 56 (29px wide on touch), wider and taller than the
      drawn pill; the strip's own widened grab zone around it still resizes.
      Offsets count from inside the pill's 1px border. */
   #rail-tab::before {
@@ -6420,8 +6420,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
     left: -5px; right: -5px;
   }
   #rail-tab svg {
-    width: 6px; height: 10px;
-    fill: none; stroke: currentColor; stroke-width: 1.3;
+    width: 8px; height: 13px;
+    fill: none; stroke: currentColor; stroke-width: 1.5;
     stroke-linecap: round; stroke-linejoin: round;
   }
   #rail-tab.waiting { color: var(--umber); border-color: color-mix(in srgb, var(--umber) 55%, var(--paper)); }
