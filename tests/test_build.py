@@ -5508,6 +5508,15 @@ def test_hiding_the_rail_is_painted_before_the_first_frame(doc):
     assert wide < css.index(":root.rail-hidden { --sidebar-w: 0px !important; }")
     assert wide < css.index(":root.rail-hidden #screen-list { display: none; }")
     assert "--rail-gutter: 0px" not in css
+    # Nothing else puts the list away: the full-window viewer is seated past the
+    # rail at the editor's level, the seam and its tab stay above both, and the
+    # viewer goes with the session it was opened in.
+    assert wide < css.index("#screen-term, #screen-editor, #screen-reader, #screen-humancode, #viewer {\n"
+                            "    left: calc(var(--sidebar-w) + var(--rail-gutter));")
+    assert "  #screen-editor, #screen-reader, #screen-humancode, #viewer { z-index: 65; }" in css
+    seam = css[css.index("  #rail-resize {\n    display: block;"):]
+    assert "    z-index: 66;\n" in seam[:seam.index("}")]
+    assert 'if ($("viewer").classList.contains("show")) return "viewer";' in _js_chunk(doc, "function fileViewKind(")
 
 
 def test_the_rail_tab_on_the_seam_toggles_one_state_and_refit(doc):

@@ -4229,7 +4229,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* A full-screen view over the terminal has to cover the pane's seam too,
      and that is fixed at z-index 60. Only here: on a phone these screens have
      nothing beside them to out-stack. */
-  #screen-editor, #screen-reader, #screen-humancode { z-index: 65; }
+  #screen-editor, #screen-reader, #screen-humancode, #viewer { z-index: 65; }
 
   /* A file opened from the docked pane opens in the pane: the same slot, the
      same width, expanding with it, and the listing left active underneath —
@@ -6281,10 +6281,15 @@ html.term-open #dbg-panel { opacity: 0.85; }
 
   /* Main-pane screens start past the rail and its gutter: the fixed screens
      move their left edge, the explorer — a page-scrolling screen — shifts
-     by margin instead. */
-  #screen-term, #screen-editor, #screen-reader, #screen-humancode {
+     by margin instead. The viewer's full-window shape is one of them: nothing
+     but the seam's tab puts the session list away (founder, 2026-11-27), so a
+     picture or a PDF takes the editor's area and leaves the rail beside it. */
+  #screen-term, #screen-editor, #screen-reader, #screen-humancode, #viewer {
     left: calc(var(--sidebar-w) + var(--rail-gutter));
   }
+  /* A zoomed picture is a transformed box larger than the viewer, which beside
+     the rail would paint over the list: the viewer clips what it shows. */
+  #viewer:not(.docked) { overflow: hidden; }
   :is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2) {
     margin-left: calc(var(--sidebar-w) + var(--rail-gutter));
   }
@@ -6395,7 +6400,11 @@ html.term-open #dbg-panel { opacity: 0.85; }
     width: var(--rail-gutter);
     cursor: col-resize;
     touch-action: none;
-    z-index: 60;
+    /* Over the full-screen views at 65 too: the tab reaches past the seam into
+       the main area, and with the rail hidden its middle is there, so a file
+       open beside the seam must not cover the one key that brings the list
+       back. Under the sheets and their scrims at 200. */
+    z-index: 66;
     -webkit-user-select: none; user-select: none;
     background: var(--paper-rec);
     border-left: 1px solid var(--hair);
@@ -6428,6 +6437,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   #rail-resize:hover, #rail-resize.dragging { background: var(--umber-soft); }
   #rail-resize:hover::after, #rail-resize.dragging::after { background: var(--umber); }
+  /* A frame the pointer crosses while the seam is held (a PDF beside it, the
+     browser pane) takes the moves the drag is owed, and the rail stops
+     following; for the length of the drag no frame is a target. */
+  :root:has(#rail-resize.dragging) iframe { pointer-events: none; }
 
   /* The seam's tab, a key rather than a grip (31-wide-layout.js, bindRailTab):
      a slim pill over the grip, 15px by 48, reaching 4px past the 7px strip on

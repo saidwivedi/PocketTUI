@@ -432,10 +432,11 @@ function fileViewKind() {
   if ($("screen-editor").classList.contains("active")) return "editor";
   if ($("screen-reader").classList.contains("active")) return "reader";
   if ($("screen-humancode").classList.contains("active")) return "humancode";
-  // Only the overlay seated in the pane: full screen it is a look at a file
-  // over whatever screen was there, and a phone switching sessions never has
-  // one up at all.
-  if ($("viewer").classList.contains("docked")) return "viewer";
+  // The overlay in either shape: full window on the wide layout it sits beside
+  // the rail like the editor does, so a rail tap can leave it on screen and it
+  // has to go with the session it was opened in. A phone switching sessions
+  // never has one up at all.
+  if ($("viewer").classList.contains("show")) return "viewer";
   return null;
 }
 
@@ -606,8 +607,19 @@ function openTerminal(name, resumed) {
       if (name === currentSession) return;
       pendingSwitch = { name: name, from: currentSession };
       // One more where the editor is over the brief, each on an entry of its own.
-      history.go(-(filesEntryCount() + 1 + hcCoveredEntries()));
+      // The viewer is an overlay over the listing and owns none: only the
+      // listing's are spent.
+      history.go(-(filesEntryCount() + (kind === "viewer" ? 0 : 1) + hcCoveredEntries()));
       return;
+    }
+    // The viewer full window over the terminal, from a tapped link, is that
+    // terminal's view too, and is put away under the rule above. It owns no
+    // entry, so there is nothing to spend and no pop to wait for: it goes into
+    // the stash here, the docked pane's way, and the switch carries on.
+    if (kind === "viewer" && !docked && currentSession
+        && $("screen-term").classList.contains("active")) {
+      if (name === currentSession) return;
+      stashFileView(currentSession, kind);
     }
     // A full-screen view opened from the session list belongs to no session —
     // there is no terminal under it to come back to — so it closes on the
@@ -615,6 +627,8 @@ function openTerminal(name, resumed) {
     // docked one stands aside: it is the pane's, and the pane is stashed.
     if (!docked) {
       if (kind === "reader") closeReader();
+      // Still up only when no stash above took it.
+      if ($("viewer").classList.contains("show")) hideImage();
       if ($("screen-editor").classList.contains("active")) {
         // A waiting save still going into the store: the switch is made
         // again once the editor may go (edMayLeave).
