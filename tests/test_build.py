@@ -5364,6 +5364,7 @@ const groups = [gB, gE];
 function syncGrid() { groups.length = 0; for (const c of cols) for (const g of c.groups) groups.push(g); }
 function relayout() {}
 function syncEmpty() {}
+function syncWrap() {}
 function activate(t) { t.group.active = t; }
 function edDropView() { log.push("edDropView"); }
 let destroyed = 0;

@@ -1470,6 +1470,7 @@ function makeWsTabs() {
   const ctx = { readText: (p) => fsReadText(p) };
   function activate() {}
   function syncEmpty() {}
+  function syncWrap() {}
   function unsplit() {}
   function paintChip() {}
   function endDrag() {}
