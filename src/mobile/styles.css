@@ -95,13 +95,13 @@
   --warn: #c98a5a;
   --bad: #c46a5e;
 
-  --diff-add-bg: #1b2519;
+  --diff-add-bg: #263321;
   --diff-add-ink: #9dc286;
-  --diff-del-bg: #2a1b18;
+  --diff-del-bg: #432822;
   --diff-del-ink: #d9877c;
   --diff-add-word-bg: #3d5f30;
   --diff-add-word-ink: #d7f0c6;
-  --diff-del-word-bg: #6e3529;
+  --diff-del-word-bg: #7a3a2c;
   --diff-del-word-ink: #ffd2ca;
   --diff-hunk-bg: #1a2027;
   --diff-hunk-ink: #94aec5;
