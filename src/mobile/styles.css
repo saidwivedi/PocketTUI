@@ -3269,10 +3269,41 @@ html.term-open #dbg-panel { opacity: 0.85; }
   transition: opacity 0.35s var(--ease-out);
 }
 :is(.viewer, .ws-pane) .mesh-hint.gone { opacity: 0; }
-/* A PDF is the one tenant that draws a toolbar of its own, along the top edge
-   where this overlay keeps its buttons: the frame starts below them rather
-   than under them, so neither row is a press the other swallows. */
-.viewer.pdf { padding-top: calc(56px + var(--safe-top)); }
+/* A PDF is a document, not a picture: it opens the way a workspace tab and
+   the editor show a file, on the app's paper under the editor's bar (back,
+   name, download), with the frame filling the rest edge to edge. The bar sits
+   in the flow above the frame rather than over it, so the reader's own
+   toolbar along the frame's top edge is never under a button. */
+.viewer.pdf {
+  flex-direction: column;
+  align-items: stretch; justify-content: flex-start;
+  padding: var(--safe-top) 0 var(--safe-bot);
+  background: var(--paper);
+}
+.viewer.pdf iframe { flex: 1; min-height: 0; height: auto; border-radius: 0; }
+.viewer .viewer-name { display: none; }
+.viewer.pdf .viewer-name { display: flex; }
+#viewer-name {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.viewer.pdf .viewer-actions {
+  position: static;
+  flex: 0 0 auto;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--hair);
+}
+/* The arrow is the way back in both shapes, as it is on the editor's bar, so
+   the full-screen × stands down here too. */
+.viewer.pdf #btn-viewer-back { display: inline-flex; }
+.viewer.pdf .viewer-close { display: none; }
+.viewer.pdf .viewer-btn {
+  color: var(--secondary); background: transparent;
+  padding: 8px; min-height: 0;
+  border-radius: 10px;
+}
+.viewer.pdf .viewer-btn:hover { color: var(--ink); background: var(--umber-tint); }
 /* Download and close, in the corner the X alone used to hold. */
 .viewer .viewer-actions {
   position: absolute;
@@ -4245,6 +4276,11 @@ html.term-open #dbg-panel { opacity: 0.85; }
      is the way back and the cross before this one ends the pane, and a third
      way out wearing a second × would be a coin flip. */
   #viewer.docked .viewer-close { display: none; }
+  /* A docked PDF's bar is the docked editor's, keys and all, and as tall as
+     that bar, whose 34px Save key sets its height over the 28px keys. */
+  #viewer.docked.pdf .viewer-actions { min-height: 51px; box-sizing: border-box; }
+  #viewer.docked.pdf .viewer-btn { padding: 5px; border-radius: 7px; }
+  #viewer.docked.pdf .viewer-btn svg { width: 18px; height: 18px; }
 
   /* The page-scrolling screen becomes a column that scrolls inside itself:
      the bar stays put because it is the flex item that does not scroll, not

@@ -641,6 +641,7 @@ function showImage(path, pane) {
   $("viewer").classList.toggle("docked", docked);
   filesSetViewOwner(docked ? owner : null);
   $("viewer").classList.toggle("pdf", kind === "pdf");
+  $("viewer-name").textContent = kind === "pdf" ? baseName(path) : "";
   $("viewer").classList.add("show");
   if (fresh) fillViewer(path, kind);
 }
