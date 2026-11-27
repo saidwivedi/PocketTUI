@@ -5489,7 +5489,8 @@ def test_the_restore_card_follows_the_count_on_a_strict_cap(doc):
 
 def test_hiding_the_rail_is_painted_before_the_first_frame(doc):
     """The pre-paint script and cfg read one key, and the class only acts
-    inside the wide layout's query, so the phone never sees either key."""
+    inside the wide layout's query, so the phone never sees the seam or its
+    tab. Hidden, only the rail's width goes: the seam keeps its gutter."""
     boot = (SRC / "boot-theme.js").read_text(encoding="utf-8")
     assert 'localStorage.getItem("pockettui_rail_hidden") === "1"' in boot
     assert 'document.documentElement.classList.add("rail-hidden");' in boot
@@ -5497,20 +5498,27 @@ def test_hiding_the_rail_is_painted_before_the_first_frame(doc):
             in doc)
     css = (SRC / "styles.css").read_text(encoding="utf-8")
     wide = css.index("@media (min-width: 768px) and (min-height: 500px) {\n  /* --rail-title")
-    assert css.index("#btn-rail-hide, #btn-rail-show { display: none; }") < wide
-    assert wide < css.index(":root.rail-hidden { --sidebar-w: 0px !important; --rail-gutter: 0px; }")
-    assert wide < css.index(":root.rail-hidden #screen-list, :root.rail-hidden #rail-resize { display: none; }")
+    assert css.index("#rail-resize { display: none; }") < wide
+    assert wide < css.index(":root.rail-hidden { --sidebar-w: 0px !important; }")
+    assert wide < css.index(":root.rail-hidden #screen-list { display: none; }")
+    assert "--rail-gutter: 0px" not in css
 
 
-def test_the_rail_keys_toggle_one_state_and_refit(doc):
-    """Both keys land in setRailHidden, which keeps cfg, the class and the grid
-    in step and leaves the remembered width alone."""
-    assert 'aria-label="Hide the session list"' in doc
-    assert 'aria-label="Show the session list"' in doc
+def test_the_rail_tab_on_the_seam_toggles_one_state_and_refit(doc):
+    """The tab is a button inside the seam; a press on it never starts a
+    resize, and its click lands in setRailHidden, which keeps cfg, the class
+    and the grid in step and leaves the remembered width alone."""
+    assert '<div id="rail-resize"><button id="rail-tab" type="button" aria-label="Hide the session list"' in doc
+    assert "btn-rail-hide" not in doc and "btn-rail-show" not in doc and "i-m-sidebar" not in doc
+    down = doc.index('const handle = $("rail-resize");')
+    guard = doc.index('    if (e.target.closest("#rail-tab")) return;\n', down)
+    assert guard < doc.index("    dragging = true;\n", down)
+    assert 'tab.addEventListener("click", () => setRailHidden(!cfg.railHidden));' in doc
     body = _js_chunk(doc, "function setRailHidden(on) {")
     assert "  cfg.railHidden = on;\n" in body
     assert '  document.documentElement.classList.toggle("rail-hidden", on);\n' in body
     assert "  refit(0);\n" in body
     assert "railW" not in body and "pockettui_sidebar_w" not in body
-    dot = _js_chunk(doc, "function syncRailDot() {")
-    assert '.item[data-name]:not(.selected) .state.waiting' in dot
+    tab = _js_chunk(doc, "function syncRailTab() {")
+    assert '.item[data-name]:not(.selected) .state.waiting' in tab
+    assert '"Show the session list, a session needs input"' in tab

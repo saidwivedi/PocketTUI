@@ -64,18 +64,30 @@ function applyRailFont(px) {
 // edge follows the variable too. Pointer events cover mouse and touch alike.
 (function railResize() {
   const handle = $("rail-resize");
-  let dragging = false, dragOff = 0;
+  let dragging = false, dragOff = 0, revealFrom = -1;
   handle.addEventListener("pointerdown", (e) => {
+    // The tab is a key on the strip, not a grip: its press only clicks.
+    if (e.target.closest("#rail-tab")) return;
     dragging = true;
     // Wherever on the gutter the grab landed, the width must not jump to the
     // pointer — the drag moves the width by the pointer's travel instead.
     dragOff = railW - e.clientX;
+    // Parked at the left edge with the rail hidden, a drag to the right brings
+    // the rail back once it has travelled a few pixels, its edge then under
+    // the pointer (clamped to the minimum width).
+    revealFrom = cfg.railHidden ? e.clientX : -1;
+    if (revealFrom >= 0) dragOff = 0;
     handle.classList.add("dragging");
     handle.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
   handle.addEventListener("pointermove", (e) => {
     if (!dragging) return;
+    if (revealFrom >= 0) {
+      if (e.clientX - revealFrom < 4) return;
+      revealFrom = -1;
+      setRailHidden(false);
+    }
     railW = Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(e.clientX + dragOff)));
     document.documentElement.style.setProperty("--sidebar-w", railW + "px");
     refit();
@@ -84,6 +96,7 @@ function applyRailFont(px) {
     if (!dragging) return;
     dragging = false;
     handle.classList.remove("dragging");
+    if (revealFrom >= 0) { revealFrom = -1; return; }
     try { localStorage.setItem("pockettui_sidebar_w", String(railW)); } catch (e) {}
     // Forced now: the debounce above may have swallowed the last move.
     refit(0);
@@ -92,64 +105,49 @@ function applyRailFont(px) {
   handle.addEventListener("pointercancel", finish);
 })();
 
-// Hiding the rail gives its width and its seam to the main pane for as long as
-// the user wants the room. The class is the whole of the layout change: under
-// the wide query it zeroes the two variables every pane border is drawn from,
-// so the panes move exactly as a drag to zero would, while railW and its stored
-// value stay as they were and come back with the rail. The pre-paint script
-// puts the class on at boot (boot-theme.js); this keeps it, cfg and the
-// terminal's grid in step afterwards. On a phone the class does nothing, so a
-// window narrowed and widened again comes back the way it was left.
+// Hiding the rail gives its width to the main pane for as long as the user
+// wants the room. The class is the whole of the layout change: under the wide
+// query it zeroes the rail's width variable every pane border is drawn from, so
+// the panes move exactly as a drag to zero would and the seam parks at the
+// window's left edge, while railW and its stored value stay as they were and
+// come back with the rail. The pre-paint script puts the class on at boot
+// (boot-theme.js); this keeps it, cfg and the terminal's grid in step
+// afterwards. On a phone the class does nothing, so a window narrowed and
+// widened again comes back the way it was left.
 function setRailHidden(on) {
   cfg.railHidden = on;
   document.documentElement.classList.toggle("rail-hidden", on);
-  syncRailDot();
+  syncRailTab();
   refit(0);
 }
 
-// While the rail is away its "Needs input" badges are out of sight, so the key
-// that brings it back carries a dot for any of them on a row other than the
-// open session's. Read off the rail's own rows, which keep rendering while
-// hidden: the badge is already the verdict, and the rows already know which one
-// is selected.
-function syncRailDot() {
-  const btn = $("btn-rail-show");
-  const waiting = !!$("list").querySelector(".item[data-name]:not(.selected) .state.waiting");
-  btn.classList.toggle("waiting", waiting);
-  btn.setAttribute("aria-label", waiting
-    ? "Show the session list, a session needs input" : "Show the session list");
+// The seam's tab names what it will do. While the rail is away its "Needs
+// input" badges are out of sight, so the seam (a dot at rest) and the tab take
+// the accent for any of them
+// on a row other than the open session's. Read off the rail's own rows, which
+// keep rendering while hidden: the badge is already the verdict, and the rows
+// already know which one is selected.
+function syncRailTab() {
+  const tab = $("rail-tab"), hidden = cfg.railHidden;
+  const waiting = hidden && !!$("list").querySelector(".item[data-name]:not(.selected) .state.waiting");
+  tab.classList.toggle("waiting", waiting);
+  $("rail-resize").classList.toggle("waiting", waiting);
+  const label = !hidden ? "Hide the session list"
+    : waiting ? "Show the session list, a session needs input" : "Show the session list";
+  tab.setAttribute("aria-label", label);
+  tab.title = label;
 }
 
-(function bindRailHide() {
-  const hide = $("btn-rail-hide"), show = $("btn-rail-show");
-  // A mouse press leaves focus in the terminal, the key bar's rule; from the
-  // keyboard, focus follows to the key that is still on screen.
-  for (const b of [hide, show]) b.addEventListener("pointerdown", e => e.preventDefault());
-  hide.addEventListener("click", () => {
-    const kb = document.activeElement === hide;
-    setRailHidden(true);
-    // The pointer that pressed hide is already on the corner the key comes
-    // back in, so it shows at once and fades only when the pointer leaves.
-    show.classList.add("peek");
-    if (kb) show.focus();
-  });
-  // Over the terminal the key rests invisible (styles.css) and shows while the
-  // pointer is in a 44px corner zone. A document-level move rather than a zone
-  // element: an element larger than the key would swallow clicks meant for the
-  // grid, and this way only the key's own box ever takes one.
-  document.addEventListener("pointermove", (e) => {
-    show.classList.toggle("peek", e.clientX < 44 && e.clientY < 44);
-  }, { passive: true });
-  show.addEventListener("click", () => {
-    const kb = document.activeElement === show;
-    setRailHidden(false);
-    if (kb) hide.focus();
-  });
+(function bindRailTab() {
+  const tab = $("rail-tab");
+  // A mouse press leaves focus in the terminal, the key bar's rule.
+  tab.addEventListener("pointerdown", e => e.preventDefault());
+  tab.addEventListener("click", () => setRailHidden(!cfg.railHidden));
   // Rows are rebuilt on every poll and re-marked on every switch; either can
-  // move the dot.
-  new MutationObserver(syncRailDot).observe($("list"),
+  // move the accent.
+  new MutationObserver(syncRailTab).observe($("list"),
     { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
-  syncRailDot();
+  syncRailTab();
 })();
 
 // Crossing the breakpoint reshapes the terminal's pane — the rail claims or

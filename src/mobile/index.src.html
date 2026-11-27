@@ -297,12 +297,6 @@
     <symbol id="i-m-term-panel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
       <rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 13.5h17M7 16.5h4"/>
     </symbol>
-    <!-- A window with a column down its left side: the rail's hide key and the
-         key that brings it back (31-wide-layout.js). Drawn at the rail's own
-         stroke weight, since it sits beside the rail's header keys. -->
-    <symbol id="i-m-sidebar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6">
-      <rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/>
-    </symbol>
     <symbol id="i-m-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7">
       <path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>
     </symbol>
@@ -393,9 +387,6 @@
 <div class="screen active" id="screen-list">
   <div class="topbar">
     <div class="brand">
-      <!-- Wide layouts only (styles.css): hides the rail for the room, and
-           #btn-rail-show takes this key's exact place while it is away. -->
-      <button class="icon-btn" id="btn-rail-hide" type="button" aria-label="Hide the session list" title="Hide the session list"><svg><use href="#i-m-sidebar"/></svg></button>
       <a href="https://pockettui.com/">
         <span class="glyph"><svg><use href="#i-logo"/></svg></span>
         <!-- Prompt, the film's mascot, standing on the I of the wordmark — the
@@ -1257,13 +1248,10 @@
      wide layouts only (display gated in styles.css). A body child rather than
      a child of the rail, whose own scrolling would carry an absolutely
      positioned handle away with the list. Pointer events drag --sidebar-w
-     live — see 31-wide-layout.js. -->
-<div id="rail-resize" aria-hidden="true"></div>
-<!-- The rail's way back while it is hidden: the same corner and the same box
-     as #btn-rail-hide, so the pointer that hid the rail is already on it. A
-     body child for #rail-resize's reason; shown only on a wide layout with the
-     rail hidden (styles.css). The dot says a session off screen needs input. -->
-<button class="icon-btn" id="btn-rail-show" type="button" aria-label="Show the session list" title="Show the session list"><svg><use href="#i-m-sidebar"/></svg><span class="rail-show-dot" aria-hidden="true"></span></button>
+     live — see 31-wide-layout.js. The tab at its middle hides the rail and
+     brings it back; while hidden the strip stays, parked at the window's left
+     edge. -->
+<div id="rail-resize"><button id="rail-tab" type="button" aria-label="Hide the session list" title="Hide the session list"><svg viewBox="0 0 6 10" aria-hidden="true"><path d="M4.5 1.5 1.5 5l3 3.5"/></svg></button></div>
 
 <!-- ============================================================
      SETTINGS

@@ -6195,7 +6195,6 @@ html.term-open #dbg-panel { opacity: 0.85; }
    two-pane layout. */
 #wide-empty { display: none; }
 #rail-resize { display: none; }
-#btn-rail-hide, #btn-rail-show { display: none; }
 
 /* Tablets and desktops. Everything two-pane lives behind this one query —
    the markup and screen classes stay exactly the phone's, the stylesheet
@@ -6207,7 +6206,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* --rail-title is the rail row title's size, set live from JS the way
      --sidebar-w is; the default here is what an install with nothing stored
      renders at. */
-  :root { --sidebar-w: 320px; --rail-gutter: 7px; --rail-title: 14px; --rail-key-room: 32px; }
+  :root { --sidebar-w: 320px; --rail-gutter: 7px; --rail-title: 14px; }
 
   /* Visible regardless of .active — the screen classes keep governing only
      the main pane, and the ID selector outweighs .screen's display:none.
@@ -6273,10 +6272,6 @@ html.term-open #dbg-panel { opacity: 0.85; }
   @container (max-width: 280px) {
     #screen-list .right { gap: 0; padding-left: 4px; }
   }
-  /* The hide key leads the header, its glyph on the list's left edge and its
-     hit box out in the padding, the way a sidebar's own key sits in a desktop
-     app's corner. */
-  #screen-list #btn-rail-hide { display: inline-flex; margin-left: -6px; }
   #screen-list .list-wrap {
     padding: 0 14px 24px;
     flex: 1;
@@ -6377,7 +6372,8 @@ html.term-open #dbg-panel { opacity: 0.85; }
     left: -5px; right: -5px;
   }
   /* The grip mark: a centered pill, the one visible hint that the seam
-     drags. It takes the accent with the gutter's tint below. */
+     drags. It takes the accent with the gutter's tint below, and gives way to
+     the tab (below) whenever the tab shows. */
   #rail-resize::after {
     content: "";
     position: absolute;
@@ -6386,107 +6382,93 @@ html.term-open #dbg-panel { opacity: 0.85; }
     margin: -18px 0 0 -1.5px;
     border-radius: 2px;
     background: var(--hair-strong);
-    transition: background 0.18s var(--ease-out);
+    transition: background 0.18s var(--ease-out), opacity 0.2s var(--ease-out);
   }
   #rail-resize:hover, #rail-resize.dragging { background: var(--umber-soft); }
   #rail-resize:hover::after, #rail-resize.dragging::after { background: var(--umber); }
 
-  /* The rail put away (31-wide-layout.js, setRailHidden): the two variables
-     every main-pane edge is drawn from go to zero, so the panes take the room
-     exactly as a drag would have given it. Important because the remembered
-     width is written inline on the root, and it is that value, untouched, that
-     comes back when the class goes. */
-  :root.rail-hidden { --sidebar-w: 0px !important; --rail-gutter: 0px; }
-  :root.rail-hidden #screen-list, :root.rail-hidden #rail-resize { display: none; }
-  /* The way back sits in the hide key's own box: the rail header's 10px top
-     padding and the key's 8px left edge, above the panes and their seams and
-     under every sheet, menu and toast. */
-  :root.rail-hidden #btn-rail-show {
-    display: inline-flex;
-    position: fixed;
-    top: calc(var(--safe-top) + 10px);
-    left: 8px;
-    z-index: 66;
-    padding: 5px;
-    border: 1px solid transparent;
+  /* The seam's tab, a key rather than a grip (31-wide-layout.js, bindRailTab):
+     a slim pill over the grip, 11px by 36, reaching 2px past the 7px strip on
+     each side, with a thin chevron toward where the rail goes. With a pointer
+     it is invisible at rest, so the seam looks as it always has, and fades in
+     while the pointer is on the strip or on the tab's own hit box (both hover
+     the strip); quick in, slower out. Without hover it stays, quiet. The
+     accent is kept for state: a waiting session while the rail is hidden. */
+  #rail-tab {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 11px; height: 36px;
+    margin: -18px 0 0 -5.5px;
+    z-index: 1;
+    padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--hair-strong);
+    border-radius: 5.5px;
+    background: color-mix(in srgb, var(--ink) 3%, var(--paper));
+    color: var(--tertiary);
+    cursor: pointer;
+    transition: opacity 0.2s var(--ease-out), color 0.18s var(--ease-out),
+                border-color 0.18s var(--ease-out), background 0.18s var(--ease-out);
   }
-  /* Over the grid it has nothing behind it to read against, so there it takes
-     the key pill's surface; in a pane's head it stays as bare as the head's
-     own keys. */
-  :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show {
-    border-color: var(--hair);
-    background: color-mix(in srgb, var(--umber) 14%,
-                          color-mix(in srgb, var(--card) 94%, transparent));
-    box-shadow: 0 1px 2px rgba(20, 16, 10, 0.06);
+  /* The hit box, 19px by 44 (25px wide on touch), wider and taller than the
+     drawn pill; the strip's own widened grab zone around it still resizes.
+     Offsets count from inside the pill's 1px border. */
+  #rail-tab::before {
+    content: "";
+    position: absolute;
+    top: -5px; bottom: -5px;
+    left: -5px; right: -5px;
   }
-  :root.rail-hidden[data-theme="dark"] #screen-term.active:not(.side-full) ~ #btn-rail-show {
-    border-color: transparent;
-    background: color-mix(in srgb, var(--umber) 14%,
-                          color-mix(in srgb, var(--hair-strong) 94%, transparent));
+  #rail-tab svg {
+    width: 6px; height: 10px;
+    fill: none; stroke: currentColor; stroke-width: 1.3;
+    stroke-linecap: round; stroke-linejoin: round;
   }
-  /* With a pointer to reach for it, the key over the grid rests invisible so
-     the prompt under it reads, and shows while the pointer is in the corner
-     (.peek, 31-wide-layout.js) or the key has keyboard focus. A waiting
-     session's dot stays on its own at rest. Quick in, slower out, so a pointer
-     crossing the corner does not flicker it. Touch-only devices keep it shown. */
+  #rail-tab.waiting { color: var(--umber); border-color: color-mix(in srgb, var(--umber) 55%, var(--paper)); }
   @media (hover: hover) {
-    :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show {
-      transition: opacity 0.2s var(--ease-out), background 0.2s var(--ease-out),
-                  border-color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out);
+    #rail-tab { opacity: 0; }
+    #rail-resize:hover #rail-tab, #rail-tab:focus-visible {
+      opacity: 1;
+      transition-duration: 0.12s;
+      color: var(--ink);
+      border-color: color-mix(in srgb, var(--ink) 28%, var(--paper));
+      background: var(--card);
     }
-    :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show svg {
-      transition: opacity 0.2s var(--ease-out);
+    #rail-resize:hover #rail-tab.waiting, #rail-tab.waiting:focus-visible {
+      color: var(--umber); border-color: var(--umber);
     }
-    :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show:not(.peek):not(:focus-visible) {
-      border-color: transparent;
-      background: transparent;
-      box-shadow: none;
-    }
-    :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show:not(.peek):not(:focus-visible):not(.waiting) {
+    #rail-resize:hover::after, #rail-resize:has(#rail-tab:focus-visible)::after {
       opacity: 0;
-    }
-    :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show:not(.peek):not(:focus-visible) svg {
-      opacity: 0;
-    }
-    :root.rail-hidden #screen-term.active:not(.side-full) ~ :is(#btn-rail-show.peek, #btn-rail-show:focus-visible),
-    :root.rail-hidden #screen-term.active:not(.side-full) ~ :is(#btn-rail-show.peek, #btn-rail-show:focus-visible) svg {
       transition-duration: 0.12s;
     }
   }
-  /* A docked pane expanded over the main area puts its head in this corner,
-     and the key is centred on that head's row: the explorer's and the
-     browser's 38px bar, or the editor's taller one. */
-  :root.rail-hidden #screen-term.side-full.active ~ #btn-rail-show { top: calc(var(--safe-top) + 4px); }
-  :root.rail-hidden #screen-term.side-full.active
-    ~ :is(#screen-editor, #screen-reader, #screen-humancode).docked.active ~ #btn-rail-show {
-    top: calc(var(--safe-top) + 10.5px);
+  @media (hover: none), (pointer: coarse) {
+    #rail-tab::before { left: -8px; right: -8px; }
   }
-  #btn-rail-show svg { width: 17px; height: 17px; }
-  #btn-rail-show .rail-show-dot {
-    display: none;
-    position: absolute;
-    top: 3px; right: 3px;
-    width: 7px; height: 7px;
+
+  /* The rail put away (31-wide-layout.js, setRailHidden): the rail's width goes
+     to zero, so the panes take the room exactly as a drag would have given it
+     and the seam, at its normal width, parks at the window's left edge with the
+     main area starting past it. Important because the remembered width is
+     written inline on the root, and it is that value, untouched, that comes
+     back when the class goes. With no room left of the seam, the tab sits flush
+     with the window's edge and its hit box reaches right instead. */
+  :root.rail-hidden { --sidebar-w: 0px !important; }
+  :root.rail-hidden #screen-list { display: none; }
+  :root.rail-hidden #rail-tab { left: -1px; margin-left: 0; }
+  :root.rail-hidden #rail-tab::before { left: -1px; right: -7px; }
+  :root.rail-hidden #rail-tab svg { transform: scaleX(-1); }
+  @media (hover: none), (pointer: coarse) {
+    :root.rail-hidden #rail-tab::before { right: -15px; }
+  }
+  /* A waiting session while the rail is away: at rest the grip becomes a small
+     accent dot on the parked seam; the tab still comes up on hover. */
+  #rail-resize.waiting::after {
+    width: 5px; height: 5px;
+    margin: -2.5px 0 0 -2.5px;
     border-radius: 50%;
-    background: var(--warn);
-    box-shadow: 0 0 0 1.5px var(--paper);
+    background: var(--umber);
   }
-  #btn-rail-show.waiting .rail-show-dot { display: block; }
-  /* What starts at the window's left edge makes room for the key rather than
-     sit under it: the head of a full-width screen (or of a docked one expanded
-     over the terminal) moves its first item along by the key's width and the
-     header's gap, and the connection banner starts past it. */
-  :root.rail-hidden :is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2,
-                        #screen-editor, #screen-reader, #screen-humancode):not(.docked) > .topbar > :first-child,
-  :root.rail-hidden #screen-term.side-full.active ~ :is(#screen-files, #screen-files-2,
-                        #screen-browser, #screen-browser-2, #screen-editor, #screen-reader,
-                        #screen-humancode).docked > .topbar > :first-child {
-    margin-left: var(--rail-key-room);
-  }
-  :root.rail-hidden #screen-term.side-full.active ~ #viewer.docked .viewer-actions {
-    left: calc(10px + var(--rail-key-room));
-  }
-  :root.rail-hidden #conn-banner { left: calc(10px + var(--rail-key-room)); }
 
   /* With no main screen up the pane would be bare paper; this quiet hint
      (see the #wide-empty markup) fills it, and goes away the moment any
