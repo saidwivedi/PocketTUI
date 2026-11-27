@@ -6424,6 +6424,35 @@ html.term-open #dbg-panel { opacity: 0.85; }
     background: color-mix(in srgb, var(--umber) 14%,
                           color-mix(in srgb, var(--hair-strong) 94%, transparent));
   }
+  /* With a pointer to reach for it, the key over the grid rests invisible so
+     the prompt under it reads, and shows while the pointer is in the corner
+     (.peek, 31-wide-layout.js) or the key has keyboard focus. A waiting
+     session's dot stays on its own at rest. Quick in, slower out, so a pointer
+     crossing the corner does not flicker it. Touch-only devices keep it shown. */
+  @media (hover: hover) {
+    :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show {
+      transition: opacity 0.2s var(--ease-out), background 0.2s var(--ease-out),
+                  border-color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out);
+    }
+    :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show svg {
+      transition: opacity 0.2s var(--ease-out);
+    }
+    :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show:not(.peek):not(:focus-visible) {
+      border-color: transparent;
+      background: transparent;
+      box-shadow: none;
+    }
+    :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show:not(.peek):not(:focus-visible):not(.waiting) {
+      opacity: 0;
+    }
+    :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show:not(.peek):not(:focus-visible) svg {
+      opacity: 0;
+    }
+    :root.rail-hidden #screen-term.active:not(.side-full) ~ :is(#btn-rail-show.peek, #btn-rail-show:focus-visible),
+    :root.rail-hidden #screen-term.active:not(.side-full) ~ :is(#btn-rail-show.peek, #btn-rail-show:focus-visible) svg {
+      transition-duration: 0.12s;
+    }
+  }
   /* A docked pane expanded over the main area puts its head in this corner,
      and the key is centred on that head's row: the explorer's and the
      browser's 38px bar, or the editor's taller one. */

@@ -128,8 +128,18 @@ function syncRailDot() {
   hide.addEventListener("click", () => {
     const kb = document.activeElement === hide;
     setRailHidden(true);
+    // The pointer that pressed hide is already on the corner the key comes
+    // back in, so it shows at once and fades only when the pointer leaves.
+    show.classList.add("peek");
     if (kb) show.focus();
   });
+  // Over the terminal the key rests invisible (styles.css) and shows while the
+  // pointer is in a 44px corner zone. A document-level move rather than a zone
+  // element: an element larger than the key would swallow clicks meant for the
+  // grid, and this way only the key's own box ever takes one.
+  document.addEventListener("pointermove", (e) => {
+    show.classList.toggle("peek", e.clientX < 44 && e.clientY < 44);
+  }, { passive: true });
   show.addEventListener("click", () => {
     const kb = document.activeElement === show;
     setRailHidden(false);
