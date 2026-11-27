@@ -6195,6 +6195,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
    two-pane layout. */
 #wide-empty { display: none; }
 #rail-resize { display: none; }
+#btn-rail-hide, #btn-rail-show { display: none; }
 
 /* Tablets and desktops. Everything two-pane lives behind this one query —
    the markup and screen classes stay exactly the phone's, the stylesheet
@@ -6206,7 +6207,7 @@ html.term-open #dbg-panel { opacity: 0.85; }
   /* --rail-title is the rail row title's size, set live from JS the way
      --sidebar-w is; the default here is what an install with nothing stored
      renders at. */
-  :root { --sidebar-w: 320px; --rail-gutter: 7px; --rail-title: 14px; }
+  :root { --sidebar-w: 320px; --rail-gutter: 7px; --rail-title: 14px; --rail-key-room: 32px; }
 
   /* Visible regardless of .active — the screen classes keep governing only
      the main pane, and the ID selector outweighs .screen's display:none.
@@ -6272,6 +6273,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   @container (max-width: 280px) {
     #screen-list .right { gap: 0; padding-left: 4px; }
   }
+  /* The hide key leads the header, its glyph on the list's left edge and its
+     hit box out in the padding, the way a sidebar's own key sits in a desktop
+     app's corner. */
+  #screen-list #btn-rail-hide { display: inline-flex; margin-left: -6px; }
   #screen-list .list-wrap {
     padding: 0 14px 24px;
     flex: 1;
@@ -6385,6 +6390,74 @@ html.term-open #dbg-panel { opacity: 0.85; }
   }
   #rail-resize:hover, #rail-resize.dragging { background: var(--umber-soft); }
   #rail-resize:hover::after, #rail-resize.dragging::after { background: var(--umber); }
+
+  /* The rail put away (31-wide-layout.js, setRailHidden): the two variables
+     every main-pane edge is drawn from go to zero, so the panes take the room
+     exactly as a drag would have given it. Important because the remembered
+     width is written inline on the root, and it is that value, untouched, that
+     comes back when the class goes. */
+  :root.rail-hidden { --sidebar-w: 0px !important; --rail-gutter: 0px; }
+  :root.rail-hidden #screen-list, :root.rail-hidden #rail-resize { display: none; }
+  /* The way back sits in the hide key's own box: the rail header's 10px top
+     padding and the key's 8px left edge, above the panes and their seams and
+     under every sheet, menu and toast. */
+  :root.rail-hidden #btn-rail-show {
+    display: inline-flex;
+    position: fixed;
+    top: calc(var(--safe-top) + 10px);
+    left: 8px;
+    z-index: 66;
+    padding: 5px;
+    border: 1px solid transparent;
+  }
+  /* Over the grid it has nothing behind it to read against, so there it takes
+     the key pill's surface; in a pane's head it stays as bare as the head's
+     own keys. */
+  :root.rail-hidden #screen-term.active:not(.side-full) ~ #btn-rail-show {
+    border-color: var(--hair);
+    background: color-mix(in srgb, var(--umber) 14%,
+                          color-mix(in srgb, var(--card) 94%, transparent));
+    box-shadow: 0 1px 2px rgba(20, 16, 10, 0.06);
+  }
+  :root.rail-hidden[data-theme="dark"] #screen-term.active:not(.side-full) ~ #btn-rail-show {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--umber) 14%,
+                          color-mix(in srgb, var(--hair-strong) 94%, transparent));
+  }
+  /* A docked pane expanded over the main area puts its head in this corner,
+     and the key is centred on that head's row: the explorer's and the
+     browser's 38px bar, or the editor's taller one. */
+  :root.rail-hidden #screen-term.side-full.active ~ #btn-rail-show { top: calc(var(--safe-top) + 4px); }
+  :root.rail-hidden #screen-term.side-full.active
+    ~ :is(#screen-editor, #screen-reader, #screen-humancode).docked.active ~ #btn-rail-show {
+    top: calc(var(--safe-top) + 10.5px);
+  }
+  #btn-rail-show svg { width: 17px; height: 17px; }
+  #btn-rail-show .rail-show-dot {
+    display: none;
+    position: absolute;
+    top: 3px; right: 3px;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--warn);
+    box-shadow: 0 0 0 1.5px var(--paper);
+  }
+  #btn-rail-show.waiting .rail-show-dot { display: block; }
+  /* What starts at the window's left edge makes room for the key rather than
+     sit under it: the head of a full-width screen (or of a docked one expanded
+     over the terminal) moves its first item along by the key's width and the
+     header's gap, and the connection banner starts past it. */
+  :root.rail-hidden :is(#screen-files, #screen-files-2, #screen-browser, #screen-browser-2,
+                        #screen-editor, #screen-reader, #screen-humancode):not(.docked) > .topbar > :first-child,
+  :root.rail-hidden #screen-term.side-full.active ~ :is(#screen-files, #screen-files-2,
+                        #screen-browser, #screen-browser-2, #screen-editor, #screen-reader,
+                        #screen-humancode).docked > .topbar > :first-child {
+    margin-left: var(--rail-key-room);
+  }
+  :root.rail-hidden #screen-term.side-full.active ~ #viewer.docked .viewer-actions {
+    left: calc(10px + var(--rail-key-room));
+  }
+  :root.rail-hidden #conn-banner { left: calc(10px + var(--rail-key-room)); }
 
   /* With no main screen up the pane would be bare paper; this quiet hint
      (see the #wide-empty markup) fills it, and goes away the moment any

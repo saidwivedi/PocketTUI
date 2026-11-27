@@ -703,6 +703,13 @@ const cfg = {
     if (v) localStorage.setItem("pockettui_alt_on", "1");
     else localStorage.removeItem("pockettui_alt_on");
   },
+  // Whether the wide layout's session list is put away for the room. Off by
+  // default; the pre-paint script reads the same key (boot-theme.js).
+  get railHidden() { return localStorage.getItem("pockettui_rail_hidden") === "1"; },
+  set railHidden(v) {
+    if (v) localStorage.setItem("pockettui_rail_hidden", "1");
+    else localStorage.removeItem("pockettui_rail_hidden");
+  },
   // Which panes, if any, are split out beside the terminal on a wide layout —
   // the git changes ("diff"), the file explorer ("files"), the in-app browser
   // ("browser") — as the column's rows, the top one first, and the session

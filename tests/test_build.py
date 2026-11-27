@@ -5485,3 +5485,32 @@ def test_the_restore_card_follows_the_count_on_a_strict_cap(doc):
     assert 'restorePost("api/restore", { names })' in _js_chunk(doc, "async function restoreTicked() {")
     assert 'restorePost("api/restore/dismiss", { all: true })' in _js_chunk(
         doc, "async function dismissRestore() {")
+
+
+def test_hiding_the_rail_is_painted_before_the_first_frame(doc):
+    """The pre-paint script and cfg read one key, and the class only acts
+    inside the wide layout's query, so the phone never sees either key."""
+    boot = (SRC / "boot-theme.js").read_text(encoding="utf-8")
+    assert 'localStorage.getItem("pockettui_rail_hidden") === "1"' in boot
+    assert 'document.documentElement.classList.add("rail-hidden");' in boot
+    assert ('get railHidden() { return localStorage.getItem("pockettui_rail_hidden") === "1"; }'
+            in doc)
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
+    wide = css.index("@media (min-width: 768px) and (min-height: 500px) {\n  /* --rail-title")
+    assert css.index("#btn-rail-hide, #btn-rail-show { display: none; }") < wide
+    assert wide < css.index(":root.rail-hidden { --sidebar-w: 0px !important; --rail-gutter: 0px; }")
+    assert wide < css.index(":root.rail-hidden #screen-list, :root.rail-hidden #rail-resize { display: none; }")
+
+
+def test_the_rail_keys_toggle_one_state_and_refit(doc):
+    """Both keys land in setRailHidden, which keeps cfg, the class and the grid
+    in step and leaves the remembered width alone."""
+    assert 'aria-label="Hide the session list"' in doc
+    assert 'aria-label="Show the session list"' in doc
+    body = _js_chunk(doc, "function setRailHidden(on) {")
+    assert "  cfg.railHidden = on;\n" in body
+    assert '  document.documentElement.classList.toggle("rail-hidden", on);\n' in body
+    assert "  refit(0);\n" in body
+    assert "railW" not in body and "pockettui_sidebar_w" not in body
+    dot = _js_chunk(doc, "function syncRailDot() {")
+    assert '.item[data-name]:not(.selected) .state.waiting' in dot

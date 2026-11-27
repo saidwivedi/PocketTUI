@@ -300,4 +300,14 @@ function applyEntryChrome(entry, dark) {
   document.documentElement.style.backgroundColor = bg;
   document.getElementById("meta-theme-color").content = bg;
 })();
+
+// The wide layout's session list, hidden on this device (cfg.railHidden,
+// 31-wide-layout.js). On the document before the first frame for the palette's
+// reason: a reload must not show the rail and then take it away. Inert on the
+// phone, where only the wide media query reads the class.
+try {
+  if (localStorage.getItem("pockettui_rail_hidden") === "1") {
+    document.documentElement.classList.add("rail-hidden");
+  }
+} catch (e) {}
 </script>

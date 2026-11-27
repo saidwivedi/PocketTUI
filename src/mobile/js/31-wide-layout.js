@@ -92,6 +92,56 @@ function applyRailFont(px) {
   handle.addEventListener("pointercancel", finish);
 })();
 
+// Hiding the rail gives its width and its seam to the main pane for as long as
+// the user wants the room. The class is the whole of the layout change: under
+// the wide query it zeroes the two variables every pane border is drawn from,
+// so the panes move exactly as a drag to zero would, while railW and its stored
+// value stay as they were and come back with the rail. The pre-paint script
+// puts the class on at boot (boot-theme.js); this keeps it, cfg and the
+// terminal's grid in step afterwards. On a phone the class does nothing, so a
+// window narrowed and widened again comes back the way it was left.
+function setRailHidden(on) {
+  cfg.railHidden = on;
+  document.documentElement.classList.toggle("rail-hidden", on);
+  syncRailDot();
+  refit(0);
+}
+
+// While the rail is away its "Needs input" badges are out of sight, so the key
+// that brings it back carries a dot for any of them on a row other than the
+// open session's. Read off the rail's own rows, which keep rendering while
+// hidden: the badge is already the verdict, and the rows already know which one
+// is selected.
+function syncRailDot() {
+  const btn = $("btn-rail-show");
+  const waiting = !!$("list").querySelector(".item[data-name]:not(.selected) .state.waiting");
+  btn.classList.toggle("waiting", waiting);
+  btn.setAttribute("aria-label", waiting
+    ? "Show the session list, a session needs input" : "Show the session list");
+}
+
+(function bindRailHide() {
+  const hide = $("btn-rail-hide"), show = $("btn-rail-show");
+  // A mouse press leaves focus in the terminal, the key bar's rule; from the
+  // keyboard, focus follows to the key that is still on screen.
+  for (const b of [hide, show]) b.addEventListener("pointerdown", e => e.preventDefault());
+  hide.addEventListener("click", () => {
+    const kb = document.activeElement === hide;
+    setRailHidden(true);
+    if (kb) show.focus();
+  });
+  show.addEventListener("click", () => {
+    const kb = document.activeElement === show;
+    setRailHidden(false);
+    if (kb) hide.focus();
+  });
+  // Rows are rebuilt on every poll and re-marked on every switch; either can
+  // move the dot.
+  new MutationObserver(syncRailDot).observe($("list"),
+    { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+  syncRailDot();
+})();
+
 // Crossing the breakpoint reshapes the terminal's pane — the rail claims or
 // returns its width — so the grid refits here as well as via the window's own
 // resize listener. Entering wide also means the list just appeared after
