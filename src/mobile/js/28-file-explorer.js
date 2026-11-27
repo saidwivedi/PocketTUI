@@ -973,6 +973,9 @@ for (const seg of root.querySelectorAll(".files-mode-seg")) {
 for (const btn of root.querySelectorAll(".dock-term")) {
   btn.addEventListener("click", () => wsTermSetHidden(!cfg.wsTermHidden));
 }
+for (const btn of root.querySelectorAll(".dock-wrap")) {
+  btn.addEventListener("click", () => edToggleWrap());
+}
 for (const btn of root.querySelectorAll(".dock-close")) {
   btn.addEventListener("click", () => closeDockedFiles());
 }

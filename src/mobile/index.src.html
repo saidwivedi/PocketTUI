@@ -834,6 +834,11 @@
     </div>
     <button class="icon-btn dock-swap" type="button" data-more
             aria-label="Move this pane down"><svg><use href="#i-chev-down"/></svg></button>
+    <!-- Expanded only: the editor header's Wrap key (#btn-editor-wrap) for
+         the workspace's tabs, the same setting, lit while the tab in front
+         wraps (47-workspace.js). -->
+    <button type="button" class="icon-btn dock-wrap" aria-pressed="false"
+            aria-label="Wrap long lines" title="Wrap long lines">Wrap</button>
     <!-- Expanded only: the terminal panel under the workspace, up or put away
          (26-side-pane.js), lit while it is up. -->
     <button type="button" class="icon-btn dock-term" id="btn-files-term-panel"

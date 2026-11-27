@@ -4816,9 +4816,13 @@ def test_the_docked_explorer_says_its_mode(doc):
     assert 'const sel = (seg.dataset.expanded === "1") === on;' in sync
     assert 'seg.setAttribute("aria-selected", sel ? "true" : "false");' in sync
     css = (SRC / "styles.css").read_text(encoding="utf-8")
-    assert ":is(#screen-files, #screen-files-2) .dock-term { display: none; }" in css
-    assert ":is(#screen-files, #screen-files-2).ws-on .dock-term { display: inline-flex; }" in css
+    assert ":is(#screen-files, #screen-files-2) :is(.dock-term, .dock-wrap) { display: none; }" in css
+    assert ":is(#screen-files, #screen-files-2).ws-on :is(.dock-term, .dock-wrap) { display: inline-flex; }" in css
     assert 'id="btn-files-term-panel"' in doc and 'querySelectorAll(".dock-term")' in doc
+    # The workspace's Wrap key runs the editor header's own handler.
+    assert 'class="icon-btn dock-wrap" aria-pressed="false"' in doc
+    assert 'querySelectorAll(".dock-wrap")) {\n  btn.addEventListener("click", () => edToggleWrap());' in doc
+    assert '$("btn-editor-wrap").addEventListener("click", edToggleWrap);' in doc
 
 
 # ---- the human-code brief (49-human-code.js, vendor/human-code.js) ----------

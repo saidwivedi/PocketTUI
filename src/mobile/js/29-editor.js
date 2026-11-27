@@ -875,13 +875,16 @@ $("btn-editor-download").addEventListener("click", () => {
 // Applies immediately, same as the key-bar toggles in Settings: reconfigure
 // the compartment rather than rebuilding the buffer, so the cursor, selection
 // and undo history all survive the tap.
-$("btn-editor-wrap").addEventListener("click", () => {
+// The workspace's Wrap key (47-workspace.js) is this one too.
+function edToggleWrap() {
   cfg.editorWrapOn = !cfg.editorWrapOn;
   for (const rec of edLive) {
     rec.view.dispatch({ effects: rec.comps.wrap.reconfigure(edWrapExt(rec.path)) });
   }
   edSyncWrapButton();
-});
+  for (const ws of wsLive) ws.syncWrap();
+}
+$("btn-editor-wrap").addEventListener("click", edToggleWrap);
 $("btn-editor-vim").addEventListener("click", () => {
   cfg.editorVimOn = !cfg.editorVimOn;
   for (const rec of edLive) {

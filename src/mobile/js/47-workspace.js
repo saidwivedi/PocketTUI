@@ -1390,6 +1390,7 @@ function makeWorkspace(ctx) {
     select(tab.path);
     // The index can have moved while the tab was behind another.
     if (tab.marksOn && tab.marks) loadBase(tab);
+    syncWrap();
     // A strip wider than the group can leave the tab being switched to off its
     // end; scrolled to only then.
     requestAnimationFrame(() => {
@@ -1397,6 +1398,24 @@ function makeWorkspace(ctx) {
       if (r.left < b.left || r.right > b.right) {
         tab.chip.scrollIntoView({ block: "nearest", inline: "nearest" });
       }
+    });
+  }
+
+  // The head's Wrap key reads as the editor's does (edSyncWrapButton), for
+  // the tab in front of the group last pressed in: on for the setting, or for
+  // a prose file, which wraps either way. Painted a tick late, so a caller that
+  // activates a tab and then moves focusGroup is read after both.
+  let wrapQueued = false;
+  function syncWrap() {
+    if (wrapQueued) return;
+    wrapQueued = true;
+    queueMicrotask(() => {
+      wrapQueued = false;
+      const key = root.querySelector(".dock-wrap");
+      if (!attached || !key) return;
+      const t = frontTab();
+      const prose = !!t && (t.kind === "editor" || t.kind === "reader") && edWraps(t.path);
+      key.setAttribute("aria-pressed", prose || cfg.editorWrapOn ? "true" : "false");
     });
   }
 
@@ -1780,6 +1799,7 @@ function makeWorkspace(ctx) {
     }
     syncEmpty(g);
     if (!g.tabs.length) unsplit();
+    syncWrap();
   }
 
   // ---- the grid of groups ------------------------------------------------------
@@ -1978,6 +1998,7 @@ function makeWorkspace(ctx) {
     const at = e.target.closest(".ws-group");
     const g = groups.find((x) => x.el === at);
     if (g) focusGroup = g;
+    syncWrap();
   }, true);
 
   // ---- dragging a tab, or a file from the tree -------------------------------------
@@ -2601,6 +2622,7 @@ function makeWorkspace(ctx) {
       relayout();
       kickStatus();
       for (const g of groups) if (g.active && g.active.hc) briefBack(g.active);
+      syncWrap();
     } else {
       wsEl.before(wrap);
       for (const t of fileTabs()) pauseMedia(t);
@@ -2684,7 +2706,7 @@ function makeWorkspace(ctx) {
     groups,
     setOn, onListing, refreshDir, kickStatus, open, close, closePath,
     attach, detach, destroy, dirtyCount, askDiscardAll, saveAt, relayout,
-    syncCaps, syncRef,
+    syncCaps, syncRef, syncWrap,
     get view() { return wsView; },
   };
   wsLive.add(api);

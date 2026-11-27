@@ -3959,7 +3959,15 @@ html.term-open #dbg-panel { opacity: 0.85; }
 .dock-swap { display: none; }
 /* The expanded explorer's terminal-panel key (26-side-pane.js), hidden a class
    further still: it is shown only while the workspace is up (.ws-on below). */
-:is(#screen-files, #screen-files-2) .dock-term { display: none; }
+:is(#screen-files, #screen-files-2) :is(.dock-term, .dock-wrap) { display: none; }
+/* A key with a word on it rather than a glyph, in the mode segment's type. */
+:is(#screen-files, #screen-files-2) .files-toolrow .dock-wrap {
+  width: auto;
+  padding: 0 7px;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+}
 /* The key that opens another pane in the column, and the menu it drops. The wrap
    wears .dock-only with the pane's other controls, so it comes and goes with
    them and is absent from the phone with them; it exists at all because the menu
@@ -4058,10 +4066,10 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-reader.docked .dock-only,
   #screen-humancode.docked .dock-only,
   #viewer.docked .dock-only { display: inline-flex; }
-  :is(#screen-files, #screen-files-2).ws-on .dock-term { display: inline-flex; }
+  :is(#screen-files, #screen-files-2).ws-on :is(.dock-term, .dock-wrap) { display: inline-flex; }
   /* On while the panel is up, in the mode-key idiom the workspace's Changes
      key and the browser's monitor key wear: the accent over the pressed fill. */
-  :is(#screen-files, #screen-files-2) .files-toolrow .dock-term[aria-pressed="true"] {
+  :is(#screen-files, #screen-files-2) .files-toolrow :is(.dock-term, .dock-wrap)[aria-pressed="true"] {
     color: var(--umber);
     background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
   }
