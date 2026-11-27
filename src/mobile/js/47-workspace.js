@@ -1419,6 +1419,13 @@ function makeWorkspace(ctx) {
     });
   }
 
+  // The head's Vim key reads as the editor's does (edSyncVimButton): one
+  // setting for every tab, so nothing about the tab in front.
+  function syncVim() {
+    const key = root.querySelector(".dock-vim");
+    if (key) key.setAttribute("aria-pressed", cfg.editorVimOn ? "true" : "false");
+  }
+
   function pauseMedia(tab) {
     const v = tab.body.querySelector("video");
     if (v) v.pause();
@@ -2623,6 +2630,7 @@ function makeWorkspace(ctx) {
       kickStatus();
       for (const g of groups) if (g.active && g.active.hc) briefBack(g.active);
       syncWrap();
+      syncVim();
     } else {
       wsEl.before(wrap);
       for (const t of fileTabs()) pauseMedia(t);
@@ -2706,7 +2714,7 @@ function makeWorkspace(ctx) {
     groups,
     setOn, onListing, refreshDir, kickStatus, open, close, closePath,
     attach, detach, destroy, dirtyCount, askDiscardAll, saveAt, relayout,
-    syncCaps, syncRef, syncWrap,
+    syncCaps, syncRef, syncWrap, syncVim,
     get view() { return wsView; },
   };
   wsLive.add(api);

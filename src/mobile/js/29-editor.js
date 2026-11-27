@@ -885,11 +885,14 @@ function edToggleWrap() {
   for (const ws of wsLive) ws.syncWrap();
 }
 $("btn-editor-wrap").addEventListener("click", edToggleWrap);
-$("btn-editor-vim").addEventListener("click", () => {
+// The workspace's Vim key (47-workspace.js) is this one too.
+function edToggleVim() {
   cfg.editorVimOn = !cfg.editorVimOn;
   for (const rec of edLive) {
     rec.view.dispatch({ effects: rec.comps.vim.reconfigure(edVimExt()) });
   }
   edSyncVimButton();
+  for (const ws of wsLive) ws.syncVim();
   if (cfg.editorVimOn) { edDefineVimEx(); edLoadVimrc(); }
-});
+}
+$("btn-editor-vim").addEventListener("click", edToggleVim);

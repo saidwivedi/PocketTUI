@@ -4823,6 +4823,12 @@ def test_the_docked_explorer_says_its_mode(doc):
     assert 'class="icon-btn dock-wrap" aria-pressed="false"' in doc
     assert 'querySelectorAll(".dock-wrap")) {\n  btn.addEventListener("click", () => edToggleWrap());' in doc
     assert '$("btn-editor-wrap").addEventListener("click", edToggleWrap);' in doc
+    # And its Vim key, the editor header's Vim handler, behind the same
+    # hardware-keyboard gate.
+    assert 'class="icon-btn dock-vim" aria-pressed="false"' in doc
+    assert 'querySelectorAll(".dock-vim")) {\n  btn.addEventListener("click", () => edToggleVim());' in doc
+    assert '$("btn-editor-vim").addEventListener("click", edToggleVim);' in doc
+    assert ":is(#screen-files, #screen-files-2) .dock-vim { display: none; }" in css
 
 
 # ---- the human-code brief (49-human-code.js, vendor/human-code.js) ----------

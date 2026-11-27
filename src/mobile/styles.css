@@ -3960,8 +3960,9 @@ html.term-open #dbg-panel { opacity: 0.85; }
 /* The expanded explorer's terminal-panel key (26-side-pane.js), hidden a class
    further still: it is shown only while the workspace is up (.ws-on below). */
 :is(#screen-files, #screen-files-2) :is(.dock-term, .dock-wrap) { display: none; }
+:is(#screen-files, #screen-files-2) .dock-vim { display: none; }
 /* A key with a word on it rather than a glyph, in the mode segment's type. */
-:is(#screen-files, #screen-files-2) .files-toolrow .dock-wrap {
+:is(#screen-files, #screen-files-2) .files-toolrow :is(.dock-wrap, .dock-vim) {
   width: auto;
   padding: 0 7px;
   font-family: var(--sans);
@@ -4067,9 +4068,14 @@ html.term-open #dbg-panel { opacity: 0.85; }
   #screen-humancode.docked .dock-only,
   #viewer.docked .dock-only { display: inline-flex; }
   :is(#screen-files, #screen-files-2).ws-on :is(.dock-term, .dock-wrap) { display: inline-flex; }
+  /* The Vim key beside Wrap is the editor's (#btn-editor-vim), on the same
+     hardware-keyboard test: a touch keyboard has no Escape. */
+  @media (hover: hover) and (pointer: fine) {
+    :is(#screen-files, #screen-files-2).ws-on .dock-vim { display: inline-flex; }
+  }
   /* On while the panel is up, in the mode-key idiom the workspace's Changes
      key and the browser's monitor key wear: the accent over the pressed fill. */
-  :is(#screen-files, #screen-files-2) .files-toolrow :is(.dock-term, .dock-wrap)[aria-pressed="true"] {
+  :is(#screen-files, #screen-files-2) .files-toolrow :is(.dock-term, .dock-wrap, .dock-vim)[aria-pressed="true"] {
     color: var(--umber);
     background: linear-gradient(var(--umber-soft), var(--umber-soft)), var(--m-fill2);
   }

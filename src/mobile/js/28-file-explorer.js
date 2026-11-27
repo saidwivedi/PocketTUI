@@ -976,6 +976,9 @@ for (const btn of root.querySelectorAll(".dock-term")) {
 for (const btn of root.querySelectorAll(".dock-wrap")) {
   btn.addEventListener("click", () => edToggleWrap());
 }
+for (const btn of root.querySelectorAll(".dock-vim")) {
+  btn.addEventListener("click", () => edToggleVim());
+}
 for (const btn of root.querySelectorAll(".dock-close")) {
   btn.addEventListener("click", () => closeDockedFiles());
 }
